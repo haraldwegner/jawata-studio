@@ -194,6 +194,18 @@ pub struct ManagerSettings {
     pub release_repo: String,
     pub last_release_check: Option<String>,
     pub last_seen_latest_version: Option<String>,
+    /// Sprint 16b/B: single-service gateway. When enabled, the deploy writes ONE
+    /// `goja` MCP entry (the gateway) instead of N per-workspace entries, and the
+    /// in-process gateway routes each call to the owning resident. Default OFF —
+    /// the per-workspace deploy is unchanged until this is turned on.
+    #[serde(default = "default_gateway_enabled")]
+    pub gateway_enabled: bool,
+    /// Stable port the gateway binds on 127.0.0.1 (below the resident range).
+    #[serde(default = "default_gateway_port")]
+    pub gateway_port: u16,
+    /// Stable Bearer token for the gateway entry; generated once on first enable.
+    #[serde(default)]
+    pub gateway_token: Option<String>,
 }
 
 /// Sprint 15 Stage 11: governs the MCP-config writer's behaviour when
@@ -231,6 +243,18 @@ pub fn default_release_repo() -> String {
     "haraldwegner/goja-mcp".to_string()
 }
 
+/// Sprint 16b/B: gateway is OFF by default — per-workspace deploy is unchanged
+/// until the user opts in.
+fn default_gateway_enabled() -> bool {
+    false
+}
+
+/// Sprint 16b/B: gateway port. 8790 sits just below the resident range
+/// (8800–8999) so it never collides with a per-workspace resident.
+fn default_gateway_port() -> u16 {
+    8790
+}
+
 /// Legacy values rewritten to the current default on read.
 /// - `pzalutski-pixel/javalens-mcp` — the pre-v0.10.0 upstream default.
 /// - `hw1964/javalens-mcp` — the pre-v0.15.0 fork default (before the
@@ -262,6 +286,9 @@ impl ManagerSettings {
             release_repo: default_release_repo(),
             last_release_check: None,
             last_seen_latest_version: None,
+            gateway_enabled: default_gateway_enabled(),
+            gateway_port: default_gateway_port(),
+            gateway_token: None,
         }
     }
 

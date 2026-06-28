@@ -1,5 +1,6 @@
 mod commands;
 mod config;
+mod gateway;
 mod lombok;
 mod manager_service;
 mod release_manager;

@@ -3,6 +3,7 @@ use crate::{
         display_path, AddProjectInput, BootstrapStatus, ConfigStore, DeployTargetFlags,
         ManagerSettings, McpMergeMode, ProjectRecord, RuntimeSource, UpdateSettingsInput,
     },
+    gateway,
     release_manager::{ManagedRuntimeRecord, ReleaseManager, ReleaseStatus},
     runtime_manager::{
         RuntimeLaunchRequest, RuntimeManager, RuntimePhase, RuntimeReference, RuntimeStatusRecord,
@@ -20,7 +21,7 @@ use std::{
     process::{ChildStderr, ChildStdout, Command, Stdio},
     sync::{
         mpsc::{self, Receiver},
-        Arc, Mutex,
+        Arc, Mutex, RwLock,
     },
     thread,
     time::{Duration, Instant},
@@ -247,6 +248,9 @@ pub struct ManagerService {
     config_store: ConfigStore,
     release_manager: ReleaseManager,
     runtime_manager: RuntimeManager,
+    /// Sprint 16b/B: shared routing table the single-service gateway reads.
+    /// Empty until the first deploy populates it.
+    routing_table: Arc<RwLock<gateway::RoutingTable>>,
 }
 
 impl ManagerService {
@@ -256,10 +260,26 @@ impl ManagerService {
         release_manager: ReleaseManager,
         runtime_manager: RuntimeManager,
     ) -> Self {
+        let routing_table = Arc::new(RwLock::new(gateway::RoutingTable::default()));
+
+        // Sprint 16b/B: start the single-service gateway when enabled. Default
+        // OFF, so this is a no-op for the existing per-workspace deploy model.
+        let settings = config_store.get_settings();
+        if settings.gateway_enabled {
+            let token = ensure_gateway_token(&config_store, &settings);
+            match gateway::spawn(settings.gateway_port, token, Arc::clone(&routing_table)) {
+                Ok(handle) => {
+                    eprintln!("[goja-studio] gateway listening on 127.0.0.1:{}", handle.port)
+                }
+                Err(error) => eprintln!("[goja-studio] gateway failed to start: {error}"),
+            }
+        }
+
         Self {
             config_store,
             release_manager,
             runtime_manager,
+            routing_table,
         }
     }
 
@@ -576,6 +596,26 @@ impl ManagerService {
         let settings = self.config_store.get_settings();
         let projects = self.config_store.list_projects();
         let (servers, resolve_errors) = self.build_deploy_servers(&settings, &projects);
+
+        // Sprint 16b/B: with the gateway on, refresh its routing table and write
+        // ONE `goja` entry to clients instead of N per-workspace entries. Off by
+        // default → `client_servers` is just `servers` (unchanged behaviour).
+        let client_servers: Vec<ManagedDeployServer> = if settings.gateway_enabled {
+            *self
+                .routing_table
+                .write()
+                .expect("routing table lock poisoned") = build_routing_table(&servers);
+            let disabled = !settings.autostart_on_boot
+                && matches!(
+                    settings.mcp_disabled_writer_mode,
+                    crate::config::WriterMode::Disable
+                );
+            let token = ensure_gateway_token(&self.config_store, &settings);
+            vec![gateway_entry(settings.gateway_port, &token, disabled)]
+        } else {
+            servers.clone()
+        };
+
         let clients = self.deploy_targets_for_settings(&settings);
         let requested_targets: Option<HashSet<String>> =
             input.target_clients.as_ref().map(|targets| {
@@ -614,7 +654,7 @@ impl ManagerService {
             let result = self.deploy_to_client(
                 target.id,
                 target.target_path.clone(),
-                &servers,
+                &client_servers,
                 &settings.mcp_merge_mode,
                 settings.mcp_backup_before_write,
                 &input.mode,
@@ -3024,6 +3064,48 @@ fn build_client_mcp_json(client: &str, servers: &[ManagedDeployServer]) -> serde
     })
 }
 
+/// Sprint 16b/B: ensure the gateway has a persisted Bearer token, generating and
+/// saving one on first use.
+fn ensure_gateway_token(config_store: &ConfigStore, settings: &ManagerSettings) -> String {
+    if let Some(token) = settings.gateway_token.clone() {
+        return token;
+    }
+    let token = crate::resident::generate_token();
+    let mut updated = settings.clone();
+    updated.gateway_token = Some(token.clone());
+    let _ = config_store.write_settings(updated);
+    token
+}
+
+/// Sprint 16b/B: convert the per-workspace deploy set into the gateway's routing
+/// table — one route per resident, carrying its project roots for path routing.
+fn build_routing_table(servers: &[ManagedDeployServer]) -> gateway::RoutingTable {
+    gateway::RoutingTable::new(
+        servers
+            .iter()
+            .map(|server| gateway::GatewayRoute {
+                workspace_name: server.workspace_name.clone(),
+                url: server.url.clone(),
+                token: server.token.clone(),
+                project_paths: server.project_paths.clone(),
+            })
+            .collect(),
+    )
+}
+
+/// Sprint 16b/B: the single client-facing `goja` entry that points at the gateway.
+fn gateway_entry(port: u16, token: &str, disabled: bool) -> ManagedDeployServer {
+    ManagedDeployServer {
+        id: "goja".to_string(),
+        workspace_name: "gateway".to_string(),
+        project_names: Vec::new(),
+        project_paths: Vec::new(),
+        url: format!("http://127.0.0.1:{port}/mcp"),
+        token: token.to_string(),
+        disabled,
+    }
+}
+
 fn write_managed_rule_block(
     path: &str,
     managed_rule_block: &str,
@@ -3671,6 +3753,49 @@ mod tests {
         assert!(replaced.contains("GOJA MCP"), "new body present");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ===== Sprint 16b/B: single-service gateway wiring =====
+
+    fn ws_server(id: &str, ws: &str, port: u16, token: &str, paths: &[&str]) -> ManagedDeployServer {
+        ManagedDeployServer {
+            id: id.into(),
+            workspace_name: ws.into(),
+            project_names: vec!["P".into()],
+            project_paths: paths.iter().map(|p| p.to_string()).collect(),
+            url: format!("http://127.0.0.1:{port}/mcp"),
+            token: token.into(),
+            disabled: false,
+        }
+    }
+
+    #[test]
+    fn gateway_entry_is_single_goja_pointing_at_gateway_port() {
+        let entry = gateway_entry(8790, "gtok", false);
+        assert_eq!(entry.id, "goja");
+        assert_eq!(entry.url, "http://127.0.0.1:8790/mcp");
+        assert_eq!(entry.token, "gtok");
+        // The client sees exactly one entry with the standard http shape.
+        let json = build_client_mcp_json("cursor", &[entry]);
+        let servers = json["mcpServers"].as_object().unwrap();
+        assert_eq!(servers.len(), 1, "client sees ONE service");
+        assert_eq!(servers["goja"]["url"], "http://127.0.0.1:8790/mcp");
+        assert_eq!(servers["goja"]["headers"]["Authorization"], "Bearer gtok");
+    }
+
+    #[test]
+    fn routing_table_maps_each_workspace_and_routes_by_path() {
+        let servers = vec![
+            ws_server("goja-a", "a", 8800, "ta", &["/p/a"]),
+            ws_server("goja-b", "b", 8801, "tb", &["/p/b"]),
+        ];
+        let table = build_routing_table(&servers);
+        assert_eq!(table.routes.len(), 2);
+
+        let params = serde_json::json!({"arguments": {"filePath": "/p/b/src/X.java"}});
+        let route = table.resolve("tools/call", Some(&params)).unwrap();
+        assert_eq!(route.url, "http://127.0.0.1:8801/mcp");
+        assert_eq!(route.token, "tb");
     }
 
     #[test]
