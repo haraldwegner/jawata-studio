@@ -1,0 +1,10 @@
+GOJA Studio — goja-studio
+Copyright (c) 2026 Harald Wegner
+
+This product is licensed under the GNU Affero General Public License,
+version 3.0. See the LICENSE file for the full terms.
+
+goja-studio is the desktop control plane for GOJA. It was previously
+distributed as "javalens-manager" under the MIT License; from v1.0.0 it is
+licensed under AGPL-3.0. Earlier MIT-licensed releases remain available under
+their original terms.

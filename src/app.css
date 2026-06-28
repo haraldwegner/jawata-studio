@@ -1,0 +1,1714 @@
+:root {
+  color-scheme: dark;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  line-height: 1.4;
+  font-weight: 400;
+  font-size: 14px;
+  background: #0b1020;
+  color: #f1f5f9;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top, rgba(37, 99, 235, 0.2), transparent 30%),
+    #0b1020;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.app-shell {
+  max-width: 1680px;
+  margin: 0 auto;
+  padding: 1.25rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.full-height-shell {
+  height: 100vh;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.full-height-shell > .hero {
+  grid-row: 1;
+}
+
+.full-height-shell > .banner {
+  grid-row: 2;
+}
+
+.full-height-shell > .dashboard-main {
+  grid-row: 3;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.dashboard-layout {
+  align-items: stretch;
+  height: 100%;
+  --left-panel-width: 320px;
+  grid-template-columns: minmax(260px, var(--left-panel-width)) 12px minmax(0, 1fr);
+}
+
+.dashboard-layout.is-resizing {
+  user-select: none;
+  cursor: col-resize;
+}
+
+.dashboard-splitter {
+  width: 12px;
+  cursor: col-resize;
+  position: relative;
+  align-self: stretch;
+}
+
+.dashboard-splitter::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.15);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.dashboard-splitter:hover::before {
+  background: rgba(148, 163, 184, 0.22);
+  border-color: rgba(148, 163, 184, 0.32);
+}
+
+.dashboard-column {
+  min-height: 0;
+  height: 100%;
+}
+
+.dashboard-column > .panel {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  /* Sprint 16.1 (bugs.md #20): isolate the scroll region's repaints so
+     WebKitGTK doesn't re-rasterise siblings on every scroll frame. */
+  contain: paint;
+}
+
+/* Sprint 10 v0.10.4: when the left dashboard column stacks multiple
+   panels (Workspaces + Register Project + Import), each panel takes
+   its natural height and the column scrolls as a whole. */
+.dashboard-column.dashboard-column-stack {
+  display: grid;
+  grid-auto-flow: row;
+  grid-auto-rows: max-content;
+  gap: 0.75rem;
+  overflow-y: auto;
+  contain: paint;
+}
+
+.dashboard-column.dashboard-column-stack > .panel {
+  height: auto;
+  overflow: visible;
+}
+
+/* WorkspaceList card */
+.workspace-list-panel .workspace-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.workspace-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.45rem;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 10px;
+}
+
+.workspace-row:hover {
+  background: rgba(148, 163, 184, 0.1);
+}
+
+.workspace-row.active {
+  border-color: rgba(96, 165, 250, 0.55);
+  background: rgba(37, 99, 235, 0.16);
+}
+
+.workspace-row-select {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.1rem 0.15rem;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  text-align: left;
+}
+
+.workspace-row-name {
+  font-weight: 600;
+  color: #f1f5f9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-row-meta {
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.workspace-new-row {
+  background: rgba(37, 99, 235, 0.08);
+  border-color: rgba(96, 165, 250, 0.32);
+  display: grid;
+  grid-template-columns: auto 1fr;
+}
+
+.workspace-new-input {
+  border: none;
+  background: transparent;
+  padding: 0.2rem 0.3rem;
+  color: #f8fafc;
+  font-size: 0.92rem;
+}
+
+.workspace-add {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  background: transparent;
+  border: 1px dashed rgba(148, 163, 184, 0.35);
+  border-radius: 10px;
+  color: #cbd5f5;
+}
+
+.workspace-add:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.08);
+  border-color: rgba(148, 163, 184, 0.55);
+}
+
+.empty-hint {
+  margin: 0;
+}
+
+/* Sprint 10 v0.10.4: shared context menu (right-click on workspaces or
+   project rows). Anchored to mouse coords by ContextMenu.svelte. */
+.context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 11rem;
+  display: grid;
+  gap: 0.1rem;
+  padding: 0.3rem;
+  background: rgba(15, 23, 42, 0.98);
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 10px;
+  box-shadow: 0 14px 36px rgba(2, 6, 23, 0.6);
+}
+
+.context-menu-item {
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  color: #f1f5f9;
+  font-size: 0.88rem;
+}
+
+.context-menu-item:hover:not(:disabled) {
+  background: rgba(96, 165, 250, 0.18);
+}
+
+.context-menu-item.danger {
+  color: #fca5a5;
+}
+
+.context-menu-item.danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fecaca;
+}
+
+/* Hover-revealed icon row on the left workspace list. The buttons are
+   visible only when the row (or one of them) is hovered. */
+.workspace-row {
+  position: relative;
+}
+
+.workspace-row-tools {
+  display: none;
+  gap: 0.25rem;
+  margin-left: 0.4rem;
+}
+
+.workspace-row:hover .workspace-row-tools,
+.workspace-row:focus-within .workspace-row-tools {
+  display: inline-flex;
+}
+
+.workspace-row-icon {
+  width: 1.4rem;
+  height: 1.4rem;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 6px;
+  font-size: 0.78rem;
+  color: #cbd5f5;
+}
+
+.workspace-row-icon:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.18);
+}
+
+.workspace-row-icon.danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fecaca;
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.panel {
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 18px;
+  padding: 1rem;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.25);
+}
+
+.stack {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.hero {
+  display: grid;
+  gap: 0.8rem;
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  /* Sprint 16.1 (bugs.md #20): opaque background, no backdrop-filter.
+     On WebKitGTK (Linux webview) a blurred sticky element overlapping
+     the scroll region forces a full backdrop recomposite every frame —
+     the main cause of slow scrolling. At 0.96 alpha the blur was barely
+     visible; an opaque fill removes the per-frame cost with no real
+     visual change. (WebView2 on Windows composites this cheaply, which
+     is why Windows scrolling was already smooth.) */
+  background: rgb(11, 16, 32);
+}
+
+.dashboard-main {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: 100%;
+  min-height: 0;
+  gap: 0.75rem;
+}
+
+.dashboard-content {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding-right: 0.15rem;
+}
+
+.header-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 1rem;
+}
+
+.nav-tabs {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: #94a3b8;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  font-weight: 500;
+}
+
+.tab:hover {
+  background: rgba(148, 163, 184, 0.1);
+  color: #f1f5f9;
+}
+
+.tab.active {
+  background: rgba(37, 99, 235, 0.15);
+  border-color: rgba(37, 99, 235, 0.4);
+  color: #60a5fa;
+}
+
+.eyebrow,
+.label,
+.muted {
+  color: #94a3b8;
+}
+
+.eyebrow {
+  margin: 0 0 0.25rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.section-intro {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+  align-items: stretch;
+}
+
+.settings-section {
+  align-content: start;
+  /* Ensure paired panels (e.g. GOJA Runtime + Exposed Services) end at
+     the same y so their bottom borders line up regardless of content
+     length differences. align-items: stretch on the parent grid handles
+     this for most browsers; this explicit height removes the corner cases. */
+  height: 100%;
+}
+
+.paired-section-intro {
+  min-height: 4.1rem;
+  align-content: start;
+}
+
+.runtime-settings-root {
+  overflow: auto;
+  min-height: 0;
+  position: relative;
+}
+
+.settings-save-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 12;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  min-height: 3.15rem;
+  padding: 0.42rem 0.65rem;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 12px;
+  /* Sprint 16.1 (bugs.md #20): opaque, no backdrop-filter — see .hero. */
+  background: rgb(11, 16, 32);
+  box-shadow: 0 -10px 26px rgba(2, 6, 23, 0.35);
+}
+
+.settings-save-footer .save-settings-button {
+  margin-left: auto;
+  min-width: 9.25rem;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.settings-save-status-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 1rem;
+}
+
+.settings-save-status {
+  font-size: 0.78rem;
+  color: #94a3b8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: min(60%, 32rem);
+}
+
+.settings-save-status.success {
+  color: #86efac;
+}
+
+.settings-save-status.error {
+  color: #fda4af;
+}
+
+.settings-save-status.saving {
+  color: #93c5fd;
+}
+
+.machine-controls-grid {
+  display: grid;
+  gap: 0.85rem;
+  /* Two cards (Data Root + Diagnostics) — natural heights, no stretch.
+     The right column (MCP Config Locations) caps its own height via
+     a scrollable list so the two columns line up without forcing the
+     left side to grow. */
+  grid-template-rows: auto auto;
+}
+
+.machine-control-card {
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 12px;
+  padding: 0.6rem;
+  background: rgba(15, 23, 42, 0.42);
+  gap: 0.5rem;
+  min-height: 0;
+  height: 100%;
+}
+
+.machine-control-card.compact-card {
+  padding: 0.48rem 0.54rem;
+  gap: 0.35rem;
+}
+
+.machine-control-card.compact-card .field {
+  gap: 0.2rem;
+}
+
+.machine-control-card.compact-card .checkbox-row.compact {
+  font-size: 0.79rem;
+}
+
+.machine-control-card.compact-card .hint {
+  font-size: 0.77rem;
+}
+
+.machine-control-card.diagnostics-card {
+  padding: 0.72rem 0.76rem;
+  gap: 0.72rem;
+}
+
+.machine-control-card.diagnostics-card .bootstrap-grid.compact {
+  gap: 0.62rem 0.72rem;
+}
+
+.machine-control-card.diagnostics-card .actions.compact {
+  margin-top: 0.15rem;
+}
+
+.machine-control-card.diagnostics-card .actions.compact button {
+  padding: 0.2rem 0.42rem;
+  font-size: 0.72rem;
+  line-height: 1.1;
+}
+
+.machine-control-card h4 {
+  margin: 0;
+  font-size: 0.88rem;
+}
+
+.port-range-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.runtime-section {
+  gap: 0.55rem;
+}
+
+.runtime-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.runtime-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.18rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  background: rgba(30, 41, 59, 0.45);
+  color: #cbd5e1;
+  font-size: 0.73rem;
+}
+
+.service-list {
+  margin: 0;
+  padding-left: 1rem;
+  display: grid;
+  gap: 0.2rem;
+  color: #cbd5e1;
+  font-size: 0.9rem;
+}
+
+.service-list.compact {
+  font-size: 0.84rem;
+  gap: 0.12rem;
+}
+
+.service-list-scroll {
+  max-height: 8.5rem;
+  overflow: auto;
+  padding-right: 0.35rem;
+}
+
+/* Inside the Exposed Services settings panel, let the probe-result + its
+   inner service list fill the panel height so the right-hand card no
+   longer leaves dead space below the list — without growing the panel
+   beyond its peer (the GOJA Runtime panel on the left). Trick:
+   flex: 1 1 0 (zero base) on the probe-result and inner list. The
+   probe-result contributes 0 to .services-section's intrinsic height,
+   so grid-stretch pairs the panel to the left card's height; flex:1
+   then expands the probe-result to fill whatever remains. */
+.services-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.services-section .probe-result {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.services-section .service-list-scroll {
+  max-height: none;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.service-item {
+  display: grid;
+  gap: 0.08rem;
+}
+
+.service-item .hint {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.probe-result {
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 12px;
+  padding: 0.6rem;
+  display: grid;
+  gap: 0.25rem;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.probe-result.ok {
+  border-color: rgba(52, 211, 153, 0.35);
+}
+
+.probe-result.error {
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+/* Sprint 10 v0.10.4: cap the MCP-clients list height so the right
+   column doesn't grow taller than the left. ~2 cards visible at once;
+   the rest scroll. */
+.mcp-clients-scroll {
+  display: grid;
+  gap: 0.75rem;
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+
+.mcp-client-card {
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 12px;
+  padding: 0.55rem;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.mcp-client-card.compact {
+  gap: 0.35rem;
+}
+
+.mcp-client-card .field-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.mcp-section-intro {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+}
+
+.machine-section,
+.mcp-locations-section {
+  min-height: 100%;
+  height: 100%;
+}
+
+.machine-section {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.mcp-client-heading {
+  display: block;
+}
+
+.mcp-client-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.mcp-client-title-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.mcp-deploy-checkbox {
+  margin: 0;
+  font-size: 0.74rem;
+  color: #cbd5e1;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+
+.mcp-current-path {
+  word-break: break-all;
+}
+
+.mcp-source-badge {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 999px;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mcp-source-badge.manual {
+  border-color: rgba(96, 165, 250, 0.5);
+  color: #93c5fd;
+}
+
+.mcp-source-badge.auto {
+  border-color: rgba(52, 211, 153, 0.4);
+  color: #6ee7b7;
+}
+
+.mcp-source-badge.missing {
+  border-color: rgba(148, 163, 184, 0.3);
+  color: #94a3b8;
+}
+
+.section-divider {
+  margin: 0.15rem 0 0.1rem;
+  border: 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.22);
+}
+
+.candidate-list {
+  max-height: 15rem;
+  overflow: auto;
+  contain: paint;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 1.85rem;
+}
+
+h2 {
+  font-size: 1.1rem;
+}
+
+h3 {
+  font-size: 0.98rem;
+}
+
+.title-subline {
+  margin-top: 0.3rem;
+  font-size: 0.82rem;
+}
+
+.bootstrap-grid,
+.detail-grid {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.bootstrap-grid {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.bootstrap-grid strong,
+.detail-grid dd {
+  display: block;
+  margin-top: 0.2rem;
+  word-break: break-word;
+}
+
+.field {
+  display: grid;
+  gap: 0.3rem;
+}
+
+/* Sprint 10 v0.10.4: workspace selector at the top of the Register
+   Project form. Subtle highlight to mark it as the primary
+   organizational decision. */
+.workspace-picker {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid rgba(96, 165, 250, 0.32);
+  border-radius: 12px;
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.workspace-picker .field span {
+  color: #cbd5f5;
+  font-weight: 600;
+}
+
+.field span,
+dt {
+  font-size: 0.82rem;
+  color: #cbd5e1;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+input,
+select {
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.7);
+  color: #f8fafc;
+  padding: 0.62rem 0.75rem;
+}
+
+input::placeholder {
+  color: #64748b;
+}
+
+select {
+  appearance: none;
+}
+
+button {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 12px;
+  background: rgba(30, 41, 59, 0.8);
+  color: #f8fafc;
+  padding: 0.58rem 0.82rem;
+  font-size: 0.92rem;
+}
+
+button.primary {
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  border-color: rgba(37, 99, 235, 0.4);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.list {
+  max-height: 56rem;
+  overflow-y: auto;
+  contain: paint;
+  overflow-x: hidden;
+  padding-right: 0.35rem;
+}
+
+.project-list-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  /* Keep Start all / Stop all / Delete all on one line. With 4 metric
+     pills now in the header (Workspaces / Running / Stopped / Projects)
+     the flex container would otherwise squish the toolbar's buttons
+     into multi-line "Start\nall" wraps. */
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.project-list-toolbar.segmented-actions {
+  border-color: rgba(148, 163, 184, 0.35);
+  background: rgba(30, 41, 59, 0.85);
+}
+
+.project-list-toolbar.segmented-actions button {
+  white-space: nowrap;
+}
+
+.deploy-toolbar {
+  display: flex;
+  justify-content: stretch;
+  align-self: stretch;
+  width: 100%;
+}
+
+.deploy-toolbar-wrap {
+  display: grid;
+  gap: 0.35rem;
+  align-content: start;
+}
+
+.deploy-toolbar-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #cbd5e1;
+}
+
+.deploy-toolbar.segmented-actions {
+  border-color: rgba(96, 165, 250, 0.45);
+  background: rgba(37, 99, 235, 0.16);
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  width: 100%;
+}
+
+.project-list-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.project-summary-metrics {
+  margin-top: 0.35rem;
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.metric-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.16rem 0.46rem;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(30, 41, 59, 0.52);
+  color: #cbd5e1;
+  font-size: 0.72rem;
+  line-height: 1.2;
+}
+
+.metric-pill.running {
+  border-color: rgba(52, 211, 153, 0.35);
+  color: #34d399;
+}
+
+.metric-pill.stopped {
+  border-color: rgba(148, 163, 184, 0.28);
+}
+
+.project-list-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.project-list-scroll {
+  max-height: none;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 0.25rem;
+  align-content: start;
+}
+
+.aggregate-pill {
+  margin-left: 0.55rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.48rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+
+.aggregate-pill.running {
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+}
+
+.aggregate-pill.stopped {
+  background: rgba(71, 85, 105, 0.45);
+  color: #cbd5e1;
+}
+
+.aggregate-pill.starting {
+  background: rgba(245, 158, 11, 0.22);
+  color: #fbbf24;
+}
+
+.segmented-actions {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(30, 41, 59, 0.6);
+}
+
+.segmented-actions button {
+  border: none;
+  border-right: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 0;
+  background: transparent;
+  padding: 0.48rem 0.76rem;
+  font-size: 0.88rem;
+}
+
+.segmented-actions button:last-child {
+  border-right: none;
+}
+
+.segmented-actions button:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.12);
+}
+
+/* Keep deploy controls visibly distinct from the generic segmented bars. */
+.deploy-toolbar.segmented-actions button {
+  min-height: 2rem;
+  padding: 0.46rem 0.8rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  width: 100%;
+  justify-content: center;
+}
+
+.deploy-toolbar.segmented-actions button.active {
+  background: rgba(59, 130, 246, 0.22);
+  color: #f8fafc;
+}
+
+.deploy-toolbar.segmented-actions button:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.25);
+}
+
+.deploy-target-picker {
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  border-radius: 12px;
+  padding: 0.6rem 0.7rem;
+  background: rgba(15, 23, 42, 0.58);
+  display: grid;
+  gap: 0.45rem;
+  width: 100%;
+  max-width: none;
+}
+
+.deploy-target-grid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.24rem 1.25rem;
+}
+
+.project-card {
+  display: grid;
+  gap: 0.3rem;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 14px;
+  padding: 0.55rem 0.65rem;
+  background: rgba(15, 23, 42, 0.6);
+  min-width: 0;
+  overflow: visible;
+}
+
+.project-card.selected {
+  border-color: rgba(96, 165, 250, 0.55);
+}
+
+/* Sprint 10 v0.10.4: workspace-grouped Dashboard view. One card per
+   logical workspace, with project rows nested inside. */
+.workspace-card {
+  display: grid;
+  gap: 0.4rem;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 14px;
+  padding: 0.6rem 0.75rem;
+  background: rgba(15, 23, 42, 0.45);
+  min-width: 0;
+}
+
+.workspace-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.workspace-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.workspace-toggle {
+  width: 1.4rem;
+  height: 1.4rem;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: #cbd5f5;
+}
+
+.workspace-toggle:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.14);
+}
+
+/* Sprint 10 v0.10.4 (Tier 2 polish): smooth chevron rotation when
+   toggling between expanded/collapsed states. */
+.workspace-toggle-icon {
+  display: inline-block;
+  line-height: 1;
+  transition: transform 140ms ease;
+}
+
+.workspace-toggle.collapsed .workspace-toggle-icon {
+  transform: rotate(-90deg);
+}
+
+/* Workspace status badge gets slightly more saturated colors than
+   per-project badges so the workspace-level state reads first. */
+.badge.workspace-status.running {
+  background: rgba(34, 197, 94, 0.22);
+  color: #86efac;
+  border-color: rgba(34, 197, 94, 0.45);
+}
+
+.badge.workspace-status.stopped {
+  background: rgba(148, 163, 184, 0.18);
+  color: #cbd5f5;
+  border-color: rgba(148, 163, 184, 0.35);
+}
+
+.badge.workspace-status.starting {
+  background: rgba(250, 204, 21, 0.22);
+  color: #fde68a;
+  border-color: rgba(250, 204, 21, 0.45);
+}
+
+.workspace-name {
+  background: transparent;
+  border: 1px dashed transparent;
+  padding: 0.15rem 0.4rem;
+  border-radius: 6px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #f8fafc;
+  cursor: text;
+}
+
+.workspace-name:hover:not(:disabled) {
+  border-color: rgba(148, 163, 184, 0.35);
+}
+
+.workspace-rename-input {
+  font-size: 1rem;
+  font-weight: 600;
+  padding: 0.15rem 0.4rem;
+  border-radius: 6px;
+  border: 1px solid rgba(96, 165, 250, 0.55);
+  background: rgba(15, 23, 42, 0.7);
+  color: #f8fafc;
+  min-width: 12rem;
+}
+
+.project-rename-input {
+  font-size: 1rem;
+  font-weight: 600;
+  padding: 0.15rem 0.4rem;
+  border-radius: 6px;
+  border: 1px solid rgba(96, 165, 250, 0.55);
+  background: rgba(15, 23, 42, 0.7);
+  color: #f8fafc;
+  min-width: 14rem;
+}
+
+.bulk-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0.75rem;
+  margin: 0 0 0.5rem 0;
+  border-radius: 8px;
+  border: 1px solid rgba(96, 165, 250, 0.45);
+  background: rgba(30, 64, 175, 0.18);
+}
+
+.bulk-action-count {
+  font-weight: 600;
+  margin-right: 0.5rem;
+}
+
+.bulk-action-clear {
+  margin-left: auto;
+}
+
+.project-select-checkbox {
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  margin-top: 0.15rem;
+  cursor: pointer;
+  align-self: start;
+  justify-self: start;
+  accent-color: #60a5fa;
+}
+
+.project-card.selected-row {
+  background: rgba(30, 64, 175, 0.18);
+  border-color: rgba(96, 165, 250, 0.55);
+}
+
+.project-card.dragging {
+  opacity: 0.45;
+}
+
+.workspace-header.drag-over,
+.workspace-row.drag-over {
+  outline: 2px solid rgba(96, 165, 250, 0.85);
+  outline-offset: -2px;
+  background: rgba(30, 64, 175, 0.22);
+}
+
+.workspace-status {
+  margin-left: 0.2rem;
+}
+
+.workspace-meta {
+  font-size: 0.78rem;
+}
+
+.workspace-actions {
+  flex-shrink: 0;
+}
+
+.workspace-projects {
+  margin-left: 0.5rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid rgba(148, 163, 184, 0.12);
+  /* Sprint 10 v0.10.4: cap each workspace's project list height so
+     it scrolls internally instead of pushing the workspace cards down
+     the column. Only the column itself scrolls when there are many
+     workspace cards. */
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+/* Sprint-10 polish: collapsed workspace keeps its rows mounted so
+   re-expanding is instant. Hide via CSS instead of {#if} unmounting. */
+.workspace-projects.is-collapsed {
+  display: none;
+}
+
+/* Empty workspace hint inside an expanded card with no projects. */
+.empty-workspace-hint {
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  border: 1px dashed rgba(148, 163, 184, 0.22);
+  border-radius: 8px;
+}
+
+/* Inline Move-to-workspace dropdown that opens on a project row. */
+.move-dropdown {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.5rem;
+  margin-top: 0.3rem;
+  border: 1px solid rgba(96, 165, 250, 0.32);
+  border-radius: 8px;
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.move-dropdown-label {
+  font-size: 0.82rem;
+  color: #cbd5e1;
+}
+
+.move-dropdown select,
+.move-dropdown input {
+  width: auto;
+  min-width: 10rem;
+  padding: 0.32rem 0.5rem;
+}
+
+.project-card.nested {
+  background: rgba(15, 23, 42, 0.35);
+}
+
+.project-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: start;
+  gap: 0.65rem;
+}
+
+.project-left {
+  min-width: 0;
+  display: grid;
+  gap: 0.2rem;
+  justify-items: start;
+}
+
+.project-right {
+  display: grid;
+  gap: 0.35rem;
+  justify-items: end;
+}
+
+.select {
+  display: inline-flex;
+  border: none;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  min-width: 0;
+}
+
+.status-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.icon-refresh {
+  width: 1.7rem;
+  height: 1.7rem;
+  border-radius: 999px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.92rem;
+  line-height: 1;
+}
+
+.icon-refresh:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.path {
+  margin-top: 0.02rem;
+  color: #94a3b8;
+  font-size: 0.74rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 42vw;
+}
+
+.meta,
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.meta span {
+  color: #cbd5e1;
+  font-size: 0.78rem;
+}
+
+.port-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+}
+
+.port-editor {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.24rem;
+}
+
+.port-editor input {
+  width: 4.6rem;
+  padding: 0.22rem 0.38rem;
+  font-size: 0.74rem;
+  border-radius: 10px;
+}
+
+.port-editor button {
+  padding: 0.18rem 0.42rem;
+  font-size: 0.72rem;
+  border-radius: 10px;
+}
+
+.actions button {
+  padding: 0.32rem 0.56rem;
+  font-size: 0.8rem;
+}
+
+.row-actions {
+  justify-content: flex-end;
+}
+
+.row-actions button {
+  padding: 0.3rem 0.52rem;
+  font-size: 0.78rem;
+}
+
+.project-error {
+  margin: 0.05rem 0 0;
+  font-size: 0.74rem;
+  color: #f87171;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-width: 84px;
+  padding: 0.24rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.status-lamp {
+  width: 0.92rem;
+  height: 0.92rem;
+  border-radius: 999px;
+  background: #cbd5e1;
+  box-shadow: 0 0 0 3px rgba(203, 213, 225, 0.18);
+}
+
+.status-lamp.stopped {
+  background: #94a3b8;
+  box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.25);
+}
+
+.status-lamp.starting {
+  background: #fbbf24;
+  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.3);
+}
+
+.status-lamp.running {
+  background: #34d399;
+  box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.3);
+}
+
+.status-lamp.failed {
+  background: #f87171;
+  box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.3);
+}
+
+.badge.stopped {
+  background: rgba(71, 85, 105, 0.45);
+}
+
+.badge.starting {
+  background: rgba(245, 158, 11, 0.22);
+  color: #fbbf24;
+}
+
+.badge.running {
+  background: rgba(16, 185, 129, 0.18);
+  color: #34d399;
+}
+
+.badge.failed {
+  background: rgba(239, 68, 68, 0.18);
+  color: #f87171;
+}
+
+.detail-panel {
+  min-height: 7.5rem;
+}
+
+.dashboard-footer-panel {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  background: rgba(11, 16, 32, 0.96);
+  overflow: hidden;
+  padding: 0.58rem 0.82rem;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  box-shadow: 0 -10px 26px rgba(2, 6, 23, 0.35);
+  backdrop-filter: blur(2px);
+  margin-top: auto;
+}
+
+.detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.8rem;
+}
+
+.detail-grid {
+  grid-template-columns: minmax(120px, 0.9fr) minmax(220px, 2fr) minmax(90px, 0.7fr) minmax(100px, 0.8fr) minmax(220px, 2.2fr);
+  gap: 0.35rem 0.72rem;
+  align-items: start;
+}
+
+dd {
+  margin: 0;
+  color: #f8fafc;
+  font-size: 0.9rem;
+  line-height: 1.2;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.empty-state {
+  border: 1px dashed rgba(148, 163, 184, 0.24);
+  border-radius: 14px;
+  padding: 0.8rem;
+  color: #94a3b8;
+  font-size: 0.9rem;
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.6rem;
+}
+
+.info-card {
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 14px;
+  padding: 0.7rem;
+  background: rgba(15, 23, 42, 0.55);
+  display: grid;
+  gap: 0.25rem;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: #cbd5e1;
+  font-size: 0.9rem;
+}
+
+.checkbox-row.compact {
+  font-size: 0.82rem;
+}
+
+.checkbox-row input {
+  width: auto;
+}
+
+.bootstrap-grid.compact {
+  gap: 0.45rem;
+}
+
+.bootstrap-grid.compact strong {
+  margin-top: 0.1rem;
+  font-size: 0.82rem;
+}
+
+.hint {
+  color: #94a3b8;
+  font-size: 0.8rem;
+}
+
+.banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  border-radius: 14px;
+  padding: 0.65rem 0.8rem;
+  font-size: 0.9rem;
+}
+
+.actions.compact button {
+  padding: 0.14rem 0.46rem;
+  font-size: 0.72rem;
+  line-height: 1.05;
+}
+
+.banner.error {
+  background: rgba(127, 29, 29, 0.55);
+  border: 1px solid rgba(248, 113, 113, 0.45);
+}
+
+.advanced-toggle {
+  margin-top: 0.5rem;
+}
+
+.advanced-toggle summary {
+  cursor: pointer;
+  color: #94a3b8;
+  font-size: 0.9rem;
+  user-select: none;
+}
+
+.advanced-toggle summary:hover {
+  color: #cbd5e1;
+}
+
+.advanced-content {
+  margin-top: 1rem;
+  padding-left: 0.5rem;
+  border-left: 2px solid rgba(148, 163, 184, 0.18);
+}
+
+@media (max-width: 960px) {
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .full-height-shell {
+    height: auto;
+    grid-template-rows: auto;
+    overflow: visible;
+  }
+
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-splitter {
+    display: none;
+  }
+
+  .dashboard-content {
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .dashboard-column {
+    height: auto;
+  }
+
+  .dashboard-column > .panel {
+    height: auto;
+    overflow: auto;
+  }
+
+  .detail-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .project-list-header {
+    flex-direction: column;
+  }
+
+  .project-row {
+    grid-template-columns: auto 1fr;
+  }
+
+  .project-right {
+    grid-column: 1 / -1;
+    justify-items: start;
+  }
+
+  .path {
+    max-width: 100%;
+  }
+
+  .app-shell {
+    padding: 1rem;
+  }
+
+  .mcp-section-intro {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .settings-save-footer {
+    padding-top: 0.5rem;
+  }
+
+  .settings-save-status-wrap {
+    width: 100%;
+  }
+
+  .settings-save-status {
+    max-width: 100%;
+    white-space: normal;
+  }
+
+  .settings-save-footer .save-settings-button {
+    width: 100%;
+  }
+
+  .machine-controls-grid {
+    grid-template-rows: none;
+    height: auto;
+  }
+
+  .machine-section,
+  .mcp-locations-section {
+    height: auto;
+  }
+}

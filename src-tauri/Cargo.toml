@@ -1,0 +1,29 @@
+[package]
+name = "goja-studio"
+version = "1.0.0"
+description = "Desktop manager for running GOJA MCP across multiple Java projects."
+edition = "2021"
+
+[lib]
+name = "goja_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.6", features = [] }
+
+[dependencies]
+dirs = "6.0.0"
+flate2 = "1.1.5"
+# Sprint 15 Stage 9: per-workspace bearer tokens (32-byte SecureRandom hex).
+getrandom = "0.2"
+reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+semver = "1.0.27"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+tar = "0.4.44"
+tauri = { version = "2.10.3", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2.7.0"
+tauri-plugin-single-instance = "2"
+walkdir = "2.5.0"
+zip = { version = "4.6.1", default-features = false, features = ["deflate"] }

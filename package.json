@@ -1,0 +1,28 @@
+{
+  "name": "goja-studio",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 1420",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.10.1",
+    "@tauri-apps/plugin-dialog": "^2.7.0",
+    "marked": "^18.0.2",
+    "svelte": "5.55.4"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "7.0.0",
+    "@tauri-apps/cli": "2.10.1",
+    "@tsconfig/svelte": "5.0.8",
+    "@types/marked": "^5.0.2",
+    "svelte-check": "4.4.6",
+    "typescript": "6.0.3",
+    "vite": "8.0.8"
+  }
+}
