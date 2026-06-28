@@ -3,9 +3,10 @@
 [![GitHub release](https://img.shields.io/github/v/release/haraldwegner/goja-studio)](https://github.com/haraldwegner/goja-studio/releases)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
-**The desktop control plane for [GOJA](https://github.com/haraldwegner/goja-mcp)** — compiler-accurate
-Java intelligence for AI agents. goja-studio downloads the GOJA engine, manages named workspaces of
-Java projects, runs them efficiently, and wires GOJA into your AI agent's MCP config in one click.
+**The desktop control plane for [GOJA](https://github.com/haraldwegner/goja-mcp)** — surgical,
+risk-free Java refactoring for autonomous agents. goja-studio downloads the GOJA engine, manages
+named workspaces of Java projects, runs them efficiently, and wires GOJA into your AI agent's MCP
+config in one click.
 
 A Tauri desktop app for Linux, macOS, and Windows. You point it at your Java projects; it does the
 rest.
