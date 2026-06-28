@@ -1457,6 +1457,8 @@ impl ManagerService {
         let mcp_json = build_client_mcp_json(client, servers);
         let rule_body = build_rule_block(client, servers);
         let rule_path = derive_rule_path(client, &path);
+        // Sprint 16b/C: also target the client's always-loaded global file.
+        let global_rule_path = derive_global_rule_path(client);
 
         let mut validation_errors = Vec::new();
         if servers.is_empty() && !matches!(mode, DeployMode::Delete) {
@@ -1469,9 +1471,13 @@ impl ManagerService {
             validation_errors.push(error);
         }
 
+        let global_rule_preview = global_rule_path
+            .as_ref()
+            .map(|g| format!("\n\nGlobal rule target: {g}"))
+            .unwrap_or_default();
         let preview_content = Some(format!(
-            "MCP config target: {path}\n\n{}\n\nRule target: {}\n\n{}",
-            mcp_json, rule_path, rule_body
+            "MCP config target: {path}\n\n{}\n\nRule target: {}{}\n\n{}",
+            mcp_json, rule_path, global_rule_preview, rule_body
         ));
 
         if !validation_errors.is_empty() {
@@ -1534,13 +1540,19 @@ impl ManagerService {
                 Err(error) => errors.push(error),
             }
 
+            let mut rules_changed = false;
             match remove_managed_rule_block(&rule_path, client, backup_before_write) {
-                Ok(changed) => {
-                    if changed {
-                        changed_sections.push("rules".into());
-                    }
-                }
+                Ok(changed) => rules_changed |= changed,
                 Err(error) => errors.push(error),
+            }
+            if let Some(global) = global_rule_path.as_ref() {
+                match remove_managed_rule_block(global, client, backup_before_write) {
+                    Ok(changed) => rules_changed |= changed,
+                    Err(error) => errors.push(error),
+                }
+            }
+            if rules_changed {
+                changed_sections.push("rules".into());
             }
 
             if !errors.is_empty() {
@@ -1596,6 +1608,15 @@ impl ManagerService {
             backup_before_write,
             matches!(mode, DeployMode::Regenerate),
         );
+        // Sprint 16b/C: mirror the block into the client's always-loaded global file.
+        let global_rule_write = global_rule_path.as_ref().map(|global| {
+            write_managed_rule_block(
+                global,
+                &rule_body,
+                backup_before_write,
+                matches!(mode, DeployMode::Regenerate),
+            )
+        });
 
         let mut changed_sections = Vec::new();
         let mut errors = Vec::new();
@@ -1612,9 +1633,18 @@ impl ManagerService {
             }
         }
 
-        if let Err(error) = rule_write {
-            errors.push(error);
-        } else {
+        let mut rules_changed = false;
+        match rule_write {
+            Ok(()) => rules_changed = true,
+            Err(error) => errors.push(error),
+        }
+        if let Some(result) = global_rule_write {
+            match result {
+                Ok(()) => rules_changed = true,
+                Err(error) => errors.push(error),
+            }
+        }
+        if rules_changed {
             changed_sections.push("rules".into());
         }
 
@@ -2511,6 +2541,26 @@ fn derive_rule_path(client: &str, mcp_target_path: &str) -> String {
     }
 }
 
+/// Sprint 16b/C: the client's GLOBAL / always-loaded instruction file — the one
+/// loaded into every session regardless of cwd. The deploy writes the managed
+/// rule block here IN ADDITION to the config-sibling (`derive_rule_path`) so the
+/// "use GOJA, not grep" rule survives MCP schema deferral.
+///
+/// - `claude` → `~/.claude/CLAUDE.md`. The sibling for Claude Code is `~/CLAUDE.md`
+///   (next to `~/.claude.json`), which is NOT always-loaded; `~/.claude/CLAUDE.md`
+///   is. This is the gap the rebrand left stale.
+/// - `cursor` → `None`: the default Cursor sibling is already `~/.cursor/rules/
+///   goja-studio.mdc` (a global rules dir), so the sibling already covers it.
+/// - `antigravity` / others → `None`: no confirmed always-loaded global file;
+///   don't guess a path. Revisit if/when one is confirmed.
+fn derive_global_rule_path(client: &str) -> Option<String> {
+    let home = dirs::home_dir()?;
+    match client {
+        "claude" => Some(display_path(&home.join(".claude").join("CLAUDE.md"))),
+        _ => None,
+    }
+}
+
 fn validate_written_client_config(
     client: &str,
     path: &str,
@@ -2948,6 +2998,15 @@ fn managed_server_entry(client: &str, server: &ManagedDeployServer) -> serde_jso
             "Authorization": format!("Bearer {}", server.token),
         }),
     );
+    // Sprint 16b/C: Claude Code (CLI, v2.1.121+) honours a per-server
+    // `alwaysLoad` flag — mark the managed GOJA server so its (post-collapse)
+    // tool surface loads upfront and never defers behind MCP tool-search.
+    // Cursor caps at 40 tools and Antigravity has no such flag, so this is
+    // Claude-only; the universal levers are the collapse + the always-loaded
+    // rule block (derive_global_rule_path).
+    if client == "claude" {
+        entry.insert("alwaysLoad".into(), serde_json::Value::Bool(true));
+    }
     if server.disabled {
         entry.insert("disabled".into(), serde_json::Value::Bool(true));
     }
@@ -3517,6 +3576,101 @@ mod tests {
             json["mcpServers"]["ws-b"]["headers"]["Authorization"],
             "Bearer beta-token"
         );
+    }
+
+    // ===== Sprint 16b/C: deploy-owned always-load =====
+
+    #[test]
+    fn claude_entry_marks_always_load() {
+        let servers = vec![url_server("goja-ws", 8800, "tok", false)];
+        let json = build_client_mcp_json("claude", &servers);
+        assert_eq!(
+            json["mcpServers"]["goja-ws"]["alwaysLoad"],
+            serde_json::Value::Bool(true),
+            "Claude entry must carry alwaysLoad:true so the surface never defers"
+        );
+    }
+
+    #[test]
+    fn non_claude_entries_omit_always_load() {
+        let servers = vec![url_server("goja-ws", 8800, "tok", false)];
+        for client in ["cursor", "antigravity", "intellij", "claude_desktop"] {
+            let json = build_client_mcp_json(client, &servers);
+            assert!(
+                json["mcpServers"]["goja-ws"].get("alwaysLoad").is_none(),
+                "{client} entry must not carry alwaysLoad (Claude-only flag)"
+            );
+        }
+    }
+
+    #[test]
+    fn global_rule_path_claude_targets_always_loaded_file() {
+        let p = derive_global_rule_path("claude").expect("claude has a global file");
+        let norm = p.replace('\\', "/");
+        assert!(
+            norm.ends_with(".claude/CLAUDE.md"),
+            "claude global rule must be ~/.claude/CLAUDE.md, got {p}"
+        );
+    }
+
+    #[test]
+    fn global_rule_path_none_for_other_clients() {
+        for client in ["cursor", "antigravity", "intellij", "claude_desktop", "unknown"] {
+            assert!(
+                derive_global_rule_path(client).is_none(),
+                "{client} must have no global rule path (sibling covers it / unconfirmed)"
+            );
+        }
+    }
+
+    #[test]
+    fn write_managed_rule_block_new_replace_append_idempotent() {
+        let dir = unique_tempdir("rule-global");
+        let file = dir.join(".claude").join("CLAUDE.md");
+        let path = file.to_string_lossy().to_string();
+        let servers = vec![url_server("goja-ws", 8800, "tok", false)];
+        let block = build_rule_block("claude", &servers);
+
+        // (1) NEW FILE: parent dir created, block written.
+        write_managed_rule_block(&path, &block, false, false).unwrap();
+        let after_new = std::fs::read_to_string(&file).unwrap();
+        assert!(after_new.contains("<!-- goja-studio:claude:start -->"));
+        assert!(after_new.contains("GOJA MCP"));
+
+        // (2) IDEMPOTENT: same block again is a byte-stable no-op.
+        write_managed_rule_block(&path, &block, false, false).unwrap();
+        assert_eq!(
+            after_new,
+            std::fs::read_to_string(&file).unwrap(),
+            "re-deploy must be byte-stable"
+        );
+
+        // (3) APPEND PRESERVING USER CONTENT: hand-written file w/o markers.
+        let user_file = dir.join("user.md");
+        let user_path = user_file.to_string_lossy().to_string();
+        std::fs::write(&user_file, "# My own notes\n\nkeep me\n").unwrap();
+        write_managed_rule_block(&user_path, &block, false, false).unwrap();
+        let appended = std::fs::read_to_string(&user_file).unwrap();
+        assert!(appended.contains("# My own notes"), "user content preserved");
+        assert!(appended.contains("keep me"), "user content preserved");
+        assert!(
+            appended.contains("<!-- goja-studio:claude:start -->"),
+            "block appended"
+        );
+
+        // (4) REPLACE BETWEEN MARKERS: a stale block is spliced out, user text kept.
+        let stale = "# Header\n\n<!-- goja-studio:claude:start -->\nOLD STALE BODY\n<!-- goja-studio:claude:end -->\n\n# Footer\n";
+        let replace_file = dir.join("replace.md");
+        let replace_path = replace_file.to_string_lossy().to_string();
+        std::fs::write(&replace_file, stale).unwrap();
+        write_managed_rule_block(&replace_path, &block, false, false).unwrap();
+        let replaced = std::fs::read_to_string(&replace_file).unwrap();
+        assert!(replaced.contains("# Header"), "leading user text kept");
+        assert!(replaced.contains("# Footer"), "trailing user text kept");
+        assert!(!replaced.contains("OLD STALE BODY"), "stale body replaced");
+        assert!(replaced.contains("GOJA MCP"), "new body present");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
