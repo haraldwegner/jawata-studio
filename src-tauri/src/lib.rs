@@ -43,7 +43,7 @@ const TRAY_REFRESH_INTERVAL_SECS: u64 = 1;
 
 #[derive(Clone, Copy)]
 enum TrayIconVariant {
-    JCircle,
+    GCircle,
     CoffeeCircle,
 }
 
@@ -63,7 +63,7 @@ fn selected_tray_icon_variant() -> TrayIconVariant {
         .as_str()
     {
         "coffee" | "cup" => TrayIconVariant::CoffeeCircle,
-        _ => TrayIconVariant::JCircle,
+        _ => TrayIconVariant::GCircle,
     }
 }
 
@@ -71,7 +71,7 @@ fn build_tray_icon(variant: TrayIconVariant) -> Image<'static> {
     let mut rgba = vec![0u8; (TRAY_ICON_SIZE * TRAY_ICON_SIZE * 4) as usize];
     draw_base_circle(&mut rgba);
     match variant {
-        TrayIconVariant::JCircle => draw_j_glyph(&mut rgba),
+        TrayIconVariant::GCircle => draw_g_glyph(&mut rgba),
         TrayIconVariant::CoffeeCircle => draw_coffee_glyph(&mut rgba),
     }
     Image::new_owned(rgba, TRAY_ICON_SIZE, TRAY_ICON_SIZE)
@@ -122,8 +122,8 @@ fn draw_base_circle(rgba: &mut [u8]) {
     let center = (TRAY_ICON_SIZE as i32) / 2;
     // Draw slightly beyond the nominal radius so the circle nearly fills the tray slot.
     let radius = center + 1;
-    // Dark blue circle background (#1c3a74)
-    let fill = [28, 58, 116, 255]; // #1c3a74
+    // Brand indigo circle background (#4F46E5)
+    let fill = [79, 70, 229, 255]; // #4F46E5
     for y in 0..TRAY_ICON_SIZE as i32 {
         for x in 0..TRAY_ICON_SIZE as i32 {
             let dx = x - center;
@@ -137,14 +137,17 @@ fn draw_base_circle(rgba: &mut [u8]) {
     }
 }
 
-fn draw_j_glyph(rgba: &mut [u8]) {
+fn draw_g_glyph(rgba: &mut [u8]) {
     let white = [255, 255, 255, 255];
     
-    // Larger "J" so the tray glyph stays readable at small sizes.
-    draw_rect(rgba, 9, 7, 22, 10, white);
-    draw_line_v(rgba, 18, 8, 22, 3, white);
-    draw_rect(rgba, 11, 21, 20, 24, white);
-    draw_rect(rgba, 8, 19, 11, 23, white);
+    // Blocky "G" sized to stay readable at small tray sizes: an open "C"
+    // (top / left / bottom strokes), closed on the lower-right, with the
+    // tongue stroke into the middle — the top-right stays open.
+    draw_rect(rgba, 8, 7, 23, 9, white);    // top stroke
+    draw_rect(rgba, 8, 7, 10, 24, white);   // left stroke
+    draw_rect(rgba, 8, 22, 23, 24, white);  // bottom stroke
+    draw_rect(rgba, 21, 16, 23, 24, white); // lower-right edge
+    draw_rect(rgba, 16, 15, 23, 17, white); // inner tongue
 }
 
 fn draw_coffee_glyph(rgba: &mut [u8]) {
