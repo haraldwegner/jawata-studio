@@ -26,12 +26,12 @@ Per-platform detail and the bypass steps are in the [README](https://github.com/
 
 ## Workspaces — the core concept
 
-A **workspace** is a named group of Java projects loaded into one GOJA process and exposed to agents as **one MCP service** (`jl-<workspace-name>`). The agent sees the combined symbol set of every project in the workspace; cross-project navigation, find-references, and (in fork v1.4.0+) refactorings work across the whole group.
+A **workspace** is a named group of Java projects loaded into one GOJA process and exposed to agents as **one MCP service** (`goja-<workspace-name>`). The agent sees the combined symbol set of every project in the workspace; cross-project navigation, find-references, and refactorings work across the whole group.
 
 - **One workspace per cohesive task.** A bundle/multi-module application (e.g. an Eclipse RCP product with 12 OSGi bundles), a monorepo, or a single project that you want isolated — each gets its own workspace.
 - **Live updates.** Add or remove a project from a workspace and the running GOJA picks it up within ~1 second through a `workspace.json` file watcher. No MCP-client restart, no agent-session reload.
 - **No ports.** Workspaces are identified by name. There is no port range, no per-project port allocation, no port conflicts.
-- **Tool budget.** Each workspace contributes ~79 tools (fork v1.9.0) toward the agent's tool registration cap (Antigravity caps around 100). With the current tool surface that means ONE active workspace per Antigravity session; Cursor and Claude Code tolerate more.
+- **Tool budget.** Each workspace contributes ~85 tools toward the agent's tool registration cap (Antigravity caps around 100). With the current tool surface that means ONE active workspace per Antigravity session; Cursor and Claude Code tolerate more.
 - **Migration.** If you're upgrading from v0.10.3 or earlier, existing projects are auto-grouped into default workspaces named like `workspace-11100` (derived from the old `assignedPort`). Rename them through the Workspaces card or the workspace header.
 
 ---
@@ -107,16 +107,16 @@ If the row you grab is part of an active selection, the **whole selection** move
 
 The **Agent deploy** strip contains **Deploy to Agents**, **Dry run**, **Regenerate**, and **Delete**. These actions do **not** start or stop GOJA — they rebuild MCP entries from your workspaces and read or write **MCP client config files** on disk (see Settings → MCP Config Locations).
 
-- **Deploy to Agents** — Writes manager-owned MCP server entries (one per workspace, keyed `jl-<workspace-name>`) into the selected clients' configs, plus the rule blocks the manager maintains. Since v0.16.0 each client receives the entry shape its parser accepts: Antigravity gets `{ "serverUrl": …, "headers": … }`; Cursor / Claude Code / IntelliJ get `{ "type": "http", "url": …, "headers": … }`. Also since v0.16.0, workspace add / rename / delete automatically refresh clients you have already deployed to (never-deployed clients stay untouched), and any workspace that cannot be resolved at deploy time is reported in the result instead of being silently omitted.
+- **Deploy to Agents** — Writes manager-owned MCP server entries (one per workspace, keyed `goja-<workspace-name>`) into the selected clients' configs, plus the rule blocks the manager maintains. Since v0.16.0 each client receives the entry shape its parser accepts: Antigravity gets `{ "serverUrl": …, "headers": … }`; Cursor / Claude Code / IntelliJ get `{ "type": "http", "url": …, "headers": … }`. Also since v0.16.0, workspace add / rename / delete automatically refresh clients you have already deployed to (never-deployed clients stay untouched), and any workspace that cannot be resolved at deploy time is reported in the result instead of being silently omitted.
 - **Dry run** — Same validation and diff output as Deploy, but no files are written.
 - **Regenerate** — Force-rewrites the manager-managed sections, even if nothing has changed since the last write. Useful after manual edits.
 - **Delete** — Removes only the manager-injected MCP servers and rule blocks from the selected clients. It does not uninstall GOJA or remove your projects.
 
 Each of these opens a **target picker**: check Cursor / Claude / Antigravity / IntelliJ for that run only. Defaults come from each client's **Deploy** toggle under Settings → MCP Config Locations.
 
-**Cursor (length limit):** Cursor rejects tools when `serverName + ":" + toolName` exceeds about **59–60** characters. The manager keeps the generated `jl-` ids short so the longest GOJA tool names still fit. **Antigravity** instead caps the total *number* of MCP tools registered across all servers (around 100 in current builds) — that is a separate constraint, and the main reason to keep concurrent workspaces small.
+**Cursor (length limit):** Cursor rejects tools when `serverName + ":" + toolName` exceeds about **59–60** characters. The manager keeps the generated `goja-` ids short so the longest GOJA tool names still fit. **Antigravity** instead caps the total *number* of MCP tools registered across all servers (around 100 in current builds) — that is a separate constraint, and the main reason to keep concurrent workspaces small.
 
-### Tool surface (fork v1.9.0)
+### Tool surface
 
 GOJA v1.9.0 registers **79 tools per workspace service** (66 in v1.4.0 → 55 after v1.5.0's parametric consolidation → 60 with v1.5.1's LTK refactorings → 62 with v1.6.0's verification tools → 73 with v1.7.0's Ring 2/3/4 expansion → 75 with v1.8.0 → 79 with v1.9.0's apply/undo primitives). Two parametric tools (`find_pattern_usages` / `find_quality_issue`) absorbed 13 narrow ones in v1.5.0 so multi-workspace setups have headroom under Antigravity's 100-tool cap.
 
