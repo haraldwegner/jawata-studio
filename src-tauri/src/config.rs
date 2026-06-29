@@ -444,6 +444,24 @@ fn migrate_legacy_app_dir(base: &Path, label: &str) {
     }
 }
 
+/// Sprint 17 (v1.2.1): rewrite a persisted `data_root` that still names the
+/// pre-rebrand app dir (`.../javalens-manager`) to the goja-studio equivalent.
+/// Only the dedicated app-dir path segment is swapped (mid-path or trailing);
+/// any other value is returned unchanged. Pairs with `migrate_legacy_app_dir`,
+/// which moved the directory but left this persisted string untouched.
+fn normalize_legacy_data_root(data_root: &str) -> String {
+    let old_mid = format!("/{OLD_APP_NAME}/");
+    let new_mid = format!("/{APP_NAME}/");
+    let old_end = format!("/{OLD_APP_NAME}");
+    let new_end = format!("/{APP_NAME}");
+    let mut s = data_root.replace(&old_mid, &new_mid);
+    if s.ends_with(&old_end) {
+        s.truncate(s.len() - old_end.len());
+        s.push_str(&new_end);
+    }
+    s
+}
+
 /// Rename `old` -> `new` iff `old` exists and `new` does not (never clobber).
 /// Returns whether a move happened. Unit-tested with temp dirs.
 fn migrate_dir_if_needed(old: &Path, new: &Path) -> std::io::Result<bool> {
@@ -1072,6 +1090,13 @@ fn read_settings(path: &Path, paths: &AppPaths) -> Result<ManagerSettings, Strin
     if settings.data_root.trim().is_empty() {
         settings.data_root = display_path(&paths.default_data_root);
     }
+    // Sprint 17 (v1.2.1): the rebrand's dir migration renamed
+    // `<base>/javalens-manager` -> `<base>/goja-studio`, but a settings.json
+    // persisted by the pre-rebrand build holds the legacy absolute data_root
+    // explicitly — and the empty-check above never rewrites a non-empty value,
+    // so the managed runtime + workspaces stayed pinned to `.cache/javalens-manager`.
+    // Normalize the legacy app-dir segment so data_root follows the rebrand.
+    settings.data_root = normalize_legacy_data_root(&settings.data_root);
     // One-shot migration: settings.json files written by v0.10.0 carry the
     // legacy upstream repo as the default value. Now that the fork is the
     // shipped default, transparently rewrite that legacy value to the new
@@ -1275,6 +1300,27 @@ mod tests {
         assert_eq!(slugify("Example Service"), "example-service");
         assert_eq!(slugify("Repo::Manager"), "repo-manager");
         assert_eq!(slugify("###"), "project");
+    }
+
+    #[test]
+    fn normalize_legacy_data_root_swaps_app_dir() {
+        // trailing legacy segment -> goja-studio (the live bug)
+        assert_eq!(
+            normalize_legacy_data_root("/home/harald/.cache/javalens-manager"),
+            "/home/harald/.cache/goja-studio"
+        );
+        // mid-path legacy segment
+        assert_eq!(
+            normalize_legacy_data_root("/home/harald/.cache/javalens-manager/tools"),
+            "/home/harald/.cache/goja-studio/tools"
+        );
+        // already migrated -> unchanged
+        assert_eq!(
+            normalize_legacy_data_root("/home/harald/.cache/goja-studio"),
+            "/home/harald/.cache/goja-studio"
+        );
+        // unrelated path -> unchanged
+        assert_eq!(normalize_legacy_data_root("/opt/custom/data"), "/opt/custom/data");
     }
 
     #[test]
