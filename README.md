@@ -45,6 +45,10 @@ The installer pulls the right artifact for your CPU automatically. To update, re
 - **One-click MCP deploy.** Writes the correct server entry into Cursor, Claude Desktop,
   Antigravity, and IntelliJ-style configs — each in that client's own schema — and re-syncs them
   when a workspace changes.
+- **Makes the agent actually use GOJA.** Deploy also writes a "prefer GOJA over grep" rule into each
+  client and — on Claude Code — a `PreToolUse` hook that redirects Java text-search to GOJA's
+  compiler-accurate tools. It's health-gated: when the engine is down on Java work the agent is told
+  to **ask, not silently degrade** to grep. Non-Java work is left untouched.
 - **Auto-managed engine.** Polls for new GOJA releases and downloads the matching runtime; the jar
   path stays stable across updates.
 - **Lives in the tray.** A system-tray menu drives per-workspace start/stop without opening the
