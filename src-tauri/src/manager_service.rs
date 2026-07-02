@@ -3587,7 +3587,7 @@ mod tests {
 
     #[test]
     fn rule_block_has_routing_table_and_tdd_loop() {
-        let servers = vec![url_server("jl-ws-a", 8800, "tok", false)];
+        let servers = vec![url_server("goja-ws-a", 8800, "tok", false)];
         let block = build_rule_block("cursor", &servers);
 
         // Routing-table section: names the key tools + the grep-fallback rule.
@@ -3608,12 +3608,12 @@ mod tests {
         assert!(block.starts_with("<!-- goja-studio:cursor:start -->"));
         assert!(block.trim_end().ends_with("<!-- goja-studio:cursor:end -->"));
         assert!(block.contains("Managed service ids:"));
-        assert!(block.contains("- jl-ws-a"));
+        assert!(block.contains("- goja-ws-a"));
     }
 
     #[test]
     fn rule_block_has_health_gated_fallback() {
-        let servers = vec![url_server("jl-ws-a", 8800, "tok", false)];
+        let servers = vec![url_server("goja-ws-a", 8800, "tok", false)];
         let block = build_rule_block("claude", &servers);
         // The ASK-when-down section: pause + ask on Java work, stay silent on non-Java, no dodging.
         assert!(block.contains("When GOJA is unavailable"), "has the health-gated section header");
@@ -3627,7 +3627,7 @@ mod tests {
 
     #[test]
     fn rule_block_marker_name_is_per_client_but_body_is_identical() {
-        let servers = vec![url_server("jl-ws-a", 8800, "tok", false)];
+        let servers = vec![url_server("goja-ws-a", 8800, "tok", false)];
         let cursor = build_rule_block("cursor", &servers);
         let claude = build_rule_block("claude", &servers);
         assert!(cursor.contains("goja-studio:cursor:start"));
@@ -3643,8 +3643,8 @@ mod tests {
     #[test]
     fn rule_block_is_deterministic_idempotent() {
         let servers = vec![
-            url_server("jl-ws-a", 8800, "tok-a", false),
-            url_server("jl-ws-b", 8801, "tok-b", false),
+            url_server("goja-ws-a", 8800, "tok-a", false),
+            url_server("goja-ws-b", 8801, "tok-b", false),
         ];
         // Same inputs → byte-identical output (so a re-deploy is a no-op write).
         assert_eq!(
@@ -3869,9 +3869,9 @@ mod tests {
         // Sprint 16 (bugs.md #10): Antigravity's Windsurf-lineage parser
         // rejects `type`+`url` ("serverURL or command must be specified");
         // it wants `serverUrl` and no `type`. Verified live 2026-06-10.
-        let servers = vec![url_server("jl-ws", 8805, "tok", false)];
+        let servers = vec![url_server("goja-ws", 8805, "tok", false)];
         let json = build_client_mcp_json("antigravity", &servers);
-        let entry = &json["mcpServers"]["jl-ws"];
+        let entry = &json["mcpServers"]["goja-ws"];
 
         assert_eq!(entry["serverUrl"], "http://127.0.0.1:8805/mcp");
         assert!(entry.get("url").is_none(), "antigravity must not get `url`");
@@ -3881,9 +3881,9 @@ mod tests {
 
     #[test]
     fn deploy_writer_antigravity_honours_disabled_flag() {
-        let servers = vec![url_server("jl-ws", 8805, "tok", true)];
+        let servers = vec![url_server("goja-ws", 8805, "tok", true)];
         let json = build_client_mcp_json("antigravity", &servers);
-        let entry = &json["mcpServers"]["jl-ws"];
+        let entry = &json["mcpServers"]["goja-ws"];
         assert_eq!(entry["disabled"], serde_json::Value::Bool(true));
         assert_eq!(entry["serverUrl"], "http://127.0.0.1:8805/mcp");
     }
@@ -3892,9 +3892,9 @@ mod tests {
     fn deploy_writer_claude_desktop_gets_http_shape() {
         // Sprint 16.1 (bugs.md #17): Claude Desktop is a native-HTTP client
         // like Claude Code / Cursor — NOT the antigravity serverUrl shape.
-        let servers = vec![url_server("jl-ws", 8805, "tok", false)];
+        let servers = vec![url_server("goja-ws", 8805, "tok", false)];
         let json = build_client_mcp_json("claude_desktop", &servers);
-        let entry = &json["mcpServers"]["jl-ws"];
+        let entry = &json["mcpServers"]["goja-ws"];
         assert_eq!(entry["type"], "http");
         assert_eq!(entry["url"], "http://127.0.0.1:8805/mcp");
         assert!(entry.get("serverUrl").is_none());
@@ -3908,9 +3908,9 @@ mod tests {
     fn deploy_writer_claude_cursor_shape_unchanged_by_per_client_branch() {
         // The v0.15.1 shape stays byte-stable for claude + cursor.
         for client in ["claude", "cursor"] {
-            let servers = vec![url_server("jl-ws", 8805, "tok", false)];
+            let servers = vec![url_server("goja-ws", 8805, "tok", false)];
             let json = build_client_mcp_json(client, &servers);
-            let entry = &json["mcpServers"]["jl-ws"];
+            let entry = &json["mcpServers"]["goja-ws"];
             assert_eq!(entry["type"], "http", "{client} keeps type");
             assert_eq!(entry["url"], "http://127.0.0.1:8805/mcp", "{client} keeps url");
             assert!(entry.get("serverUrl").is_none(), "{client} must not get serverUrl");
@@ -3919,7 +3919,7 @@ mod tests {
 
     #[test]
     fn validator_accepts_per_client_shapes() {
-        let servers = vec![url_server("jl-ws", 8805, "tok", false)];
+        let servers = vec![url_server("goja-ws", 8805, "tok", false)];
 
         let antigravity_json = build_client_mcp_json("antigravity", &servers);
         assert!(
@@ -4054,10 +4054,20 @@ mod tests {
         let managed = dir.join("managed.json");
         std::fs::write(
             &managed,
-            r#"{ "mcpServers": { "jl-my-ws": { "url": "http://x" }, "other": {} } }"#,
+            r#"{ "mcpServers": { "goja-my-ws": { "url": "http://x" }, "other": {} } }"#,
         )
         .unwrap();
         assert!(path_has_managed_entries(managed.to_str().unwrap()));
+
+        // Legacy pre-rebrand keys (`jl-…` / `javalens-…`) are still recognised as managed,
+        // so the manager can find and clean up deployments written before the GOJA rebrand.
+        let legacy = dir.join("legacy.json");
+        std::fs::write(
+            &legacy,
+            r#"{ "mcpServers": { "jl-legacy-ws": { "url": "http://x" } } }"#,
+        )
+        .unwrap();
+        assert!(path_has_managed_entries(legacy.to_str().unwrap()));
 
         let foreign = dir.join("foreign.json");
         std::fs::write(
