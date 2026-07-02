@@ -3311,8 +3311,8 @@ fn build_guard_script(health_url: &str) -> String {
     format!(
         r#"#!/usr/bin/env bash
 # <goja-studio managed PreToolUse guard — do not edit; overwritten on deploy>
-# Redirects Java TEXT SEARCH (grep/rg/find/sed/awk over *.java, or the Grep tool
-# aimed at Java) to GOJA's compiler-accurate tools. Health-gated: a different
+# Redirects Java SYMBOL SEARCH (grep/rg over *.java files, or the Grep tool aimed
+# at Java) to GOJA's compiler-accurate tools. Health-gated: a different
 # message when GOJA is up (use the tool) vs down (start it, or grep on purpose).
 # Non-Java calls and file edits pass through untouched. Exit 2 blocks + tells the
 # model why; exit 0 lets the call run.
@@ -3332,18 +3332,25 @@ case "$tool_name" in
   *) exit 0 ;;
 esac
 
-# Does this call touch Java source at all? (matches ".java" in a path, glob, or
-# literal — a following quote/space/comma/EOL all count as the boundary).
-printf '%s' "$flat" | grep -qiE '\.java([^a-zA-Z]|$)' || exit 0
+# v1.2.1 tuning: redirect only genuine Java SYMBOL SEARCH. BOTH gates must hold —
+# a content-search tool AND a real .java file target — so file/line ops and
+# incidental ".java" mentions no longer trip the guard.
 
+# (1) Content-search tool only (grep-family). File/line ops (find/sed/awk) and
+#     everything else are NOT symbol search — pass them untouched.
 is_search=0
 if [ "$tool_name" = "Grep" ]; then
   is_search=1
 else
-  # Bash: only a text-search command over Java is a redirect target.
-  printf '%s' "$flat" | grep -qE '(^|[^a-zA-Z])(grep|rg|ripgrep|ag|ack|find|sed|awk)([^a-zA-Z]|$)' && is_search=1
+  printf '%s' "$flat" | grep -qE '(^|[^a-zA-Z])(grep|egrep|fgrep|rg|ripgrep|ag|ack)([^a-zA-Z]|$)' && is_search=1
 fi
 [ "$is_search" -eq 1 ] || exit 0
+
+# (2) It must target Java SOURCE FILES — a concrete path (Foo.java, src/Foo.java)
+#     or a glob (*.java). The char before the dot must be a word char or a glob
+#     star, which excludes an escaped regex pattern like "\.java" and incidental
+#     mentions such as ".java" inside a build file, a log, or this guard's own text.
+printf '%s' "$flat" | grep -qiE '([A-Za-z0-9_$]\.java|\*\.java)([^a-zA-Z]|$)' || exit 0
 
 # GOJA liveness: any HTTP response on the gateway = up; connection refused = down.
 goja_up=0
@@ -4167,11 +4174,27 @@ mod tests {
         assert!(script.contains("GOJA is running"), "up branch: redirect to the tool");
         assert!(script.contains("appears to be DOWN"), "down branch: diagnosis");
         assert!(script.contains("search_symbols"), "names the GOJA tool to use instead");
-        // Java-scoped + text-search-scoped; edits/non-Java pass.
+        // Java-scoped + content-search-scoped; edits/non-Java pass.
         assert!(script.contains(r"\.java"), "scoped to Java source");
-        assert!(script.contains("grep|rg"), "matches text-search commands");
         assert!(script.contains("exit 0"), "has a pass path");
         assert!(script.contains("exit 2"), "has a block/redirect path");
+
+        // v1.2.1 tuning: content-search tools only — grep-family, NOT file/line ops.
+        assert!(
+            script.contains("grep|egrep|fgrep|rg|ripgrep|ag|ack"),
+            "matches content-search tools"
+        );
+        assert!(
+            !script.contains("|find|sed|awk") && !script.contains("ack|find"),
+            "file/line ops (find/sed/awk) are NOT treated as symbol search"
+        );
+        // v1.2.1 tuning: requires a real .java FILE reference (word-char/glob-star
+        // before the dot), so an escaped pattern `\.java` or incidental mention passes.
+        assert!(
+            script.contains(r"[A-Za-z0-9_$]\.java|\*\.java"),
+            "requires a .java file/glob target, not an incidental mention"
+        );
+
         // Deterministic → byte-stable re-deploy.
         assert_eq!(script, build_guard_script("http://127.0.0.1:8890/mcp"));
     }
