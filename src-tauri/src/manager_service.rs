@@ -4312,7 +4312,10 @@ mod tests {
         assert_eq!(table.routes.len(), 2);
 
         let params = serde_json::json!({"arguments": {"filePath": "/p/b/src/X.java"}});
-        let route = table.resolve("tools/call", Some(&params)).unwrap();
+        let route = match table.resolve("tools/call", Some(&params)) {
+            crate::gateway::Resolution::Route(route) => route,
+            other => panic!("expected Route, got {other:?}"),
+        };
         assert_eq!(route.url, "http://127.0.0.1:8801/mcp");
         assert_eq!(route.token, "tb");
     }

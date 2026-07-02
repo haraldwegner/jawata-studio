@@ -40,6 +40,23 @@ pub struct RoutingTable {
     pub routes: Vec<GatewayRoute>,
 }
 
+/// Outcome of routing a JSON-RPC message to a resident. Distinguishes the three
+/// cases the gateway must handle differently: forward, no-resident, and — the
+/// Sprint-18 fix — a workspace-scoped call that cannot be routed deterministically
+/// because >1 workspace is deployed and the call carried no locator. That last case
+/// used to silently pick `routes.first()`, which is how subagents (which omit
+/// `projectKey`) mis-routed into an arbitrary/empty workspace.
+#[derive(Debug)]
+pub enum Resolution<'a> {
+    /// Forward the message to this resident.
+    Route(&'a GatewayRoute),
+    /// No resident is running at all.
+    NoResident,
+    /// Multiple workspaces are deployed and the call had no usable locator.
+    /// Carries the valid projectKeys so the caller is told exactly what to pass.
+    Ambiguous(Vec<String>),
+}
+
 impl RoutingTable {
     pub fn new(routes: Vec<GatewayRoute>) -> Self {
         Self { routes }
@@ -49,31 +66,59 @@ impl RoutingTable {
         self.routes.is_empty()
     }
 
+    /// The projectKeys a caller may pass to disambiguate — the sanitized last
+    /// segment of each project path, sorted + deduped.
+    pub fn project_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self
+            .routes
+            .iter()
+            .flat_map(|route| {
+                route
+                    .project_paths
+                    .iter()
+                    .map(|path| last_segment(path).to_string())
+            })
+            .filter(|key| !key.is_empty())
+            .collect();
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
     /// Choose the resident a JSON-RPC message should be forwarded to.
-    /// `None` only when there are no residents at all.
-    pub fn resolve(&self, method: &str, params: Option<&Value>) -> Option<&GatewayRoute> {
-        if self.routes.is_empty() {
-            return None;
-        }
+    ///
+    /// - Workspace-agnostic methods (`initialize`, `tools/list`, …) and any call
+    ///   under a SINGLE deployed workspace route to that resident.
+    /// - A `tools/call` with a `filePath` or `projectKey` routes by locator.
+    /// - A `tools/call` with NO locator under >1 workspace is `Ambiguous` — the
+    ///   gateway refuses to guess (deterministic routing; kills the silent
+    ///   subagent mis-route) and returns the valid keys so the caller self-corrects.
+    pub fn resolve(&self, method: &str, params: Option<&Value>) -> Resolution<'_> {
+        let Some(first) = self.routes.first() else {
+            return Resolution::NoResident;
+        };
         // Workspace-agnostic methods go to any ready resident.
         if method != "tools/call" {
-            return self.routes.first();
+            return Resolution::Route(first);
         }
         if let Some(args) = params.and_then(|p| p.get("arguments")) {
             if let Some(file_path) = args.get("filePath").and_then(Value::as_str) {
                 if let Some(route) = self.by_file_path(file_path) {
-                    return Some(route);
+                    return Resolution::Route(route);
                 }
             }
             if let Some(project_key) = args.get("projectKey").and_then(Value::as_str) {
                 if let Some(route) = self.by_project_key(project_key) {
-                    return Some(route);
+                    return Resolution::Route(route);
                 }
             }
         }
-        // Workspace-scoped call with no locator → fall back to the first resident
-        // (correct when there is a single workspace; best-effort otherwise).
-        self.routes.first()
+        // No locator matched. A single workspace is unambiguous; >1 is not.
+        if self.routes.len() == 1 {
+            Resolution::Route(first)
+        } else {
+            Resolution::Ambiguous(self.project_keys())
+        }
     }
 
     /// Longest project-path prefix wins (handles nested project roots).
@@ -184,17 +229,49 @@ fn handle(
     let params = parsed.get("params");
     let id = parsed.get("id").cloned().unwrap_or(Value::Null);
 
+    // Resolve outside the borrow: owned Route / NoResident / Ambiguous.
+    enum Target {
+        Route(GatewayRoute),
+        NoResident,
+        Ambiguous(Vec<String>),
+    }
     let target = {
         let guard = table.read().expect("routing table lock poisoned");
-        guard.resolve(rpc_method, params).cloned()
+        match guard.resolve(rpc_method, params) {
+            Resolution::Route(route) => Target::Route(route.clone()),
+            Resolution::NoResident => Target::NoResident,
+            Resolution::Ambiguous(keys) => Target::Ambiguous(keys),
+        }
     };
-    let Some(target) = target else {
-        let err = json!({
-            "jsonrpc": "2.0", "id": id,
-            "error": {"code": -32001, "message": "No GOJA workspace resident is running"}
-        });
-        respond_json(request, 200, &err.to_string());
-        return;
+    let target = match target {
+        Target::Route(route) => route,
+        Target::NoResident => {
+            let err = json!({
+                "jsonrpc": "2.0", "id": id,
+                "error": {"code": -32001, "message": "No GOJA workspace resident is running"}
+            });
+            respond_json(request, 200, &err.to_string());
+            return;
+        }
+        Target::Ambiguous(keys) => {
+            // Deterministic routing: refuse to guess, name the valid keys. This is
+            // what a subagent that omitted projectKey now gets instead of a silent
+            // mis-route into an arbitrary/empty workspace.
+            let message = format!(
+                "GOJA gateway: multiple workspaces are deployed and this call carried no \
+                 workspace locator, so it cannot be routed deterministically. Re-issue with \
+                 `projectKey` set to one of {:?} (or pass an absolute `filePath` under the target \
+                 project). Tip: drive GOJA from the main loop, which holds the workspace context; \
+                 subagents must pass `projectKey` explicitly.",
+                keys
+            );
+            let err = json!({
+                "jsonrpc": "2.0", "id": id,
+                "error": {"code": -32003, "message": message, "data": {"availableProjectKeys": keys}}
+            });
+            respond_json(request, 200, &err.to_string());
+            return;
+        }
     };
 
     match client
@@ -294,29 +371,37 @@ mod tests {
         ])
     }
 
+    /// Unwrap a `Route`, panicking with the actual variant on anything else.
+    fn routed<'a>(resolution: Resolution<'a>) -> &'a GatewayRoute {
+        match resolution {
+            Resolution::Route(route) => route,
+            other => panic!("expected Route, got {other:?}"),
+        }
+    }
+
     #[test]
-    fn empty_table_resolves_to_none() {
+    fn empty_table_resolves_to_no_resident() {
         let t = RoutingTable::default();
-        assert!(t.resolve("tools/list", None).is_none());
-        assert!(t.resolve("tools/call", None).is_none());
+        assert!(matches!(t.resolve("tools/list", None), Resolution::NoResident));
+        assert!(matches!(t.resolve("tools/call", None), Resolution::NoResident));
     }
 
     #[test]
     fn non_call_methods_go_to_first_resident() {
         let t = table();
-        assert_eq!(t.resolve("initialize", None).unwrap().workspace_name, "alpha");
-        assert_eq!(t.resolve("tools/list", None).unwrap().workspace_name, "alpha");
-        assert_eq!(t.resolve("ping", None).unwrap().workspace_name, "alpha");
+        assert_eq!(routed(t.resolve("initialize", None)).workspace_name, "alpha");
+        assert_eq!(routed(t.resolve("tools/list", None)).workspace_name, "alpha");
+        assert_eq!(routed(t.resolve("ping", None)).workspace_name, "alpha");
     }
 
     #[test]
     fn tools_call_routes_by_file_path() {
         let t = table();
         let params = json!({"name": "get_at_position", "arguments": {"filePath": "/home/u/beta/src/A.java"}});
-        assert_eq!(t.resolve("tools/call", Some(&params)).unwrap().workspace_name, "beta");
+        assert_eq!(routed(t.resolve("tools/call", Some(&params))).workspace_name, "beta");
 
         let params2 = json!({"arguments": {"filePath": "/home/u/alpha/X.java"}});
-        assert_eq!(t.resolve("tools/call", Some(&params2)).unwrap().workspace_name, "alpha");
+        assert_eq!(routed(t.resolve("tools/call", Some(&params2))).workspace_name, "alpha");
     }
 
     #[test]
@@ -326,28 +411,62 @@ mod tests {
             route("nested", 8801, &["/home/u/nested"]),
         ]);
         let params = json!({"arguments": {"filePath": "/home/u/nested/deep/B.java"}});
-        assert_eq!(t.resolve("tools/call", Some(&params)).unwrap().workspace_name, "nested");
+        assert_eq!(routed(t.resolve("tools/call", Some(&params))).workspace_name, "nested");
     }
 
     #[test]
     fn tools_call_routes_by_project_key_when_no_path() {
         let t = table();
         let params = json!({"arguments": {"projectKey": "beta"}});
-        assert_eq!(t.resolve("tools/call", Some(&params)).unwrap().workspace_name, "beta");
+        assert_eq!(routed(t.resolve("tools/call", Some(&params))).workspace_name, "beta");
+        // The extra path of a multi-root workspace is also a valid key.
+        let params2 = json!({"arguments": {"projectKey": "beta-extra"}});
+        assert_eq!(routed(t.resolve("tools/call", Some(&params2))).workspace_name, "beta");
     }
 
+    // ===== Sprint 18 Track 2 / Stage 10: deterministic routing (subagent mis-route fix) =====
+
     #[test]
-    fn tools_call_without_locator_falls_back_to_first() {
-        let t = table();
+    fn single_workspace_without_locator_auto_routes() {
+        // Ergonomics preserved: one workspace is unambiguous, no locator needed.
+        let t = RoutingTable::new(vec![route("solo", 8800, &["/home/u/solo"])]);
+        assert_eq!(routed(t.resolve("tools/call", None)).workspace_name, "solo");
         let params = json!({"arguments": {}});
-        assert_eq!(t.resolve("tools/call", Some(&params)).unwrap().workspace_name, "alpha");
-        assert_eq!(t.resolve("tools/call", None).unwrap().workspace_name, "alpha");
+        assert_eq!(routed(t.resolve("tools/call", Some(&params))).workspace_name, "solo");
     }
 
     #[test]
-    fn unknown_file_path_falls_back_to_first() {
+    fn multi_workspace_without_locator_is_ambiguous_not_first() {
+        // The fix: no silent routes.first(); the caller is told what to pass.
         let t = table();
-        let params = json!({"arguments": {"filePath": "/somewhere/else/C.java"}});
-        assert_eq!(t.resolve("tools/call", Some(&params)).unwrap().workspace_name, "alpha");
+        for params in [Some(json!({"arguments": {}})), None] {
+            match t.resolve("tools/call", params.as_ref()) {
+                Resolution::Ambiguous(keys) => {
+                    assert!(keys.contains(&"alpha".to_string()));
+                    assert!(keys.contains(&"beta".to_string()));
+                    assert!(keys.contains(&"beta-extra".to_string()));
+                }
+                other => panic!("expected Ambiguous, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn multi_workspace_unknown_locator_is_ambiguous() {
+        let t = table();
+        // Unknown filePath (no prefix match) + unknown projectKey → ambiguous, not first.
+        let bad_path = json!({"arguments": {"filePath": "/somewhere/else/C.java"}});
+        assert!(matches!(t.resolve("tools/call", Some(&bad_path)), Resolution::Ambiguous(_)));
+        let bad_key = json!({"arguments": {"projectKey": "does-not-exist"}});
+        assert!(matches!(t.resolve("tools/call", Some(&bad_key)), Resolution::Ambiguous(_)));
+    }
+
+    #[test]
+    fn project_keys_are_sorted_and_deduped() {
+        let t = RoutingTable::new(vec![
+            route("a", 8800, &["/home/u/zeta", "/home/u/alpha"]),
+            route("b", 8801, &["/home/u/alpha"]), // duplicate last segment
+        ]);
+        assert_eq!(t.project_keys(), vec!["alpha".to_string(), "zeta".to_string()]);
     }
 }
