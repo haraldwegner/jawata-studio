@@ -2683,8 +2683,9 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
     // Sprint A0 (v0.17.0): the rule block deployed into each client's rule file
     // (CLAUDE.md / .cursor/rules/*.mdc / AGENTS.md / …). It is the cross-client
     // delivery vehicle for "use goja, not grep, for Java" — the prior
-    // one-line policy was too vague to change agent behaviour. Two imperative
-    // sections: a Java→goja routing table, then the TDD-refactor loop.
+    // one-line policy was too vague to change agent behaviour. Three imperative
+    // sections: a Java→goja routing table, the health-gated fallback (ASK when
+    // GOJA is down on Java work, silent on non-Java), then the TDD-refactor loop.
     // Keep it tight and scannable; a long rule gets ignored. Identical text for
     // every client (only the marker name differs) so the idempotent
     // marker-replace in write_managed_rule_block stays simple.
@@ -2713,6 +2714,17 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
         String::new(),
         "Shell text search is a FALLBACK only — when GOJA is unavailable, or for \
          non-Java / non-semantic matches (build files, configs, comments, log strings)."
+            .to_string(),
+        String::new(),
+        "## When GOJA is unavailable — ASK, don't silently degrade".to_string(),
+        String::new(),
+        "If a GOJA tool is unreachable (the server is not running — e.g. not started after a \
+         reboot, autostart off) and you are doing **Java** semantic/structural work, do NOT \
+         quietly fall back to grep or hand-editing. **STOP and ask** how to proceed (wait while \
+         it is started · grep this once, degraded · abort) — silently losing the \
+         compiler-accurate layer is worse than pausing. On **non-Java** work (Rust, Python, \
+         configs, docs) GOJA does not apply: proceed normally, no question. And never use \
+         \"GOJA is down\" as a reason to reclassify Java work as something else to dodge this check."
             .to_string(),
         String::new(),
         "## Refactor in small, verified steps".to_string(),
@@ -3597,6 +3609,20 @@ mod tests {
         assert!(block.trim_end().ends_with("<!-- goja-studio:cursor:end -->"));
         assert!(block.contains("Managed service ids:"));
         assert!(block.contains("- jl-ws-a"));
+    }
+
+    #[test]
+    fn rule_block_has_health_gated_fallback() {
+        let servers = vec![url_server("jl-ws-a", 8800, "tok", false)];
+        let block = build_rule_block("claude", &servers);
+        // The ASK-when-down section: pause + ask on Java work, stay silent on non-Java, no dodging.
+        assert!(block.contains("When GOJA is unavailable"), "has the health-gated section header");
+        assert!(
+            block.contains("STOP and ask") && block.to_lowercase().contains("degraded"),
+            "instructs to stop and ask rather than silently degrade"
+        );
+        assert!(block.contains("non-Java"), "scopes the ask to Java work; silent on non-Java");
+        assert!(block.contains("dodge"), "carries the anti-dodge guard");
     }
 
     #[test]
