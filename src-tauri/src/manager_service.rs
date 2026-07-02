@@ -1595,6 +1595,17 @@ impl ManagerService {
                 changed_sections.push("rules".into());
             }
 
+            // Sprint 18 Track 2 / Stage 9: strip the enforcement hook (Claude Code).
+            if let (Some(settings_path), Some(guard_path)) =
+                (derive_hook_settings_path(client), managed_guard_script_path())
+            {
+                match remove_managed_hook(&settings_path, &guard_path, backup_before_write) {
+                    Ok(true) => changed_sections.push("hook".into()),
+                    Ok(false) => {}
+                    Err(error) => errors.push(error),
+                }
+            }
+
             if !errors.is_empty() {
                 return DeployClientResult {
                     client: client.to_string(),
@@ -1686,6 +1697,29 @@ impl ManagerService {
         }
         if rules_changed {
             changed_sections.push("rules".into());
+        }
+
+        // Sprint 18 Track 2 / Stage 9: write the PreToolUse enforcement hook
+        // (Claude Code only). Health URL = the deployed gateway `/mcp` URL so the
+        // guard's liveness probe needs no config lookup.
+        if let (Some(settings_path), Some(guard_path)) =
+            (derive_hook_settings_path(client), managed_guard_script_path())
+        {
+            let health_url = servers
+                .first()
+                .map(|server| server.url.clone())
+                .unwrap_or_else(|| "http://127.0.0.1:8890/mcp".to_string());
+            match write_managed_hook(
+                &settings_path,
+                &guard_path,
+                &health_url,
+                backup_before_write,
+                matches!(mode, DeployMode::Regenerate),
+            ) {
+                Ok(true) => changed_sections.push("hook".into()),
+                Ok(false) => {}
+                Err(error) => errors.push(error),
+            }
         }
 
         if errors.is_empty() {
@@ -3228,6 +3262,332 @@ fn latest_backup_path(_path: &str) -> Option<String> {
     None
 }
 
+// ===== Sprint 18 Track 2 / Stage 9: PreToolUse enforcement hook (Claude Code) =====
+//
+// Level 3 of "make the agent use GOJA" (available → recommended → ENFORCED; the
+// rule block is level 2). Claude Code fires a `PreToolUse` hook before it runs a
+// tool; a hook that exits 2 blocks the call and feeds its stderr back to the
+// model. We register a hook on `Bash|Grep` that redirects Java *text search*
+// (grep/rg/find/sed/awk over `.java`, or the Grep tool aimed at Java) to the GOJA
+// semantic tools. It is HEALTH-GATED: the same block carries a different message
+// when the resident is up (redirect to the tool) vs down (diagnosis + how to
+// start, or proceed grep-degraded on purpose). Non-Java calls, and edits, pass
+// untouched — the hook enforces only the unambiguous, high-precision case so it
+// can never block a legitimate edit. Structural-edit guidance stays in the rule
+// block (level 2). Claude Code only; other clients keep the rule block.
+
+/// Sentinel embedded in the managed guard command so we can find + replace + remove
+/// exactly our `PreToolUse` entries without disturbing user-authored hooks.
+const GOJA_HOOK_SENTINEL: &str = "goja-studio/pretooluse-guard.sh";
+
+/// The client whose settings file receives the enforcement hook. Claude Code only:
+/// its `~/.claude/settings.json` hook schema is the one we target; Cursor/
+/// Antigravity have no equivalent, so they keep the rule block (level 2) alone.
+fn derive_hook_settings_path(client: &str) -> Option<String> {
+    if client != "claude" {
+        return None;
+    }
+    let home = dirs::home_dir()?;
+    Some(display_path(&home.join(".claude").join("settings.json")))
+}
+
+/// Absolute path of the managed guard script goja-studio writes + owns. Lives under
+/// `~/.claude/goja-studio/` so the settings.json entry is a stable one-liner and all
+/// the branching logic lives in a shell file we overwrite on every deploy.
+fn managed_guard_script_path() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(
+        home.join(".claude")
+            .join("goja-studio")
+            .join("pretooluse-guard.sh"),
+    )
+}
+
+/// The bash guard. `health_url` (the deployed gateway `/mcp` URL) is baked in so the
+/// health probe needs no config lookup. Exit 0 = pass; exit 2 = block + redirect
+/// (stderr is shown to the model). Deterministic for a given `health_url` so a
+/// re-deploy is a byte-stable no-op.
+fn build_guard_script(health_url: &str) -> String {
+    format!(
+        r#"#!/usr/bin/env bash
+# <goja-studio managed PreToolUse guard — do not edit; overwritten on deploy>
+# Redirects Java TEXT SEARCH (grep/rg/find/sed/awk over *.java, or the Grep tool
+# aimed at Java) to GOJA's compiler-accurate tools. Health-gated: a different
+# message when GOJA is up (use the tool) vs down (start it, or grep on purpose).
+# Non-Java calls and file edits pass through untouched. Exit 2 blocks + tells the
+# model why; exit 0 lets the call run.
+set -u
+
+HEALTH_URL="{health_url}"
+
+input="$(cat)"
+# One flattened line so the crude extractors below never span a newline.
+flat="$(printf '%s' "$input" | tr '\n\r' '  ')"
+
+tool_name="$(printf '%s' "$flat" | sed -n 's/.*"tool_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+
+# Only Bash and Grep are matched in settings.json, but guard defensively.
+case "$tool_name" in
+  Bash|Grep) ;;
+  *) exit 0 ;;
+esac
+
+# Does this call touch Java source at all? (matches ".java" in a path, glob, or
+# literal — a following quote/space/comma/EOL all count as the boundary).
+printf '%s' "$flat" | grep -qiE '\.java([^a-zA-Z]|$)' || exit 0
+
+is_search=0
+if [ "$tool_name" = "Grep" ]; then
+  is_search=1
+else
+  # Bash: only a text-search command over Java is a redirect target.
+  printf '%s' "$flat" | grep -qE '(^|[^a-zA-Z])(grep|rg|ripgrep|ag|ack|find|sed|awk)([^a-zA-Z]|$)' && is_search=1
+fi
+[ "$is_search" -eq 1 ] || exit 0
+
+# GOJA liveness: any HTTP response on the gateway = up; connection refused = down.
+goja_up=0
+if command -v curl >/dev/null 2>&1; then
+  curl -s -o /dev/null --max-time 1 "$HEALTH_URL" && goja_up=1
+elif command -v wget >/dev/null 2>&1; then
+  wget -q -O /dev/null --timeout=1 "$HEALTH_URL" && goja_up=1
+else
+  # No HTTP client: fall back to a raw TCP connect via bash /dev/tcp.
+  hostport="$(printf '%s' "$HEALTH_URL" | sed -E 's#^https?://([^/]+).*#\1#')"
+  host="${{hostport%%:*}}"; port="${{hostport##*:}}"
+  [ "$port" = "$hostport" ] && port=80
+  (exec 3<>"/dev/tcp/$host/$port") >/dev/null 2>&1 && goja_up=1
+fi
+
+if [ "$goja_up" -eq 1 ]; then
+  {{
+    echo "GOJA is running — use it instead of text search on Java."
+    echo "For a symbol: search_symbols. Callers/usages: find_references."
+    echo "Type shape/members/hierarchy: analyze / inspect. Jump: go_to_definition."
+    echo "(GOJA is compiler-accurate; grep over .java misses/overmatches symbols.)"
+  }} 1>&2
+  exit 2
+else
+  {{
+    echo "GOJA MCP appears to be DOWN (no response at $HEALTH_URL) and this is Java work."
+    echo "Per the collaboration rules, do not silently grep Java semantics — decide first:"
+    echo "  1) Start GOJA (open goja-studio and start the resident), then use search_symbols / find_references / analyze."
+    echo "  2) If you must proceed grep-degraded, say so explicitly and re-run — this guard only warns once GOJA is confirmed down."
+    echo "Non-Java work is unaffected."
+  }} 1>&2
+  exit 2
+fi
+"#,
+        health_url = health_url
+    )
+}
+
+/// The single `PreToolUse` matcher entry that invokes the guard for `Bash` and
+/// `Grep`. Kept minimal + deterministic so the settings.json write is idempotent.
+fn build_managed_hook_entry(guard_path: &Path) -> serde_json::Value {
+    let command = display_path(guard_path);
+    serde_json::json!({
+        "matcher": "Bash|Grep",
+        "hooks": [
+            { "type": "command", "command": command }
+        ]
+    })
+}
+
+/// True iff a `PreToolUse` entry is one goja-studio wrote (its command references
+/// the managed guard script). Used to replace/remove our entries and leave the
+/// user's hooks alone.
+fn is_managed_hook_entry(entry: &serde_json::Value) -> bool {
+    entry
+        .get("hooks")
+        .and_then(|hooks| hooks.as_array())
+        .map(|hooks| {
+            hooks.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(|command| command.as_str())
+                    .map(|command| command.contains(GOJA_HOOK_SENTINEL))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Write the guard script + register the managed `PreToolUse` entry in the client's
+/// settings.json, replacing any prior managed entry and preserving user hooks.
+/// Returns Ok(true) when anything changed. Idempotent: an unchanged re-deploy is a
+/// no-op write.
+fn write_managed_hook(
+    settings_path: &str,
+    guard_path: &Path,
+    health_url: &str,
+    backup_before_write: bool,
+    force_rewrite: bool,
+) -> Result<bool, String> {
+    // 1. Write the guard script (goja-studio owns it outright).
+    let script_parent = guard_path
+        .parent()
+        .ok_or_else(|| format!("guard path has no parent: {}", guard_path.display()))?;
+    fs::create_dir_all(script_parent).map_err(|error| {
+        format!(
+            "failed to create guard dir {}: {error}",
+            script_parent.display()
+        )
+    })?;
+    let script_body = build_guard_script(health_url);
+    let script_changed = fs::read_to_string(guard_path)
+        .map(|existing| existing != script_body)
+        .unwrap_or(true);
+    if script_changed || force_rewrite {
+        fs::write(guard_path, &script_body).map_err(|error| {
+            format!("failed writing guard script {}: {error}", guard_path.display())
+        })?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(guard_path, fs::Permissions::from_mode(0o755));
+    }
+
+    // 2. Merge the managed entry into settings.json's hooks.PreToolUse.
+    let settings_buf = PathBuf::from(settings_path);
+    let settings_parent = settings_buf
+        .parent()
+        .ok_or_else(|| format!("settings path has no parent: {}", settings_buf.display()))?;
+    fs::create_dir_all(settings_parent).map_err(|error| {
+        format!(
+            "failed to create settings dir {}: {error}",
+            settings_parent.display()
+        )
+    })?;
+
+    let existing_contents = fs::read_to_string(&settings_buf).ok();
+    let mut root = existing_contents
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !root.is_object() {
+        root = serde_json::json!({});
+    }
+
+    {
+        let object = root.as_object_mut().expect("root is an object");
+        let hooks = object
+            .entry("hooks")
+            .or_insert_with(|| serde_json::json!({}));
+        if !hooks.is_object() {
+            *hooks = serde_json::json!({});
+        }
+        let hooks_object = hooks.as_object_mut().expect("hooks is an object");
+
+        let mut pre = hooks_object
+            .get("PreToolUse")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        // Drop any prior managed entry, keep user entries, append the fresh one.
+        pre.retain(|entry| !is_managed_hook_entry(entry));
+        pre.push(build_managed_hook_entry(guard_path));
+        hooks_object.insert("PreToolUse".into(), serde_json::Value::Array(pre));
+    }
+
+    let next_json = serde_json::to_string_pretty(&root)
+        .map_err(|error| format!("failed serializing settings json: {error}"))?;
+
+    if !force_rewrite {
+        if let Some(existing) = existing_contents.as_deref() {
+            if existing.trim() == next_json.trim() && !script_changed {
+                return Ok(false);
+            }
+        }
+    }
+
+    if backup_before_write && settings_buf.exists() {
+        let backup_path = format!(
+            "{settings_path}.bak-{}",
+            crate::config::current_timestamp_string()
+        );
+        fs::copy(&settings_buf, &backup_path).map_err(|error| {
+            format!(
+                "failed creating settings backup {} from {}: {error}",
+                backup_path,
+                settings_buf.display()
+            )
+        })?;
+    }
+    fs::write(&settings_buf, format!("{next_json}\n")).map_err(|error| {
+        format!(
+            "failed writing settings {}: {error}",
+            settings_buf.display()
+        )
+    })?;
+    Ok(true)
+}
+
+/// Remove the managed `PreToolUse` entry from settings.json + delete the guard
+/// script. Returns Ok(true) when anything was removed. Leaves user hooks intact and
+/// prunes now-empty `PreToolUse` / `hooks` containers.
+fn remove_managed_hook(
+    settings_path: &str,
+    guard_path: &Path,
+    backup_before_write: bool,
+) -> Result<bool, String> {
+    let mut changed = false;
+
+    // 1. Strip our entry from settings.json (if the file + entry exist).
+    let settings_buf = PathBuf::from(settings_path);
+    if settings_buf.exists() {
+        let existing = fs::read_to_string(&settings_buf).map_err(|error| {
+            format!("failed to read settings {}: {error}", settings_buf.display())
+        })?;
+        if let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&existing) {
+            let mut removed_any = false;
+            if let Some(hooks) = root
+                .as_object_mut()
+                .and_then(|object| object.get_mut("hooks"))
+                .and_then(|hooks| hooks.as_object_mut())
+            {
+                if let Some(pre) = hooks.get_mut("PreToolUse").and_then(|v| v.as_array_mut()) {
+                    let before = pre.len();
+                    pre.retain(|entry| !is_managed_hook_entry(entry));
+                    removed_any = pre.len() != before;
+                    if pre.is_empty() {
+                        hooks.remove("PreToolUse");
+                    }
+                }
+                let hooks_empty = hooks.is_empty();
+                if hooks_empty {
+                    root.as_object_mut().map(|object| object.remove("hooks"));
+                }
+            }
+            if removed_any {
+                let next_json = serde_json::to_string_pretty(&root)
+                    .map_err(|error| format!("failed serializing settings json: {error}"))?;
+                if backup_before_write {
+                    let backup_path = format!(
+                        "{settings_path}.bak-{}",
+                        crate::config::current_timestamp_string()
+                    );
+                    let _ = fs::copy(&settings_buf, &backup_path);
+                }
+                fs::write(&settings_buf, format!("{next_json}\n")).map_err(|error| {
+                    format!("failed writing settings {}: {error}", settings_buf.display())
+                })?;
+                changed = true;
+            }
+        }
+    }
+
+    // 2. Delete the guard script.
+    if guard_path.exists() {
+        fs::remove_file(guard_path).map_err(|error| {
+            format!("failed removing guard script {}: {error}", guard_path.display())
+        })?;
+        changed = true;
+    }
+
+    Ok(changed)
+}
+
 /// Sprint 10 v0.10.4: atomic write of `workspace.json` for one workspace.
 /// Lifted out of `ManagerService` so it can be unit-tested without the
 /// full ConfigStore + ReleaseManager + RuntimeManager dependency graph.
@@ -3777,6 +4137,139 @@ mod tests {
         assert!(replaced.contains("# Footer"), "trailing user text kept");
         assert!(!replaced.contains("OLD STALE BODY"), "stale body replaced");
         assert!(replaced.contains("GOJA MCP"), "new body present");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ===== Sprint 18 Track 2 / Stage 9: PreToolUse enforcement hook =====
+
+    #[test]
+    fn hook_settings_path_is_claude_only() {
+        assert!(
+            derive_hook_settings_path("claude")
+                .map(|p| p.ends_with("settings.json"))
+                .unwrap_or(false),
+            "claude gets ~/.claude/settings.json"
+        );
+        for other in ["cursor", "antigravity", "claude_desktop", "intellij"] {
+            assert!(
+                derive_hook_settings_path(other).is_none(),
+                "{other} keeps the rule block, no hook"
+            );
+        }
+    }
+
+    #[test]
+    fn guard_script_is_health_gated_and_java_scoped() {
+        let script = build_guard_script("http://127.0.0.1:8890/mcp");
+        // Health URL baked in; both branches present.
+        assert!(script.contains("http://127.0.0.1:8890/mcp"), "health url baked in");
+        assert!(script.contains("GOJA is running"), "up branch: redirect to the tool");
+        assert!(script.contains("appears to be DOWN"), "down branch: diagnosis");
+        assert!(script.contains("search_symbols"), "names the GOJA tool to use instead");
+        // Java-scoped + text-search-scoped; edits/non-Java pass.
+        assert!(script.contains(r"\.java"), "scoped to Java source");
+        assert!(script.contains("grep|rg"), "matches text-search commands");
+        assert!(script.contains("exit 0"), "has a pass path");
+        assert!(script.contains("exit 2"), "has a block/redirect path");
+        // Deterministic → byte-stable re-deploy.
+        assert_eq!(script, build_guard_script("http://127.0.0.1:8890/mcp"));
+    }
+
+    #[test]
+    fn managed_hook_entry_shape() {
+        let guard = PathBuf::from("/home/u/.claude/goja-studio/pretooluse-guard.sh");
+        let entry = build_managed_hook_entry(&guard);
+        assert_eq!(entry["matcher"], "Bash|Grep", "matches only the text-search tools");
+        let cmd = entry["hooks"][0]["command"].as_str().unwrap();
+        assert!(cmd.contains(GOJA_HOOK_SENTINEL), "command references the managed guard");
+        assert_eq!(entry["hooks"][0]["type"], "command");
+        assert!(is_managed_hook_entry(&entry), "our own entry is recognised as managed");
+        // A user's unrelated PreToolUse entry must NOT be flagged as managed.
+        let user = serde_json::json!({
+            "matcher": "Write",
+            "hooks": [{ "type": "command", "command": "echo hi" }]
+        });
+        assert!(!is_managed_hook_entry(&user));
+    }
+
+    #[test]
+    fn managed_hook_write_remove_roundtrip_preserves_user_hooks() {
+        let dir = unique_tempdir("hook");
+        let settings = dir.join(".claude").join("settings.json");
+        let settings_path = settings.to_string_lossy().to_string();
+        let guard = dir
+            .join(".claude")
+            .join("goja-studio")
+            .join("pretooluse-guard.sh");
+        let health = "http://127.0.0.1:8890/mcp";
+
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(
+            &settings,
+            r#"{"model":"opus","hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"echo user"}]}]}}"#,
+        )
+        .unwrap();
+
+        // (1) WRITE: entry added, guard written, user content preserved.
+        assert!(write_managed_hook(&settings_path, &guard, health, false, false).unwrap());
+        assert!(guard.exists(), "guard script written");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&guard).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111, "guard is executable");
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(v["model"], "opus", "unrelated setting preserved");
+        let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre.len(), 2, "user entry + managed entry");
+        assert!(pre.iter().any(is_managed_hook_entry), "managed entry present");
+        assert!(
+            pre.iter()
+                .any(|e| e["hooks"][0]["command"] == "echo user"),
+            "user entry preserved"
+        );
+
+        // (2) IDEMPOTENT: unchanged re-deploy is a no-op, byte-stable.
+        let before = std::fs::read_to_string(&settings).unwrap();
+        assert!(
+            !write_managed_hook(&settings_path, &guard, health, false, false).unwrap(),
+            "re-deploy is a no-op"
+        );
+        assert_eq!(before, std::fs::read_to_string(&settings).unwrap(), "byte-stable");
+
+        // (3) REMOVE: managed entry + guard gone, user entry kept.
+        assert!(remove_managed_hook(&settings_path, &guard, false).unwrap());
+        assert!(!guard.exists(), "guard deleted");
+        let v2: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        let pre2 = v2["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre2.len(), 1, "only the user entry remains");
+        assert!(!pre2.iter().any(is_managed_hook_entry));
+        assert_eq!(v2["model"], "opus");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_managed_hook_prunes_empty_containers() {
+        let dir = unique_tempdir("hook-prune");
+        let settings = dir.join("settings.json");
+        let settings_path = settings.to_string_lossy().to_string();
+        let guard = dir.join("goja-studio").join("pretooluse-guard.sh");
+
+        // Only our entry exists → after removal the containers vanish.
+        write_managed_hook(&settings_path, &guard, "http://127.0.0.1:8890/mcp", false, false)
+            .unwrap();
+        assert!(remove_managed_hook(&settings_path, &guard, false).unwrap());
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert!(v.get("hooks").is_none(), "empty hooks container pruned");
+
+        // Removal when nothing is managed → no-op, no error.
+        assert!(!remove_managed_hook(&settings_path, &guard, false).unwrap());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
