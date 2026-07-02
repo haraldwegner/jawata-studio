@@ -115,24 +115,24 @@ Each of these opens a **target picker**: check Cursor / Claude / Antigravity / I
 
 **Cursor (length limit):** Cursor rejects tools when `serverName + ":" + toolName` exceeds about **59–60** characters. The manager keeps the generated `goja-` ids short so the longest GOJA tool names still fit. **Antigravity** instead caps the total *number* of MCP tools registered across all servers (around 100 in current builds) — that is a separate constraint, and the main reason to keep concurrent workspaces small.
 
-### Tool surface
+### How GOJA works — a compiler-grounded loop, not a bag of tools
 
-GOJA registers **40 tools per workspace service**. Parametric front doors fold what would otherwise be a hundred-plus narrow tools behind a `kind`/action parameter, so multi-workspace setups keep headroom under Antigravity's ~100-tool cap: `analyze`, `inspect`, `get_at_position`, `find_references`, `find_pattern_usages`, `extract`, `inline`, `move`, `move_in_hierarchy`, `generate`, `find_quality_issue`, `find_modernization`, `refactor_to_pattern`, `dependency`, `quick_fix`, `refactoring`, `project`.
+GOJA is one **Java vertical over your whole workspace**, not a per-project add-on sitting beside ten per-language shims. Its ~40 tools are **parametric front doors** — a `kind`/`action` parameter folds what would otherwise be a hundred narrow tools into a handful, which keeps a multi-workspace setup under Antigravity's ~100-tool cap. But the point isn't the list; it's the **loop the tools compose into**:
 
-- **`find_pattern_usages(kind, query)`** — type-anchored searches. `kind ∈ { annotation, instantiation, type_argument, cast, instanceof }`.
-- **`find_quality_issue(kind, ...)`** — quality + code-smell detection: the 8 built-ins (`naming, bugs, unused, large_classes, circular_deps, reflection, throws, catches`), the 18 **Fowler** smells, **SOLID** (`dip, isp, srp_cohesion, lsp`), and **Kerievsky** (`singleton, type_code`) — with a `family` filter (`quality / fowler / solid / kerievsky`) that runs a whole set at once.
+- **Detect** — `find_quality_issue` / `find_modernization` surface Fowler smells, SOLID and Kerievsky violations, and modernization candidates — all compiler-resolved, so no regex false positives.
+- **Goal** — `refactor_to_pattern` names the target state: a design pattern to move *toward* (state / command / template method / visitor / compose method) or *away from* (inline singleton).
+- **How** — `refactoring(action=plan → apply_plan)` executes that goal as **atomic, parity-gated steps**. It compiles to zero errors after every step and runs a **purity check** — a step that smuggles in a new return/throw/branch or a relocated side-effect is *flagged, not silently applied* — and on any red it **rolls back** to the last good state. This is the machinery that makes autonomous refactoring risk-free: a fallible agent cannot leave your tree half-migrated.
 
-Each parametric tool's `kind` is a typed enum in the input schema with per-kind descriptions, so agents discover what's available through `tools/list`.
+Two supporting ideas ship with that loop:
 
-**Refactoring** — JDT-LTK structural refactorings behind `rename_symbol`, `extract` *(method / variable / constant / interface)*, `inline` *(method / variable)*, `move` *(class / package)*, `move_in_hierarchy` *(pull-up / push-down)*, `encapsulate_field`, `change_method_signature`, and `generate`. They take a position (filePath / line / column, zero-based) plus refactoring-specific arguments. **`refactor_to_pattern(kind, ...)`** adds Kerievsky pattern-targeted refactorings — toward a pattern (state / command dispatcher / template method / visitor / compose method / type-code-to-class) and away from one (inline singleton / replace pattern with idiom). Every mutating tool applies its change directly and returns `{ filesModified, diff, undoChangeId }` — agents verify with `compile_workspace` and revert with `undo_refactoring` if needed; `auto_apply: false` stages a change for preview-then-commit. Detect tools carry MCP `readOnlyHint` annotations, so restricted client modes (e.g. Cursor Ask mode) can run analysis without write permissions.
+- **Reuse over reinvent.** When an agent needs a near-duplicate class, letting the **compiler** derive it — `generate(kind=copy_class)` then `extract(kind=superclass)` — is cheaper and safer than the model re-authoring the code by hand. The tools exist so the agent writes *less* code, not more.
+- **Health-gated honesty.** The deployed rule block (and, on Claude Code, a `PreToolUse` hook) instructs the agent: on Java work, when GOJA is unreachable, **ask — don't silently fall back to grep**. When the service is up, text search over `.java` is redirected to GOJA's compiler-accurate tools. Non-Java work is untouched.
 
-**Workspace verification** — `compile_workspace` runs `IncrementalProjectBuilder` over every loaded project and aggregates `IMarker.PROBLEM` markers (compile errors, classpath errors, manifest errors) — the same path Eclipse IDE's Problems view uses, catching cascading errors that per-file `get_diagnostics` misses. `run_tests` launches JUnit 4 / 5 / TestNG via JDT-LTK's launching delegate, headless, with method/class/package scope and parsed pass/fail/skip results.
+Every mutating tool applies its change directly and returns `{ filesModified, diff, undoChangeId }` — verify with `compile_workspace`, revert with `undo_refactoring`, or pass `auto_apply: false` to stage a preview-then-commit. Detect tools carry MCP `readOnlyHint`, so a restricted client mode (e.g. Cursor Ask) can analyze without write permission.
 
-**Code generation** — `generate(kind, ...)` bypasses the small mistakes agents make hand-writing modifiers/generics/annotations, all built via `ASTRewrite` directly: `kind ∈ { constructor, getters_setters, equals_hashcode, tostring, override_methods (query mode lists overridable signatures; generate mode emits @Override stubs), test_skeleton (writes a JUnit class to the src/test/java mirror) }`.
+### The tool surface (live — not enumerated here)
 
-**Build & dependency management (Maven)** — `dependency(action, ...)`: `add` / `update` mutate `pom.xml` text-level (preserves user formatting + comments); `find_unused` is read-only and heuristic (groupId-prefix or artifactId-substring match against source imports).
-
-**Workflow polish** — `format` (file/package/project/workspace scope, honours the project's own `.settings/org.eclipse.jdt.core.prefs`); `optimize_imports_workspace` (workspace fan-out of import optimisation, idempotent).
+The authoritative, always-current list of tools and their descriptions is the running service itself. Open **Settings → Exposed Services → Test Services**: it performs a live MCP handshake and lists every tool name and description the service exposes, with a count and probe duration. Agents discover the same surface through `tools/list`, where each parametric tool's `kind`/`action` is a typed enum with per-kind descriptions. A hand-maintained copy in this help would only drift out of date after each release — so it is deliberately not kept here.
 
 ### Selected Project Status
 
