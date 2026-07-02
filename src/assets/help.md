@@ -31,7 +31,7 @@ A **workspace** is a named group of Java projects loaded into one GOJA process a
 - **One workspace per cohesive task.** A bundle/multi-module application (e.g. an Eclipse RCP product with 12 OSGi bundles), a monorepo, or a single project that you want isolated — each gets its own workspace.
 - **Live updates.** Add or remove a project from a workspace and the running GOJA picks it up within ~1 second through a `workspace.json` file watcher. No MCP-client restart, no agent-session reload.
 - **No ports.** Workspaces are identified by name. There is no port range, no per-project port allocation, no port conflicts.
-- **Tool budget.** Each workspace contributes ~85 tools toward the agent's tool registration cap (Antigravity caps around 100). With the current tool surface that means ONE active workspace per Antigravity session; Cursor and Claude Code tolerate more.
+- **Tool budget.** Each workspace contributes ~40 tools toward the agent's tool registration cap (Antigravity caps around 100), so roughly two active workspaces fit per Antigravity session; Cursor and Claude Code tolerate more.
 
 ---
 
@@ -117,20 +117,20 @@ Each of these opens a **target picker**: check Cursor / Claude / Antigravity / I
 
 ### Tool surface
 
-GOJA registers **85 tools per workspace service**. Two parametric tools (`find_pattern_usages` / `find_quality_issue`) fold what would otherwise be a dozen-plus narrow tools into two, so multi-workspace setups keep headroom under Antigravity's ~100-tool cap.
+GOJA registers **40 tools per workspace service**. Parametric front doors fold what would otherwise be a hundred-plus narrow tools behind a `kind`/action parameter, so multi-workspace setups keep headroom under Antigravity's ~100-tool cap: `analyze`, `inspect`, `get_at_position`, `find_references`, `find_pattern_usages`, `extract`, `inline`, `move`, `move_in_hierarchy`, `generate`, `find_quality_issue`, `find_modernization`, `refactor_to_pattern`, `dependency`, `quick_fix`, `refactoring`, `project`.
 
 - **`find_pattern_usages(kind, query)`** — type-anchored searches. `kind ∈ { annotation, instantiation, type_argument, cast, instanceof }`.
-- **`find_quality_issue(kind, ...)`** — code-quality analyses. `kind ∈ { naming, bugs, unused, large_classes, circular_deps, reflection, throws, catches }`.
+- **`find_quality_issue(kind, ...)`** — quality + code-smell detection: the 8 built-ins (`naming, bugs, unused, large_classes, circular_deps, reflection, throws, catches`), the 18 **Fowler** smells, **SOLID** (`dip, isp, srp_cohesion, lsp`), and **Kerievsky** (`singleton, type_code`) — with a `family` filter (`quality / fowler / solid / kerievsky`) that runs a whole set at once.
 
-Each parametric tool's `kind` is a typed enum in the input schema with per-kind descriptions, so agents can discover what's available through `tools/list`. `find_method_references` and the position-anchored search tools stay as separate tools.
+Each parametric tool's `kind` is a typed enum in the input schema with per-kind descriptions, so agents discover what's available through `tools/list`.
 
-**Refactoring** — JDT-LTK structural refactorings (`move_class`, `move_package`, `pull_up`, `push_down`, `encapsulate_field`, and more). They take a position (filePath / line / column, zero-based) plus refactoring-specific arguments. Every refactoring tool applies its change directly and returns `{ filesModified, diff, undoChangeId }` — agents verify with `compile_workspace` and revert with `undo_refactoring` if needed; `auto_apply: false` stages a change for preview-then-commit. Detect tools carry MCP `readOnlyHint` annotations, so restricted client modes (e.g. Cursor Ask mode) can run analysis without write permissions.
+**Refactoring** — JDT-LTK structural refactorings behind `rename_symbol`, `extract` *(method / variable / constant / interface)*, `inline` *(method / variable)*, `move` *(class / package)*, `move_in_hierarchy` *(pull-up / push-down)*, `encapsulate_field`, `change_method_signature`, and `generate`. They take a position (filePath / line / column, zero-based) plus refactoring-specific arguments. **`refactor_to_pattern(kind, ...)`** adds Kerievsky pattern-targeted refactorings — toward a pattern (state / command dispatcher / template method / visitor / compose method / type-code-to-class) and away from one (inline singleton / replace pattern with idiom). Every mutating tool applies its change directly and returns `{ filesModified, diff, undoChangeId }` — agents verify with `compile_workspace` and revert with `undo_refactoring` if needed; `auto_apply: false` stages a change for preview-then-commit. Detect tools carry MCP `readOnlyHint` annotations, so restricted client modes (e.g. Cursor Ask mode) can run analysis without write permissions.
 
 **Workspace verification** — `compile_workspace` runs `IncrementalProjectBuilder` over every loaded project and aggregates `IMarker.PROBLEM` markers (compile errors, classpath errors, manifest errors) — the same path Eclipse IDE's Problems view uses, catching cascading errors that per-file `get_diagnostics` misses. `run_tests` launches JUnit 4 / 5 / TestNG via JDT-LTK's launching delegate, headless, with method/class/package scope and parsed pass/fail/skip results.
 
-**Code generation** — tools that bypass the small mistakes agents make hand-writing modifiers/generics/annotations, all built via `ASTRewrite` directly: `generate_constructor`, `generate_getters_setters`, `generate_equals_hashcode`, `generate_tostring`, `override_methods` (query mode lists overridable signatures; generate mode emits `@Override` stubs), `generate_test_skeleton` (writes a JUnit class to the `src/test/java` mirror).
+**Code generation** — `generate(kind, ...)` bypasses the small mistakes agents make hand-writing modifiers/generics/annotations, all built via `ASTRewrite` directly: `kind ∈ { constructor, getters_setters, equals_hashcode, tostring, override_methods (query mode lists overridable signatures; generate mode emits @Override stubs), test_skeleton (writes a JUnit class to the src/test/java mirror) }`.
 
-**Build & dependency management (Maven)** — `add_dependency` and `update_dependency` mutate `pom.xml` text-level (preserves user formatting + comments); `find_unused_dependencies` is read-only and heuristic (groupId-prefix or artifactId-substring match against source imports).
+**Build & dependency management (Maven)** — `dependency(action, ...)`: `add` / `update` mutate `pom.xml` text-level (preserves user formatting + comments); `find_unused` is read-only and heuristic (groupId-prefix or artifactId-substring match against source imports).
 
 **Workflow polish** — `format` (file/package/project/workspace scope, honours the project's own `.settings/org.eclipse.jdt.core.prefs`); `optimize_imports_workspace` (workspace fan-out of import optimisation, idempotent).
 
