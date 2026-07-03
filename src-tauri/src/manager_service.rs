@@ -3414,6 +3414,15 @@ if printf '%s' "$flat" | grep -qiE 'goja-fallback:'; then
   exit 0
 fi
 
+# (4) v1.4.0 (Sprint 22) TRY-FIRST gate: if this search's target was already looked
+#     up via goja THIS session (its token is in the per-session state), the agent
+#     tried goja first → grep is a legitimate follow-up, allow it. Only an UN-tried
+#     java-symbol search reaches the block below. Conservative: match any goja-queried
+#     token (>=3 chars) that appears in the command; when in doubt, allow.
+if [ -s "$goja_state_file" ] && printf '%s' "$flat" | grep -qiFf <(grep -E '^.{{3,}}$' "$goja_state_file") 2>/dev/null; then
+  exit 0
+fi
+
 # GOJA liveness: any HTTP response on the gateway = up; connection refused = down.
 goja_up=0
 if command -v curl >/dev/null 2>&1; then
@@ -3430,11 +3439,12 @@ fi
 
 if [ "$goja_up" -eq 1 ]; then
   {{
-    echo "GOJA is running — use it instead of text search on Java."
+    echo "TRY GOJA FIRST — you have not looked this up via GOJA yet this session."
     echo "For a symbol: search_symbols. Callers/usages: find_references."
     echo "Type shape/members/hierarchy: analyze / inspect. Jump: go_to_definition."
+    echo "Once you have queried it via GOJA, grep is a fine follow-up (this gate then passes)."
     echo "(GOJA is compiler-accurate; grep over .java misses/overmatches symbols.)"
-    echo "If this genuinely is NOT a symbol search, re-run with 'goja-fallback: <reason>' in the command to proceed (declared + logged)."
+    echo "If this genuinely is NOT a symbol search, re-run with 'goja-fallback: <reason>' to proceed (declared + logged)."
   }} 1>&2
   exit 2
 else
@@ -4077,6 +4087,11 @@ mod tests {
             script.contains("$goja_state_file"),
             "appends the tokens to the per-session try-first state"
         );
+        // Stage 2: the search gate consults that state — an un-tried symbol is blocked.
+        assert!(
+            script.contains("TRY-FIRST gate"),
+            "the search gate consults the try-first state before blocking"
+        );
     }
 
     #[test]
@@ -4272,7 +4287,7 @@ mod tests {
         let script = build_guard_script("http://127.0.0.1:8890/mcp");
         // Health URL baked in; both branches present.
         assert!(script.contains("http://127.0.0.1:8890/mcp"), "health url baked in");
-        assert!(script.contains("GOJA is running"), "up branch: redirect to the tool");
+        assert!(script.contains("TRY GOJA FIRST"), "up branch: try-first redirect");
         assert!(script.contains("appears to be DOWN"), "down branch: diagnosis");
         assert!(script.contains("search_symbols"), "names the GOJA tool to use instead");
         // Java-scoped + content-search-scoped; edits/non-Java pass.
