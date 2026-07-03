@@ -2750,6 +2750,24 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
          non-Java / non-semantic matches (build files, configs, comments, log strings)."
             .to_string(),
         String::new(),
+        "**Try-first, or justify — the deployed hook ENFORCES this.** A `grep`/`rg` over a \
+         `.java` file, or a hand-edit of a `.java` file, is BLOCKED unless you tried goja first \
+         (a search) or use a goja tool (an edit) — OR you declare \
+         `goja-fallback: <why goja is inadequate for THIS case>` in the command (it is logged). \
+         It is meant to be inconvenient NOT to use goja; you are never stuck — the justified \
+         fallback always proceeds."
+            .to_string(),
+        String::new(),
+        "Editing a `.java` file by hand is blocked — use the tool:".to_string(),
+        "- Rename a symbol (updates ALL references) → `rename_symbol`".to_string(),
+        "- Move a class / pull a member up or down → `move` / `move_in_hierarchy`".to_string(),
+        "- Extract a method / variable / constant / superclass → `extract`".to_string(),
+        "- Duplicate a class → `generate(kind=copy_class)` then `extract(kind=superclass)`"
+            .to_string(),
+        "- Any structural change → `refactoring(action=plan)` then `apply_plan` \
+         (parity-gated, reversible)"
+            .to_string(),
+        String::new(),
         "## When GOJA is unavailable — ASK, don't silently degrade".to_string(),
         String::new(),
         "If a GOJA tool is unreachable (the server is not running — e.g. not started after a \
@@ -3338,6 +3356,20 @@ if [ -n "$session_id" ]; then goja_state_file="$goja_state_dir/$session_id"; els
 # the state above and still routes only search to the gates below; the other tools
 # pass through until their stages add branches.
 case "$tool_name" in
+  mcp__goja*)
+    # Stage 1: record that goja was TRIED for these targets — the try-first signal
+    # the search gate (Stage 2) consults. Goja calls are never blocked; we just log
+    # the target tokens (query / typeName / symbol / newName / filePath basename),
+    # lowercased, one per line.
+    if [ -n "$goja_state_file" ]; then
+      mkdir -p "$goja_state_dir" 2>/dev/null
+      printf '%s' "$flat" \
+        | grep -oiE '"(query|typeName|symbol|newName|filePath)"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | sed -E 's/.*:[[:space:]]*"//; s/"$//; s#.*/##' \
+        | tr 'A-Z' 'a-z' \
+        >> "$goja_state_file" 2>/dev/null
+    fi
+    exit 0 ;;
   Bash|Grep) ;;
   *) exit 0 ;;
 esac
@@ -4009,6 +4041,42 @@ mod tests {
         assert!(block.trim_end().ends_with("<!-- goja-studio:cursor:end -->"));
         assert!(block.contains("Managed service ids:"));
         assert!(block.contains("- goja-ws-a"));
+    }
+
+    #[test]
+    fn rule_block_has_try_or_justify_rule_and_edit_mappings() {
+        // Sprint 22 Stage 1: the rule block carries the enforcement contract (the
+        // hook's try-or-justify) + the edit-side intent→tool mappings.
+        let block = build_rule_block("claude", &vec![url_server("goja-ws-a", 8800, "tok", false)]);
+        assert!(block.contains("Try-first, or justify"), "states the enforcement contract");
+        assert!(block.contains("goja-fallback:"), "names the declared-fallback escape");
+        assert!(
+            block.to_lowercase().contains("inconvenient") && block.contains("never stuck"),
+            "inconvenient-not-to-use, but never stuck"
+        );
+        // Edit mappings for the blocked hand-edit path.
+        assert!(block.contains("rename_symbol"), "rename → rename_symbol");
+        assert!(block.contains("generate(kind=copy_class)"), "duplicate → copy_class");
+        assert!(
+            block.contains("refactoring(action=plan)"),
+            "structural change → the plan lifecycle"
+        );
+    }
+
+    #[test]
+    fn guard_logs_goja_calls_for_try_first() {
+        // Sprint 22 Stage 1: the guard records goja-call target tokens to the
+        // per-session state file (the "tried goja" signal), never blocking goja.
+        let script = build_guard_script("http://127.0.0.1:8890/mcp");
+        assert!(script.contains("mcp__goja*)"), "has a branch for goja tool calls");
+        assert!(
+            script.contains("query|typeName|symbol|newName|filePath"),
+            "extracts the target tokens from tool_input"
+        );
+        assert!(
+            script.contains("$goja_state_file"),
+            "appends the tokens to the per-session try-first state"
+        );
     }
 
     #[test]
