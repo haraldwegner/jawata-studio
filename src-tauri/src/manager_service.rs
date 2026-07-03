@@ -3801,6 +3801,13 @@ emit() {
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
   printf '%s\t%s\t%s\t%s\n' "$ts" "$(goja_ver)" "$1" "$2" >> "$log" 2>/dev/null
 }
+# v1.5.1: log a declared-fallback slip + steer. Callers gate this to a REAL .java-targeted
+# op, so a non-.java edit whose content merely contains the marker is not counted.
+emit_slip() {
+  reason="$(printf '%s' "$input" | sed -nE 's/.*[Gg][Oo][Jj][Aa]-[Ff][Aa][Ll][Ll][Bb][Aa][Cc][Kk]:[[:space:]]*([^"\\]*).*/\1/p' | head -n1 | sed -E 's/[[:space:]]*$//')"
+  emit "slip" "$tool_name	$reason"
+  printf '%s' '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"goja-fallback recorded. Next: verify with compile_workspace + get_diagnostics. A declared fallback is a GOJA feature request — if a newer GOJA version can do it, prefer GOJA next time."}}'
+}
 
 input="$(cat)"
 flat="$(printf '%s' "$input" | tr '\n' ' ')"
@@ -3826,12 +3833,23 @@ case "$tool_name" in
   *compile_workspace|*get_diagnostics|*run_tests|*find_tests)
     emit "verify" "$tool_name"
     ;;
-  Bash|Grep|Edit|Write|MultiEdit)
-    if printf '%s' "$flat" | grep -qiE 'goja-fallback:'; then
-      reason="$(printf '%s' "$input" | sed -nE 's/.*[Gg][Oo][Jj][Aa]-[Ff][Aa][Ll][Ll][Bb][Aa][Cc][Kk]:[[:space:]]*([^"\\]*).*/\1/p' | head -n1 | sed -E 's/[[:space:]]*$//')"
-      emit "slip" "$tool_name	$reason"
-      printf '%s' '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"goja-fallback recorded. Next: verify with compile_workspace + get_diagnostics. A declared fallback is a GOJA feature request — if a newer GOJA version can do it, prefer GOJA next time."}}'
-    fi
+  Edit|Write|MultiEdit)
+    # v1.5.1: a slip counts only for a .java edit the PRE edit-gate allowed via the marker —
+    # a non-.java edit whose CONTENT merely contains 'goja-fallback:' is not a gated op.
+    ef="$(printf '%s' "$flat" | grep -oE '"file_path"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed -E 's/.*"([^"]*)"$/\1/')"
+    case "$ef" in
+      *.java) printf '%s' "$flat" | grep -qiE 'goja-fallback:' && emit_slip ;;
+    esac
+    ;;
+  Bash|Grep)
+    # v1.5.1: a slip counts only for a Java symbol SEARCH the PRE search-gate allowed —
+    # require a content-search tool AND a .java target (the PRE dual-gate) plus the marker.
+    st=0
+    if [ "$tool_name" = "Grep" ]; then st=1
+    elif printf '%s' "$flat" | grep -qiE '(^|[^a-zA-Z])(grep|egrep|fgrep|rg|ripgrep|ag|ack)([^a-zA-Z]|$)'; then st=1; fi
+    if [ "$st" = "1" ] \
+       && printf '%s' "$flat" | grep -qiE '([A-Za-z0-9_$]\.java|\*\.java)' \
+       && printf '%s' "$flat" | grep -qiE 'goja-fallback:'; then emit_slip; fi
     ;;
 esac
 exit 0
@@ -4839,6 +4857,8 @@ mod tests {
         assert!(s.contains("emit \"verify\""), "captures verify events");
         assert!(s.contains("goja-fallback"), "keys the slip off the declared fallback");
         assert!(s.contains("additionalContext"), "steers after a slip");
+        assert!(s.contains("emit_slip"), "slip logging is factored so callers can gate it to real .java ops");
+        assert!(s.contains("not a gated op"), "v1.5.1: slip scoped to .java-targeted ops — no false slip on an incidental marker in edited content");
         assert!(s.trim_end().ends_with("exit 0"), "reactive — never blocks");
         assert_eq!(s, build_observer_script(), "deterministic (byte-stable re-deploy)");
     }
