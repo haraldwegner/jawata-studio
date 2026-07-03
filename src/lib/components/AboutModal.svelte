@@ -54,15 +54,21 @@
 
       <div class="about-section">
         <h3>License</h3>
-        <p>Released under the <strong>MIT License</strong>.</p>
+        <p>
+          Released under the
+          <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener noreferrer"><strong>GNU AGPL-3.0</strong></a>.
+        </p>
       </div>
 
       <div class="about-section">
         <h3>Credits & Acknowledgements</h3>
         <ul class="credits-list">
           <li>
-            <strong>goja-mcp</strong><br />
-            Explicit credit to <strong>P. Zalutski</strong> for the upstream GOJA MCP project.
+            <strong>goja-mcp</strong> (the analysis engine, downloaded separately)<br />
+            Builds on the <strong>MIT-licensed</strong> upstream
+            <a href="https://github.com/pzalutski-pixel/javalens-mcp" target="_blank" rel="noopener noreferrer">javalens-mcp</a>
+            by <strong>Peter&nbsp;Zalutski</strong>; the retained MIT notice ships in goja-mcp's
+            <code>NOTICE</code>.
           </li>
           <li>
             <strong>Open Source Dependencies</strong><br />

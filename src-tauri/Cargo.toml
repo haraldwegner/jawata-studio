@@ -1,7 +1,8 @@
 [package]
 name = "goja-studio"
-version = "1.2.1"
+version = "1.2.2"
 description = "Desktop manager for running GOJA MCP across multiple Java projects."
+license = "AGPL-3.0-only"
 edition = "2021"
 
 [lib]
