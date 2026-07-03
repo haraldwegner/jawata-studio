@@ -3359,7 +3359,12 @@ printf '%s' "$flat" | grep -qiE '([A-Za-z0-9_$]\.java|\*\.java)([^a-zA-Z]|$)' ||
 #     in the Bash command (e.g. a trailing comment). The Grep tool has no free field,
 #     so falling back means using Bash grep with the marker — deliberately.
 if printf '%s' "$flat" | grep -qiE 'goja-fallback:'; then
-  goja_reason="$(printf '%s' "$flat" | sed -n 's/.*goja-fallback:[[:space:]]*\(.*\)/\1/p' | head -c 200)"
+  # v1.3.1: capture ONLY the reason on the marker's own line. Read from the
+  # UN-flattened input (so other lines of a multi-line command can't bleed in),
+  # then trim at the first backslash (a JSON escape / \n) or double-quote (the JSON
+  # string close), strip trailing space, and cap. fallback.log is the audit trail
+  # (and training data for the intelligent-injector sprint), so keep it clean.
+  goja_reason="$(printf '%s' "$input" | sed -n 's/.*goja-fallback:[[:space:]]*//p' | head -n1 | sed 's/\\.*//' | sed 's/".*//' | sed 's/[[:space:]]*$//' | head -c 200)"
   goja_logdir="$HOME/.claude/goja-studio"
   mkdir -p "$goja_logdir" 2>/dev/null
   goja_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
@@ -4219,6 +4224,12 @@ mod tests {
         assert!(
             script.contains("fallback.log"),
             "logs declared fallbacks (auditable, not silent)"
+        );
+        // v1.3.1: the reason is captured from the UN-flattened input (marker's own
+        // line only), so a multi-line command's other lines can't bleed into the log.
+        assert!(
+            script.contains(r#"printf '%s' "$input" | sed -n 's/.*goja-fallback:"#),
+            "reason captured from un-flattened input (clean audit line)"
         );
         // The down-branch must point at the real escape, not the old false promise.
         assert!(
