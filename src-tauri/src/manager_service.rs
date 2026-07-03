@@ -3404,6 +3404,24 @@ session_id="$(printf '%s' "$flat" | sed -n 's/.*"session_id"[[:space:]]*:[[:spac
 goja_state_dir="$HOME/.claude/goja-studio/trygate"
 if [ -n "$session_id" ]; then goja_state_file="$goja_state_dir/$session_id"; else goja_state_file=""; fi
 
+# v1.5.1 (Sprint 22 refinement): AUTHORING permit. Adding NEW Java code is authoring,
+# not a refactor goja can express — and a text-level hook cannot reliably tell authoring
+# from restructuring (that judgment needs the AST; it is the intelligent-injector's job).
+# So the clean escape for a structured Edit/Write — with no marker polluting the source —
+# is a SEPARATE declaration: run a Bash command containing 'goja-author: <reason>' to open
+# a short, session-scoped authoring window; subsequent .java edits then pass and are logged.
+goja_editgate_dir="$HOME/.claude/goja-studio/editgate"
+if [ -n "$session_id" ]; then goja_editgate="$goja_editgate_dir/$session_id"; else goja_editgate=""; fi
+if [ "$tool_name" = "Bash" ] && printf '%s' "$flat" | grep -qiE 'goja-author:'; then
+  ar="$(printf '%s' "$input" | sed -n 's/.*goja-author:[[:space:]]*//p' | head -n1 | sed 's/\\.*//' | sed 's/".*//' | sed 's/[[:space:]]*$//' | head -c 200)"
+  if [ -n "$goja_editgate" ]; then
+    mkdir -p "$goja_editgate_dir" 2>/dev/null
+    printf '%s\t%s\n' "$(date +%s 2>/dev/null)" "$ar" > "$goja_editgate" 2>/dev/null
+  fi
+  goja_log_fallback "authoring-window: $ar"
+  exit 0
+fi
+
 # The matcher fires for Bash|Grep (search gate), Edit|Write|MultiEdit (edit
 # enforcement — Stage 3) and mcp__goja* (goja-call logging — Stage 1). Stage 0 wires
 # the state above and still routes only search to the gates below; the other tools
@@ -3437,6 +3455,16 @@ case "$tool_name" in
       goja_log_fallback "$er"
       exit 0
     fi
+    # v1.5.1: a fresh AUTHORING window (declared via a 'goja-author:' Bash command this
+    # session) covers structured .java edits — authoring new code is not a refactor. The
+    # window is TTL-bounded (30 min); each covered edit is logged so the trail stays complete.
+    if [ -n "$goja_editgate" ] && [ -f "$goja_editgate" ]; then
+      pts="$(cut -f1 "$goja_editgate" 2>/dev/null)"; nows="$(date +%s 2>/dev/null)"
+      if [ -n "$pts" ] && [ -n "$nows" ] && [ "$((nows - pts))" -lt 1800 ]; then
+        goja_log_fallback "authored-edit ($edit_path)"
+        exit 0
+      fi
+    fi
     # GOJA down → its refactor tools are unreachable → allow the hand-edit.
     goja_up=0
     if command -v curl >/dev/null 2>&1; then curl -s -o /dev/null --max-time 1 "$HEALTH_URL" && goja_up=1
@@ -3450,6 +3478,7 @@ case "$tool_name" in
       echo "Rename → rename_symbol (updates ALL references). Move → move / move_in_hierarchy."
       echo "Extract method/variable/constant/superclass → extract. Duplicate a class → generate(kind=copy_class)."
       echo "Any structural change → refactoring(action=plan) then apply_plan (parity-gated, reversible)."
+      echo "Authoring NEW code (not a refactor)? Declare a window: run a Bash command with 'goja-author: <reason>', then edit (session-scoped, logged)."
       echo "If this is a genuinely non-structural edit GOJA cannot do, re-run with 'goja-fallback: <why>' (declared + logged)."
     }} 1>&2
     exit 2 ;;
@@ -4433,6 +4462,25 @@ mod tests {
         assert!(
             script.contains("goja_log_fallback") && script.contains("tools/goja/current"),
             "the fallback log is versioned by the deployed engine version"
+        );
+    }
+
+    #[test]
+    fn guard_authoring_window_permits_java_edits() {
+        // v1.5.1 (Sprint 22 refinement): a 'goja-author:' Bash declaration opens a
+        // session-scoped, TTL-bounded window during which .java edits pass + are logged —
+        // the clean escape for authoring NEW code (not a refactor), no marker in the source.
+        let script = build_guard_script("http://127.0.0.1:8890/mcp");
+        assert!(script.contains("goja-author:"), "recognizes the authoring declaration");
+        assert!(script.contains("editgate"), "keeps a per-session authoring-window state");
+        assert!(
+            script.contains("authoring-window:") && script.contains("authored-edit"),
+            "logs the declaration and each covered edit to the versioned fallback log"
+        );
+        assert!(script.contains("1800"), "the authoring window is TTL-bounded, not a permanent bypass");
+        assert!(
+            script.contains("Authoring NEW code"),
+            "the block message points the agent at the authoring window"
         );
     }
 
