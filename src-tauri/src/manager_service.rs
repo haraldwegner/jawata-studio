@@ -3326,7 +3326,17 @@ flat="$(printf '%s' "$input" | tr '\n\r' '  ')"
 
 tool_name="$(printf '%s' "$flat" | sed -n 's/.*"tool_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
 
-# Only Bash and Grep are matched in settings.json, but guard defensively.
+# v1.4.0 (Sprint 22): per-session "try-first" state, keyed by the hook stdin
+# session_id. Later stages log goja calls here and consult it to gate grep. Derived
+# once. An empty session_id (older clients) leaves the file empty → gates degrade open.
+session_id="$(printf '%s' "$flat" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+goja_state_dir="$HOME/.claude/goja-studio/trygate"
+if [ -n "$session_id" ]; then goja_state_file="$goja_state_dir/$session_id"; else goja_state_file=""; fi
+
+# The matcher fires for Bash|Grep (search gate), Edit|Write|MultiEdit (edit
+# enforcement — Stage 3) and mcp__goja* (goja-call logging — Stage 1). Stage 0 wires
+# the state above and still routes only search to the gates below; the other tools
+# pass through until their stages add branches.
 case "$tool_name" in
   Bash|Grep) ;;
   *) exit 0 ;;
@@ -3410,12 +3420,14 @@ fi
     )
 }
 
-/// The single `PreToolUse` matcher entry that invokes the guard for `Bash` and
-/// `Grep`. Kept minimal + deterministic so the settings.json write is idempotent.
+/// The single `PreToolUse` matcher entry that invokes the guard. Matchers are
+/// unanchored regex: `Bash|Grep` (search gate), `Edit|Write|MultiEdit` (edit
+/// enforcement), and `mcp__goja.*` (goja-call logging for the try-first gate).
+/// Kept deterministic so the settings.json write is idempotent.
 fn build_managed_hook_entry(guard_path: &Path) -> serde_json::Value {
     let command = display_path(guard_path);
     serde_json::json!({
-        "matcher": "Bash|Grep",
+        "matcher": "Bash|Grep|Edit|Write|MultiEdit|mcp__goja.*",
         "hooks": [
             { "type": "command", "command": command }
         ]
@@ -4237,6 +4249,12 @@ mod tests {
             "the false 're-run' promise is gone"
         );
 
+        // v1.4.0 (Sprint 22): per-session try-first state keyed by session_id.
+        assert!(
+            script.contains(r#""session_id""#) && script.contains("trygate"),
+            "derives the per-session try-first state path from the hook session_id"
+        );
+
         // Deterministic → byte-stable re-deploy.
         assert_eq!(script, build_guard_script("http://127.0.0.1:8890/mcp"));
     }
@@ -4245,7 +4263,10 @@ mod tests {
     fn managed_hook_entry_shape() {
         let guard = PathBuf::from("/home/u/.claude/goja-studio/pretooluse-guard.sh");
         let entry = build_managed_hook_entry(&guard);
-        assert_eq!(entry["matcher"], "Bash|Grep", "matches only the text-search tools");
+        assert_eq!(
+            entry["matcher"], "Bash|Grep|Edit|Write|MultiEdit|mcp__goja.*",
+            "fires for search (Bash|Grep), edits (Edit|Write|MultiEdit) and goja calls (mcp__goja.*)"
+        );
         let cmd = entry["hooks"][0]["command"].as_str().unwrap();
         assert!(cmd.contains(GOJA_HOOK_SENTINEL), "command references the managed guard");
         assert_eq!(entry["hooks"][0]["type"], "command");
