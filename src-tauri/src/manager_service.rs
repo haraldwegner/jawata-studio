@@ -1606,6 +1606,17 @@ impl ManagerService {
                 }
             }
 
+            // Sprint 22 (POST layer): strip the PostToolUse observer too.
+            if let (Some(settings_path), Some(observer_path)) =
+                (derive_hook_settings_path(client), managed_observer_script_path())
+            {
+                match remove_managed_posthook(&settings_path, &observer_path, backup_before_write) {
+                    Ok(true) => changed_sections.push("posthook".into()),
+                    Ok(false) => {}
+                    Err(error) => errors.push(error),
+                }
+            }
+
             if !errors.is_empty() {
                 return DeployClientResult {
                     client: client.to_string(),
@@ -1717,6 +1728,23 @@ impl ManagerService {
                 matches!(mode, DeployMode::Regenerate),
             ) {
                 Ok(true) => changed_sections.push("hook".into()),
+                Ok(false) => {}
+                Err(error) => errors.push(error),
+            }
+        }
+
+        // Sprint 22 (POST layer): write the PostToolUse observer (Claude Code only) —
+        // the reactive steer-after-slip + versioned outcomes/utilization capture.
+        if let (Some(settings_path), Some(observer_path)) =
+            (derive_hook_settings_path(client), managed_observer_script_path())
+        {
+            match write_managed_posthook(
+                &settings_path,
+                &observer_path,
+                backup_before_write,
+                matches!(mode, DeployMode::Regenerate),
+            ) {
+                Ok(true) => changed_sections.push("posthook".into()),
                 Ok(false) => {}
                 Err(error) => errors.push(error),
             }
@@ -3298,6 +3326,9 @@ fn latest_backup_path(_path: &str) -> Option<String> {
 /// exactly our `PreToolUse` entries without disturbing user-authored hooks.
 const GOJA_HOOK_SENTINEL: &str = "goja-studio/pretooluse-guard.sh";
 
+/// Sprint 22 (POST layer): sentinel for the managed PostToolUse observer entry.
+const GOJA_POSTHOOK_SENTINEL: &str = "goja-studio/posttooluse-observer.sh";
+
 /// The client whose settings file receives the enforcement hook. Claude Code only:
 /// its `~/.claude/settings.json` hook schema is the one we target; Cursor/
 /// Antigravity have no equivalent, so they keep the rule block (level 2) alone.
@@ -3318,6 +3349,16 @@ fn managed_guard_script_path() -> Option<PathBuf> {
         home.join(".claude")
             .join("goja-studio")
             .join("pretooluse-guard.sh"),
+    )
+}
+
+/// Absolute path of the managed PostToolUse observer script (sibling of the guard).
+fn managed_observer_script_path() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(
+        home.join(".claude")
+            .join("goja-studio")
+            .join("posttooluse-observer.sh"),
     )
 }
 
@@ -3706,6 +3747,248 @@ fn remove_managed_hook(
         changed = true;
     }
 
+    Ok(changed)
+}
+
+/// Sprint 22 (POST layer): the PostToolUse observer. Reactive — PostToolUse cannot
+/// block — it appends three signals to `~/.claude/goja-studio/outcomes.log` (the
+/// scoring substrate) and steers after a declared-fallback slip. Deterministic so a
+/// re-deploy is a byte-stable no-op.
+fn build_observer_script() -> String {
+    r#"#!/usr/bin/env bash
+# <goja-studio managed PostToolUse observer — do not edit; overwritten on deploy>
+# Reactive, never blocks. Appends three POST signals to a versioned outcomes log:
+#   slip            a declared goja-fallback the PRE guard allowed (+ a steering note)
+#   read-ungrounded a Read of a .java file not preceded by a GOJA lookup this session
+#   verify          a compile/diagnostics/test event (correlates a preceding change)
+dir="$HOME/.claude/goja-studio"; mkdir -p "$dir" 2>/dev/null
+log="$dir/outcomes.log"
+
+goja_ver() {
+  ls -1d "${XDG_CACHE_HOME:-$HOME/.cache}/goja-studio/tools/goja/current"/goja-* 2>/dev/null \
+    | head -n1 | sed 's#.*/goja-##'
+}
+emit() {
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  printf '%s\t%s\t%s\t%s\n' "$ts" "$(goja_ver)" "$1" "$2" >> "$log" 2>/dev/null
+}
+
+input="$(cat)"
+flat="$(printf '%s' "$input" | tr '\n' ' ')"
+tool_name="$(printf '%s' "$flat" | grep -oE '"tool_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed -E 's/.*"([^"]*)"$/\1/')"
+session_id="$(printf '%s' "$flat" | grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed -E 's/.*"([^"]*)"$/\1/')"
+state="$dir/trygate/$session_id"
+
+case "$tool_name" in
+  Read)
+    f="$(printf '%s' "$flat" | grep -oE '"file_path"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed -E 's/.*"([^"]*)"$/\1/')"
+    case "$f" in
+      *.java)
+        base="$(printf '%s' "$f" | sed -E 's#.*/##; s#\.java$##' | tr '[:upper:]' '[:lower:]')"
+        grounded=0
+        if [ -s "$state" ] && [ -n "$base" ] \
+           && printf '%s' "$base" | grep -qiFf <(grep -E '^.{3,}$' "$state") 2>/dev/null; then
+          grounded=1
+        fi
+        [ "$grounded" -eq 0 ] && emit "read-ungrounded" "$f"
+        ;;
+    esac
+    ;;
+  *compile_workspace|*get_diagnostics|*run_tests|*find_tests)
+    emit "verify" "$tool_name"
+    ;;
+  Bash|Grep|Edit|Write|MultiEdit)
+    if printf '%s' "$flat" | grep -qiE 'goja-fallback:'; then
+      reason="$(printf '%s' "$input" | sed -nE 's/.*[Gg][Oo][Jj][Aa]-[Ff][Aa][Ll][Ll][Bb][Aa][Cc][Kk]:[[:space:]]*([^"\\]*).*/\1/p' | head -n1 | sed -E 's/[[:space:]]*$//')"
+      emit "slip" "$tool_name	$reason"
+      printf '%s' '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"goja-fallback recorded. Next: verify with compile_workspace + get_diagnostics. A declared fallback is a GOJA feature request — if a newer GOJA version can do it, prefer GOJA next time."}}'
+    fi
+    ;;
+esac
+exit 0
+"#
+    .to_string()
+}
+
+/// The single `PostToolUse` matcher entry that invokes the observer. Broad matcher:
+/// Read (ungrounded-read capture), the verify MCP tools, and search/edit tools (slip
+/// capture); the script no-ops on anything else.
+fn build_managed_posthook_entry(observer_path: &Path) -> serde_json::Value {
+    let command = display_path(observer_path);
+    serde_json::json!({
+        "matcher": "Bash|Grep|Edit|Write|MultiEdit|Read|mcp__goja.*",
+        "hooks": [
+            { "type": "command", "command": command }
+        ]
+    })
+}
+
+/// True iff a `PostToolUse` entry is one goja-studio wrote (its command references the
+/// managed observer script).
+fn is_managed_posthook_entry(entry: &serde_json::Value) -> bool {
+    entry
+        .get("hooks")
+        .and_then(|hooks| hooks.as_array())
+        .map(|hooks| {
+            hooks.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(|command| command.as_str())
+                    .map(|command| command.contains(GOJA_POSTHOOK_SENTINEL))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Write the observer script + register the managed `PostToolUse` entry, preserving
+/// user hooks. Mirror of `write_managed_hook`. Idempotent.
+fn write_managed_posthook(
+    settings_path: &str,
+    observer_path: &Path,
+    backup_before_write: bool,
+    force_rewrite: bool,
+) -> Result<bool, String> {
+    let script_parent = observer_path
+        .parent()
+        .ok_or_else(|| format!("observer path has no parent: {}", observer_path.display()))?;
+    fs::create_dir_all(script_parent).map_err(|error| {
+        format!("failed to create observer dir {}: {error}", script_parent.display())
+    })?;
+    let script_body = build_observer_script();
+    let script_changed = fs::read_to_string(observer_path)
+        .map(|existing| existing != script_body)
+        .unwrap_or(true);
+    if script_changed || force_rewrite {
+        fs::write(observer_path, &script_body).map_err(|error| {
+            format!("failed writing observer script {}: {error}", observer_path.display())
+        })?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(observer_path, fs::Permissions::from_mode(0o755));
+    }
+
+    let settings_buf = PathBuf::from(settings_path);
+    let settings_parent = settings_buf
+        .parent()
+        .ok_or_else(|| format!("settings path has no parent: {}", settings_buf.display()))?;
+    fs::create_dir_all(settings_parent).map_err(|error| {
+        format!("failed to create settings dir {}: {error}", settings_parent.display())
+    })?;
+
+    let existing_contents = fs::read_to_string(&settings_buf).ok();
+    let mut root = existing_contents
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !root.is_object() {
+        root = serde_json::json!({});
+    }
+
+    {
+        let object = root.as_object_mut().expect("root is an object");
+        let hooks = object.entry("hooks").or_insert_with(|| serde_json::json!({}));
+        if !hooks.is_object() {
+            *hooks = serde_json::json!({});
+        }
+        let hooks_object = hooks.as_object_mut().expect("hooks is an object");
+        let mut post = hooks_object
+            .get("PostToolUse")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        post.retain(|entry| !is_managed_posthook_entry(entry));
+        post.push(build_managed_posthook_entry(observer_path));
+        hooks_object.insert("PostToolUse".into(), serde_json::Value::Array(post));
+    }
+
+    let next_json = serde_json::to_string_pretty(&root)
+        .map_err(|error| format!("failed serializing settings json: {error}"))?;
+
+    if !force_rewrite {
+        if let Some(existing) = existing_contents.as_deref() {
+            if existing.trim() == next_json.trim() && !script_changed {
+                return Ok(false);
+            }
+        }
+    }
+
+    if backup_before_write && settings_buf.exists() {
+        let backup_path = format!(
+            "{settings_path}.bak-{}",
+            crate::config::current_timestamp_string()
+        );
+        fs::copy(&settings_buf, &backup_path).map_err(|error| {
+            format!(
+                "failed creating settings backup {} from {}: {error}",
+                backup_path,
+                settings_buf.display()
+            )
+        })?;
+    }
+    fs::write(&settings_buf, format!("{next_json}\n")).map_err(|error| {
+        format!("failed writing settings {}: {error}", settings_buf.display())
+    })?;
+    Ok(true)
+}
+
+/// Remove the managed `PostToolUse` entry + delete the observer script. Mirror of
+/// `remove_managed_hook`. Prunes now-empty containers.
+fn remove_managed_posthook(
+    settings_path: &str,
+    observer_path: &Path,
+    backup_before_write: bool,
+) -> Result<bool, String> {
+    let mut changed = false;
+    let settings_buf = PathBuf::from(settings_path);
+    if settings_buf.exists() {
+        let existing = fs::read_to_string(&settings_buf).map_err(|error| {
+            format!("failed to read settings {}: {error}", settings_buf.display())
+        })?;
+        if let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&existing) {
+            let mut removed_any = false;
+            if let Some(hooks) = root
+                .as_object_mut()
+                .and_then(|object| object.get_mut("hooks"))
+                .and_then(|hooks| hooks.as_object_mut())
+            {
+                if let Some(post) = hooks.get_mut("PostToolUse").and_then(|v| v.as_array_mut()) {
+                    let before = post.len();
+                    post.retain(|entry| !is_managed_posthook_entry(entry));
+                    removed_any = post.len() != before;
+                    if post.is_empty() {
+                        hooks.remove("PostToolUse");
+                    }
+                }
+                let hooks_empty = hooks.is_empty();
+                if hooks_empty {
+                    root.as_object_mut().map(|object| object.remove("hooks"));
+                }
+            }
+            if removed_any {
+                let next_json = serde_json::to_string_pretty(&root)
+                    .map_err(|error| format!("failed serializing settings json: {error}"))?;
+                if backup_before_write {
+                    let backup_path = format!(
+                        "{settings_path}.bak-{}",
+                        crate::config::current_timestamp_string()
+                    );
+                    let _ = fs::copy(&settings_buf, &backup_path);
+                }
+                fs::write(&settings_buf, format!("{next_json}\n")).map_err(|error| {
+                    format!("failed writing settings {}: {error}", settings_buf.display())
+                })?;
+                changed = true;
+            }
+        }
+    }
+    if observer_path.exists() {
+        fs::remove_file(observer_path).map_err(|error| {
+            format!("failed removing observer script {}: {error}", observer_path.display())
+        })?;
+        changed = true;
+    }
     Ok(changed)
 }
 
@@ -4477,6 +4760,86 @@ mod tests {
         assert_eq!(pre2.len(), 1, "only the user entry remains");
         assert!(!pre2.iter().any(is_managed_hook_entry));
         assert_eq!(v2["model"], "opus");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn managed_posthook_entry_shape() {
+        let observer = PathBuf::from("/home/u/.claude/goja-studio/posttooluse-observer.sh");
+        let entry = build_managed_posthook_entry(&observer);
+        assert_eq!(
+            entry["matcher"], "Bash|Grep|Edit|Write|MultiEdit|Read|mcp__goja.*",
+            "fires for Read (ungrounded capture), verify MCP tools, and search/edit slips"
+        );
+        let cmd = entry["hooks"][0]["command"].as_str().unwrap();
+        assert!(cmd.contains(GOJA_POSTHOOK_SENTINEL), "command references the managed observer");
+        assert!(is_managed_posthook_entry(&entry), "our own entry is recognised as managed");
+        let user = serde_json::json!({
+            "matcher": "Bash",
+            "hooks": [{ "type": "command", "command": "echo hi" }]
+        });
+        assert!(!is_managed_posthook_entry(&user), "a user PostToolUse entry is not managed");
+    }
+
+    #[test]
+    fn observer_script_captures_the_three_signals() {
+        let s = build_observer_script();
+        assert!(s.contains("outcomes.log"), "appends to the versioned outcomes log");
+        assert!(s.contains("read-ungrounded"), "captures ungrounded .java reads");
+        assert!(s.contains("emit \"slip\""), "captures declared-fallback slips");
+        assert!(s.contains("emit \"verify\""), "captures verify events");
+        assert!(s.contains("goja-fallback"), "keys the slip off the declared fallback");
+        assert!(s.contains("additionalContext"), "steers after a slip");
+        assert!(s.trim_end().ends_with("exit 0"), "reactive — never blocks");
+        assert_eq!(s, build_observer_script(), "deterministic (byte-stable re-deploy)");
+    }
+
+    #[test]
+    fn managed_posthook_write_remove_roundtrip_preserves_user_hooks() {
+        let dir = unique_tempdir("posthook");
+        let settings = dir.join(".claude").join("settings.json");
+        let settings_path = settings.to_string_lossy().to_string();
+        let observer = dir
+            .join(".claude")
+            .join("goja-studio")
+            .join("posttooluse-observer.sh");
+
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(
+            &settings,
+            r#"{"model":"opus","hooks":{"PostToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"echo user-post"}]}]}}"#,
+        )
+        .unwrap();
+
+        // (1) WRITE: entry added, observer written, user content preserved.
+        assert!(write_managed_posthook(&settings_path, &observer, false, false).unwrap());
+        assert!(observer.exists(), "observer script written");
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(v["model"], "opus", "unrelated setting preserved");
+        let post = v["hooks"]["PostToolUse"].as_array().unwrap();
+        assert_eq!(post.len(), 2, "user entry + managed entry");
+        assert!(post.iter().any(is_managed_posthook_entry), "managed entry present");
+        assert!(
+            post.iter().any(|e| e["hooks"][0]["command"] == "echo user-post"),
+            "user entry preserved"
+        );
+
+        // (2) IDEMPOTENT: unchanged re-deploy is a no-op.
+        assert!(
+            !write_managed_posthook(&settings_path, &observer, false, false).unwrap(),
+            "re-deploy is a no-op"
+        );
+
+        // (3) REMOVE: managed entry + observer gone, user entry kept.
+        assert!(remove_managed_posthook(&settings_path, &observer, false).unwrap());
+        assert!(!observer.exists(), "observer deleted");
+        let v2: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        let post2 = v2["hooks"]["PostToolUse"].as_array().unwrap();
+        assert_eq!(post2.len(), 1, "only the user entry remains");
+        assert!(!post2.iter().any(is_managed_posthook_entry));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
