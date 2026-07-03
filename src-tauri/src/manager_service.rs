@@ -3332,11 +3332,23 @@ fn build_guard_script(health_url: &str) -> String {
 # Redirects Java SYMBOL SEARCH (grep/rg over *.java files, or the Grep tool aimed
 # at Java) to GOJA's compiler-accurate tools. Health-gated: a different
 # message when GOJA is up (use the tool) vs down (start it, or grep on purpose).
-# Non-Java calls and file edits pass through untouched. Exit 2 blocks + tells the
-# model why; exit 0 lets the call run.
+# Non-Java calls pass through untouched; a Java hand-edit is redirected to goja
+# refactor tools (Sprint 22). Exit 2 blocks + tells the model why; exit 0 lets it run.
 set -u
 
 HEALTH_URL="{health_url}"
+
+# Append a DECLARED fallback to the audit log, stamped with the deployed goja engine
+# version (derived from the install path). A "goja vX can't do Y" entry is then a
+# versioned signal — scoring substrate + feature backlog. Rare (only on an explicit
+# fallback), so the version lookup cost is paid only then.
+goja_log_fallback() {{
+  ver="$(ls -1d "${{XDG_CACHE_HOME:-$HOME/.cache}}/goja-studio/tools/goja/current"/goja-* 2>/dev/null | head -n1 | sed 's#.*/goja-##')"
+  [ -n "$ver" ] || ver="unknown"
+  dir="$HOME/.claude/goja-studio"; mkdir -p "$dir" 2>/dev/null
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  printf '%s\t%s\tdeclared-fallback\t%s\n' "$ts" "$ver" "$1" >> "$dir/fallback.log" 2>/dev/null
+}}
 
 input="$(cat)"
 # One flattened line so the crude extractors below never span a newline.
@@ -3370,6 +3382,36 @@ case "$tool_name" in
         >> "$goja_state_file" 2>/dev/null
     fi
     exit 0 ;;
+  Edit|Write|MultiEdit)
+    # v1.4.0 (Sprint 22) EDIT ENFORCEMENT: a hand-edit of a .java file must go through a
+    # goja refactor tool, or be justified. Non-.java, brand-new files, and goja-down pass.
+    edit_path="$(printf '%s' "$flat" | sed -n 's/.*"file_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+    case "$edit_path" in
+      *.java) ;;
+      *) exit 0 ;;
+    esac
+    # Declared fallback → proceed + log (versioned).
+    if printf '%s' "$flat" | grep -qiE 'goja-fallback:'; then
+      er="$(printf '%s' "$input" | sed -n 's/.*goja-fallback:[[:space:]]*//p' | head -n1 | sed 's/\\.*//' | sed 's/".*//' | sed 's/[[:space:]]*$//' | head -c 200)"
+      goja_log_fallback "$er"
+      exit 0
+    fi
+    # GOJA down → its refactor tools are unreachable → allow the hand-edit.
+    goja_up=0
+    if command -v curl >/dev/null 2>&1; then curl -s -o /dev/null --max-time 1 "$HEALTH_URL" && goja_up=1
+    elif command -v wget >/dev/null 2>&1; then wget -q -O /dev/null --timeout=1 "$HEALTH_URL" && goja_up=1
+    else hp="$(printf '%s' "$HEALTH_URL" | sed -E 's#^https?://([^/]+).*#\1#')"; h="${{hp%%:*}}"; p="${{hp##*:}}"; [ "$p" = "$hp" ] && p=80; (exec 3<>"/dev/tcp/$h/$p") >/dev/null 2>&1 && goja_up=1; fi
+    [ "$goja_up" -eq 1 ] || exit 0
+    # Brand-new file (Write to a non-existent path) → nothing to refactor → allow.
+    if [ "$tool_name" = "Write" ] && [ ! -e "$edit_path" ]; then exit 0; fi
+    {{
+      echo "USE A GOJA REFACTOR TOOL — hand-editing $edit_path (a .java file) is blocked."
+      echo "Rename → rename_symbol (updates ALL references). Move → move / move_in_hierarchy."
+      echo "Extract method/variable/constant/superclass → extract. Duplicate a class → generate(kind=copy_class)."
+      echo "Any structural change → refactoring(action=plan) then apply_plan (parity-gated, reversible)."
+      echo "If this is a genuinely non-structural edit GOJA cannot do, re-run with 'goja-fallback: <why>' (declared + logged)."
+    }} 1>&2
+    exit 2 ;;
   Bash|Grep) ;;
   *) exit 0 ;;
 esac
@@ -3407,10 +3449,7 @@ if printf '%s' "$flat" | grep -qiE 'goja-fallback:'; then
   # string close), strip trailing space, and cap. fallback.log is the audit trail
   # (and training data for the intelligent-injector sprint), so keep it clean.
   goja_reason="$(printf '%s' "$input" | sed -n 's/.*goja-fallback:[[:space:]]*//p' | head -n1 | sed 's/\\.*//' | sed 's/".*//' | sed 's/[[:space:]]*$//' | head -c 200)"
-  goja_logdir="$HOME/.claude/goja-studio"
-  mkdir -p "$goja_logdir" 2>/dev/null
-  goja_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
-  printf '%s\tdeclared-fallback\t%s\n' "$goja_ts" "$goja_reason" >> "$goja_logdir/fallback.log" 2>/dev/null
+  goja_log_fallback "$goja_reason"
   exit 0
 fi
 
@@ -4091,6 +4130,26 @@ mod tests {
         assert!(
             script.contains("TRY-FIRST gate"),
             "the search gate consults the try-first state before blocking"
+        );
+    }
+
+    #[test]
+    fn guard_enforces_java_edits() {
+        // Sprint 22 Stage 3: a hand-edit of a .java file is blocked → refactor tool
+        // or justify; the fallback log is stamped with the deployed engine version.
+        let script = build_guard_script("http://127.0.0.1:8890/mcp");
+        assert!(script.contains("Edit|Write|MultiEdit)"), "has the edit-enforcement branch");
+        assert!(
+            script.contains("USE A GOJA REFACTOR TOOL"),
+            "blocks a Java hand-edit with a refactor-tool redirect"
+        );
+        assert!(
+            script.contains("rename_symbol") && script.contains("refactoring(action=plan)"),
+            "names the refactor tools"
+        );
+        assert!(
+            script.contains("goja_log_fallback") && script.contains("tools/goja/current"),
+            "the fallback log is versioned by the deployed engine version"
         );
     }
 
