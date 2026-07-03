@@ -52,6 +52,9 @@ The installer pulls the right artifact for your CPU automatically. To update, re
   session, or you declare `goja-fallback: <why>` (logged, versioned). Advertising the tools wasn't
   enough; the hook makes *not* using them the inconvenient path. Health-gated (engine down → **ask,
   don't silently degrade**); non-Java work is left untouched.
+- **Learns from what happens next.** A companion `PostToolUse` observer (never blocks) records
+  declared fallbacks, ungrounded `.java` reads, and compile/test outcomes into a versioned log — the
+  signal for sharpening the guidance over time, and GOJA's own feature backlog.
 - **Auto-managed engine.** Polls for new GOJA releases and downloads the matching runtime; the jar
   path stays stable across updates.
 - **Lives in the tray.** A system-tray menu drives per-workspace start/stop without opening the
