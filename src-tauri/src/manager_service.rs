@@ -3352,6 +3352,21 @@ fi
 #     mentions such as ".java" inside a build file, a log, or this guard's own text.
 printf '%s' "$flat" | grep -qiE '([A-Za-z0-9_$]\.java|\*\.java)([^a-zA-Z]|$)' || exit 0
 
+# (3) v1.3.0 escape valve: a DECLARED fallback proceeds — and is logged. This turns
+#     a silent, lazy skip into an explicit, auditable decision (the friction that
+#     defeats laziness). Works whether GOJA is up or down: the agent asserts goja
+#     cannot or need not answer THIS search. Grammar: put 'goja-fallback: <reason>'
+#     in the Bash command (e.g. a trailing comment). The Grep tool has no free field,
+#     so falling back means using Bash grep with the marker — deliberately.
+if printf '%s' "$flat" | grep -qiE 'goja-fallback:'; then
+  goja_reason="$(printf '%s' "$flat" | sed -n 's/.*goja-fallback:[[:space:]]*\(.*\)/\1/p' | head -c 200)"
+  goja_logdir="$HOME/.claude/goja-studio"
+  mkdir -p "$goja_logdir" 2>/dev/null
+  goja_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  printf '%s\tdeclared-fallback\t%s\n' "$goja_ts" "$goja_reason" >> "$goja_logdir/fallback.log" 2>/dev/null
+  exit 0
+fi
+
 # GOJA liveness: any HTTP response on the gateway = up; connection refused = down.
 goja_up=0
 if command -v curl >/dev/null 2>&1; then
@@ -3372,6 +3387,7 @@ if [ "$goja_up" -eq 1 ]; then
     echo "For a symbol: search_symbols. Callers/usages: find_references."
     echo "Type shape/members/hierarchy: analyze / inspect. Jump: go_to_definition."
     echo "(GOJA is compiler-accurate; grep over .java misses/overmatches symbols.)"
+    echo "If this genuinely is NOT a symbol search, re-run with 'goja-fallback: <reason>' in the command to proceed (declared + logged)."
   }} 1>&2
   exit 2
 else
@@ -3379,7 +3395,7 @@ else
     echo "GOJA MCP appears to be DOWN (no response at $HEALTH_URL) and this is Java work."
     echo "Per the collaboration rules, do not silently grep Java semantics — decide first:"
     echo "  1) Start GOJA (open goja-studio and start the resident), then use search_symbols / find_references / analyze."
-    echo "  2) If you must proceed grep-degraded, say so explicitly and re-run — this guard only warns once GOJA is confirmed down."
+    echo "  2) Or proceed deliberately: re-run with 'goja-fallback: <reason>' in the command (e.g. a trailing comment) — declared + logged, not a silent skip."
     echo "Non-Java work is unaffected."
   }} 1>&2
   exit 2
@@ -4193,6 +4209,21 @@ mod tests {
         assert!(
             script.contains(r"[A-Za-z0-9_$]\.java|\*\.java"),
             "requires a .java file/glob target, not an incidental mention"
+        );
+
+        // v1.3.0 escape valve: a declared fallback proceeds and is logged.
+        assert!(
+            script.contains("goja-fallback:"),
+            "recognises the declared-fallback escape grammar"
+        );
+        assert!(
+            script.contains("fallback.log"),
+            "logs declared fallbacks (auditable, not silent)"
+        );
+        // The down-branch must point at the real escape, not the old false promise.
+        assert!(
+            !script.contains("this guard only warns once GOJA is confirmed down"),
+            "the false 're-run' promise is gone"
         );
 
         // Deterministic → byte-stable re-deploy.
