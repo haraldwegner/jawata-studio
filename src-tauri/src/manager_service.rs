@@ -1617,6 +1617,27 @@ impl ManagerService {
                 }
             }
 
+            // Sprint 21 (v2.0): strip the knowledge PUSH hooks (SessionStart primer +
+            // PreToolUse recall).
+            if let (Some(settings_path), Some(primer_path)) =
+                (derive_hook_settings_path(client), managed_primer_script_path())
+            {
+                match remove_managed_primer(&settings_path, &primer_path, backup_before_write) {
+                    Ok(true) => changed_sections.push("primer".into()),
+                    Ok(false) => {}
+                    Err(error) => errors.push(error),
+                }
+            }
+            if let (Some(settings_path), Some(recall_path)) =
+                (derive_hook_settings_path(client), managed_recall_script_path())
+            {
+                match remove_managed_recall(&settings_path, &recall_path, backup_before_write) {
+                    Ok(true) => changed_sections.push("recall".into()),
+                    Ok(false) => {}
+                    Err(error) => errors.push(error),
+                }
+            }
+
             if !errors.is_empty() {
                 return DeployClientResult {
                     client: client.to_string(),
@@ -1747,6 +1768,46 @@ impl ManagerService {
                 Ok(true) => changed_sections.push("posthook".into()),
                 Ok(false) => {}
                 Err(error) => errors.push(error),
+            }
+        }
+
+        // Sprint 21 (v2.0): write the knowledge PUSH hooks (Claude Code only) — the
+        // SessionStart domain primer + the PreToolUse cue-gated recall. Both bake the
+        // resident `/mcp` URL + Bearer token so they can live-call experience(...); they
+        // fail safe (goja down / empty / absence → inject nothing).
+        if let Some(server) = servers.first() {
+            let regenerate = matches!(mode, DeployMode::Regenerate);
+            if let (Some(settings_path), Some(primer_path)) =
+                (derive_hook_settings_path(client), managed_primer_script_path())
+            {
+                match write_managed_primer(
+                    &settings_path,
+                    &primer_path,
+                    &server.url,
+                    &server.token,
+                    backup_before_write,
+                    regenerate,
+                ) {
+                    Ok(true) => changed_sections.push("primer".into()),
+                    Ok(false) => {}
+                    Err(error) => errors.push(error),
+                }
+            }
+            if let (Some(settings_path), Some(recall_path)) =
+                (derive_hook_settings_path(client), managed_recall_script_path())
+            {
+                match write_managed_recall(
+                    &settings_path,
+                    &recall_path,
+                    &server.url,
+                    &server.token,
+                    backup_before_write,
+                    regenerate,
+                ) {
+                    Ok(true) => changed_sections.push("recall".into()),
+                    Ok(false) => {}
+                    Err(error) => errors.push(error),
+                }
             }
         }
 
@@ -4039,6 +4100,329 @@ fn remove_managed_posthook(
     Ok(changed)
 }
 
+// ===== Sprint 21 (v2.0): the knowledge PUSH hooks — SessionStart domain primer +
+// PreToolUse cue-gated recall. Both live-call experience(...) on the deployed GOJA
+// resident (Bearer token baked in like health_url), peel goja's FIXED MCP envelope
+// (POST /mcp returns the JSON-RPC result in the body — no handshake), and inject via
+// `additionalContext`. FAIL-SAFE by construction: goja down / empty / absence / any
+// parse miss → emit nothing, so the session/tool call proceeds unchanged. Rendering
+// lives in the mcp (`experience(..., format=text)`, reactor-tested + sanitized), so
+// these scripts only peel the fixed envelope and never parse variable tool structure. =====
+
+/// Sentinel for the managed SessionStart primer entry.
+const GOJA_PRIMER_SENTINEL: &str = "goja-studio/sessionstart-primer.sh";
+/// Sentinel for the managed PreToolUse recall entry (distinct from the guard's entry).
+const GOJA_RECALL_SENTINEL: &str = "goja-studio/pretooluse-recall.sh";
+
+/// Absolute path of the managed SessionStart primer script (sibling of the guard).
+fn managed_primer_script_path() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(
+        home.join(".claude")
+            .join("goja-studio")
+            .join("sessionstart-primer.sh"),
+    )
+}
+
+/// Absolute path of the managed PreToolUse recall script (sibling of the guard).
+fn managed_recall_script_path() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(
+        home.join(".claude")
+            .join("goja-studio")
+            .join("pretooluse-recall.sh"),
+    )
+}
+
+/// True iff a hook entry's command references the given managed sentinel.
+fn entry_command_contains(entry: &serde_json::Value, needle: &str) -> bool {
+    entry
+        .get("hooks")
+        .and_then(|hooks| hooks.as_array())
+        .map(|hooks| {
+            hooks.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(|command| command.as_str())
+                    .map(|command| command.contains(needle))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn is_managed_primer_entry(entry: &serde_json::Value) -> bool {
+    entry_command_contains(entry, GOJA_PRIMER_SENTINEL)
+}
+fn is_managed_recall_entry(entry: &serde_json::Value) -> bool {
+    entry_command_contains(entry, GOJA_RECALL_SENTINEL)
+}
+
+/// SessionStart entry: no matcher (fires on every session start).
+fn build_managed_primer_entry(primer_path: &Path) -> serde_json::Value {
+    serde_json::json!({
+        "hooks": [ { "type": "command", "command": display_path(primer_path) } ]
+    })
+}
+/// PreToolUse entry for recall: fires on goja tool calls (the script gates to refactor verbs).
+fn build_managed_recall_entry(recall_path: &Path) -> serde_json::Value {
+    serde_json::json!({
+        "matcher": "mcp__goja.*",
+        "hooks": [ { "type": "command", "command": display_path(recall_path) } ]
+    })
+}
+
+/// Generic: write a managed script + merge its entry into `hooks.<section>`, dropping any
+/// prior managed entry (by `is_managed`) and preserving user hooks. Idempotent. Shared by
+/// the primer (SessionStart) + recall (PreToolUse) without touching the guard/observer.
+#[allow(clippy::too_many_arguments)]
+fn write_managed_hook_section(
+    settings_path: &str,
+    script_path: &Path,
+    script_body: &str,
+    section: &str,
+    entry: serde_json::Value,
+    is_managed: fn(&serde_json::Value) -> bool,
+    backup_before_write: bool,
+    force_rewrite: bool,
+) -> Result<bool, String> {
+    let script_parent = script_path
+        .parent()
+        .ok_or_else(|| format!("script path has no parent: {}", script_path.display()))?;
+    fs::create_dir_all(script_parent)
+        .map_err(|error| format!("failed to create hook dir {}: {error}", script_parent.display()))?;
+    let script_changed = fs::read_to_string(script_path)
+        .map(|existing| existing != script_body)
+        .unwrap_or(true);
+    if script_changed || force_rewrite {
+        fs::write(script_path, script_body)
+            .map_err(|error| format!("failed writing hook script {}: {error}", script_path.display()))?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(script_path, fs::Permissions::from_mode(0o755));
+    }
+
+    let settings_buf = PathBuf::from(settings_path);
+    let settings_parent = settings_buf
+        .parent()
+        .ok_or_else(|| format!("settings path has no parent: {}", settings_buf.display()))?;
+    fs::create_dir_all(settings_parent)
+        .map_err(|error| format!("failed to create settings dir {}: {error}", settings_parent.display()))?;
+
+    let existing_contents = fs::read_to_string(&settings_buf).ok();
+    let mut root = existing_contents
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !root.is_object() {
+        root = serde_json::json!({});
+    }
+    {
+        let object = root.as_object_mut().expect("root is an object");
+        let hooks = object.entry("hooks").or_insert_with(|| serde_json::json!({}));
+        if !hooks.is_object() {
+            *hooks = serde_json::json!({});
+        }
+        let hooks_object = hooks.as_object_mut().expect("hooks is an object");
+        let mut arr = hooks_object
+            .get(section)
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        arr.retain(|entry| !is_managed(entry));
+        arr.push(entry);
+        hooks_object.insert(section.to_string(), serde_json::Value::Array(arr));
+    }
+
+    let next_json = serde_json::to_string_pretty(&root)
+        .map_err(|error| format!("failed serializing settings json: {error}"))?;
+    if !force_rewrite {
+        if let Some(existing) = existing_contents.as_deref() {
+            if existing.trim() == next_json.trim() && !script_changed {
+                return Ok(false);
+            }
+        }
+    }
+    if backup_before_write && settings_buf.exists() {
+        let backup_path = format!("{settings_path}.bak-{}", crate::config::current_timestamp_string());
+        fs::copy(&settings_buf, &backup_path)
+            .map_err(|error| format!("failed creating settings backup {backup_path}: {error}"))?;
+    }
+    fs::write(&settings_buf, format!("{next_json}\n"))
+        .map_err(|error| format!("failed writing settings {}: {error}", settings_buf.display()))?;
+    Ok(true)
+}
+
+/// Generic mirror of the section write: strip the managed entry + delete the script.
+fn remove_managed_hook_section(
+    settings_path: &str,
+    script_path: &Path,
+    section: &str,
+    is_managed: fn(&serde_json::Value) -> bool,
+    backup_before_write: bool,
+) -> Result<bool, String> {
+    let mut changed = false;
+    let settings_buf = PathBuf::from(settings_path);
+    if settings_buf.exists() {
+        let existing = fs::read_to_string(&settings_buf)
+            .map_err(|error| format!("failed to read settings {}: {error}", settings_buf.display()))?;
+        if let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&existing) {
+            let mut removed_any = false;
+            if let Some(hooks) = root
+                .as_object_mut()
+                .and_then(|object| object.get_mut("hooks"))
+                .and_then(|hooks| hooks.as_object_mut())
+            {
+                if let Some(arr) = hooks.get_mut(section).and_then(|v| v.as_array_mut()) {
+                    let before = arr.len();
+                    arr.retain(|entry| !is_managed(entry));
+                    removed_any = arr.len() != before;
+                    if arr.is_empty() {
+                        hooks.remove(section);
+                    }
+                }
+                if hooks.is_empty() {
+                    root.as_object_mut().map(|object| object.remove("hooks"));
+                }
+            }
+            if removed_any {
+                let next_json = serde_json::to_string_pretty(&root)
+                    .map_err(|error| format!("failed serializing settings json: {error}"))?;
+                if backup_before_write {
+                    let backup_path =
+                        format!("{settings_path}.bak-{}", crate::config::current_timestamp_string());
+                    let _ = fs::copy(&settings_buf, &backup_path);
+                }
+                fs::write(&settings_buf, format!("{next_json}\n"))
+                    .map_err(|error| format!("failed writing settings {}: {error}", settings_buf.display()))?;
+                changed = true;
+            }
+        }
+    }
+    if script_path.exists() {
+        fs::remove_file(script_path)
+            .map_err(|error| format!("failed removing hook script {}: {error}", script_path.display()))?;
+        changed = true;
+    }
+    Ok(changed)
+}
+
+fn write_managed_primer(
+    settings_path: &str,
+    primer_path: &Path,
+    mcp_url: &str,
+    token: &str,
+    backup_before_write: bool,
+    force_rewrite: bool,
+) -> Result<bool, String> {
+    write_managed_hook_section(
+        settings_path,
+        primer_path,
+        &build_primer_script(mcp_url, token),
+        "SessionStart",
+        build_managed_primer_entry(primer_path),
+        is_managed_primer_entry,
+        backup_before_write,
+        force_rewrite,
+    )
+}
+fn remove_managed_primer(settings_path: &str, primer_path: &Path, backup_before_write: bool) -> Result<bool, String> {
+    remove_managed_hook_section(settings_path, primer_path, "SessionStart", is_managed_primer_entry, backup_before_write)
+}
+fn write_managed_recall(
+    settings_path: &str,
+    recall_path: &Path,
+    mcp_url: &str,
+    token: &str,
+    backup_before_write: bool,
+    force_rewrite: bool,
+) -> Result<bool, String> {
+    write_managed_hook_section(
+        settings_path,
+        recall_path,
+        &build_recall_script(mcp_url, token),
+        "PreToolUse",
+        build_managed_recall_entry(recall_path),
+        is_managed_recall_entry,
+        backup_before_write,
+        force_rewrite,
+    )
+}
+fn remove_managed_recall(settings_path: &str, recall_path: &Path, backup_before_write: bool) -> Result<bool, String> {
+    remove_managed_hook_section(settings_path, recall_path, "PreToolUse", is_managed_recall_entry, backup_before_write)
+}
+
+/// The SessionStart primer script (URL + Bearer token baked in). Deterministic → a
+/// re-deploy is a byte-stable no-op. Uses `.replace()` templating (not `format!`) so the
+/// JSON-heavy body needs no brace-doubling.
+fn build_primer_script(mcp_url: &str, token: &str) -> String {
+    PRIMER_TEMPLATE.replace("__MCP_URL__", mcp_url).replace("__TOKEN__", token)
+}
+/// The PreToolUse recall script (URL + Bearer token baked in). Same peel; gated to
+/// refactor-ish goja verbs with a symbol cue.
+fn build_recall_script(mcp_url: &str, token: &str) -> String {
+    RECALL_TEMPLATE.replace("__MCP_URL__", mcp_url).replace("__TOKEN__", token)
+}
+
+const PRIMER_TEMPLATE: &str = r#"#!/usr/bin/env bash
+# <goja-studio managed SessionStart primer — do not edit; overwritten on deploy>
+# Injects the DOMAIN-layer knowledge primer at session start (the always-on half of the
+# knowledge push channel). Live-calls experience(kind=primer, format=text), peels goja's
+# fixed MCP envelope, emits the lines as SessionStart context. FAIL-SAFE: goja down /
+# empty / absence / any parse miss -> emit nothing; the session proceeds unchanged.
+set -u
+MCP_URL="__MCP_URL__"
+TOKEN="__TOKEN__"
+command -v curl >/dev/null 2>&1 || exit 0
+req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"primer","format":"text","limit":12}}}'
+resp="$(curl -s --max-time 3 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$req" "$MCP_URL" 2>/dev/null)"
+[ -n "$resp" ] || exit 0
+flat="$(printf '%s' "$resp" | tr -d '\n\r')"
+# Peel content[0].text (un-escape one JSON level) -> the ToolResponse JSON.
+inner="$(printf '%s' "$flat" | sed -n 's/.*"text"[[:space:]]*:[[:space:]]*"\(.*\)"[[:space:]]*}[[:space:]]*][[:space:]]*}[[:space:]]*}.*/\1/p' | sed 's/\\"/"/g; s/\\\\/\\/g')"
+[ -n "$inner" ] || exit 0
+printf '%s' "$inner" | grep -q '"success"[[:space:]]*:[[:space:]]*true' || exit 0
+# Pull the data string (flat primer lines; \n stays escaped, valid in the output JSON).
+data="$(printf '%s' "$inner" | sed -n 's/.*"data"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p')"
+[ -n "$data" ] || exit 0
+case "$data" in No\ domain\ knowledge*) exit 0 ;; esac
+printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"GOJA domain primer (what this codebase is about):\n%s"}}' "$data"
+exit 0
+"#;
+
+const RECALL_TEMPLATE: &str = r#"#!/usr/bin/env bash
+# <goja-studio managed PreToolUse recall — do not edit; overwritten on deploy>
+# Before a GOJA refactor, injects the terminal recall for the target symbol (prior
+# hazards / lessons / failure modes), or stays silent on absence. Never blocks (exit 0).
+# FAIL-SAFE: goja down / no cue / absence / any parse miss -> emit nothing.
+set -u
+MCP_URL="__MCP_URL__"
+TOKEN="__TOKEN__"
+command -v curl >/dev/null 2>&1 || exit 0
+input="$(cat)"
+flatin="$(printf '%s' "$input" | tr '\n\r' '  ')"
+tool_name="$(printf '%s' "$flatin" | sed -n 's/.*"tool_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+case "$tool_name" in
+  *rename_symbol*|*extract*|*move*|*refactor*|*inline*|*change_method_signature*|*apply_cleanup*|*apply_null*|*encapsulate*|*replace_duplicates*|*convert_anonymous*) ;;
+  *) exit 0 ;;
+esac
+sym="$(printf '%s' "$flatin" | sed -n 's/.*"\(typeName\|symbol\|newName\|query\)"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\2/p' | head -n1)"
+[ -n "$sym" ] || exit 0
+req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"recall","format":"text","symbol":"'"$sym"'"}}}'
+resp="$(curl -s --max-time 3 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$req" "$MCP_URL" 2>/dev/null)"
+[ -n "$resp" ] || exit 0
+flat="$(printf '%s' "$resp" | tr -d '\n\r')"
+inner="$(printf '%s' "$flat" | sed -n 's/.*"text"[[:space:]]*:[[:space:]]*"\(.*\)"[[:space:]]*}[[:space:]]*][[:space:]]*}[[:space:]]*}.*/\1/p' | sed 's/\\"/"/g; s/\\\\/\\/g')"
+[ -n "$inner" ] || exit 0
+printf '%s' "$inner" | grep -q '"success"[[:space:]]*:[[:space:]]*true' || exit 0
+data="$(printf '%s' "$inner" | sed -n 's/.*"data"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p')"
+[ -n "$data" ] || exit 0
+case "$data" in No\ known\ knowledge*) exit 0 ;; esac
+printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"GOJA recalled prior knowledge for %s:\n%s"}}' "$sym" "$data"
+exit 0
+"#;
+
 /// Sprint 10 v0.10.4: atomic write of `workspace.json` for one workspace.
 /// Lifted out of `ManagerService` so it can be unit-tested without the
 /// full ConfigStore + ReleaseManager + RuntimeManager dependency graph.
@@ -4929,6 +5313,125 @@ mod tests {
 
         // Removal when nothing is managed → no-op, no error.
         assert!(!remove_managed_hook(&settings_path, &guard, false).unwrap());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ===== Sprint 21 (v2.0): knowledge PUSH hooks (primer + recall) =====
+
+    #[test]
+    fn primer_script_bakes_url_token_and_fails_safe() {
+        let s = build_primer_script("http://127.0.0.1:8890/mcp", "sekret");
+        assert!(s.contains(r#"MCP_URL="http://127.0.0.1:8890/mcp""#), "bakes the mcp url");
+        assert!(s.contains(r#"TOKEN="sekret""#), "bakes the bearer token");
+        assert!(
+            s.contains(r#""kind":"primer""#) && s.contains(r#""format":"text""#),
+            "calls experience(kind=primer, format=text)"
+        );
+        assert!(s.contains("Authorization: Bearer $TOKEN"), "authenticates the call");
+        assert!(
+            s.contains("SessionStart") && s.contains("additionalContext"),
+            "injects the primer as SessionStart context"
+        );
+        assert!(
+            s.contains("command -v curl") && s.contains("exit 0"),
+            "fail-safe: curl absent / any miss → exit 0, inject nothing"
+        );
+        assert!(s.contains("No\\ domain"), "silent on the absence sentinel");
+    }
+
+    #[test]
+    fn recall_script_gates_to_refactor_verbs_with_symbol_cue() {
+        let s = build_recall_script("http://127.0.0.1:8890/mcp", "sekret");
+        assert!(s.contains(r#""kind":"recall""#), "calls experience(kind=recall)");
+        assert!(
+            s.contains("rename_symbol") && s.contains("refactor") && s.contains("extract"),
+            "gated to refactor-ish goja verbs"
+        );
+        assert!(
+            s.contains("typeName") && s.contains("symbol") && s.contains("newName"),
+            "extracts a symbol cue from the tool input"
+        );
+        assert!(s.contains("PreToolUse") && s.contains("additionalContext"), "injects pre-op context");
+        assert!(s.contains("No\\ known\\ knowledge"), "silent on absence");
+    }
+
+    #[test]
+    fn push_scripts_are_deterministic() {
+        assert_eq!(build_primer_script("u", "t"), build_primer_script("u", "t"));
+        assert_eq!(build_recall_script("u", "t"), build_recall_script("u", "t"));
+    }
+
+    #[test]
+    fn primer_write_remove_roundtrip_preserves_user_hooks() {
+        let dir = unique_tempdir("push-primer");
+        let settings = dir.join(".claude").join("settings.json");
+        let settings_path = settings.to_string_lossy().to_string();
+        let primer = dir
+            .join(".claude")
+            .join("goja-studio")
+            .join("sessionstart-primer.sh");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(
+            &settings,
+            r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo user-start"}]}]}}"#,
+        )
+        .unwrap();
+
+        assert!(write_managed_primer(&settings_path, &primer, "http://127.0.0.1:8890/mcp", "tok", false, false).unwrap());
+        assert!(primer.exists(), "primer script written");
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        let ss = v["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(ss.len(), 2, "user + managed primer entry");
+        assert!(ss.iter().any(is_managed_primer_entry), "managed primer present");
+        assert!(
+            ss.iter().any(|e| e["hooks"][0]["command"] == "echo user-start"),
+            "user SessionStart entry preserved"
+        );
+
+        assert!(
+            !write_managed_primer(&settings_path, &primer, "http://127.0.0.1:8890/mcp", "tok", false, false).unwrap(),
+            "unchanged re-deploy is a no-op"
+        );
+
+        assert!(remove_managed_primer(&settings_path, &primer, false).unwrap());
+        assert!(!primer.exists(), "primer script deleted");
+        let v2: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(v2["hooks"]["SessionStart"].as_array().unwrap().len(), 1, "only the user entry remains");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recall_and_guard_coexist_in_pretooluse() {
+        let dir = unique_tempdir("push-recall");
+        let settings = dir.join(".claude").join("settings.json");
+        let settings_path = settings.to_string_lossy().to_string();
+        let guard = dir.join(".claude").join("goja-studio").join("pretooluse-guard.sh");
+        let recall = dir.join(".claude").join("goja-studio").join("pretooluse-recall.sh");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+
+        write_managed_hook(&settings_path, &guard, "http://127.0.0.1:8890/mcp", false, false).unwrap();
+        write_managed_recall(&settings_path, &recall, "http://127.0.0.1:8890/mcp", "tok", false, false).unwrap();
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        let pre = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre.len(), 2, "guard + recall entries coexist in PreToolUse");
+        assert!(pre.iter().any(is_managed_hook_entry), "guard entry present");
+        assert!(pre.iter().any(is_managed_recall_entry), "recall entry present");
+
+        // Removing recall leaves the guard untouched.
+        assert!(remove_managed_recall(&settings_path, &recall, false).unwrap());
+        let v2: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        let pre2 = v2["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre2.len(), 1, "only the guard remains");
+        assert!(pre2.iter().any(is_managed_hook_entry));
+        assert!(!pre2.iter().any(is_managed_recall_entry));
+        assert!(!recall.exists(), "recall script deleted");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
