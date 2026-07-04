@@ -4389,7 +4389,7 @@ printf '%s' "$inner" | grep -q '"success"[[:space:]]*:[[:space:]]*true' || exit 
 data="$(printf '%s' "$inner" | sed -n 's/.*"data"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
 [ -n "$data" ] || exit 0
 case "$data" in No\ domain\ knowledge*) exit 0 ;; esac
-printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"GOJA domain primer (what this codebase is about):\n%s"}}' "$data"
+printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"GOJA domain primer (what this codebase is about):\\n%s"}}' "$data"
 exit 0
 "#;
 
@@ -4423,7 +4423,7 @@ printf '%s' "$inner" | grep -q '"success"[[:space:]]*:[[:space:]]*true' || exit 
 data="$(printf '%s' "$inner" | sed -n 's/.*"data"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
 [ -n "$data" ] || exit 0
 case "$data" in No\ known\ knowledge*) exit 0 ;; esac
-printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"GOJA recalled prior knowledge for %s:\n%s"}}' "$sym" "$data"
+printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"GOJA recalled prior knowledge for %s:\\n%s"}}' "$sym" "$data"
 exit 0
 "#;
 
@@ -5380,6 +5380,20 @@ mod tests {
             assert!(
                 !s.contains(r#""data"[[:space:]]*:[[:space:]]*"\(.*\)""#),
                 "must not use the greedy .* that swallows the trailing meta"
+            );
+        }
+    }
+
+    #[test]
+    fn push_scripts_emit_escaped_newline_for_valid_json() {
+        // Deployed-loop dogfood (v2.0.1) caught this: a bare \n in the printf FORMAT string
+        // becomes a REAL newline inside the additionalContext value → invalid JSON → the
+        // client rejects the injection. The header separator must be \\n so printf emits a
+        // literal \n escape.
+        for s in [build_primer_script("u", "t"), build_recall_script("u", "t")] {
+            assert!(
+                s.contains(r"\\n%s"),
+                "additionalContext header newline is escaped (\\n), not a raw newline"
             );
         }
     }
