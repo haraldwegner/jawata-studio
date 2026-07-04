@@ -4384,7 +4384,9 @@ inner="$(printf '%s' "$flat" | sed -n 's/.*"text"[[:space:]]*:[[:space:]]*"\(.*\
 [ -n "$inner" ] || exit 0
 printf '%s' "$inner" | grep -q '"success"[[:space:]]*:[[:space:]]*true' || exit 0
 # Pull the data string (flat primer lines; \n stays escaped, valid in the output JSON).
-data="$(printf '%s' "$inner" | sed -n 's/.*"data"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p')"
+# data is a quote-sanitized flat string, so [^"]* stops at its closing quote — NOT greedy
+# .* (which would swallow the trailing ,"meta":{steering} the result layer appends).
+data="$(printf '%s' "$inner" | sed -n 's/.*"data"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
 [ -n "$data" ] || exit 0
 case "$data" in No\ domain\ knowledge*) exit 0 ;; esac
 printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"GOJA domain primer (what this codebase is about):\n%s"}}' "$data"
@@ -4416,7 +4418,9 @@ flat="$(printf '%s' "$resp" | tr -d '\n\r')"
 inner="$(printf '%s' "$flat" | sed -n 's/.*"text"[[:space:]]*:[[:space:]]*"\(.*\)"[[:space:]]*}[[:space:]]*][[:space:]]*}[[:space:]]*}.*/\1/p' | sed 's/\\"/"/g; s/\\\\/\\/g')"
 [ -n "$inner" ] || exit 0
 printf '%s' "$inner" | grep -q '"success"[[:space:]]*:[[:space:]]*true' || exit 0
-data="$(printf '%s' "$inner" | sed -n 's/.*"data"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p')"
+# data is a quote-sanitized flat string, so [^"]* stops at its closing quote — NOT greedy
+# .* (which would swallow the trailing ,"meta":{steering} the result layer appends).
+data="$(printf '%s' "$inner" | sed -n 's/.*"data"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
 [ -n "$data" ] || exit 0
 case "$data" in No\ known\ knowledge*) exit 0 ;; esac
 printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"GOJA recalled prior knowledge for %s:\n%s"}}' "$sym" "$data"
@@ -5360,6 +5364,24 @@ mod tests {
     fn push_scripts_are_deterministic() {
         assert_eq!(build_primer_script("u", "t"), build_primer_script("u", "t"));
         assert_eq!(build_recall_script("u", "t"), build_recall_script("u", "t"));
+    }
+
+    #[test]
+    fn push_scripts_extract_data_without_swallowing_meta() {
+        // Live dogfood (v2.0.0) caught this: the result layer appends ,"meta":{steering} after
+        // "data" on every success, so a greedy "\(.*\)" peel swallows the meta blob into the
+        // injected context. The data string is quote-sanitized, so [^"]* stops at its closing
+        // quote. Guard both templates against a regression to the greedy form.
+        for s in [build_primer_script("u", "t"), build_recall_script("u", "t")] {
+            assert!(
+                s.contains(r#""data"[[:space:]]*:[[:space:]]*"\([^"]*\)""#),
+                "data-extraction stops at the closing quote (safe against trailing meta)"
+            );
+            assert!(
+                !s.contains(r#""data"[[:space:]]*:[[:space:]]*"\(.*\)""#),
+                "must not use the greedy .* that swallows the trailing meta"
+            );
+        }
     }
 
     #[test]
