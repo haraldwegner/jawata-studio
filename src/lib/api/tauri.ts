@@ -51,6 +51,16 @@ export interface ManagerSettings {
   releaseRepo: string;
   lastReleaseCheck?: string | null;
   lastSeenLatestVersion?: string | null;
+  /** Sprint 21a: knowledge-store + backup preferences (Knowledge view). */
+  autoSeedOnDeploy: boolean;
+  /** `shared` (user-level store, default) | `workspace` | `memory` | explicit dir. */
+  experienceStoreMode: string;
+  memoryRoots: string[];
+  memoryRecursive: boolean;
+  memoryMaxDepth: number;
+  memoryMaxFiles: number;
+  memoryMaxBytes: number;
+  backupRetention: number;
 }
 
 /** Represents path configuration for a specific MCP client. */
@@ -126,6 +136,47 @@ export interface UpdateSettingsInput {
   deployTargets: DeployTargetFlags;
   /** Optional override of the GitHub repo (owner/repo) for the runtime release stream. */
   releaseRepo?: string | null;
+  /** Sprint 21a: Knowledge-view settings — optional so older saves preserve them. */
+  autoSeedOnDeploy?: boolean | null;
+  experienceStoreMode?: string | null;
+  memoryRoots?: string[] | null;
+  memoryRecursive?: boolean | null;
+  memoryMaxDepth?: number | null;
+  memoryMaxFiles?: number | null;
+  memoryMaxBytes?: number | null;
+  backupRetention?: number | null;
+}
+
+// ===== Sprint 21a (item F): Knowledge view =====
+
+/** Per-workspace knowledge-store overview (resident stats or unreachable+error). */
+export interface KnowledgeWorkspaceStatus {
+  workspace: string;
+  url: string;
+  reachable: boolean;
+  stats?: {
+    total?: number;
+    by_status?: Record<string, number>;
+    by_language?: Record<string, number>;
+    store?: { file?: string; bytes?: number };
+  } | null;
+  error?: string | null;
+}
+
+/** One planned/performed move of a scattered backup file. */
+export interface GcItem {
+  file: string;
+  original: string;
+  action: string;
+}
+
+/** Report of the scattered-backup GC (dryRun = plan only). */
+export interface GcReport {
+  dryRun: boolean;
+  scannedDirs: number;
+  items: GcItem[];
+  moved: number;
+  unrecognizedSkipped: number;
 }
 
 /** Record of an installed managed runtime. */
@@ -373,6 +424,29 @@ export function importWorkspaceProjects(input: WorkspaceImportInput): Promise<Wo
 /** Updates the manager settings. */
 export function updateSettings(input: UpdateSettingsInput): Promise<ManagerDashboard> {
   return invoke("update_settings", { input });
+}
+
+// ===== Sprint 21a (item F): Knowledge view =====
+
+/** Per-workspace knowledge-store overview (resident experience(kind=stats)). */
+export function knowledgeStatus(): Promise<KnowledgeWorkspaceStatus[]> {
+  return invoke("knowledge_status");
+}
+
+/** Run one experience(kind=…) verb on a workspace's resident. The UI action names ARE
+ * the prompt vocabulary — load/reseed/wipe/refresh/list/promote/export/import/prune/
+ * dedup/compact/stats. Returns the decoded ToolResponse ({success, data, ...}). */
+export function experienceVerb(
+  workspace: string,
+  kind: string,
+  args: Record<string, unknown> = {}
+): Promise<{ success: boolean; data?: unknown; error?: unknown }> {
+  return invoke("experience_verb", { workspace, kind, args });
+}
+
+/** GC the historically scattered .bak files (dryRun = report only). */
+export function backupsGc(dryRun: boolean): Promise<GcReport> {
+  return invoke("backups_gc", { dryRun });
 }
 
 /** Sprint 14 (v0.14.0): toggle OS-level autostart-on-boot in one

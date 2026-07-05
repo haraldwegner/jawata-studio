@@ -211,6 +211,49 @@ pub struct ManagerSettings {
     /// (primer + recall) has content from day one. Default ON.
     #[serde(default = "default_auto_seed_on_deploy")]
     pub auto_seed_on_deploy: bool,
+    /// Sprint 21a (item F/H): where the experience store lives — `shared` (the
+    /// user-level store, DEFAULT), `workspace` (per-workspace at the stable root),
+    /// `memory`, or an explicit directory path. Passed to the resident as
+    /// `-Dgoja.experience.store`.
+    #[serde(default = "default_experience_store_mode")]
+    pub experience_store_mode: String,
+    /// Sprint 21a (item F): extra memory roots for `experience(kind=load|reseed)` —
+    /// passed as `-Dgoja.memory.roots` (platform path-separator list).
+    #[serde(default)]
+    pub memory_roots: Vec<String>,
+    /// Sprint 21a (item F): `load`/`reseed` (incl. auto-seed) also walk subdirectories.
+    #[serde(default)]
+    pub memory_recursive: bool,
+    /// Sprint 21a (item F): link-crawl bounds, passed as `-Dgoja.memory.max*`.
+    #[serde(default = "default_memory_max_depth")]
+    pub memory_max_depth: u32,
+    #[serde(default = "default_memory_max_files")]
+    pub memory_max_files: u32,
+    #[serde(default = "default_memory_max_bytes")]
+    pub memory_max_bytes: u64,
+    /// Sprint 21a (item E): centralized-backup retention (versions kept per file).
+    #[serde(default = "default_backup_retention")]
+    pub backup_retention: u32,
+}
+
+pub fn default_experience_store_mode() -> String {
+    "shared".to_string()
+}
+
+pub fn default_memory_max_depth() -> u32 {
+    5
+}
+
+pub fn default_memory_max_files() -> u32 {
+    200
+}
+
+pub fn default_memory_max_bytes() -> u64 {
+    2_000_000
+}
+
+pub fn default_backup_retention() -> u32 {
+    10
 }
 
 /// Sprint 21a (item D): auto-seed is ON by default — a store that starts empty keeps
@@ -301,6 +344,13 @@ impl ManagerSettings {
             gateway_port: default_gateway_port(),
             gateway_token: None,
             auto_seed_on_deploy: default_auto_seed_on_deploy(),
+            experience_store_mode: default_experience_store_mode(),
+            memory_roots: Vec::new(),
+            memory_recursive: false,
+            memory_max_depth: default_memory_max_depth(),
+            memory_max_files: default_memory_max_files(),
+            memory_max_bytes: default_memory_max_bytes(),
+            backup_retention: default_backup_retention(),
         }
     }
 
@@ -391,6 +441,21 @@ pub struct UpdateSettingsInput {
     /// current value.
     #[serde(default)]
     pub auto_seed_on_deploy: Option<bool>,
+    /// Sprint 21a (item F): Knowledge-view settings — all optional for older frontends.
+    #[serde(default)]
+    pub experience_store_mode: Option<String>,
+    #[serde(default)]
+    pub memory_roots: Option<Vec<String>>,
+    #[serde(default)]
+    pub memory_recursive: Option<bool>,
+    #[serde(default)]
+    pub memory_max_depth: Option<u32>,
+    #[serde(default)]
+    pub memory_max_files: Option<u32>,
+    #[serde(default)]
+    pub memory_max_bytes: Option<u64>,
+    #[serde(default)]
+    pub backup_retention: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -899,6 +964,35 @@ impl ConfigStore {
         }
         if let Some(auto_seed) = input.auto_seed_on_deploy {
             settings.auto_seed_on_deploy = auto_seed;
+        }
+        if let Some(mode) = input.experience_store_mode {
+            let trimmed = mode.trim();
+            if !trimmed.is_empty() {
+                settings.experience_store_mode = trimmed.to_string();
+            }
+        }
+        if let Some(roots) = input.memory_roots {
+            settings.memory_roots = roots
+                .into_iter()
+                .map(|root| root.trim().to_string())
+                .filter(|root| !root.is_empty())
+                .collect();
+        }
+        if let Some(recursive) = input.memory_recursive {
+            settings.memory_recursive = recursive;
+        }
+        if let Some(depth) = input.memory_max_depth {
+            settings.memory_max_depth = depth.max(1);
+        }
+        if let Some(files) = input.memory_max_files {
+            settings.memory_max_files = files.max(1);
+        }
+        if let Some(bytes) = input.memory_max_bytes {
+            settings.memory_max_bytes = bytes.max(1024);
+        }
+        if let Some(retention) = input.backup_retention {
+            settings.backup_retention = retention.clamp(1, 500);
+            crate::backups::set_backup_retention(settings.backup_retention as usize);
         }
 
         write_json(&self.paths.settings_file, &*settings)?;

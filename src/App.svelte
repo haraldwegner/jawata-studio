@@ -6,6 +6,7 @@
   import ProjectList from "./lib/components/ProjectList.svelte";
   import WorkspaceList from "./lib/components/WorkspaceList.svelte";
   import RuntimeSettings from "./lib/components/RuntimeSettings.svelte";
+  import KnowledgeView from "./lib/components/KnowledgeView.svelte";
   import HelpView from "./lib/components/HelpView.svelte";
   import { createAppStore } from "./lib/stores/app";
   import {
@@ -22,7 +23,7 @@
   const MIN_RIGHT_PANEL_WIDTH = 420;
   const SPLITTER_WIDTH = 12;
 
-  let currentView: "dashboard" | "settings" | "help" = "dashboard";
+  let currentView: "dashboard" | "knowledge" | "settings" | "help" = "dashboard";
   /** Sprint 10 v0.10.4: which workspace the Register Project / Import
    * forms add to. Owned at App.svelte so the Workspaces card and the
    * forms stay in sync. Defaults to the first existing workspace if
@@ -402,6 +403,13 @@
           Dashboard
         </button>
         <button
+          class="tab {currentView === 'knowledge' ? 'active' : ''}"
+          on:click={() => (currentView = 'knowledge')}
+          type="button"
+        >
+          Knowledge
+        </button>
+        <button
           class="tab {currentView === 'settings' ? 'active' : ''}"
           on:click={() => (currentView = 'settings')}
           type="button"
@@ -604,6 +612,21 @@
       {:else}
         <section class="panel stack">
           <h2>Settings</h2>
+          <p class="muted">Loading settings...</p>
+        </section>
+      {/if}
+    </section>
+  {:else if currentView === 'knowledge'}
+    <section class="dashboard-main">
+      {#if $appStore.settings}
+        <KnowledgeView
+          disabled={$appStore.isBusy}
+          settings={$appStore.settings}
+          on:refresh={() => appStore.load()}
+        />
+      {:else}
+        <section class="panel stack">
+          <h2>Knowledge / Database</h2>
           <p class="muted">Loading settings...</p>
         </section>
       {/if}

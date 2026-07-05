@@ -15,6 +15,18 @@ use std::sync::RwLock;
 /// Keep the last N versions per original file; pruned on every write.
 pub const DEFAULT_RETENTION: usize = 10;
 
+/// Item F: retention is a Knowledge-prefs setting; follows it like the root does.
+static RETENTION: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(DEFAULT_RETENTION);
+
+pub fn set_backup_retention(keep: usize) {
+    RETENTION.store(keep.max(1), Ordering::Relaxed);
+}
+
+fn retention() -> usize {
+    RETENTION.load(Ordering::Relaxed)
+}
+
 /// The configured `data_root` (the managed area lives under it). Set at ConfigStore
 /// load + settings updates + deploy entry; falls back to the default data root so a
 /// backup is never silently dropped before configuration is read.
@@ -75,7 +87,7 @@ pub fn backup_before_write(original: &Path) -> Result<Option<PathBuf>, String> {
             target.display()
         )
     })?;
-    prune_dir(&dir, DEFAULT_RETENTION);
+    prune_dir(&dir, retention());
     Ok(Some(target))
 }
 
@@ -189,7 +201,7 @@ pub fn gc_scattered_backups(dirs: &[PathBuf], dry_run: bool) -> GcReport {
                         })
                         .is_ok();
                 if ok {
-                    prune_dir(&target_dir, DEFAULT_RETENTION);
+                    prune_dir(&target_dir, retention());
                     moved += 1;
                 } else {
                     continue;              // unreadable/unmovable → leave it, report nothing done

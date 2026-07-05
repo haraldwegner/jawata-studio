@@ -123,6 +123,9 @@ pub struct RuntimeReference {
     pub workspace_dir: String,
     pub runtime_label: String,
     pub resolved_jar_path: String,
+    /// Sprint 21a (item F): `-D` system properties handed to the resident JVM
+    /// (knowledge-store mode, memory roots, crawl caps). MUST precede `-jar`.
+    pub jvm_properties: Vec<String>,
     /// Sprint 15 Stage 10: bind port for the resident-JVM HTTP transport.
     /// Allocated once per workspace via
     /// `ConfigStore::get_or_allocate_workspace_state` and stable across
@@ -534,6 +537,10 @@ impl RuntimeManager {
             args.push(agent);
         }
 
+        // Sprint 21a (item F): knowledge-store + memory-crawl configuration as system
+        // properties — like -javaagent these MUST precede -jar.
+        args.extend(reference.jvm_properties.iter().cloned());
+
         args.extend([
             "-jar".into(),
             reference.resolved_jar_path.clone(),
@@ -794,6 +801,7 @@ mod tests {
                 workspace_dir: "/cache/goja/test-ws".into(),
                 runtime_label: "Managed GOJA 1.4.0".into(),
                 resolved_jar_path: "/tools/goja/goja.jar".into(),
+                jvm_properties: vec!["-Dgoja.experience.store=shared".into()],
                 resident_port: 8800,
                 resident_token: "test-token".into(),
             },
@@ -810,9 +818,11 @@ mod tests {
         assert_eq!(spec.command, "java");
         // Sprint 15 Stage 10: -port + -token added so the fork v1.8.5
         // HTTP listener binds where the URL-emitting MCP writer expects.
+        // Sprint 21a (item F): knowledge-store system properties precede -jar.
         assert_eq!(
             spec.args,
             vec![
+                "-Dgoja.experience.store=shared",
                 "-jar",
                 "/tools/goja/goja.jar",
                 "-data",
@@ -910,6 +920,7 @@ mod tests {
             workspace_dir: workspace_dir.into(),
             runtime_label: "test-runtime".into(),
             resolved_jar_path: "/dev/null".into(),
+            jvm_properties: vec![],
             resident_port: 8800,
             resident_token: "test-token".into(),
         }

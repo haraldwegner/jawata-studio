@@ -416,6 +416,9 @@ pub fn run() {
             commands::clean_generated_data,
             commands::probe_services,
             commands::deploy_to_agents,
+            commands::knowledge_status,
+            commands::experience_verb,
+            commands::backups_gc,
             commands::get_quit_prompt_context,
             commands::perform_quit_action,
         ])

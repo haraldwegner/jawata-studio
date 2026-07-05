@@ -721,6 +721,99 @@ impl ManagerService {
         })
     }
 
+    // ===== Sprint 21a (item F): Knowledge view backend =====
+
+    /// Per-workspace store overview for the Knowledge view: reachability + the
+    /// resident's `experience(kind=stats)` (counts by status/language, store file+size).
+    pub fn knowledge_status(&self) -> Vec<KnowledgeWorkspaceStatus> {
+        let settings = self.config_store.get_settings();
+        let projects = self.config_store.list_projects();
+        let (servers, _resolve_errors) = self.build_deploy_servers(&settings, &projects);
+        servers
+            .iter()
+            .map(|server| {
+                match call_experience(
+                    &server.url,
+                    &server.token,
+                    serde_json::json!({"kind": "stats"}),
+                    5,
+                ) {
+                    Ok(response) => KnowledgeWorkspaceStatus {
+                        workspace: server.workspace_name.clone(),
+                        url: server.url.clone(),
+                        reachable: true,
+                        stats: response.get("data").cloned(),
+                        error: None,
+                    },
+                    Err(error) => KnowledgeWorkspaceStatus {
+                        workspace: server.workspace_name.clone(),
+                        url: server.url.clone(),
+                        reachable: false,
+                        stats: None,
+                        error: Some(error),
+                    },
+                }
+            })
+            .collect()
+    }
+
+    /// Run one `experience(kind=…)` verb against a workspace's resident. The UI's
+    /// actions carry EXACTLY these verb names (the prompt vocabulary); anything outside
+    /// the vocabulary is refused here.
+    pub fn experience_verb(
+        &self,
+        workspace: &str,
+        kind: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        if !EXPERIENCE_KINDS.contains(&kind) {
+            return Err(format!(
+                "unknown experience verb '{kind}' — allowed: {EXPERIENCE_KINDS:?}"
+            ));
+        }
+        let settings = self.config_store.get_settings();
+        let projects = self.config_store.list_projects();
+        let (servers, _resolve_errors) = self.build_deploy_servers(&settings, &projects);
+        let server = servers
+            .iter()
+            .find(|server| server.workspace_name == workspace)
+            .ok_or_else(|| format!("no resident for workspace '{workspace}'"))?;
+        let mut arguments = if args.is_object() {
+            args
+        } else {
+            serde_json::json!({})
+        };
+        arguments
+            .as_object_mut()
+            .expect("arguments is an object")
+            .insert("kind".into(), serde_json::Value::String(kind.to_string()));
+        call_experience(&server.url, &server.token, arguments, 60)
+    }
+
+    /// Sprint 21a (item E): GC the historically scattered `.bak` files (dry-run first).
+    /// Sweeps the dirs goja-studio ever wrote beside: `$HOME`, `~/.claude`, `~/.cursor`,
+    /// the studio config dir, and every registered project dir.
+    pub fn backups_gc(&self, dry_run: bool) -> crate::backups::GcReport {
+        let settings = self.config_store.get_settings();
+        crate::backups::set_backups_root(&settings.data_root);
+        crate::backups::set_backup_retention(settings.backup_retention as usize);
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        if let Some(home) = dirs::home_dir() {
+            dirs.push(home.clone());
+            dirs.push(home.join(".claude"));
+            dirs.push(home.join(".cursor"));
+        }
+        if let Some(config_parent) = self.config_store.paths().settings_file.parent() {
+            dirs.push(config_parent.to_path_buf());
+        }
+        for project in self.config_store.list_projects() {
+            dirs.push(PathBuf::from(&project.project_path));
+        }
+        dirs.sort();
+        dirs.dedup();
+        crate::backups::gc_scattered_backups(&dirs, dry_run)
+    }
+
     /// Checks if any runtimes are currently running.
     pub fn has_running_services(&self) -> bool {
         self.running_services_count() > 0
@@ -1297,6 +1390,7 @@ impl ManagerService {
                     workspace_dir,
                     runtime_label: format!("Managed GOJA {}", runtime.version),
                     resolved_jar_path: runtime.jar_path.clone(),
+                    jvm_properties: knowledge_jvm_properties(settings),
                     resident_port: workspace_state.resident_port,
                     resident_token: workspace_state.resident_token,
                 })
@@ -1307,6 +1401,7 @@ impl ManagerService {
                 workspace_dir,
                 runtime_label: "Local GOJA JAR".into(),
                 resolved_jar_path: jar_path.clone(),
+                jvm_properties: knowledge_jvm_properties(settings),
                 resident_port: workspace_state.resident_port,
                 resident_token: workspace_state.resident_token,
             }),
@@ -3955,6 +4050,65 @@ case "$tool_name" in
 esac
 exit 0
 "#;
+
+/// Sprint 21a (item F): knowledge-store + memory-crawl configuration handed to the
+/// resident JVM as `-D` system properties (they MUST precede `-jar`).
+fn knowledge_jvm_properties(settings: &ManagerSettings) -> Vec<String> {
+    let mut props = vec![format!(
+        "-Dgoja.experience.store={}",
+        settings.experience_store_mode
+    )];
+    if !settings.memory_roots.is_empty() {
+        let separator = if cfg!(windows) { ";" } else { ":" };
+        props.push(format!(
+            "-Dgoja.memory.roots={}",
+            settings.memory_roots.join(separator)
+        ));
+    }
+    props.push(format!("-Dgoja.memory.maxDepth={}", settings.memory_max_depth));
+    props.push(format!("-Dgoja.memory.maxFiles={}", settings.memory_max_files));
+    props.push(format!("-Dgoja.memory.maxBytes={}", settings.memory_max_bytes));
+    props
+}
+
+/// Sprint 21a (item F): call `experience(...)` on a resident and peel goja's fixed MCP
+/// envelope — the body carries the JSON-RPC result whose `content[0].text` is the
+/// DOUBLE-ENCODED ToolResponse (`{success, data, ...}`), returned decoded.
+fn call_experience(
+    url: &str,
+    token: &str,
+    arguments: serde_json::Value,
+    timeout_secs: u64,
+) -> Result<serde_json::Value, String> {
+    let body = call_resident_tool(url, token, "experience", arguments, timeout_secs)?;
+    let envelope: serde_json::Value =
+        serde_json::from_str(&body).map_err(|error| format!("bad envelope: {error}"))?;
+    if let Some(rpc_error) = envelope.get("error") {
+        return Err(format!("resident error: {rpc_error}"));
+    }
+    let text = envelope
+        .pointer("/result/content/0/text")
+        .and_then(|text| text.as_str())
+        .ok_or_else(|| "unexpected envelope (no result.content[0].text)".to_string())?;
+    serde_json::from_str(text).map_err(|error| format!("bad tool response: {error}"))
+}
+
+/// Sprint 21a (item F): the exact verb vocabulary — the Knowledge view's actions are
+/// these names 1:1 (Harald 2026-07-05: what you click is what you'd say in a prompt).
+const EXPERIENCE_KINDS: &[&str] = &[
+    "record", "recall", "primer", "list", "load", "reseed", "refresh", "wipe", "promote",
+    "export", "import", "prune", "dedup", "compact", "stats",
+];
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeWorkspaceStatus {
+    pub workspace: String,
+    pub url: String,
+    pub reachable: bool,
+    pub stats: Option<serde_json::Value>,
+    pub error: Option<String>,
+}
 
 /// Sprint 21a (item D): which residents to auto-seed. Pure so the toggle logic is
 /// unit-testable; empty when the setting is off or a server has no url/token.

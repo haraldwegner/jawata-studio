@@ -33,6 +33,33 @@ pub fn get_dashboard(state: State<'_, AppState>) -> Result<ManagerDashboard, Str
     state.manager_service.load_dashboard()
 }
 
+// ===== Sprint 21a (item F): Knowledge view =====
+
+#[tauri::command]
+pub fn knowledge_status(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::manager_service::KnowledgeWorkspaceStatus>, String> {
+    Ok(state.manager_service.knowledge_status())
+}
+
+#[tauri::command]
+pub fn experience_verb(
+    state: State<'_, AppState>,
+    workspace: String,
+    kind: String,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    state.manager_service.experience_verb(&workspace, &kind, args)
+}
+
+#[tauri::command]
+pub fn backups_gc(
+    state: State<'_, AppState>,
+    dry_run: bool,
+) -> Result<crate::backups::GcReport, String> {
+    Ok(state.manager_service.backups_gc(dry_run))
+}
+
 #[tauri::command]
 pub fn add_project(
     state: State<'_, AppState>,
