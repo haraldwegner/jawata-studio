@@ -4699,7 +4699,14 @@ case "$tool_name" in
   *rename_symbol*|*extract*|*move*|*refactor*|*inline*|*change_method_signature*|*apply_cleanup*|*apply_null*|*encapsulate*|*replace_duplicates*|*convert_anonymous*) ;;
   *) exit 0 ;;
 esac
-sym="$(printf '%s' "$flatin" | sed -n 's/.*"\(typeName\|symbol\|newName\|query\)"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\2/p' | head -n1)"
+# Cue PRIORITY (Sprint 21a dogfood find): the old single alternation with a greedy .*
+# picked the LAST key — a rename carrying symbol+newName queried the NEW name and
+# recalled nothing. The subject identifiers win; newName is the last resort.
+sym=""
+for key in typeName symbol query newName; do
+  sym="$(printf '%s' "$flatin" | sed -n 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+  [ -n "$sym" ] && break
+done
 [ -n "$sym" ] || exit 0
 req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"recall","format":"text","symbol":"'"$sym"'"}}}'
 resp="$(curl -s --max-time 3 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$req" "$MCP_URL" 2>/dev/null)"
@@ -5823,6 +5830,13 @@ mod tests {
         assert!(
             s.contains("typeName") && s.contains("symbol") && s.contains("newName"),
             "extracts a symbol cue from the tool input"
+        );
+        // Sprint 21a live-dogfood find: subject identifiers must WIN over newName — the
+        // old greedy alternation picked the LAST key, so a rename queried the NEW name
+        // and recalled nothing. The priority loop encodes the order explicitly.
+        assert!(
+            s.contains("for key in typeName symbol query newName"),
+            "cue priority: subject identifiers first, newName last"
         );
         assert!(s.contains("PreToolUse") && s.contains("additionalContext"), "injects pre-op context");
         assert!(s.contains("No\\ known\\ knowledge"), "silent on absence");
