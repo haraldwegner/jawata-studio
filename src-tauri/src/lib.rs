@@ -1,3 +1,4 @@
+mod backups;
 mod commands;
 mod config;
 mod gateway;

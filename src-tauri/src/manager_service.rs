@@ -594,6 +594,9 @@ impl ManagerService {
     ) -> Result<DeployToAgentsResult, String> {
         let started_at = Instant::now();
         let settings = self.config_store.get_settings();
+        // Sprint 21a (item E): make sure the centralized backup area follows the
+        // currently configured data root before any managed write.
+        crate::backups::set_backups_root(&settings.data_root);
         let projects = self.config_store.list_projects();
         let (servers, resolve_errors) = self.build_deploy_servers(&settings, &projects);
 
@@ -3131,15 +3134,10 @@ fn write_managed_json_block(
         }
     }
 
-    if backup_before_write && path_buf.exists() {
-        let backup_path = format!("{path}.bak-{}", crate::config::current_timestamp_string());
-        fs::copy(&path_buf, &backup_path).map_err(|error| {
-            format!(
-                "failed creating backup {} from {}: {error}",
-                backup_path,
-                path_buf.display()
-            )
-        })?;
+    if backup_before_write {
+        // Sprint 21a (item E): centralized area — no .bak-* beside the user's file.
+        crate::backups::backup_before_write(&path_buf)
+            .map_err(|error| format!("failed creating centralized backup: {error}"))?;
     }
     fs::write(&path_buf, format!("{next_json}\n"))
         .map_err(|error| format!("failed writing MCP config {}: {error}", path_buf.display()))
@@ -3185,15 +3183,10 @@ fn remove_managed_json_block(path: &str, backup_before_write: bool) -> Result<bo
         return Ok(false);
     }
 
-    if backup_before_write && path_buf.exists() {
-        let backup_path = format!("{path}.bak-{}", crate::config::current_timestamp_string());
-        fs::copy(&path_buf, &backup_path).map_err(|error| {
-            format!(
-                "failed creating backup {} from {}: {error}",
-                backup_path,
-                path_buf.display()
-            )
-        })?;
+    if backup_before_write {
+        // Sprint 21a (item E): centralized area — no .bak-* beside the user's file.
+        crate::backups::backup_before_write(&path_buf)
+            .map_err(|error| format!("failed creating centralized backup: {error}"))?;
     }
 
     let next_json = serde_json::to_string_pretty(&root_value)
@@ -3347,15 +3340,10 @@ fn write_managed_rule_block(
         return Ok(());
     }
 
-    if backup_before_write && path_buf.exists() {
-        let backup_path = format!("{path}.bak-{}", crate::config::current_timestamp_string());
-        fs::copy(&path_buf, &backup_path).map_err(|error| {
-            format!(
-                "failed creating rule backup {} from {}: {error}",
-                backup_path,
-                path_buf.display()
-            )
-        })?;
+    if backup_before_write {
+        // Sprint 21a (item E): centralized area — no .bak-* beside the user's file.
+        crate::backups::backup_before_write(&path_buf)
+            .map_err(|error| format!("failed creating centralized rule backup: {error}"))?;
     }
     fs::write(&path_buf, format!("{}\n", next.trim_end()))
         .map_err(|error| format!("failed writing rule file {}: {error}", path_buf.display()))
@@ -3389,15 +3377,10 @@ fn remove_managed_rule_block(
     }
     let next = next.trim().to_string();
 
-    if backup_before_write && path_buf.exists() {
-        let backup_path = format!("{path}.bak-{}", crate::config::current_timestamp_string());
-        fs::copy(&path_buf, &backup_path).map_err(|error| {
-            format!(
-                "failed creating rule backup {} from {}: {error}",
-                backup_path,
-                path_buf.display()
-            )
-        })?;
+    if backup_before_write {
+        // Sprint 21a (item E): centralized area — no .bak-* beside the user's file.
+        crate::backups::backup_before_write(&path_buf)
+            .map_err(|error| format!("failed creating centralized rule backup: {error}"))?;
     }
 
     if next.is_empty() {
@@ -3410,8 +3393,11 @@ fn remove_managed_rule_block(
     Ok(true)
 }
 
-fn latest_backup_path(_path: &str) -> Option<String> {
-    None
+/// Sprint 21a (item E): the newest CENTRALIZED backup of `path` (the old sibling-file
+/// stub always returned None — the UI's backupPath was permanently empty).
+fn latest_backup_path(path: &str) -> Option<String> {
+    crate::backups::latest_backup_path(Path::new(path))
+        .map(|backup| display_path(&backup))
 }
 
 // ===== Sprint 18 Track 2 / Stage 9: PreToolUse enforcement hook (Claude Code) =====
@@ -3798,18 +3784,10 @@ fn write_managed_hook(
         }
     }
 
-    if backup_before_write && settings_buf.exists() {
-        let backup_path = format!(
-            "{settings_path}.bak-{}",
-            crate::config::current_timestamp_string()
-        );
-        fs::copy(&settings_buf, &backup_path).map_err(|error| {
-            format!(
-                "failed creating settings backup {} from {}: {error}",
-                backup_path,
-                settings_buf.display()
-            )
-        })?;
+    if backup_before_write {
+        // Sprint 21a (item E): centralized area — no .bak-* beside the user's file.
+        crate::backups::backup_before_write(&settings_buf)
+            .map_err(|error| format!("failed creating centralized settings backup: {error}"))?;
     }
     fs::write(&settings_buf, format!("{next_json}\n")).map_err(|error| {
         format!(
@@ -3860,11 +3838,7 @@ fn remove_managed_hook(
                 let next_json = serde_json::to_string_pretty(&root)
                     .map_err(|error| format!("failed serializing settings json: {error}"))?;
                 if backup_before_write {
-                    let backup_path = format!(
-                        "{settings_path}.bak-{}",
-                        crate::config::current_timestamp_string()
-                    );
-                    let _ = fs::copy(&settings_buf, &backup_path);
+                    let _ = crate::backups::backup_before_write(&settings_buf);
                 }
                 fs::write(&settings_buf, format!("{next_json}\n")).map_err(|error| {
                     format!("failed writing settings {}: {error}", settings_buf.display())
@@ -4187,18 +4161,10 @@ fn write_managed_posthook(
         }
     }
 
-    if backup_before_write && settings_buf.exists() {
-        let backup_path = format!(
-            "{settings_path}.bak-{}",
-            crate::config::current_timestamp_string()
-        );
-        fs::copy(&settings_buf, &backup_path).map_err(|error| {
-            format!(
-                "failed creating settings backup {} from {}: {error}",
-                backup_path,
-                settings_buf.display()
-            )
-        })?;
+    if backup_before_write {
+        // Sprint 21a (item E): centralized area — no .bak-* beside the user's file.
+        crate::backups::backup_before_write(&settings_buf)
+            .map_err(|error| format!("failed creating centralized settings backup: {error}"))?;
     }
     fs::write(&settings_buf, format!("{next_json}\n")).map_err(|error| {
         format!("failed writing settings {}: {error}", settings_buf.display())
@@ -4243,11 +4209,7 @@ fn remove_managed_posthook(
                 let next_json = serde_json::to_string_pretty(&root)
                     .map_err(|error| format!("failed serializing settings json: {error}"))?;
                 if backup_before_write {
-                    let backup_path = format!(
-                        "{settings_path}.bak-{}",
-                        crate::config::current_timestamp_string()
-                    );
-                    let _ = fs::copy(&settings_buf, &backup_path);
+                    let _ = crate::backups::backup_before_write(&settings_buf);
                 }
                 fs::write(&settings_buf, format!("{next_json}\n")).map_err(|error| {
                     format!("failed writing settings {}: {error}", settings_buf.display())
@@ -4409,10 +4371,10 @@ fn write_managed_hook_section(
             }
         }
     }
-    if backup_before_write && settings_buf.exists() {
-        let backup_path = format!("{settings_path}.bak-{}", crate::config::current_timestamp_string());
-        fs::copy(&settings_buf, &backup_path)
-            .map_err(|error| format!("failed creating settings backup {backup_path}: {error}"))?;
+    if backup_before_write {
+        // Sprint 21a (item E): centralized area — no .bak-* beside the user's file.
+        crate::backups::backup_before_write(&settings_buf)
+            .map_err(|error| format!("failed creating centralized settings backup: {error}"))?;
     }
     fs::write(&settings_buf, format!("{next_json}\n"))
         .map_err(|error| format!("failed writing settings {}: {error}", settings_buf.display()))?;
@@ -4455,9 +4417,7 @@ fn remove_managed_hook_section(
                 let next_json = serde_json::to_string_pretty(&root)
                     .map_err(|error| format!("failed serializing settings json: {error}"))?;
                 if backup_before_write {
-                    let backup_path =
-                        format!("{settings_path}.bak-{}", crate::config::current_timestamp_string());
-                    let _ = fs::copy(&settings_buf, &backup_path);
+                    let _ = crate::backups::backup_before_write(&settings_buf);
                 }
                 fs::write(&settings_buf, format!("{next_json}\n"))
                     .map_err(|error| format!("failed writing settings {}: {error}", settings_buf.display()))?;
@@ -5622,6 +5582,35 @@ mod tests {
         assert_eq!(post2.len(), 1, "only the user entry remains");
         assert!(!post2.iter().any(is_managed_posthook_entry));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn managed_write_backs_up_centrally_never_beside_the_file() {
+        // Sprint 21a (item E) acceptance: a managed write with backups ON produces ZERO
+        // .bak siblings and exactly one version in the managed area.
+        let _guard = crate::backups::test_lock().lock().unwrap();
+        let dir = unique_tempdir("central-backup");
+        crate::backups::set_backups_root(dir.to_string_lossy().as_ref());
+        let settings = dir.join(".claude").join("settings.json");
+        let settings_path = settings.to_string_lossy().to_string();
+        let guard = dir.join(".claude").join("goja-studio").join("pretooluse-guard.sh");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(&settings, "{}").unwrap();
+
+        write_managed_hook(&settings_path, &guard, "http://127.0.0.1:8890/mcp", true, false)
+            .unwrap();
+
+        let siblings = std::fs::read_dir(settings.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".bak"))
+            .count();
+        assert_eq!(siblings, 0, "zero .bak siblings beside the user's file");
+        assert!(
+            latest_backup_path(&settings_path).is_some(),
+            "the pre-write state landed in the managed area"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

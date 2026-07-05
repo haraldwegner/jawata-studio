@@ -41,7 +41,7 @@ impl Default for UpdatePolicy {
     }
 }
 
-fn default_data_root() -> String {
+pub(crate) fn default_data_root() -> String {
     String::new()
 }
 
@@ -585,6 +585,9 @@ impl ConfigStore {
             write_json(&paths.settings_file, &default)?;
             default
         };
+        // Sprint 21a (item E): the centralized backup area lives under the CONFIGURED
+        // data root — publish it as soon as settings are known.
+        crate::backups::set_backups_root(&settings.data_root);
 
         Ok(Self {
             paths,
@@ -881,6 +884,7 @@ impl ConfigStore {
             return Err("dataRoot must not be empty".into());
         }
         settings.data_root = input.data_root.trim().to_string();
+        crate::backups::set_backups_root(&settings.data_root);
 
         validate_runtime_source(&input.global_runtime_source)?;
         settings.global_runtime_source = input.global_runtime_source;
@@ -1031,12 +1035,8 @@ fn read_projects(path: &Path) -> Result<ProjectsFile, String> {
             .cloned()
             .collect();
         if !orphans.is_empty() {
-            let backup = format!(
-                "{}.bak-{}",
-                path.display(),
-                current_timestamp_string()
-            );
-            match fs::copy(path, &backup) {
+            // Sprint 21a (item E): backup goes to the centralized managed area.
+            match crate::backups::backup_before_write(path) {
                 Ok(_) => {
                     for orphan in &orphans {
                         eprintln!(
@@ -1053,7 +1053,7 @@ fn read_projects(path: &Path) -> Result<ProjectsFile, String> {
                 Err(error) => {
                     // No backup → no prune. Keep the data; retry next load.
                     eprintln!(
-                        "[goja-studio] skipping orphan prune — backup to {backup} \
+                        "[goja-studio] skipping orphan prune — centralized backup \
                          failed: {error}"
                     );
                 }
@@ -1254,14 +1254,12 @@ fn sanitize_deploy_target_flags(flags: DeployTargetFlags) -> DeployTargetFlags {
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    if path.exists() {
-        let backup_path = path.with_extension(format!("json.bak.{}", current_timestamp_millis()));
-        if let Err(error) = fs::copy(path, &backup_path) {
-            eprintln!(
-                "Warning: failed to create backup of {}: {error}",
-                path.display()
-            );
-        }
+    // Sprint 21a (item E): centralized backup — no .json.bak.* beside the file.
+    if let Err(error) = crate::backups::backup_before_write(path) {
+        eprintln!(
+            "Warning: failed to create backup of {}: {error}",
+            path.display()
+        );
     }
 
     let json = serde_json::to_string_pretty(value)
@@ -1270,7 +1268,7 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
         .map_err(|error| format!("failed to write {}: {error}", path.display()))
 }
 
-fn current_timestamp_millis() -> u128 {
+pub(crate) fn current_timestamp_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time went backwards")
@@ -2019,21 +2017,20 @@ mod tests {
         path
     }
 
-    fn backup_count(dir: &Path) -> usize {
+    /// Sprint 21a (item E): siblings are gone — backups land in the managed area.
+    fn sibling_backup_count(dir: &Path) -> usize {
         fs::read_dir(dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("projects.json.bak-")
-            })
+            .filter(|e| e.file_name().to_string_lossy().contains(".bak"))
             .count()
     }
 
     #[test]
     fn read_projects_prunes_orphaned_workspace_states() {
+        let _guard = crate::backups::test_lock().lock().unwrap();
         let dir = unique_tempdir("prune-orphans");
+        crate::backups::set_backups_root(dir.to_string_lossy().as_ref());
         let path = projects_json_with_orphans(&dir);
 
         let parsed = read_projects(&path).unwrap();
@@ -2041,13 +2038,15 @@ mod tests {
         assert_eq!(parsed.workspaces.len(), 1, "only the live entry survives");
         assert_eq!(parsed.workspaces[0].workspace_name, "live-ws");
         assert_eq!(parsed.workspaces[0].resident_port, 8805);
-        assert_eq!(backup_count(&dir), 1, "pruning write must back up first");
+        assert_eq!(sibling_backup_count(&dir), 0, "no .bak sibling beside the file (item E)");
+        assert!(
+            crate::backups::latest_backup_path(&path).is_some(),
+            "pruning write backed up into the CENTRALIZED area first"
+        );
 
-        // The pruned file persists — a second read finds nothing to prune
-        // and creates no second backup (idempotent).
+        // The pruned file persists — a second read finds nothing to prune (idempotent).
         let reread = read_projects(&path).unwrap();
         assert_eq!(reread.workspaces.len(), 1);
-        assert_eq!(backup_count(&dir), 1, "no second backup on clean re-read");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2074,7 +2073,7 @@ mod tests {
 
         let parsed = read_projects(&path).unwrap();
         assert_eq!(parsed.workspaces.len(), 1);
-        assert_eq!(backup_count(&dir), 0, "no orphans → no backup, no rewrite");
+        assert_eq!(sibling_backup_count(&dir), 0, "no orphans → no backup, no rewrite");
         let _ = fs::remove_dir_all(&dir);
     }
 }
