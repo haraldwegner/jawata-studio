@@ -1756,18 +1756,29 @@ impl ManagerService {
 
         // Sprint 22 (POST layer): write the PostToolUse observer (Claude Code only) —
         // the reactive steer-after-slip + versioned outcomes/utilization capture.
+        // Sprint 21a (item J): the observer now also bridges slips into the experience
+        // store, so it bakes the resident URL + token like the push hooks.
         if let (Some(settings_path), Some(observer_path)) =
             (derive_hook_settings_path(client), managed_observer_script_path())
         {
+            let (observer_url, observer_token) = servers
+                .first()
+                .map(|server| (server.url.clone(), server.token.clone()))
+                .unwrap_or_default();
             match write_managed_posthook(
                 &settings_path,
                 &observer_path,
+                &observer_url,
+                &observer_token,
                 backup_before_write,
                 matches!(mode, DeployMode::Regenerate),
             ) {
                 Ok(true) => changed_sections.push("posthook".into()),
                 Ok(false) => {}
                 Err(error) => errors.push(error),
+            }
+            if let Err(error) = selftest_hook_script(&observer_path) {
+                errors.push(error);
             }
         }
 
@@ -1792,6 +1803,9 @@ impl ManagerService {
                     Ok(false) => {}
                     Err(error) => errors.push(error),
                 }
+                if let Err(error) = selftest_hook_script(&primer_path) {
+                    errors.push(error);
+                }
             }
             if let (Some(settings_path), Some(recall_path)) =
                 (derive_hook_settings_path(client), managed_recall_script_path())
@@ -1807,6 +1821,9 @@ impl ManagerService {
                     Ok(true) => changed_sections.push("recall".into()),
                     Ok(false) => {}
                     Err(error) => errors.push(error),
+                }
+                if let Err(error) = selftest_hook_script(&recall_path) {
+                    errors.push(error);
                 }
             }
         }
@@ -3844,15 +3861,25 @@ fn remove_managed_hook(
 /// block — it appends three signals to `~/.claude/goja-studio/outcomes.log` (the
 /// scoring substrate) and steers after a declared-fallback slip. Deterministic so a
 /// re-deploy is a byte-stable no-op.
-fn build_observer_script() -> String {
-    r#"#!/usr/bin/env bash
+fn build_observer_script(mcp_url: &str, token: &str) -> String {
+    OBSERVER_TEMPLATE.replace("__MCP_URL__", mcp_url).replace("__TOKEN__", token)
+}
+
+const OBSERVER_TEMPLATE: &str = r#"#!/usr/bin/env bash
 # <goja-studio managed PostToolUse observer — do not edit; overwritten on deploy>
 # Reactive, never blocks. Appends three POST signals to a versioned outcomes log:
 #   slip            a declared goja-fallback the PRE guard allowed (+ a steering note)
 #   read-ungrounded a Read of a .java file not preceded by a GOJA lookup this session
 #   verify          a compile/diagnostics/test event (correlates a preceding change)
+# Sprint 21a (item J): slips are also BRIDGED into the experience store as candidates.
 dir="$HOME/.claude/goja-studio"; mkdir -p "$dir" 2>/dev/null
 log="$dir/outcomes.log"
+MCP_URL="__MCP_URL__"
+TOKEN="__TOKEN__"
+
+# The one steering payload — selftest and the real slip path share these bytes.
+slip_ctx='{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"goja-fallback recorded. Next: verify with compile_workspace + get_diagnostics. A declared fallback is a GOJA feature request — if a newer GOJA version can do it, prefer GOJA next time."}}'
+if [ "${GOJA_HOOK_SELFTEST:-}" = "1" ]; then printf '%s' "$slip_ctx"; exit 0; fi
 
 goja_ver() {
   ls -1d "${XDG_CACHE_HOME:-$HOME/.cache}/goja-studio/tools/goja/current"/goja-* 2>/dev/null \
@@ -3864,14 +3891,25 @@ emit() {
 }
 # v1.5.1: log a declared-fallback slip + steer. Callers gate this to a REAL .java-targeted
 # op, so a non-.java edit whose content merely contains the marker is not counted.
+# Sprint 21a (item J): the slip is also recorded into the experience store (candidate) —
+# the first conversation-level auto-learn path. Fail-safe: goja down -> log-only.
 emit_slip() {
-  reason="$(printf '%s' "$input" | sed -nE 's/.*[Gg][Oo][Jj][Aa]-[Ff][Aa][Ll][Ll][Bb][Aa][Cc][Kk]:[[:space:]]*([^"\\]*).*/\1/p' | head -n1 | sed -E 's/[[:space:]]*$//')"
+  reason="$(printf '%s' "$flat" | sed -nE 's/.*[Gg][Oo][Jj][Aa]-[Ff][Aa][Ll][Ll][Bb][Aa][Cc][Kk]:[[:space:]]*([^"\\]*).*/\1/p' | head -n1 | sed -E 's/[[:space:]]*$//')"
   emit "slip" "$tool_name	$reason"
-  printf '%s' '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"goja-fallback recorded. Next: verify with compile_workspace + get_diagnostics. A declared fallback is a GOJA feature request — if a newer GOJA version can do it, prefer GOJA next time."}}'
+  if command -v curl >/dev/null 2>&1 && [ -n "$MCP_URL" ]; then
+    sr="$(printf '%s: %s' "$tool_name" "$reason" | sed 's/["\\]/ /g' | tr -d '[:cntrl:]' | cut -c1-200)"
+    curl -s --max-time 3 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"record","type":"failure_mode","operation":"goja-fallback-slip","summary":"goja-fallback slip: '"$sr"'","symptoms":["goja fallback slip"]}}}' \
+      "$MCP_URL" >/dev/null 2>&1 || true
+  fi
+  printf '%s' "$slip_ctx"
 }
 
 input="$(cat)"
 flat="$(printf '%s' "$input" | tr '\n' ' ')"
+# Sprint 21a (item J): judge the REQUEST only. tool_response may echo file contents that
+# merely mention '.java' or 'goja-fallback:' (a cat of a hook script logged a false slip).
+flat="$(printf '%s' "$flat" | sed 's/"tool_response".*$//')"
 tool_name="$(printf '%s' "$flat" | grep -oE '"tool_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed -E 's/.*"([^"]*)"$/\1/')"
 session_id="$(printf '%s' "$flat" | grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed -E 's/.*"([^"]*)"$/\1/')"
 state="$dir/trygate/$session_id"
@@ -3914,8 +3952,55 @@ case "$tool_name" in
     ;;
 esac
 exit 0
-"#
-    .to_string()
+"#;
+
+/// Sprint 21a (item J): the post-deploy hook self-check — the v2.0.x dogfood lesson
+/// institutionalized. Unit tests on the TEMPLATE were green while the EMITTED bytes were
+/// broken (greedy peel, printf `\n`); so after writing a hook, drive its
+/// `GOJA_HOOK_SELFTEST=1` path (which shares the live emit format) and validate the bytes
+/// it prints parse as the hook JSON contract. Fail-OPEN when bash is unavailable (the
+/// check cannot judge), fail-CLOSED on empty/invalid output (the deploy reports it).
+fn selftest_hook_script(script: &Path) -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    if !script.exists() {
+        return Ok(());
+    }
+    let output = match Command::new("bash")
+        .arg(script)
+        .env("GOJA_HOOK_SELFTEST", "1")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => return Ok(()),          // no bash on this platform — cannot judge
+    };
+    if output.stdout.is_empty() {
+        return Err(format!(
+            "hook self-check emitted NOTHING (selftest path missing?): {}",
+            script.display()
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+        format!(
+            "hook self-check emitted INVALID JSON ({error}): {}",
+            script.display()
+        )
+    })?;
+    let has_context = value
+        .get("hookSpecificOutput")
+        .and_then(|h| h.get("additionalContext"))
+        .and_then(|c| c.as_str())
+        .map(|c| !c.is_empty())
+        .unwrap_or(false);
+    if has_context {
+        Ok(())
+    } else {
+        Err(format!(
+            "hook self-check output lacks hookSpecificOutput.additionalContext: {}",
+            script.display()
+        ))
+    }
 }
 
 /// The single `PostToolUse` matcher entry that invokes the observer. Broad matcher:
@@ -3953,6 +4038,8 @@ fn is_managed_posthook_entry(entry: &serde_json::Value) -> bool {
 fn write_managed_posthook(
     settings_path: &str,
     observer_path: &Path,
+    mcp_url: &str,
+    token: &str,
     backup_before_write: bool,
     force_rewrite: bool,
 ) -> Result<bool, String> {
@@ -3962,7 +4049,7 @@ fn write_managed_posthook(
     fs::create_dir_all(script_parent).map_err(|error| {
         format!("failed to create observer dir {}: {error}", script_parent.display())
     })?;
-    let script_body = build_observer_script();
+    let script_body = build_observer_script(mcp_url, token);
     let script_changed = fs::read_to_string(observer_path)
         .map(|existing| existing != script_body)
         .unwrap_or(true);
@@ -4374,6 +4461,12 @@ const PRIMER_TEMPLATE: &str = r#"#!/usr/bin/env bash
 set -u
 MCP_URL="__MCP_URL__"
 TOKEN="__TOKEN__"
+# THE emit path — selftest and the live path share this one printf format, so the deploy
+# self-check validates the exact bytes the real injection will produce (Sprint 21a item J).
+emit_ctx() {
+  printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"GOJA domain primer (what this codebase is about):\\n%s"}}' "$1"
+}
+if [ "${GOJA_HOOK_SELFTEST:-}" = "1" ]; then emit_ctx '[domain_fact] selftest canned line (accepted)'; exit 0; fi
 command -v curl >/dev/null 2>&1 || exit 0
 req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"primer","format":"text","limit":12}}}'
 resp="$(curl -s --max-time 3 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$req" "$MCP_URL" 2>/dev/null)"
@@ -4389,7 +4482,7 @@ printf '%s' "$inner" | grep -q '"success"[[:space:]]*:[[:space:]]*true' || exit 
 data="$(printf '%s' "$inner" | sed -n 's/.*"data"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
 [ -n "$data" ] || exit 0
 case "$data" in No\ domain\ knowledge*) exit 0 ;; esac
-printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"GOJA domain primer (what this codebase is about):\\n%s"}}' "$data"
+emit_ctx "$data"
 exit 0
 "#;
 
@@ -4401,6 +4494,11 @@ const RECALL_TEMPLATE: &str = r#"#!/usr/bin/env bash
 set -u
 MCP_URL="__MCP_URL__"
 TOKEN="__TOKEN__"
+# THE emit path — selftest and the live path share this one printf format (Sprint 21a item J).
+emit_ctx() {
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"GOJA recalled prior knowledge for %s:\\n%s"}}' "$1" "$2"
+}
+if [ "${GOJA_HOOK_SELFTEST:-}" = "1" ]; then emit_ctx 'com.example.SelfTest' '[lesson] selftest canned line (accepted)'; exit 0; fi
 command -v curl >/dev/null 2>&1 || exit 0
 input="$(cat)"
 flatin="$(printf '%s' "$input" | tr '\n\r' '  ')"
@@ -4423,7 +4521,7 @@ printf '%s' "$inner" | grep -q '"success"[[:space:]]*:[[:space:]]*true' || exit 
 data="$(printf '%s' "$inner" | sed -n 's/.*"data"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
 [ -n "$data" ] || exit 0
 case "$data" in No\ known\ knowledge*) exit 0 ;; esac
-printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"GOJA recalled prior knowledge for %s:\\n%s"}}' "$sym" "$data"
+emit_ctx "$sym" "$data"
 exit 0
 "#;
 
@@ -5238,7 +5336,7 @@ mod tests {
 
     #[test]
     fn observer_script_captures_the_three_signals() {
-        let s = build_observer_script();
+        let s = build_observer_script("http://127.0.0.1:8890/mcp", "tok");
         assert!(s.contains("outcomes.log"), "appends to the versioned outcomes log");
         assert!(s.contains("read-ungrounded"), "captures ungrounded .java reads");
         assert!(s.contains("emit \"slip\""), "captures declared-fallback slips");
@@ -5248,7 +5346,87 @@ mod tests {
         assert!(s.contains("emit_slip"), "slip logging is factored so callers can gate it to real .java ops");
         assert!(s.contains("not a gated op"), "v1.5.1: slip scoped to .java-targeted ops — no false slip on an incidental marker in edited content");
         assert!(s.trim_end().ends_with("exit 0"), "reactive — never blocks");
-        assert_eq!(s, build_observer_script(), "deterministic (byte-stable re-deploy)");
+        assert_eq!(
+            s,
+            build_observer_script("http://127.0.0.1:8890/mcp", "tok"),
+            "deterministic (byte-stable re-deploy)"
+        );
+    }
+
+    #[test]
+    fn observer_judges_tool_input_only() {
+        // Sprint 21a (item J): a cat of a file whose CONTENT mentions '.java' +
+        // 'goja-fallback:' logged a false slip — the observer grepped the whole payload
+        // including tool_response. The response must be stripped BEFORE any matching.
+        let s = build_observer_script("u", "t");
+        let strip = s.find(r#"sed 's/"tool_response".*$//'"#)
+            .expect("strips tool_response from the judged payload");
+        let matching = s.find("case \"$tool_name\" in").expect("signal matching");
+        assert!(strip < matching, "the strip happens before any signal matching");
+    }
+
+    #[test]
+    fn observer_bridges_slips_into_the_experience_store() {
+        // Sprint 21a (items G+J): the first conversation-level auto-learn path — a slip
+        // becomes a candidate entry, fail-safe when goja is down.
+        let s = build_observer_script("http://127.0.0.1:8890/mcp", "sekret");
+        assert!(s.contains(r#"MCP_URL="http://127.0.0.1:8890/mcp""#), "bakes the resident url");
+        assert!(s.contains(r#"TOKEN="sekret""#), "bakes the bearer token");
+        assert!(s.contains(r#""kind":"record""#), "records into the store");
+        assert!(s.contains(r#""type":"failure_mode""#), "as a failure-mode candidate");
+        assert!(s.contains("|| true"), "fail-safe: a dead resident never breaks the hook");
+        assert!(
+            s.contains(r#"sed 's/["\\]/ /g'"#),
+            "the interpolated summary is sanitized for the JSON payload"
+        );
+    }
+
+    #[test]
+    fn all_emitting_hooks_have_a_selftest_path_sharing_the_live_emit() {
+        // Sprint 21a (item J): the selftest MUST exercise the same emit format as the
+        // live path — a duplicated format string could pass selftest while live is broken.
+        for s in [
+            build_primer_script("u", "t"),
+            build_recall_script("u", "t"),
+        ] {
+            assert!(s.contains("GOJA_HOOK_SELFTEST"), "has a selftest entry point");
+            assert!(s.contains("emit_ctx"), "emits through the shared function");
+            assert_eq!(
+                s.matches("hookSpecificOutput").count(),
+                1,
+                "exactly ONE emit format definition — selftest and live share it"
+            );
+        }
+        let observer = build_observer_script("u", "t");
+        assert!(observer.contains("GOJA_HOOK_SELFTEST"));
+        assert_eq!(
+            observer.matches("hookSpecificOutput").count(),
+            1,
+            "observer steering payload defined once, shared by selftest + emit_slip"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn selftest_validates_emitted_bytes_and_catches_the_v202_bug_class() {
+        let dir = unique_tempdir("selftest");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A correctly generated primer passes.
+        let good = dir.join("primer-good.sh");
+        std::fs::write(&good, build_primer_script("http://127.0.0.1:1/mcp", "t")).unwrap();
+        assert!(selftest_hook_script(&good).is_ok(), "healthy template passes the self-check");
+
+        // Re-introduce the v2.0.1 bug (printf format with a REAL newline instead of \n):
+        // the emitted additionalContext becomes invalid JSON — the self-check must fail.
+        let broken = dir.join("primer-broken.sh");
+        let body = build_primer_script("http://127.0.0.1:1/mcp", "t").replace(r"\\n%s", "\n%s");
+        std::fs::write(&broken, body).unwrap();
+        let err = selftest_hook_script(&broken);
+        assert!(err.is_err(), "the v2.0.x bug class is caught at deploy time");
+        assert!(err.unwrap_err().contains("INVALID JSON"), "with a diagnosable message");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -5269,7 +5447,7 @@ mod tests {
         .unwrap();
 
         // (1) WRITE: entry added, observer written, user content preserved.
-        assert!(write_managed_posthook(&settings_path, &observer, false, false).unwrap());
+        assert!(write_managed_posthook(&settings_path, &observer, "http://u/mcp", "tok", false, false).unwrap());
         assert!(observer.exists(), "observer script written");
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
@@ -5284,7 +5462,7 @@ mod tests {
 
         // (2) IDEMPOTENT: unchanged re-deploy is a no-op.
         assert!(
-            !write_managed_posthook(&settings_path, &observer, false, false).unwrap(),
+            !write_managed_posthook(&settings_path, &observer, "http://u/mcp", "tok", false, false).unwrap(),
             "re-deploy is a no-op"
         );
 
