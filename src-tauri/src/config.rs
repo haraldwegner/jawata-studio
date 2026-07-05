@@ -206,6 +206,17 @@ pub struct ManagerSettings {
     /// Stable Bearer token for the gateway entry; generated once on first enable.
     #[serde(default)]
     pub gateway_token: Option<String>,
+    /// Sprint 21a (item D): after a successful deploy, call
+    /// `experience(kind=load)` on each resident so the knowledge push channel
+    /// (primer + recall) has content from day one. Default ON.
+    #[serde(default = "default_auto_seed_on_deploy")]
+    pub auto_seed_on_deploy: bool,
+}
+
+/// Sprint 21a (item D): auto-seed is ON by default — a store that starts empty keeps
+/// the push channel silent until someone seeds by hand.
+pub fn default_auto_seed_on_deploy() -> bool {
+    true
 }
 
 /// Sprint 15 Stage 11: governs the MCP-config writer's behaviour when
@@ -289,6 +300,7 @@ impl ManagerSettings {
             gateway_enabled: default_gateway_enabled(),
             gateway_port: default_gateway_port(),
             gateway_token: None,
+            auto_seed_on_deploy: default_auto_seed_on_deploy(),
         }
     }
 
@@ -375,6 +387,10 @@ pub struct UpdateSettingsInput {
     /// Lets older frontend builds save settings without resetting this field.
     #[serde(default)]
     pub release_repo: Option<String>,
+    /// Sprint 21a (item D): optional — omitted by older frontends preserves the
+    /// current value.
+    #[serde(default)]
+    pub auto_seed_on_deploy: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -876,6 +892,9 @@ impl ConfigStore {
         settings.deploy_targets = sanitize_deploy_target_flags(input.deploy_targets);
         if let Some(release_repo) = input.release_repo {
             settings.release_repo = sanitize_release_repo(release_repo)?;
+        }
+        if let Some(auto_seed) = input.auto_seed_on_deploy {
+            settings.auto_seed_on_deploy = auto_seed;
         }
 
         write_json(&self.paths.settings_file, &*settings)?;

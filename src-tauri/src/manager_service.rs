@@ -669,6 +669,34 @@ impl ManagerService {
         let ok = results
             .iter()
             .all(|entry| !matches!(entry.status, DeployClientStatus::Failed));
+
+        // Sprint 21a (item D): auto-seed the knowledge store after a successful deploy —
+        // experience(kind=load) with no path seeds from the resident's default memory
+        // roots, so the primer + recall have content from day one. Fire-and-forget in a
+        // background thread: results are LOGGED, a dead/booting resident never fails or
+        // delays the deploy.
+        if ok {
+            let seed_targets = auto_seed_targets(settings.auto_seed_on_deploy, &servers);
+            if !seed_targets.is_empty() {
+                std::thread::spawn(move || {
+                    for (url, token) in seed_targets {
+                        match call_resident_tool(
+                            &url,
+                            &token,
+                            "experience",
+                            serde_json::json!({"kind": "load"}),
+                            10,
+                        ) {
+                            Ok(_) => eprintln!("[goja-studio] auto-seed ok: {url}"),
+                            Err(error) => {
+                                eprintln!("[goja-studio] auto-seed skipped ({url}): {error}")
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
         let detail = if !resolve_errors.is_empty() {
             format!(
                 "Agent deploy completed, but {} workspace(s) could not be \
@@ -3954,6 +3982,56 @@ esac
 exit 0
 "#;
 
+/// Sprint 21a (item D): which residents to auto-seed. Pure so the toggle logic is
+/// unit-testable; empty when the setting is off or a server has no url/token.
+fn auto_seed_targets(enabled: bool, servers: &[ManagedDeployServer]) -> Vec<(String, String)> {
+    if !enabled {
+        return Vec::new();
+    }
+    servers
+        .iter()
+        .filter(|server| !server.url.is_empty() && !server.token.is_empty())
+        .map(|server| (server.url.clone(), server.token.clone()))
+        .collect()
+}
+
+/// Sprint 21a (item D): one-shot JSON-RPC `tools/call` against a resident `/mcp` —
+/// the small sibling of `gateway::forward` (reqwest blocking POST with Bearer). Used by
+/// auto-seed and by the Knowledge view's maintenance actions (item F).
+fn call_resident_tool(
+    url: &str,
+    token: &str,
+    tool: &str,
+    arguments: serde_json::Value,
+    timeout_secs: u64,
+) -> Result<String, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .build()
+        .map_err(|error| format!("http client: {error}"))?;
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": { "name": tool, "arguments": arguments }
+    });
+    let response = client
+        .post(url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .map_err(|error| format!("request failed: {error}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|error| format!("response read failed: {error}"))?;
+    if !status.is_success() {
+        return Err(format!("resident answered {status}: {body}"));
+    }
+    Ok(body)
+}
+
 /// Sprint 21a (item J): the post-deploy hook self-check — the v2.0.x dogfood lesson
 /// institutionalized. Unit tests on the TEMPLATE were green while the EMITTED bytes were
 /// broken (greedy peel, printf `\n`); so after writing a hook, drive its
@@ -5404,6 +5482,75 @@ mod tests {
             1,
             "observer steering payload defined once, shared by selftest + emit_slip"
         );
+    }
+
+    // ===== Sprint 21a (item D): auto-seed on deploy =====
+
+    fn seed_server(url: &str, token: &str) -> ManagedDeployServer {
+        ManagedDeployServer {
+            id: "goja-test".into(),
+            workspace_name: "test".into(),
+            project_names: vec![],
+            project_paths: vec![],
+            url: url.into(),
+            token: token.into(),
+            disabled: false,
+        }
+    }
+
+    #[test]
+    fn auto_seed_targets_honors_the_toggle_and_skips_empty_credentials() {
+        let servers = vec![
+            seed_server("http://127.0.0.1:8801/mcp", "tok-a"),
+            seed_server("", ""),                                  // no resident allocated
+            seed_server("http://127.0.0.1:8802/mcp", "tok-b"),
+        ];
+        assert!(auto_seed_targets(false, &servers).is_empty(), "toggle off → no seeding");
+        let on = auto_seed_targets(true, &servers);
+        assert_eq!(on.len(), 2, "credential-less servers are skipped");
+        assert_eq!(on[0], ("http://127.0.0.1:8801/mcp".into(), "tok-a".into()));
+    }
+
+    #[test]
+    fn call_resident_tool_posts_jsonrpc_with_bearer() {
+        use std::io::{Read as _, Write as _};
+        // Minimal one-shot HTTP stub — asserts on the request, answers 200 JSON.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let body = r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            req
+        });
+
+        let url = format!("http://{addr}/mcp");
+        let result = call_resident_tool(&url, "sekret", "experience",
+            serde_json::json!({"kind": "load"}), 5);
+        let request = handle.join().unwrap();
+
+        assert!(result.is_ok(), "stub answered 200: {result:?}");
+        assert!(result.unwrap().contains("\"result\""));
+        assert!(request.contains("Authorization: Bearer sekret") || request.contains("authorization: Bearer sekret"),
+            "bearer auth sent: {request}");
+        assert!(request.contains(r#""name":"experience""#), "tools/call for experience");
+        assert!(request.contains(r#""kind":"load""#), "seed arguments passed through");
+    }
+
+    #[test]
+    fn call_resident_tool_reports_dead_resident_as_err() {
+        // Nothing listens here — the helper must fail fast with a message, not panic.
+        let result = call_resident_tool("http://127.0.0.1:9/mcp", "t", "experience",
+            serde_json::json!({"kind": "load"}), 2);
+        assert!(result.is_err());
     }
 
     #[test]
