@@ -108,9 +108,39 @@
     }));
   }
 
+  // Auto-reload while residents boot: a freshly (re)started resident needs ~30 s of
+  // OSGi/JDT boot before its HTTP port answers — don't show a stale "unreachable" and
+  // make the user press Reload (Harald, 2026-07-06). Poll every 5 s while anything is
+  // unreachable, for up to 2 minutes per (re)load trigger.
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let retryDeadline = 0;
+  let autoRetrying = false;
+
   onMount(() => {
+    retryDeadline = Date.now() + 120_000;
     void refreshStatus();
+    return () => {
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   });
+
+  function manualReload() {
+    retryDeadline = Date.now() + 120_000;   // a manual reload re-arms the retry window
+    void refreshStatus();
+  }
+
+  function scheduleAutoReload() {
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    const anyUnreachable = statuses.length === 0 || statuses.some((s) => !s.reachable);
+    autoRetrying = anyUnreachable && Date.now() < retryDeadline;
+    if (!autoRetrying) return;
+    retryTimer = setTimeout(() => {
+      void refreshStatus();
+    }, 5000);
+  }
 
   async function refreshStatus() {
     statusLoading = true;
@@ -120,6 +150,7 @@
       showResult("status", { error: String(error) });
     } finally {
       statusLoading = false;
+      scheduleAutoReload();
     }
   }
 
@@ -522,11 +553,14 @@
         <button
           type="button"
           disabled={statusLoading || interactionDisabled}
-          on:click={refreshStatus}
-          title="Re-read entry counts, store file and size from every resident"
+          on:click={manualReload}
+          title="Re-read entry counts, store file and size from every resident (unreachable residents are retried automatically while they boot)"
         >
           {statusLoading ? "Loading…" : "Reload status"}
         </button>
+        {#if autoRetrying && !busyAction}
+          <span class="hint">resident starting — retrying automatically…</span>
+        {/if}
         <button
           type="button"
           disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
