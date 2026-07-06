@@ -6,7 +6,7 @@
   import ProjectList from "./lib/components/ProjectList.svelte";
   import WorkspaceList from "./lib/components/WorkspaceList.svelte";
   import RuntimeSettings from "./lib/components/RuntimeSettings.svelte";
-  import KnowledgeView from "./lib/components/KnowledgeView.svelte";
+  import MemoryView from "./lib/components/MemoryView.svelte";
   import HelpView from "./lib/components/HelpView.svelte";
   import { createAppStore } from "./lib/stores/app";
   import {
@@ -23,7 +23,7 @@
   const MIN_RIGHT_PANEL_WIDTH = 420;
   const SPLITTER_WIDTH = 12;
 
-  let currentView: "dashboard" | "knowledge" | "settings" | "help" = "dashboard";
+  let currentView: "dashboard" | "memory" | "settings" | "help" = "dashboard";
   /** Sprint 10 v0.10.4: which workspace the Register Project / Import
    * forms add to. Owned at App.svelte so the Workspaces card and the
    * forms stay in sync. Defaults to the first existing workspace if
@@ -403,11 +403,11 @@
           Dashboard
         </button>
         <button
-          class="tab {currentView === 'knowledge' ? 'active' : ''}"
-          on:click={() => (currentView = 'knowledge')}
+          class="tab {currentView === 'memory' ? 'active' : ''}"
+          on:click={() => (currentView = 'memory')}
           type="button"
         >
-          Knowledge
+          Memory
         </button>
         <button
           class="tab {currentView === 'settings' ? 'active' : ''}"
@@ -616,17 +616,17 @@
         </section>
       {/if}
     </section>
-  {:else if currentView === 'knowledge'}
+  {:else if currentView === 'memory'}
     <section class="dashboard-main">
       {#if $appStore.settings}
-        <KnowledgeView
+        <MemoryView
           disabled={$appStore.isBusy}
           settings={$appStore.settings}
           on:refresh={() => appStore.load()}
         />
       {:else}
         <section class="panel stack">
-          <h2>Knowledge / Database</h2>
+          <h2>Memory / Database</h2>
           <p class="muted">Loading settings...</p>
         </section>
       {/if}

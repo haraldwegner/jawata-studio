@@ -1,5 +1,6 @@
 <script lang="ts">
-  // Sprint 21a (item F): the Knowledge / Database view.
+  // Sprint 21a (item F): the Memory / Database view (Harald 2026-07-06: "memory", not
+  // "knowledge", in every user-visible label).
   //
   // VOCABULARY PRINCIPLE (Harald, 2026-07-05): every action carries EXACTLY the
   // experience(kind=…) verb name — load / reseed / wipe / refresh / list / promote /
@@ -74,11 +75,11 @@
     saveState === "saving"
       ? "Saving…"
       : saveState === "saved"
-        ? "Knowledge settings saved."
+        ? "Memory settings saved."
         : saveState === "error"
           ? saveError
           : isDirty
-            ? "Unsaved knowledge settings."
+            ? "Unsaved memory settings."
             : "";
 
   onMount(() => {
@@ -250,11 +251,13 @@
   ];
 </script>
 
-<section class="panel stack knowledge-root">
+<!-- runtime-settings-root = the app-wide "scrollable middle + sticky footer" scroll
+     container (the same mechanism Settings and Dashboard use). -->
+<section class="panel stack runtime-settings-root memory-root">
   <div>
-    <h2>Knowledge / Database</h2>
+    <h2>Memory / Database</h2>
     <p class="muted">
-      The experience store behind the GOJA push channel. Every action is the exact verb you
+      Your memory store behind the GOJA push channel. Every action is the exact verb you
       can also use in a prompt — the UI and the conversation share one vocabulary.
     </p>
   </div>
@@ -532,7 +535,7 @@
     class="save-settings-button"
     disabled={interactionDisabled || !isDirty}
     on:click={saveKnowledgeSettings}
-    title="Persist the knowledge settings to disk"
+    title="Persist the memory settings to disk"
     type="button"
   >
     Save settings
