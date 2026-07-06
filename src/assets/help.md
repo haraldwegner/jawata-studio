@@ -142,6 +142,10 @@ When you click a project row, the bottom strip shows **Name**, **Project path**,
 
 ## Memory
 
+![Memory — Memory sources and Store & Maintenance panels, results under the actions](/help/memory.png)
+
+*Memory sources on the left; the store with its five actions and inline results on the right.*
+
 Your GOJA memory store — the knowledge behind the push channel that primes and steers
 agents. One user-level database by default, shared by every workspace, living at
 `~/.local/share/goja/`. The view has two panels:
