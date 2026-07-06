@@ -140,6 +140,34 @@ When you click a project row, the bottom strip shows **Name**, **Project path**,
 
 ---
 
+## Memory
+
+Your GOJA memory store — the knowledge behind the push channel that primes and steers
+agents. One user-level database by default, shared by every workspace, living at
+`~/.local/share/goja/`. The view has two panels:
+
+- **Memory sources** — where **Load** finds your memory files. The usual locations are
+  auto-discovered: your layered `CLAUDE.md` files, every Claude project memory folder,
+  Cursor rules (`.cursor/rules`, `.cursorrules`), `AGENTS.md`, Copilot instructions.
+  Add extra root folders only for anything outside those conventions. **Store mode**
+  chooses between the shared user-level store (default — your knowledge is recallable
+  from every workspace) and a per-workspace store. **Auto-seed on deploy** loads your
+  memory into fresh residents automatically after every deploy.
+- **Store & Maintenance** — the store, its size and entry count, and the actions:
+  **Load** (pick up new and changed memory files — unchanged files are skipped, so
+  re-loading is always safe), **Clean up** (one hygiene pass: drop aged discarded
+  entries, merge duplicates, shrink the file), **Export…/Import…** (portable JSON via
+  the file dialogs), and **Wipe** (delete all entries — the database itself stays; Load
+  re-fills it). Results appear right below the actions, with the raw response one click
+  away.
+
+Everything else — re-checking stale Java references, curating candidate entries,
+backups — happens automatically or by prompt: every action here can also be asked for
+in plain words in your agent session ("load my memory files", "wipe the store"). Hover
+any control for its prompt phrase.
+
+---
+
 ## Settings
 
 ![Settings — GOJA Runtime and Exposed Services](/help/settings-top.png)
