@@ -4065,9 +4065,8 @@ fn knowledge_jvm_properties(settings: &ManagerSettings) -> Vec<String> {
             settings.memory_roots.join(separator)
         ));
     }
-    props.push(format!("-Dgoja.memory.maxDepth={}", settings.memory_max_depth));
-    props.push(format!("-Dgoja.memory.maxFiles={}", settings.memory_max_files));
-    props.push(format!("-Dgoja.memory.maxBytes={}", settings.memory_max_bytes));
+    // Sprint 21b: no -Dgoja.memory.max* — the resident's defaults are runaway backstops
+    // ("the crawl finds everything"); the properties remain honored for manual launches.
     props
 }
 
@@ -5630,6 +5629,32 @@ mod tests {
         let on = auto_seed_targets(true, &servers);
         assert_eq!(on.len(), 2, "credential-less servers are skipped");
         assert_eq!(on[0], ("http://127.0.0.1:8801/mcp".into(), "tok-a".into()));
+    }
+
+    #[test]
+    fn knowledge_jvm_properties_carries_no_crawl_caps() {
+        // Sprint 21b: the crawl finds everything — studio sends store mode + roots only;
+        // the resident's own defaults are the runaway backstops.
+        let paths = crate::config::AppPaths {
+            config_dir: std::path::PathBuf::from("/tmp/config"),
+            state_dir: std::path::PathBuf::from("/tmp/state"),
+            cache_dir: std::path::PathBuf::from("/tmp/cache"),
+            projects_file: std::path::PathBuf::from("/tmp/config/projects.json"),
+            settings_file: std::path::PathBuf::from("/tmp/config/settings.json"),
+            runtime_state_file: std::path::PathBuf::from("/tmp/state/runtime-state.json"),
+            default_data_root: std::path::PathBuf::from("/tmp/cache/goja-studio"),
+            log_dir: std::path::PathBuf::from("/tmp/state/logs"),
+        };
+        let mut settings = ManagerSettings::default_for_paths(&paths);
+        settings.memory_roots = vec!["/home/x/.claude".into()];
+        let props = knowledge_jvm_properties(&settings);
+        assert_eq!(props.len(), 2, "store mode + roots, nothing else");
+        assert!(props[0].starts_with("-Dgoja.experience.store="));
+        assert!(props[1].starts_with("-Dgoja.memory.roots="));
+        assert!(
+            props.iter().all(|p| !p.contains("goja.memory.max")),
+            "no -Dgoja.memory.max* from studio"
+        );
     }
 
     #[test]

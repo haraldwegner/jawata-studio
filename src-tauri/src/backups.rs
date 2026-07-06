@@ -319,6 +319,13 @@ mod tests {
         let versions = list_versions(&root.join("backups").join(key_for(&original)));
         assert_eq!(versions.len(), 1, "landed as a managed version");
 
+        // Sprint 21b (item E): the sweep runs automatically at every manager startup —
+        // a second pass over the same dirs must be a clean no-op.
+        let again = gc_scattered_backups(&[scattered.clone()], false);
+        assert_eq!(again.moved, 0, "second run is a no-op");
+        assert!(again.items.is_empty(), "nothing recognized remains");
+        assert!(not_ours.exists(), "unrecognized file still untouched");
+
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_dir_all(scattered);
     }

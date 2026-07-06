@@ -186,6 +186,17 @@ pub fn run() {
     let runtime_manager = RuntimeManager::new(config_store.paths());
     let manager_service = ManagerService::new(config_store, release_manager, runtime_manager);
 
+    // Sprint 21b (item E): backups are plumbing — sweep historically scattered
+    // .bak-<ms> files into the managed area once per launch, automatically. Only
+    // recognized goja-studio patterns move; unrecognized files are never touched.
+    let gc = manager_service.backups_gc(false);
+    if !gc.items.is_empty() || gc.unrecognized_skipped > 0 {
+        eprintln!(
+            "goja-studio: backup GC — {} recognized backup(s) swept into the managed area, {} unrecognized left untouched ({} dirs scanned)",
+            gc.moved, gc.unrecognized_skipped, gc.scanned_dirs
+        );
+    }
+
     tauri::Builder::default()
         // Sprint 14 (v0.14.0, bugs.md #3): single-instance MUST be the first
         // plugin in the chain so the duplicate process exits before any
@@ -418,7 +429,6 @@ pub fn run() {
             commands::deploy_to_agents,
             commands::knowledge_status,
             commands::experience_verb,
-            commands::backups_gc,
             commands::get_quit_prompt_context,
             commands::perform_quit_action,
         ])

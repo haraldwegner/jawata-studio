@@ -53,14 +53,6 @@ pub fn experience_verb(
 }
 
 #[tauri::command]
-pub fn backups_gc(
-    state: State<'_, AppState>,
-    dry_run: bool,
-) -> Result<crate::backups::GcReport, String> {
-    Ok(state.manager_service.backups_gc(dry_run))
-}
-
-#[tauri::command]
 pub fn add_project(
     state: State<'_, AppState>,
     input: AddProjectInput,

@@ -221,35 +221,17 @@ pub struct ManagerSettings {
     /// passed as `-Dgoja.memory.roots` (platform path-separator list).
     #[serde(default)]
     pub memory_roots: Vec<String>,
-    /// Sprint 21a (item F): `load`/`reseed` (incl. auto-seed) also walk subdirectories.
-    #[serde(default)]
-    pub memory_recursive: bool,
-    /// Sprint 21a (item F): link-crawl bounds, passed as `-Dgoja.memory.max*`.
-    #[serde(default = "default_memory_max_depth")]
-    pub memory_max_depth: u32,
-    #[serde(default = "default_memory_max_files")]
-    pub memory_max_files: u32,
-    #[serde(default = "default_memory_max_bytes")]
-    pub memory_max_bytes: u64,
+    // Sprint 21b: memory_recursive + memory_max_* REMOVED — the crawl finds everything
+    // (resident default), caps are resident-side runaway backstops with no UI. Stale keys
+    // in existing config files are ignored by serde.
     /// Sprint 21a (item E): centralized-backup retention (versions kept per file).
+    /// Sprint 21b: a config key only — no UI (backups are plumbing).
     #[serde(default = "default_backup_retention")]
     pub backup_retention: u32,
 }
 
 pub fn default_experience_store_mode() -> String {
     "shared".to_string()
-}
-
-pub fn default_memory_max_depth() -> u32 {
-    5
-}
-
-pub fn default_memory_max_files() -> u32 {
-    200
-}
-
-pub fn default_memory_max_bytes() -> u64 {
-    2_000_000
 }
 
 pub fn default_backup_retention() -> u32 {
@@ -346,10 +328,6 @@ impl ManagerSettings {
             auto_seed_on_deploy: default_auto_seed_on_deploy(),
             experience_store_mode: default_experience_store_mode(),
             memory_roots: Vec::new(),
-            memory_recursive: false,
-            memory_max_depth: default_memory_max_depth(),
-            memory_max_files: default_memory_max_files(),
-            memory_max_bytes: default_memory_max_bytes(),
             backup_retention: default_backup_retention(),
         }
     }
@@ -441,19 +419,13 @@ pub struct UpdateSettingsInput {
     /// current value.
     #[serde(default)]
     pub auto_seed_on_deploy: Option<bool>,
-    /// Sprint 21a (item F): Knowledge-view settings — all optional for older frontends.
+    /// Sprint 21a (item F): Memory-view settings — all optional for older frontends.
+    /// Sprint 21b: memory_recursive + memory_max_* dropped (crawl finds everything;
+    /// caps are resident-side backstops); a frontend still sending them is ignored.
     #[serde(default)]
     pub experience_store_mode: Option<String>,
     #[serde(default)]
     pub memory_roots: Option<Vec<String>>,
-    #[serde(default)]
-    pub memory_recursive: Option<bool>,
-    #[serde(default)]
-    pub memory_max_depth: Option<u32>,
-    #[serde(default)]
-    pub memory_max_files: Option<u32>,
-    #[serde(default)]
-    pub memory_max_bytes: Option<u64>,
     #[serde(default)]
     pub backup_retention: Option<u32>,
 }
@@ -978,18 +950,6 @@ impl ConfigStore {
                 .filter(|root| !root.is_empty())
                 .collect();
         }
-        if let Some(recursive) = input.memory_recursive {
-            settings.memory_recursive = recursive;
-        }
-        if let Some(depth) = input.memory_max_depth {
-            settings.memory_max_depth = depth.max(1);
-        }
-        if let Some(files) = input.memory_max_files {
-            settings.memory_max_files = files.max(1);
-        }
-        if let Some(bytes) = input.memory_max_bytes {
-            settings.memory_max_bytes = bytes.max(1024);
-        }
         if let Some(retention) = input.backup_retention {
             settings.backup_retention = retention.clamp(1, 500);
             crate::backups::set_backup_retention(settings.backup_retention as usize);
@@ -1405,6 +1365,30 @@ fn slugify(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_json_with_removed_sprint21a_keys_still_loads() {
+        // Sprint 21b: memory_recursive + memory_max_* left ManagerSettings; config files
+        // written by v2.1.0 still carry the keys — serde must ignore them, not fail.
+        let paths = AppPaths {
+            config_dir: PathBuf::from("/tmp/config"),
+            state_dir: PathBuf::from("/tmp/state"),
+            cache_dir: PathBuf::from("/tmp/cache"),
+            projects_file: PathBuf::from("/tmp/config/projects.json"),
+            settings_file: PathBuf::from("/tmp/config/settings.json"),
+            runtime_state_file: PathBuf::from("/tmp/state/runtime-state.json"),
+            default_data_root: PathBuf::from("/tmp/cache/goja-studio"),
+            log_dir: PathBuf::from("/tmp/state/logs"),
+        };
+        let mut v = serde_json::to_value(ManagerSettings::default_for_paths(&paths)).unwrap();
+        v["memoryRecursive"] = serde_json::json!(true);
+        v["memoryMaxDepth"] = serde_json::json!(5);
+        v["memoryMaxFiles"] = serde_json::json!(200);
+        v["memoryMaxBytes"] = serde_json::json!(2_000_000);
+        let parsed: ManagerSettings =
+            serde_json::from_value(v).expect("stale v2.1.0 keys are ignored");
+        assert_eq!(parsed.backup_retention, default_backup_retention());
+    }
 
     #[test]
     fn slugify_normalizes_display_names() {
