@@ -221,7 +221,7 @@ struct ProbeRuntime {
 /// Cursor + Claude MCP-config schema.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ManagedDeployServer {
+pub(crate) struct ManagedDeployServer {
     id: String,
     workspace_name: String,
     project_names: Vec<String>,
@@ -723,12 +723,32 @@ impl ManagerService {
 
     // ===== Sprint 21a (item F): Knowledge view backend =====
 
+    /// Sprint 21b: the FAST half of the Memory-view calls — config reads only, safe on
+    /// the main thread. The blocking HTTP half lives in the `*_for`/`*_on` functions and
+    /// runs via `spawn_blocking` (sync Tauri commands execute on the MAIN thread; the
+    /// 2×5 s status poll froze the whole UI while residents were booting).
+    pub(crate) fn knowledge_servers(&self) -> Vec<ManagedDeployServer> {
+        let settings = self.config_store.get_settings();
+        let projects = self.config_store.list_projects();
+        self.build_deploy_servers(&settings, &projects).0
+    }
+
+    /// Resolve one workspace's resident for an off-thread experience call.
+    pub(crate) fn find_knowledge_server(&self, workspace: &str) -> Result<ManagedDeployServer, String> {
+        self.knowledge_servers()
+            .into_iter()
+            .find(|server| server.workspace_name == workspace)
+            .ok_or_else(|| format!("no resident for workspace '{workspace}'"))
+    }
+
     /// Per-workspace store overview for the Knowledge view: reachability + the
     /// resident's `experience(kind=stats)` (counts by status/language, store file+size).
     pub fn knowledge_status(&self) -> Vec<KnowledgeWorkspaceStatus> {
-        let settings = self.config_store.get_settings();
-        let projects = self.config_store.list_projects();
-        let (servers, _resolve_errors) = self.build_deploy_servers(&settings, &projects);
+        Self::knowledge_status_for(&self.knowledge_servers())
+    }
+
+    /// The blocking HTTP half — no `&self`, callable from `spawn_blocking`.
+    pub(crate) fn knowledge_status_for(servers: &[ManagedDeployServer]) -> Vec<KnowledgeWorkspaceStatus> {
         servers
             .iter()
             .map(|server| {
@@ -766,18 +786,20 @@ impl ManagerService {
         kind: &str,
         args: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
+        Self::experience_verb_on(&self.find_knowledge_server(workspace)?, kind, args)
+    }
+
+    /// The blocking HTTP half of a verb call — no `&self`, callable from `spawn_blocking`.
+    pub(crate) fn experience_verb_on(
+        server: &ManagedDeployServer,
+        kind: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         if !EXPERIENCE_KINDS.contains(&kind) {
             return Err(format!(
                 "unknown experience verb '{kind}' — allowed: {EXPERIENCE_KINDS:?}"
             ));
         }
-        let settings = self.config_store.get_settings();
-        let projects = self.config_store.list_projects();
-        let (servers, _resolve_errors) = self.build_deploy_servers(&settings, &projects);
-        let server = servers
-            .iter()
-            .find(|server| server.workspace_name == workspace)
-            .ok_or_else(|| format!("no resident for workspace '{workspace}'"))?;
         let mut arguments = if args.is_object() {
             args
         } else {

@@ -36,20 +36,33 @@ pub fn get_dashboard(state: State<'_, AppState>) -> Result<ManagerDashboard, Str
 // ===== Sprint 21a (item F): Knowledge view =====
 
 #[tauri::command]
-pub fn knowledge_status(
+pub async fn knowledge_status(
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::manager_service::KnowledgeWorkspaceStatus>, String> {
-    Ok(state.manager_service.knowledge_status())
+    // Sprint 21b: sync Tauri commands run ON THE MAIN THREAD — this one makes up to
+    // N×5 s of HTTP calls and is polled by the Memory view, which froze the entire UI
+    // while residents were booting. Config reads stay here; HTTP goes off-thread.
+    let servers = state.manager_service.knowledge_servers();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::manager_service::ManagerService::knowledge_status_for(&servers)
+    })
+    .await
+    .map_err(|e| format!("status task failed: {e}"))
 }
 
 #[tauri::command]
-pub fn experience_verb(
+pub async fn experience_verb(
     state: State<'_, AppState>,
     workspace: String,
     kind: String,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    state.manager_service.experience_verb(&workspace, &kind, args)
+    let server = state.manager_service.find_knowledge_server(&workspace)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::manager_service::ManagerService::experience_verb_on(&server, &kind, args)
+    })
+    .await
+    .map_err(|e| format!("verb task failed: {e}"))?
 }
 
 #[tauri::command]
