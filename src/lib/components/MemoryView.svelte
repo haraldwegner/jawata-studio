@@ -70,6 +70,10 @@
     error?: string | null;
   };
   $: storeRows = buildStoreRows(statuses, storeMode);
+  // Self-healing selection: switching store mode regroups the rows and can orphan the key.
+  $: if (storeRows.length > 0 && !storeRows.some((row) => row.key === selected)) {
+    selected = (storeRows.find((row) => row.reachable) ?? storeRows[0]).key;
+  }
   $: selectedRow = storeRows.find((row) => row.key === selected);
 
   function buildStoreRows(list: KnowledgeWorkspaceStatus[], mode: string): StoreRow[] {
@@ -111,11 +115,7 @@
   async function refreshStatus() {
     statusLoading = true;
     try {
-      statuses = await knowledgeStatus();
-      const rows = buildStoreRows(statuses, storeMode);
-      if (rows.length > 0 && !rows.some((row) => row.key === selected)) {
-        selected = (rows.find((row) => row.reachable) ?? rows[0]).key;
-      }
+      statuses = await knowledgeStatus();   // selection self-heals reactively
     } catch (error) {
       showResult("status", { error: String(error) });
     } finally {
