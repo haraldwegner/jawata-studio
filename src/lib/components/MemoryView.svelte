@@ -219,6 +219,39 @@
     }
   }
 
+  /** load is per-resident-ADDITIVE: each workspace's resident discovers its own project
+   * locations (project CLAUDE.md, .cursor/rules, …) into the ONE shared store — so a
+   * shared-store load must run on EVERY reachable resident, not just one. All other
+   * actions operate on the single database and need one resident only. */
+  async function runLoad() {
+    if (!selectedRow || selectedRow.targets.length === 0 || busyAction) return;
+    busyAction = "load";
+    outputTitle = "load";
+    outputSummary = [];
+    outputRaw = "…";
+    const report: Record<string, unknown> = {};
+    const lines: string[] = [];
+    const multi = selectedRow.targets.length > 1;
+    try {
+      for (const workspace of selectedRow.targets) {
+        const response = await experienceVerb(workspace, "load", {});
+        const payload = response.success ? response.data : response;
+        report[workspace] = payload;
+        const sub = summarize("load", payload);
+        lines.push(...(multi ? sub.map((line) => `${workspace}: ${line}`) : sub));
+        outputSummary = [...lines];
+        outputRaw = JSON.stringify(report, null, 2);
+      }
+      await refreshStatus();
+    } catch (error) {
+      report["error"] = String(error);
+      outputRaw = JSON.stringify(report, null, 2);
+      outputSummary = [...lines, `Error: ${String(error)}`];
+    } finally {
+      busyAction = "";
+    }
+  }
+
   /** Sprint 21b: ONE hygiene action — prune, dedup-merge, compact, in that order. */
   async function runCleanUp() {
     if (!selectedRow || selectedRow.targets.length === 0 || busyAction) return;
@@ -497,8 +530,8 @@
         <button
           type="button"
           disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
-          on:click={() => runVerb("load", {})}
-          title={'Seed the store from your memory files — auto-discovered Claude/Cursor & co. locations plus the extra roots. Idempotent: re-loading replaces, so this is also the re-initialize after a wipe. Say: "load my memory files"'}
+          on:click={runLoad}
+          title={'Seed the store from your memory files — auto-discovered Claude/Cursor & co. locations plus the extra roots. Runs on EVERY reachable workspace of this store (each contributes its own project locations). Idempotent: re-loading replaces, so this is also the re-initialize after a wipe. Say: "load my memory files"'}
         >
           load
         </button>
