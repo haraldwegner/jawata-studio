@@ -54,43 +54,54 @@
             ? "Unsaved memory settings."
             : "";
 
-  /** One row per DISTINCT store file — a shared store is ONE store, not N workspace
-   * rows showing the same file. Unreachable residents keep their own row. */
+  /** ONE store ⇒ ONE row. In shared mode ALL workspaces are the same store — a single
+   * row with the location and the workspace list (stats from any reachable resident);
+   * unreachable residents don't split the store. In workspace mode: one row each. */
   type StoreRow = {
     key: string;
-    label: string;
     file?: string;
     total?: number;
     bytes?: number;
-    workspaces: string[];
+    /** Display list — every workspace, unreachable ones marked. */
+    workspaceLabels: string;
+    /** Action targets — reachable residents only. */
+    targets: string[];
     reachable: boolean;
     error?: string | null;
   };
-  $: storeRows = groupByStoreFile(statuses);
+  $: storeRows = buildStoreRows(statuses, storeMode);
   $: selectedRow = storeRows.find((row) => row.key === selected);
 
-  function groupByStoreFile(list: KnowledgeWorkspaceStatus[]): StoreRow[] {
-    const rows: StoreRow[] = [];
-    for (const status of list) {
-      const file = status.reachable ? status.stats?.store?.file : undefined;
-      const existing = file ? rows.find((row) => row.file === file) : undefined;
-      if (existing) {
-        existing.workspaces.push(status.workspace);
-        existing.label = `shared — ${existing.workspaces.join(", ")}`;
-        continue;
-      }
-      rows.push({
-        key: status.workspace,
-        label: status.workspace + (status.reachable ? "" : " (unreachable)"),
-        file,
-        total: status.stats?.total ?? undefined,
-        bytes: status.stats?.store?.bytes,
-        workspaces: [status.workspace],
-        reachable: status.reachable,
-        error: status.error
-      });
+  function buildStoreRows(list: KnowledgeWorkspaceStatus[], mode: string): StoreRow[] {
+    if (list.length === 0) return [];
+    if (mode !== "workspace") {
+      const reachable = list.filter((status) => status.reachable && status.stats);
+      const first = reachable[0];
+      return [
+        {
+          key: "shared",
+          file: first?.stats?.store?.file ?? undefined,
+          total: first?.stats?.total ?? undefined,
+          bytes: first?.stats?.store?.bytes,
+          workspaceLabels: list
+            .map((s) => s.workspace + (s.reachable ? "" : " (unreachable)"))
+            .join(", "),
+          targets: reachable.map((s) => s.workspace),
+          reachable: reachable.length > 0,
+          error: reachable.length === 0 ? "no resident reachable" : null
+        }
+      ];
     }
-    return rows;
+    return list.map((status) => ({
+      key: status.workspace,
+      file: status.stats?.store?.file ?? undefined,
+      total: status.stats?.total ?? undefined,
+      bytes: status.stats?.store?.bytes,
+      workspaceLabels: status.workspace + (status.reachable ? "" : " (unreachable)"),
+      targets: status.reachable ? [status.workspace] : [],
+      reachable: status.reachable,
+      error: status.error
+    }));
   }
 
   onMount(() => {
@@ -101,7 +112,7 @@
     statusLoading = true;
     try {
       statuses = await knowledgeStatus();
-      const rows = groupByStoreFile(statuses);
+      const rows = buildStoreRows(statuses, storeMode);
       if (rows.length > 0 && !rows.some((row) => row.key === selected)) {
         selected = (rows.find((row) => row.reachable) ?? rows[0]).key;
       }
@@ -191,12 +202,12 @@
   }
 
   async function runVerb(kind: string, args: Record<string, unknown> = {}, confirmText?: string) {
-    if (!selectedRow || busyAction) return;
+    if (!selectedRow || selectedRow.targets.length === 0 || busyAction) return;
     if (confirmText && !window.confirm(confirmText)) return;
     busyAction = kind;
     showResult(kind, "…");
     try {
-      const response = await experienceVerb(selectedRow.workspaces[0], kind, args);
+      const response = await experienceVerb(selectedRow.targets[0], kind, args);
       showResult(kind, response.success ? response.data : response);
       if (["load", "wipe", "import"].includes(kind)) {
         await refreshStatus();
@@ -210,7 +221,7 @@
 
   /** Sprint 21b: ONE hygiene action — prune, dedup-merge, compact, in that order. */
   async function runCleanUp() {
-    if (!selectedRow || busyAction) return;
+    if (!selectedRow || selectedRow.targets.length === 0 || busyAction) return;
     const confirmText =
       "clean up runs three steps on the selected store:\n" +
       "• prune — drop rejected/superseded entries older than 30 days\n" +
@@ -229,7 +240,7 @@
         ["dedup", { confirm: true }],
         ["compact", {}]
       ] as const) {
-        const response = await experienceVerb(selectedRow.workspaces[0], step, args);
+        const response = await experienceVerb(selectedRow.targets[0], step, args);
         const payload = response.success ? response.data : response;
         report[step] = payload;
         lines.push(...summarize(step, payload));
@@ -440,6 +451,7 @@
               <tr>
                 {#if storeRows.length > 1}<th></th>{/if}
                 <th>Store</th>
+                <th>Workspaces</th>
                 <th>Entries</th>
                 <th>Size</th>
               </tr>
@@ -448,7 +460,7 @@
               {#each storeRows as row (row.key)}
                 <tr
                   class:unreachable={!row.reachable}
-                  title={row.file ?? row.error ?? "Resident unreachable"}
+                  title={row.error ?? row.file ?? undefined}
                 >
                   {#if storeRows.length > 1}
                     <td>
@@ -461,7 +473,10 @@
                       />
                     </td>
                   {/if}
-                  <td>{row.label}</td>
+                  <td class="mono" title={row.file ?? undefined}>
+                    {row.file ?? row.error ?? "–"}
+                  </td>
+                  <td>{row.workspaceLabels}</td>
                   <td>{row.total ?? "–"}</td>
                   <td>{formatBytes(row.bytes)}</td>
                 </tr>
@@ -469,9 +484,6 @@
             </tbody>
           </table>
         </div>
-        {#if selectedRow?.file}
-          <p class="hint mono" title="The selected store's database file">{selectedRow.file}</p>
-        {/if}
       {/if}
       <div class="actions">
         <button
@@ -484,7 +496,7 @@
         </button>
         <button
           type="button"
-          disabled={!!busyAction || interactionDisabled || !selectedRow}
+          disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
           on:click={() => runVerb("load", {})}
           title={'Seed the store from your memory files — auto-discovered Claude/Cursor & co. locations plus the extra roots. Idempotent: re-loading replaces, so this is also the re-initialize after a wipe. Say: "load my memory files"'}
         >
@@ -492,7 +504,7 @@
         </button>
         <button
           type="button"
-          disabled={!!busyAction || interactionDisabled || !selectedRow}
+          disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
           on:click={runCleanUp}
           title="One hygiene pass: prune aged rejected/superseded entries + merge duplicate groups + compact the store file. Runs prune, dedup and compact — each also available by prompt."
         >
@@ -500,7 +512,7 @@
         </button>
         <button
           type="button"
-          disabled={!!busyAction || interactionDisabled || !selectedRow}
+          disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
           on:click={runExport}
           title={'Write the whole store to a portable JSON file — opens the save dialog. Say: "export the store to a file"'}
         >
@@ -508,7 +520,7 @@
         </button>
         <button
           type="button"
-          disabled={!!busyAction || interactionDisabled || !selectedRow}
+          disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
           on:click={runImport}
           title={'Re-ingest a previously exported JSON file (deduplicated by id) — opens the file picker. Say: "import the export file"'}
         >
@@ -517,7 +529,7 @@
         <button
           type="button"
           class="danger"
-          disabled={!!busyAction || interactionDisabled || !selectedRow}
+          disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
           on:click={() =>
             runVerb("wipe", {}, "wipe removes EVERY entry from this store. Continue?")}
           title={'Delete everything in the selected store. Re-initialize afterwards with load. Say: "wipe the store"'}
