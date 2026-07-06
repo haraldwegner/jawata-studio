@@ -71,6 +71,35 @@ struct GitHubAsset {
     browser_download_url: String,
 }
 
+/// Sprint 21a dogfood fix: the platform token in goja release asset names
+/// (`goja-v2.1.0-linux-x64.tar.gz` → `linux-x64`).
+fn platform_asset_token() -> String {
+    let os = if cfg!(target_os = "windows") {
+        "win32"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
+    let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x64" };
+    format!("{os}-{arch}")
+}
+
+/// Pick the release archive for THIS platform. The old logic took the FIRST `.tar.gz` in
+/// GitHub's (alphabetical) asset list — which is `linux-arm64`, so an x86_64 machine
+/// installed the arm64 build and the resident died on the wrong SWT (live dogfood find,
+/// v2.1.0 install). Platform+arch match first; the un-suffixed legacy fallback stays for
+/// old releases with a single archive.
+fn select_release_asset<'a>(assets: &'a [GitHubAsset], token: &str) -> Option<&'a GitHubAsset> {
+    let is_archive =
+        |asset: &GitHubAsset| asset.name.ends_with(".tar.gz") || asset.name.ends_with(".zip");
+    assets
+        .iter()
+        .find(|asset| asset.name.contains(token) && is_archive(asset))
+        .or_else(|| assets.iter().find(|asset| asset.name.ends_with(".tar.gz")))
+        .or_else(|| assets.iter().find(|asset| asset.name.ends_with(".zip")))
+}
+
 #[derive(Debug, Clone)]
 struct RemoteRelease {
     version: String,
@@ -259,16 +288,7 @@ impl ReleaseManager {
             .map_err(|error| format!("failed to parse GitHub release payload: {error}"))?;
         let version = normalize_version(&release.tag_name);
 
-        let asset = release
-            .assets
-            .iter()
-            .find(|asset| asset.name.ends_with(".tar.gz"))
-            .or_else(|| {
-                release
-                    .assets
-                    .iter()
-                    .find(|asset| asset.name.ends_with(".zip"))
-            })
+        let asset = select_release_asset(&release.assets, &platform_asset_token())
             .ok_or("latest GOJA release did not include a downloadable archive")?;
 
         let archive_kind = if asset.name.ends_with(".tar.gz") {
@@ -707,6 +727,53 @@ mod tests {
     use super::*;
     use crate::config::AppPaths;
     use std::path::PathBuf;
+
+    fn gh_asset(name: &str) -> GitHubAsset {
+        GitHubAsset {
+            name: name.into(),
+            browser_download_url: format!("https://example.test/{name}"),
+        }
+    }
+
+    #[test]
+    fn select_release_asset_prefers_the_platform_archive() {
+        // Sprint 21a dogfood find: the first-.tar.gz pick installed linux-arm64 on an
+        // x86_64 machine (GitHub lists assets alphabetically) → wrong SWT, resident dead.
+        let assets = vec![
+            gh_asset("goja-v2.1.0-linux-arm64.tar.gz"),
+            gh_asset("goja-v2.1.0-linux-x64.tar.gz"),
+            gh_asset("goja-v2.1.0-macos-arm64.zip"),
+            gh_asset("goja-v2.1.0-macos-x64.zip"),
+            gh_asset("goja-v2.1.0-win32-x64.zip"),
+            gh_asset("checksums.txt"),
+        ];
+        for (token, expected) in [
+            ("linux-x64", "goja-v2.1.0-linux-x64.tar.gz"),
+            ("linux-arm64", "goja-v2.1.0-linux-arm64.tar.gz"),
+            ("macos-arm64", "goja-v2.1.0-macos-arm64.zip"),
+            ("macos-x64", "goja-v2.1.0-macos-x64.zip"),
+            ("win32-x64", "goja-v2.1.0-win32-x64.zip"),
+        ] {
+            assert_eq!(
+                select_release_asset(&assets, token).unwrap().name,
+                expected,
+                "platform token {token}"
+            );
+        }
+        // Legacy single-archive releases (no platform suffix) keep working.
+        let legacy = vec![gh_asset("goja-v1.7.0.tar.gz")];
+        assert_eq!(
+            select_release_asset(&legacy, "linux-x64").unwrap().name,
+            "goja-v1.7.0.tar.gz"
+        );
+        // The token this build computes matches the release naming scheme.
+        let token = platform_asset_token();
+        assert!(
+            ["linux-x64", "linux-arm64", "macos-x64", "macos-arm64", "win32-x64", "win32-arm64"]
+                .contains(&token.as_str()),
+            "unexpected token {token}"
+        );
+    }
 
     #[test]
     fn compare_version_strings_prefers_newer_semver_tags() {
