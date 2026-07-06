@@ -169,9 +169,11 @@
       case "load": {
         const loaded = asCount(p.loaded);
         const files = asCount(p.files);
+        const unchanged = asCount(p.unchanged);
         if (loaded !== undefined) {
           lines.push(
             `Loaded ${loaded}${files !== undefined ? ` of ${files}` : ""} file(s)` +
+              (unchanged ? `, ${unchanged} unchanged (skipped)` : "") +
               (Array.isArray(p.linked) || asCount(p.linked) !== undefined
                 ? `, ${asCount(p.linked) ?? 0} reached via links`
                 : "")
