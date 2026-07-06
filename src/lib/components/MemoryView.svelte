@@ -361,6 +361,58 @@
       </label>
     </section>
 
+    <!-- F.3 + F.4: memory sources + store location -->
+    <section class="panel stack settings-section">
+      <div class="section-intro">
+        <h3>Memory sources &amp; store location</h3>
+        <p class="muted">
+          Feeds load/reseed and auto-seed. Store mode, roots and caps reach residents at their
+          next start; the verbs act immediately.
+        </p>
+      </div>
+      <label class="field">
+        <span>Store mode</span>
+        <select bind:value={storeMode} disabled={interactionDisabled}>
+          <option value="shared">shared — one user-level store (default)</option>
+          <option value="workspace">workspace — per-workspace store</option>
+          <option value="memory">memory — non-persistent</option>
+        </select>
+        <span class="hint">“shared” makes your knowledge recallable from every workspace.</span>
+      </label>
+      <label class="field">
+        <span>Memory root folders/files (one per line)</span>
+        <textarea rows="3" bind:value={memoryRootsText} disabled={interactionDisabled}
+          placeholder="empty = the resident's layered CLAUDE.md defaults"></textarea>
+        <span class="hint">e.g. /home/you/.claude/projects/&lt;project&gt;/memory</span>
+      </label>
+      <label class="checkbox-row" title="Directory roots are also walked recursively; the [[link]] graph is always followed">
+        <input type="checkbox" bind:checked={memoryRecursive} disabled={interactionDisabled} />
+        <span>Recursive — also walk subdirectories (link-following is always on)</span>
+      </label>
+      <label class="checkbox-row" title="After a successful deploy, run 'load' on every resident">
+        <input type="checkbox" bind:checked={autoSeedOnDeploy} disabled={interactionDisabled} />
+        <span>Auto-seed on deploy</span>
+      </label>
+      <label class="field">
+        <span>Crawl caps</span>
+        <div class="field-row caps-row">
+          <label class="cap">
+            <span class="hint">max depth</span>
+            <input type="number" min="1" bind:value={memoryMaxDepth} disabled={interactionDisabled} />
+          </label>
+          <label class="cap">
+            <span class="hint">max files</span>
+            <input type="number" min="1" bind:value={memoryMaxFiles} disabled={interactionDisabled} />
+          </label>
+          <label class="cap">
+            <span class="hint">max bytes</span>
+            <input type="number" min="1024" step="1024" bind:value={memoryMaxBytes} disabled={interactionDisabled} />
+          </label>
+        </div>
+        <span class="hint">Bounds for the link crawl; skipped sources are always reported.</span>
+      </label>
+    </section>
+
     <!-- F.5: curation -->
     <section class="panel stack settings-section">
       <div class="section-intro">
@@ -415,60 +467,8 @@
       {/if}
     </section>
 
-    <!-- F.3 + F.4: memory sources + store location -->
-    <section class="panel stack settings-section">
-      <div class="section-intro">
-        <h3>Memory sources &amp; store location</h3>
-        <p class="muted">
-          Feeds load/reseed and auto-seed. Store mode, roots and caps reach residents at their
-          next start; the verbs act immediately.
-        </p>
-      </div>
-      <label class="field">
-        <span>Store mode</span>
-        <select bind:value={storeMode} disabled={interactionDisabled}>
-          <option value="shared">shared — one user-level store (default)</option>
-          <option value="workspace">workspace — per-workspace store</option>
-          <option value="memory">memory — non-persistent</option>
-        </select>
-        <span class="hint">“shared” makes your knowledge recallable from every workspace.</span>
-      </label>
-      <label class="field">
-        <span>Memory root folders/files (one per line)</span>
-        <textarea rows="3" bind:value={memoryRootsText} disabled={interactionDisabled}
-          placeholder="empty = the resident's layered CLAUDE.md defaults"></textarea>
-        <span class="hint">e.g. /home/you/.claude/projects/&lt;project&gt;/memory</span>
-      </label>
-      <label class="checkbox-row" title="Directory roots are also walked recursively; the [[link]] graph is always followed">
-        <input type="checkbox" bind:checked={memoryRecursive} disabled={interactionDisabled} />
-        <span>Recursive — also walk subdirectories (link-following is always on)</span>
-      </label>
-      <label class="checkbox-row" title="After a successful deploy, run 'load' on every resident">
-        <input type="checkbox" bind:checked={autoSeedOnDeploy} disabled={interactionDisabled} />
-        <span>Auto-seed on deploy</span>
-      </label>
-      <label class="field">
-        <span>Crawl caps</span>
-        <div class="field-row caps-row">
-          <label class="cap">
-            <span class="hint">max depth</span>
-            <input type="number" min="1" bind:value={memoryMaxDepth} disabled={interactionDisabled} />
-          </label>
-          <label class="cap">
-            <span class="hint">max files</span>
-            <input type="number" min="1" bind:value={memoryMaxFiles} disabled={interactionDisabled} />
-          </label>
-          <label class="cap">
-            <span class="hint">max bytes</span>
-            <input type="number" min="1024" step="1024" bind:value={memoryMaxBytes} disabled={interactionDisabled} />
-          </label>
-        </div>
-        <span class="hint">Bounds for the link crawl; skipped sources are always reported.</span>
-      </label>
-    </section>
-
     <!-- F.5: backups -->
-    <section class="panel stack settings-section knowledge-wide">
+    <section class="panel stack settings-section">
       <div class="section-intro">
         <h3>Backups</h3>
         <p class="muted">
