@@ -51,15 +51,13 @@ export interface ManagerSettings {
   releaseRepo: string;
   lastReleaseCheck?: string | null;
   lastSeenLatestVersion?: string | null;
-  /** Sprint 21a: knowledge-store + backup preferences (Knowledge view). */
+  /** Sprint 21a: memory-store preferences (Memory view). Sprint 21b: recursive +
+   * crawl caps removed — the crawl finds everything (resident-side backstops). */
   autoSeedOnDeploy: boolean;
   /** `shared` (user-level store, default) | `workspace` | `memory` | explicit dir. */
   experienceStoreMode: string;
   memoryRoots: string[];
-  memoryRecursive: boolean;
-  memoryMaxDepth: number;
-  memoryMaxFiles: number;
-  memoryMaxBytes: number;
+  /** Backup plumbing — config key only, no UI. */
   backupRetention: number;
 }
 
@@ -136,14 +134,10 @@ export interface UpdateSettingsInput {
   deployTargets: DeployTargetFlags;
   /** Optional override of the GitHub repo (owner/repo) for the runtime release stream. */
   releaseRepo?: string | null;
-  /** Sprint 21a: Knowledge-view settings — optional so older saves preserve them. */
+  /** Sprint 21a: Memory-view settings — optional so older saves preserve them. */
   autoSeedOnDeploy?: boolean | null;
   experienceStoreMode?: string | null;
   memoryRoots?: string[] | null;
-  memoryRecursive?: boolean | null;
-  memoryMaxDepth?: number | null;
-  memoryMaxFiles?: number | null;
-  memoryMaxBytes?: number | null;
   backupRetention?: number | null;
 }
 
@@ -161,22 +155,6 @@ export interface KnowledgeWorkspaceStatus {
     store?: { file?: string; bytes?: number };
   } | null;
   error?: string | null;
-}
-
-/** One planned/performed move of a scattered backup file. */
-export interface GcItem {
-  file: string;
-  original: string;
-  action: string;
-}
-
-/** Report of the scattered-backup GC (dryRun = plan only). */
-export interface GcReport {
-  dryRun: boolean;
-  scannedDirs: number;
-  items: GcItem[];
-  moved: number;
-  unrecognizedSkipped: number;
 }
 
 /** Record of an installed managed runtime. */
@@ -442,11 +420,6 @@ export function experienceVerb(
   args: Record<string, unknown> = {}
 ): Promise<{ success: boolean; data?: unknown; error?: unknown }> {
   return invoke("experience_verb", { workspace, kind, args });
-}
-
-/** GC the historically scattered .bak files (dryRun = report only). */
-export function backupsGc(dryRun: boolean): Promise<GcReport> {
-  return invoke("backups_gc", { dryRun });
 }
 
 /** Sprint 14 (v0.14.0): toggle OS-level autostart-on-boot in one
