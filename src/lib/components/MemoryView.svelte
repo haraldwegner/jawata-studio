@@ -92,7 +92,7 @@
             .join(", "),
           targets: reachable.map((s) => s.workspace),
           reachable: reachable.length > 0,
-          error: reachable.length === 0 ? "no resident reachable" : null
+          error: reachable.length === 0 ? "No resident reachable — retrying…" : null
         }
       ];
     }
@@ -108,34 +108,26 @@
     }));
   }
 
-  // Auto-reload while residents boot: a freshly (re)started resident needs ~30 s of
-  // OSGi/JDT boot before its HTTP port answers — don't show a stale "unreachable" and
-  // make the user press Reload (Harald, 2026-07-06). Poll every 5 s while anything is
-  // unreachable, for up to 2 minutes per (re)load trigger.
+  // Auto-reload while residents are unreachable: a freshly (re)started resident needs
+  // ~30 s of OSGi/JDT boot before its HTTP port answers. Poll every 5 s for as long as
+  // anything is unreachable AND the view is mounted — a local status call is free, and
+  // an expiring window just re-creates the stale-"unreachable" trap (Harald, 2026-07-06).
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
-  let retryDeadline = 0;
   let autoRetrying = false;
 
   onMount(() => {
-    retryDeadline = Date.now() + 120_000;
     void refreshStatus();
     return () => {
       if (retryTimer) clearTimeout(retryTimer);
     };
   });
 
-  function manualReload() {
-    retryDeadline = Date.now() + 120_000;   // a manual reload re-arms the retry window
-    void refreshStatus();
-  }
-
   function scheduleAutoReload() {
     if (retryTimer) {
       clearTimeout(retryTimer);
       retryTimer = null;
     }
-    const anyUnreachable = statuses.length === 0 || statuses.some((s) => !s.reachable);
-    autoRetrying = anyUnreachable && Date.now() < retryDeadline;
+    autoRetrying = statuses.length === 0 || statuses.some((s) => !s.reachable);
     if (!autoRetrying) return;
     retryTimer = setTimeout(() => {
       void refreshStatus();
@@ -350,22 +342,15 @@
 
   // --- memory roots: pickers + removable list ------------------------------------------
 
-  async function addRootFolder() {
+  /** One Add… button (Harald): the OS dialog cannot offer files AND folders in a single
+   * picker, and with the recursive crawl + skip-unchanged, a file's parent folder is
+   * equivalent to the file — so folders are the one mode that covers everything. */
+  async function addRoot() {
     const picked = await open({ title: "Add memory root folder", directory: true, multiple: true });
     if (!picked) return;
     for (const dir of Array.isArray(picked) ? picked : [picked]) {
       if (typeof dir === "string" && !memoryRoots.includes(dir)) {
         memoryRoots = [...memoryRoots, dir];
-      }
-    }
-  }
-
-  async function addRootFile() {
-    const picked = await open({ title: "Add memory file", directory: false, multiple: true });
-    if (!picked) return;
-    for (const file of Array.isArray(picked) ? picked : [picked]) {
-      if (typeof file === "string" && !memoryRoots.includes(file)) {
-        memoryRoots = [...memoryRoots, file];
       }
     }
   }
@@ -438,18 +423,10 @@
           <button
             type="button"
             disabled={interactionDisabled}
-            on:click={addRootFolder}
-            title="Pick folder(s) to crawl in addition to the auto-discovered locations"
+            on:click={addRoot}
+            title="Pick folder(s) to crawl in addition to the auto-discovered locations — subfolders and [[links]] are followed, unchanged files are skipped, so a folder also covers any single file in it"
           >
-            Add folder…
-          </button>
-          <button
-            type="button"
-            disabled={interactionDisabled}
-            on:click={addRootFile}
-            title="Pick individual memory file(s)"
-          >
-            Add file…
+            Add…
           </button>
         </div>
         {#if memoryRoots.length > 0}
@@ -555,8 +532,8 @@
         <button
           type="button"
           disabled={statusLoading || interactionDisabled}
-          on:click={manualReload}
-          title="Re-read entry counts, store file and size from every resident (unreachable residents are retried automatically while they boot)"
+          on:click={refreshStatus}
+          title="Re-read entry counts, store file and size from every resident (unreachable residents are retried automatically)"
         >
           {statusLoading ? "Loading…" : "Reload status"}
         </button>
@@ -569,7 +546,7 @@
           on:click={runLoad}
           title={'Seed the store from your memory files — auto-discovered Claude/Cursor & co. locations plus the extra roots. Runs on EVERY reachable workspace of this store (each contributes its own project locations). Idempotent: re-loading replaces, so this is also the re-initialize after a wipe. Say: "load my memory files"'}
         >
-          load
+          Load
         </button>
         <button
           type="button"
@@ -577,7 +554,7 @@
           on:click={runCleanUp}
           title="One hygiene pass: prune aged rejected/superseded entries + merge duplicate groups + compact the store file. Runs prune, dedup and compact — each also available by prompt."
         >
-          clean up
+          Clean up
         </button>
         <button
           type="button"
@@ -585,7 +562,7 @@
           on:click={runExport}
           title={'Write the whole store to a portable JSON file — opens the save dialog. Say: "export the store to a file"'}
         >
-          export…
+          Export…
         </button>
         <button
           type="button"
@@ -593,7 +570,7 @@
           on:click={runImport}
           title={'Re-ingest a previously exported JSON file (deduplicated by id) — opens the file picker. Say: "import the export file"'}
         >
-          import…
+          Import…
         </button>
         <button
           type="button"
@@ -603,7 +580,7 @@
             runVerb("wipe", {}, "wipe removes EVERY entry from this store. Continue?")}
           title={'Delete everything in the selected store. Re-initialize afterwards with load. Say: "wipe the store"'}
         >
-          wipe
+          Wipe
         </button>
         {#if busyAction}
           <span class="hint">running “{busyAction}”…</span>
