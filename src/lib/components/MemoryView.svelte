@@ -607,30 +607,29 @@
           <span class="hint">running “{busyAction}”…</span>
         {/if}
       </div>
-    </section>
 
-    <!-- Result: wide, human-readable; raw JSON behind details. -->
-    <section class="panel stack settings-section memory-wide">
-      <div class="section-intro">
-        <h3>Result{outputTitle ? ` of “${outputTitle}”` : ""}</h3>
+      <!-- Results live right below the actions (Harald, 2026-07-06) — the right
+           column grows, the sources column breathes. -->
+      <div class="result-block">
+        <h4>Result{outputTitle ? ` of “${outputTitle}”` : ""}</h4>
+        {#if outputSummary.length > 0}
+          <ul class="result-lines">
+            {#each outputSummary as line}
+              <li>{line}</li>
+            {/each}
+          </ul>
+        {:else if !outputRaw}
+          <p class="hint">No action run yet — results appear here.</p>
+        {/if}
+        {#if outputRaw && outputRaw !== "…"}
+          <details>
+            <summary title="The unmodified response of the last action">raw response</summary>
+            <pre>{outputRaw}</pre>
+          </details>
+        {:else if outputRaw === "…"}
+          <p class="hint">running…</p>
+        {/if}
       </div>
-      {#if outputSummary.length > 0}
-        <ul class="result-lines">
-          {#each outputSummary as line}
-            <li>{line}</li>
-          {/each}
-        </ul>
-      {:else if !outputRaw}
-        <p class="hint">No action run yet — results appear here.</p>
-      {/if}
-      {#if outputRaw && outputRaw !== "…"}
-        <details>
-          <summary title="The unmodified response of the last action">raw response</summary>
-          <pre>{outputRaw}</pre>
-        </details>
-      {:else if outputRaw === "…"}
-        <p class="hint">running…</p>
-      {/if}
     </section>
   </div>
 </section>
@@ -655,8 +654,14 @@
 
 <style>
   /* Only what app.css does not already provide: tables, the roots list, the pre. */
-  .memory-wide {
-    grid-column: 1 / -1;
+  .result-block {
+    margin-top: 0.4rem;
+    padding-top: 0.6rem;
+    border-top: 1px solid rgba(148, 163, 184, 0.18);
+  }
+  .result-block h4 {
+    margin: 0 0 0.35rem;
+    font-size: 0.95rem;
   }
   .table-wrap {
     overflow-x: auto;
