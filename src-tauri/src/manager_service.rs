@@ -1785,6 +1785,16 @@ impl ManagerService {
                     Err(error) => errors.push(error),
                 }
             }
+            // Sprint 21c (item D): strip the UserPromptSubmit recall too.
+            if let (Some(settings_path), Some(userprompt_path)) =
+                (derive_hook_settings_path(client), managed_userprompt_script_path())
+            {
+                match remove_managed_userprompt(&settings_path, &userprompt_path, backup_before_write) {
+                    Ok(true) => changed_sections.push("userprompt".into()),
+                    Ok(false) => {}
+                    Err(error) => errors.push(error),
+                }
+            }
 
             if !errors.is_empty() {
                 return DeployClientResult {
@@ -1971,6 +1981,28 @@ impl ManagerService {
                     Err(error) => errors.push(error),
                 }
                 if let Err(error) = selftest_hook_script(&recall_path) {
+                    errors.push(error);
+                }
+            }
+            // Sprint 21c (item D): the prompt-boundary recall — every user prompt gets a
+            // deterministic keyword pass against the store; a single fitting fact is
+            // injected as context, absence stays silent.
+            if let (Some(settings_path), Some(userprompt_path)) =
+                (derive_hook_settings_path(client), managed_userprompt_script_path())
+            {
+                match write_managed_userprompt(
+                    &settings_path,
+                    &userprompt_path,
+                    &server.url,
+                    &server.token,
+                    backup_before_write,
+                    regenerate,
+                ) {
+                    Ok(true) => changed_sections.push("userprompt".into()),
+                    Ok(false) => {}
+                    Err(error) => errors.push(error),
+                }
+                if let Err(error) = selftest_hook_script(&userprompt_path) {
                     errors.push(error);
                 }
             }
@@ -4415,6 +4447,8 @@ fn remove_managed_posthook(
 const GOJA_PRIMER_SENTINEL: &str = "goja-studio/sessionstart-primer.sh";
 /// Sentinel for the managed PreToolUse recall entry (distinct from the guard's entry).
 const GOJA_RECALL_SENTINEL: &str = "goja-studio/pretooluse-recall.sh";
+/// Sentinel for the managed UserPromptSubmit recall entry (Sprint 21c item D).
+const GOJA_USERPROMPT_SENTINEL: &str = "goja-studio/userpromptsubmit-recall.sh";
 
 /// Absolute path of the managed SessionStart primer script (sibling of the guard).
 fn managed_primer_script_path() -> Option<PathBuf> {
@@ -4433,6 +4467,16 @@ fn managed_recall_script_path() -> Option<PathBuf> {
         home.join(".claude")
             .join("goja-studio")
             .join("pretooluse-recall.sh"),
+    )
+}
+
+/// Absolute path of the managed UserPromptSubmit recall script (Sprint 21c item D).
+fn managed_userprompt_script_path() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(
+        home.join(".claude")
+            .join("goja-studio")
+            .join("userpromptsubmit-recall.sh"),
     )
 }
 
@@ -4470,6 +4514,15 @@ fn build_managed_recall_entry(recall_path: &Path) -> serde_json::Value {
     serde_json::json!({
         "matcher": "mcp__goja.*",
         "hooks": [ { "type": "command", "command": display_path(recall_path) } ]
+    })
+}
+fn is_managed_userprompt_entry(entry: &serde_json::Value) -> bool {
+    entry_command_contains(entry, GOJA_USERPROMPT_SENTINEL)
+}
+/// UserPromptSubmit entry: no matcher (fires on every user prompt; the script gates itself).
+fn build_managed_userprompt_entry(script_path: &Path) -> serde_json::Value {
+    serde_json::json!({
+        "hooks": [ { "type": "command", "command": display_path(script_path) } ]
     })
 }
 
@@ -4652,6 +4705,28 @@ fn write_managed_recall(
 fn remove_managed_recall(settings_path: &str, recall_path: &Path, backup_before_write: bool) -> Result<bool, String> {
     remove_managed_hook_section(settings_path, recall_path, "PreToolUse", is_managed_recall_entry, backup_before_write)
 }
+fn write_managed_userprompt(
+    settings_path: &str,
+    script_path: &Path,
+    mcp_url: &str,
+    token: &str,
+    backup_before_write: bool,
+    force_rewrite: bool,
+) -> Result<bool, String> {
+    write_managed_hook_section(
+        settings_path,
+        script_path,
+        &build_userprompt_script(mcp_url, token),
+        "UserPromptSubmit",
+        build_managed_userprompt_entry(script_path),
+        is_managed_userprompt_entry,
+        backup_before_write,
+        force_rewrite,
+    )
+}
+fn remove_managed_userprompt(settings_path: &str, script_path: &Path, backup_before_write: bool) -> Result<bool, String> {
+    remove_managed_hook_section(settings_path, script_path, "UserPromptSubmit", is_managed_userprompt_entry, backup_before_write)
+}
 
 /// The SessionStart primer script (URL + Bearer token baked in). Deterministic → a
 /// re-deploy is a byte-stable no-op. Uses `.replace()` templating (not `format!`) so the
@@ -4664,6 +4739,94 @@ fn build_primer_script(mcp_url: &str, token: &str) -> String {
 fn build_recall_script(mcp_url: &str, token: &str) -> String {
     RECALL_TEMPLATE.replace("__MCP_URL__", mcp_url).replace("__TOKEN__", token)
 }
+/// The UserPromptSubmit recall script (Sprint 21c item D): prompt → keyword cues →
+/// terminal recall → inject the ONE fitting fact, or nothing. Same envelope peel.
+fn build_userprompt_script(mcp_url: &str, token: &str) -> String {
+    USERPROMPT_TEMPLATE.replace("__MCP_URL__", mcp_url).replace("__TOKEN__", token)
+}
+
+const USERPROMPT_TEMPLATE: &str = r#"#!/usr/bin/env bash
+# <goja-studio managed UserPromptSubmit recall — do not edit; overwritten on deploy>
+# Sprint 21c (item D): prompt -> keywords -> recall -> injected FACT. Extracts content-
+# bearing cues from the user's prompt (longest n-grams first, rarity-marked tokens
+# preferred within a tier, >=2 content tokens), asks the store terminally, and injects
+# the ONE fitting atomic fact — or nothing. Never a pile, never a guess, never blocks.
+set -u
+MCP_URL="__MCP_URL__"
+TOKEN="__TOKEN__"
+# THE emit path — selftest and the live path share this one printf format (Sprint 21a item J).
+emit_ctx() {
+  printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"GOJA recalled a prior fact for this topic:\\n%s"}}' "$1"
+}
+if [ "${GOJA_HOOK_SELFTEST:-}" = "1" ]; then emit_ctx '[lesson] selftest canned line (accepted)'; exit 0; fi
+command -v curl >/dev/null 2>&1 || exit 0
+input="$(cat)"
+flatin="$(printf '%s' "$input" | tr '\n\r' '  ')"
+prompt="$(printf '%s' "$flatin" | sed -n 's/.*"prompt"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+[ -n "$prompt" ] || exit 0
+case "$prompt" in /*) exit 0 ;; esac
+# Normalize: lowercase, punctuation -> space; digits/hyphens/underscores survive (rarity marks).
+norm="$(printf '%s' "$prompt" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/ /g')"
+words=""
+count=0
+for w in $norm; do
+  case "$w" in
+    the|a|an|and|or|for|with|this|that|these|those|is|are|was|were|be|been|to|of|in|on|at|it|its|we|i|you|he|she|they|do|does|did|not|no|yes|our|my|your|his|her|their|what|which|how|why|when|where|who|make|makes|made|making|please|now|then|so|but|if|else|can|could|should|would|will|shall|may|might|must|have|has|had|get|got|just|also|about|into|from|out|up|down|over|again|more|less|very|all|any|some|one|two|new|use|used|using) continue ;;
+  esac
+  [ ${#w} -ge 3 ] || continue
+  words="$words $w"
+  count=$((count+1))
+  [ "$count" -ge 40 ] && break
+done
+[ "$count" -ge 2 ] || exit 0
+# Cue candidates per TIER: within a tier, rarity-marked cues (digits / hyphens /
+# underscores) before plain ones, then order of appearance. The best trigram gets ONE
+# attempt (precision bonus); bigrams — the workhorse under the all-tokens fit gate —
+# get the other two, so long prompts can never starve them (live-drive finding).
+# DECLARED deviation from "rarer tokens first": true corpus rarity needs a frequency
+# table the hook does not have — the marker heuristic is the deterministic proxy.
+ngrams() {
+  printf '%s' "$words" | awk -v len="$1" '{
+    n = split($0, w, " ");
+    for (pass = 1; pass <= 2; pass++) {
+      want = (pass == 1) ? 1 : 0;
+      for (i = 1; i + len - 1 <= n; i++) {
+        cue = w[i];
+        for (j = 1; j < len; j++) cue = cue " " w[i+j];
+        mark = (cue ~ /[0-9_-]/) ? 1 : 0;
+        if (mark == want && !seen[cue]++) print cue;
+      }
+    }
+  }'
+}
+tri="$(ngrams 3)"
+bi="$(ngrams 2)"
+c1="$(printf '%s\n' "$tri" | sed -n 1p)"
+c2="$(printf '%s\n' "$bi" | sed -n 1p)"
+c3="$(printf '%s\n' "$bi" | sed -n 2p)"
+for cue in "$c1" "$c2" "$c3"; do
+  [ -n "$cue" ] || continue
+  req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"recall","format":"text","symptom":"'"$cue"'"}}}'
+  resp="$(curl -s --max-time 2 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$req" "$MCP_URL" 2>/dev/null)"
+  [ -n "$resp" ] || exit 0
+  flat="$(printf '%s' "$resp" | tr -d '\n\r')"
+  inner="$(printf '%s' "$flat" | sed -n 's/.*"text"[[:space:]]*:[[:space:]]*"\(.*\)"[[:space:]]*}[[:space:]]*][[:space:]]*}[[:space:]]*}.*/\1/p' | sed 's/\\"/"/g; s/\\\\/\\/g')"
+  [ -n "$inner" ] || continue
+  printf '%s' "$inner" | grep -q '"success"[[:space:]]*:[[:space:]]*true' || continue
+  # data is a quote-sanitized flat string, so [^"]* stops at its closing quote — NOT greedy
+  # .* (which would swallow the trailing ,"meta":{steering} the result layer appends).
+  data="$(printf '%s' "$inner" | sed -n 's/.*"data"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  [ -n "$data" ] || continue
+  case "$data" in No\ known\ knowledge*|No\ domain*) continue ;; esac
+  # Terminal-or-absence at the INJECTION boundary: entry lines are \n-joined and content
+  # backslashes are sanitized away, so ANY \n in data = 2+ fitting facts = ambiguous ->
+  # try the next-ranked cue instead of injecting a pile or a guess.
+  case "$data" in *"\n"*) continue ;; esac
+  emit_ctx "$data"
+  exit 0
+done
+exit 0
+"#;
 
 const PRIMER_TEMPLATE: &str = r#"#!/usr/bin/env bash
 # <goja-studio managed SessionStart primer — do not edit; overwritten on deploy>
@@ -5608,6 +5771,7 @@ mod tests {
         for s in [
             build_primer_script("u", "t"),
             build_recall_script("u", "t"),
+            build_userprompt_script("u", "t"),
         ] {
             assert!(s.contains("GOJA_HOOK_SELFTEST"), "has a selftest entry point");
             assert!(s.contains("emit_ctx"), "emits through the shared function");
@@ -5893,6 +6057,7 @@ mod tests {
     fn push_scripts_are_deterministic() {
         assert_eq!(build_primer_script("u", "t"), build_primer_script("u", "t"));
         assert_eq!(build_recall_script("u", "t"), build_recall_script("u", "t"));
+        assert_eq!(build_userprompt_script("u", "t"), build_userprompt_script("u", "t"));
     }
 
     #[test]
@@ -5901,7 +6066,11 @@ mod tests {
         // "data" on every success, so a greedy "\(.*\)" peel swallows the meta blob into the
         // injected context. The data string is quote-sanitized, so [^"]* stops at its closing
         // quote. Guard both templates against a regression to the greedy form.
-        for s in [build_primer_script("u", "t"), build_recall_script("u", "t")] {
+        for s in [
+            build_primer_script("u", "t"),
+            build_recall_script("u", "t"),
+            build_userprompt_script("u", "t"),
+        ] {
             assert!(
                 s.contains(r#""data"[[:space:]]*:[[:space:]]*"\([^"]*\)""#),
                 "data-extraction stops at the closing quote (safe against trailing meta)"
@@ -5919,12 +6088,101 @@ mod tests {
         // becomes a REAL newline inside the additionalContext value → invalid JSON → the
         // client rejects the injection. The header separator must be \\n so printf emits a
         // literal \n escape.
-        for s in [build_primer_script("u", "t"), build_recall_script("u", "t")] {
+        for s in [
+            build_primer_script("u", "t"),
+            build_recall_script("u", "t"),
+            build_userprompt_script("u", "t"),
+        ] {
             assert!(
                 s.contains(r"\\n%s"),
                 "additionalContext header newline is escaped (\\n), not a raw newline"
             );
         }
+    }
+
+    #[test]
+    fn userprompt_script_extracts_cues_and_injects_single_fact_only() {
+        // Sprint 21c (item D): prompt -> keywords -> recall -> the ONE fitting fact.
+        let s = build_userprompt_script("http://127.0.0.1:8890/mcp", "sekret");
+        assert!(s.contains(r#"MCP_URL="http://127.0.0.1:8890/mcp""#), "bakes the mcp url");
+        assert!(s.contains(r#"TOKEN="sekret""#), "bakes the bearer token");
+        assert!(
+            s.contains(r#""kind":"recall""#) && s.contains(r#""symptom":"#),
+            "recalls by symptom cue"
+        );
+        assert!(s.contains(r#""prompt""#), "reads the prompt from hook stdin");
+        assert!(
+            s.contains(r#"case "$prompt" in /*) exit 0"#),
+            "slash commands are not topics"
+        );
+        assert!(
+            s.contains(r#"[ "$count" -ge 2 ] || exit 0"#),
+            "a cue needs >=2 content tokens"
+        );
+        assert!(
+            s.contains("UserPromptSubmit") && s.contains("additionalContext"),
+            "injects prompt-boundary context"
+        );
+        // Terminal-or-absence at the injection boundary: entry lines are \n-joined, so
+        // any \n in the peeled data = 2+ fitting facts = ambiguous -> next cue, never a pile.
+        assert!(
+            s.contains(r#"*"\n"*) continue"#),
+            "multi-fact answers are ambiguous — try the next-ranked cue"
+        );
+        assert!(s.contains("No\\ known\\ knowledge"), "silent on absence");
+        assert!(s.contains("--max-time 2"), "short per-attempt timeout");
+    }
+
+    #[test]
+    fn userprompt_write_remove_roundtrip_preserves_user_hooks() {
+        let dir = unique_tempdir("push-userprompt");
+        let settings = dir.join(".claude").join("settings.json");
+        let settings_path = settings.to_string_lossy().to_string();
+        let script = dir
+            .join(".claude")
+            .join("goja-studio")
+            .join("userpromptsubmit-recall.sh");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(
+            &settings,
+            r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo user-prompt"}]}]}}"#,
+        )
+        .unwrap();
+
+        assert!(write_managed_userprompt(&settings_path, &script, "http://127.0.0.1:8890/mcp", "tok", false, false).unwrap());
+        assert!(script.exists(), "userprompt script written");
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        let arr = v["hooks"]["UserPromptSubmit"].as_array().unwrap();
+        assert_eq!(arr.len(), 2, "user + managed entry");
+        assert!(arr.iter().any(is_managed_userprompt_entry), "managed entry present");
+        assert!(
+            arr.iter().any(|e| e["hooks"][0]["command"] == "echo user-prompt"),
+            "user UserPromptSubmit entry preserved"
+        );
+        assert!(
+            arr.iter()
+                .filter(|e| is_managed_userprompt_entry(e))
+                .all(|e| e.get("matcher").is_none()),
+            "UserPromptSubmit takes no matcher"
+        );
+
+        assert!(
+            !write_managed_userprompt(&settings_path, &script, "http://127.0.0.1:8890/mcp", "tok", false, false).unwrap(),
+            "unchanged re-deploy is a byte-stable no-op"
+        );
+
+        assert!(remove_managed_userprompt(&settings_path, &script, false).unwrap());
+        assert!(!script.exists(), "userprompt script deleted");
+        let v2: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(
+            v2["hooks"]["UserPromptSubmit"].as_array().unwrap().len(),
+            1,
+            "only the user entry remains"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
