@@ -170,6 +170,34 @@ backups — happens automatically or by prompt: every action here can also be as
 in plain words in your agent session ("load my memory files", "wipe the store"). Hover
 any control for its prompt phrase.
 
+### Memory from Cursor (and other clients)
+
+This store is your **cross-client memory**: the same entries answer in Cursor, Claude
+Code, and any MCP client. What differs is delivery — Claude Code *pushes* memory into
+sessions automatically (session primer, recall before refactor tools); every other
+client must be **asked**. Three phrases cover it:
+
+- *"What do we know about `freeSlot`?"* — the agent runs a symbol/symptom **recall**;
+  a match returns the closed set of known lessons for exactly that code.
+- *"Record this as a lesson anchored to `pipeline.SlotManager`."* — the agent writes a
+  **record** entry; it's recallable by symbol from every client afterwards.
+- *"Prime yourself from the memory store."* — at the start of a session, the agent
+  pulls the domain **primer** Claude Code would have received automatically.
+
+And you don't need an agent to write memory at all: **any markdown file is memory —
+and you probably already have a corpus.** Sprint docs, postmortems, ADRs, design
+notes: add your `docs/` folder once under **Memory sources**, hit **Load**, and every
+`.md` in it becomes agent knowledge — new and changed files on every Load, unchanged
+ones skipped. The loader does the heavy lifting: each section becomes one recallable
+fact, headings/bold/backticked terms become search cues, and a document whose text
+names its code (`` `SlotManager.freeSlot` ``) is anchored to that symbol
+automatically, no frontmatter needed — the next agent that touches `freeSlot` can be
+handed the postmortem that was written about it.
+
+One warning: if a Cursor agent says "I'll remember that" **without** calling GOJA, it
+is remembering into Cursor's own chat memory — opaque, not listable, not exportable,
+and invisible to every other tool. Durable memory is the one you can see in this view.
+
 ---
 
 ## Settings

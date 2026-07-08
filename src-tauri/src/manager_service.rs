@@ -3084,6 +3084,9 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
          Cursor and Claude Code. Clients without hook injection must PULL it:"
             .to_string(),
         String::new(),
+        "- At the START of a session touching Java → `experience(kind=primer, \
+         format=text)` — the domain layer Claude Code receives automatically."
+            .to_string(),
         "- BEFORE diagnosing a symptom or refactoring a symbol → \
          `experience(kind=recall, symbol=\"pkg.Type#member\")` or \
          `experience(kind=recall, symptom=\"...\")`. A match is a CLOSED SET — match \
@@ -5358,6 +5361,10 @@ mod tests {
         assert!(
             block.contains("experience(kind=record"),
             "shows the record call shape"
+        );
+        assert!(
+            block.contains("experience(kind=primer"),
+            "pull-based session primer for clients without a session-start hook"
         );
         assert!(
             block.contains("CROSS-CLIENT"),

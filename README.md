@@ -59,6 +59,19 @@ The installer pulls the right artifact for your CPU automatically. To update, re
   path stays stable across updates.
 - **Lives in the tray.** A system-tray menu drives per-workspace start/stop without opening the
   window. Optional autostart-on-boot restores the workspaces you had running.
+- **One memory, every client.** The GOJA knowledge store is your agent's durable, cross-client
+  memory — markdown files in your git plus a symbol-anchored store, written and recalled from
+  Cursor, Claude Code, or any MCP client. In Claude Code it's pushed into sessions automatically
+  (primer + recall hooks); in Cursor, ask: *"what do we know about `freeSlot`?"* (recall),
+  *"record this as a lesson anchored to `pipeline.SlotManager`"* (record), *"prime yourself from
+  the memory store"* (session primer). Or skip the agent entirely: any markdown is memory — and
+  your `docs/` folder is probably already a corpus. Add it under Memory sources and Load turns
+  sprint docs, postmortems and ADRs into agent knowledge: one fact per section, search cues from
+  the headings, auto-anchored to the code the text names — the next agent touching `freeSlot` gets
+  handed the postmortem written about it. If an agent says "I'll remember that" without calling
+  GOJA, it's remembering
+  into an opaque chat memory no other tool can see — durable memory is the one in the studio's
+  Memory view: listable, promotable, exportable, yours.
 
 ---
 
