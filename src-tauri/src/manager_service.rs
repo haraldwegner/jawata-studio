@@ -4953,6 +4953,107 @@ emit_ctx "$sym" "$data"
 exit 0
 "#;
 
+// ===================== Sprint 22a P1-b: Cursor hooks (client parity) =====================
+// Cursor's beforeSubmitPrompt CANNOT inject context (only continue/user_message), so the
+// recalled fact reaches the model via the goja-studio rule block + sessionStart primer +
+// MCP meta.steering — NOT a 1:1 UserPromptSubmit port (cursor.com/docs/hooks, verified
+// 2026-07-08). These scripts follow Cursor's contract: one JSON object on stdin; a
+// {continue, permission, additional_context} object on stdout. Guard + primer are full
+// parity; recall is a side-effect; the observer is fire-and-forget.
+
+fn build_cursor_primer_script(mcp_url: &str, token: &str) -> String {
+    CURSOR_PRIMER_TEMPLATE.replace("__MCP_URL__", mcp_url).replace("__TOKEN__", token)
+}
+const CURSOR_PRIMER_TEMPLATE: &str = r#"#!/usr/bin/env bash
+# <goja-studio managed Cursor sessionStart primer — do not edit; overwritten on deploy>
+set -u
+MCP_URL="__MCP_URL__"
+TOKEN="__TOKEN__"
+if [ "${GOJA_HOOK_SELFTEST:-}" = "1" ]; then printf '%s\n' '{"additional_context":"[domain_fact] selftest (accepted)"}'; exit 0; fi
+cat > /dev/null
+command -v curl >/dev/null 2>&1 || { printf '%s\n' '{}'; exit 0; }
+req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"primer","format":"text","limit":12}}}'
+resp="$(curl -s --max-time 3 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$req" "$MCP_URL" 2>/dev/null)"
+[ -n "$resp" ] || { printf '%s\n' '{}'; exit 0; }
+flat="$(printf '%s' "$resp" | tr -d '\n\r')"
+inner="$(printf '%s' "$flat" | sed -n 's/.*"text"[[:space:]]*:[[:space:]]*"\(.*\)"[[:space:]]*}[[:space:]]*][[:space:]]*}[[:space:]]*}.*/\1/p' | sed 's/\\"/"/g; s/\\\\/\\/g')"
+printf '%s' "$inner" | grep -q '"success"[[:space:]]*:[[:space:]]*true' || { printf '%s\n' '{}'; exit 0; }
+data="$(printf '%s' "$inner" | sed -n 's/.*"data"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+[ -n "$data" ] || { printf '%s\n' '{}'; exit 0; }
+case "$data" in No\ domain*) printf '%s\n' '{}'; exit 0 ;; esac
+printf '{"additional_context":"GOJA domain primer:\\n%s"}\n' "$data"
+"#;
+
+fn build_cursor_guard_script() -> String {
+    CURSOR_GUARD_TEMPLATE.to_string()
+}
+const CURSOR_GUARD_TEMPLATE: &str = r#"#!/usr/bin/env bash
+# <goja-studio managed Cursor beforeShellExecution guard — do not edit; overwritten on deploy>
+set -u
+input="$(cat)"
+cmd="$(printf '%s' "$input" | tr '\n\r' '  ')"
+# Deny Java-semantic shell text search/edit; steer to GOJA MCP. failClosed in hooks.json
+# means a crash/timeout also blocks. Everything else is allowed.
+case "$cmd" in
+  *grep*.java*|*\ rg\ *.java*|*sed*.java*|*awk*.java*)
+    printf '%s\n' '{"continue":true,"permission":"deny","user_message":"Blocked: use GOJA MCP for Java semantic search.","agent_message":"Shell text search on .java is blocked — call search_symbols / find_references via GOJA MCP (or declare a goja-fallback)."}'
+    exit 0 ;;
+esac
+printf '%s\n' '{"continue":true,"permission":"allow"}'
+"#;
+
+fn build_cursor_recall_script(mcp_url: &str, token: &str) -> String {
+    CURSOR_RECALL_TEMPLATE.replace("__MCP_URL__", mcp_url).replace("__TOKEN__", token)
+}
+const CURSOR_RECALL_TEMPLATE: &str = r#"#!/usr/bin/env bash
+# <goja-studio managed Cursor beforeSubmitPrompt recall (SIDE-EFFECT only — Cursor cannot
+# inject context on this event; the recalled fact reaches the model via the goja-studio rule
+# block + sessionStart primer + MCP meta.steering) — do not edit; overwritten on deploy>
+set -u
+MCP_URL="__MCP_URL__"
+TOKEN="__TOKEN__"
+if [ "${GOJA_HOOK_SELFTEST:-}" = "1" ]; then printf '%s\n' '{"continue":true}'; exit 0; fi
+input="$(cat)"
+if command -v curl >/dev/null 2>&1; then
+  flatin="$(printf '%s' "$input" | tr '\n\r' '  ')"
+  prompt="$(printf '%s' "$flatin" | sed -n 's/.*"prompt"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+  cue="$(printf '%s' "$prompt" | grep -oE '[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*#[A-Za-z0-9_]+|[A-Z][A-Za-z0-9_]*(\.[A-Z][A-Za-z0-9_]*)+' 2>/dev/null | head -n 1)"
+  if [ -n "$cue" ]; then
+    req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"recall","format":"text","symbol":"'"$cue"'"}}}'
+    curl -s --max-time 2 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$req" "$MCP_URL" >/dev/null 2>&1 || true
+  fi
+fi
+printf '%s\n' '{"continue":true}'
+"#;
+
+fn build_cursor_observer_script() -> String {
+    CURSOR_OBSERVER_TEMPLATE.to_string()
+}
+const CURSOR_OBSERVER_TEMPLATE: &str = r#"#!/usr/bin/env bash
+# <goja-studio managed Cursor afterMCPExecution observer (fire-and-forget side-effect) — do not edit; overwritten on deploy>
+set -u
+cat > /dev/null
+# afterMCPExecution responses are not enforced; reserved for slip->store / fallback.log
+# correlation (parity with the Claude PostToolUse observer).
+printf '%s\n' '{}'
+"#;
+
+/// The managed Cursor `hooks.json` (version 1) registering the four managed scripts, with
+/// command paths relative to `~/.cursor/` per the spec. The guard is `failClosed` so a
+/// crash/timeout blocks the Java-grep rather than leaking it.
+fn build_cursor_hooks_json() -> String {
+    serde_json::json!({
+        "version": 1,
+        "hooks": {
+            "sessionStart": [{ "command": "./hooks/goja-session-primer.sh", "timeout": 15 }],
+            "beforeShellExecution": [{ "command": "./hooks/goja-guard.sh", "timeout": 5, "failClosed": true, "matcher": "grep |rg |sed |awk " }],
+            "beforeSubmitPrompt": [{ "command": "./hooks/goja-recall.sh", "timeout": 5 }],
+            "afterMCPExecution": [{ "command": "./hooks/goja-observer.sh", "timeout": 5 }]
+        }
+    })
+    .to_string()
+}
+
 /// Sprint 10 v0.10.4: atomic write of `workspace.json` for one workspace.
 /// Lifted out of `ManagerService` so it can be unit-tested without the
 /// full ConfigStore + ReleaseManager + RuntimeManager dependency graph.
@@ -6241,6 +6342,47 @@ mod tests {
             s.contains(r#"basename "$fp" .java"#),
             "derives the type-name cue from the edited .java file"
         );
+    }
+
+    #[test]
+    fn cursor_hooks_json_registers_managed_events_failclosed_guard() {
+        let v: serde_json::Value = serde_json::from_str(&build_cursor_hooks_json()).unwrap();
+        assert_eq!(v["version"], 1);
+        for ev in ["sessionStart", "beforeShellExecution", "beforeSubmitPrompt", "afterMCPExecution"] {
+            assert!(v["hooks"][ev].is_array(), "event {ev} registered");
+        }
+        assert_eq!(v["hooks"]["beforeShellExecution"][0]["failClosed"], true, "guard fails closed");
+        assert_eq!(v["hooks"]["sessionStart"][0]["command"], "./hooks/goja-session-primer.sh");
+    }
+
+    #[test]
+    fn cursor_primer_injects_additional_context() {
+        let s = build_cursor_primer_script("u", "t");
+        assert!(s.contains(r#""additional_context""#), "sessionStart injects via additional_context");
+        assert!(s.contains(r#""kind":"primer""#));
+    }
+
+    #[test]
+    fn cursor_guard_denies_java_grep_with_agent_steer() {
+        let s = build_cursor_guard_script();
+        assert!(s.contains(r#""permission":"deny""#), "denies");
+        assert!(s.contains("grep") && s.contains(".java"), "targets Java grep");
+        assert!(s.contains(r#""agent_message""#), "steers the agent to GOJA");
+    }
+
+    #[test]
+    fn cursor_recall_is_side_effect_only_no_inject() {
+        let s = build_cursor_recall_script("u", "t");
+        // beforeSubmitPrompt cannot inject on Cursor — must NOT emit additional_context.
+        assert!(!s.contains("additional_context"), "beforeSubmitPrompt cannot inject on Cursor");
+        assert!(s.contains(r#"{"continue":true}"#), "returns the allow shape");
+        assert!(s.contains(r#""kind":"recall""#), "still does the side-effect recall");
+    }
+
+    #[test]
+    fn cursor_observer_is_fire_and_forget() {
+        let s = build_cursor_observer_script();
+        assert!(s.contains(r#"{}"#), "afterMCPExecution response is not enforced");
     }
 
     #[test]
