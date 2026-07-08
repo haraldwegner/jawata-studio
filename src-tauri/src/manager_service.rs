@@ -3074,6 +3074,30 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
         "4. Green → keep going. Red → `undo_refactoring` and rethink. One step at a time."
             .to_string(),
         String::new(),
+        // v2.5.1 (Cursor parity, interim): the experience store is the CROSS-CLIENT
+        // memory, but only Claude Code has push hooks (primer/recall). Every other
+        // client must PULL — this section is the textual substitute until its hook
+        // schema is ported. Identical text everywhere (harmless where hooks push too).
+        "## GOJA memory — recall before you theorize, record what you learn".to_string(),
+        String::new(),
+        "The experience store is the CROSS-CLIENT memory: the same store answers in \
+         Cursor and Claude Code. Clients without hook injection must PULL it:"
+            .to_string(),
+        String::new(),
+        "- BEFORE diagnosing a symptom or refactoring a symbol → \
+         `experience(kind=recall, symbol=\"pkg.Type#member\")` or \
+         `experience(kind=recall, symptom=\"...\")`. A match is a CLOSED SET — match \
+         your observation to ONE of them with evidence, or declare it genuinely new; \
+         do not generate a novel cause."
+            .to_string(),
+        "- Learned something durable (lesson, failure mode, hazard, convention) → \
+         `experience(kind=record, type=lesson, summary=..., symbol=...)` — it becomes \
+         recallable by symbol from every client."
+            .to_string(),
+        "- Shell fallback on Java anyway? Declare `goja-fallback: <why>` in the \
+         command — the declaration is the audit trail."
+            .to_string(),
+        String::new(),
         "Managed service ids:".to_string(),
     ];
     for server in servers {
@@ -5309,6 +5333,39 @@ mod tests {
             block.contains("refactoring(action=plan)"),
             "structural change → the plan lifecycle"
         );
+    }
+
+    #[test]
+    fn rule_block_carries_the_memory_recall_discipline() {
+        // v2.5.1 (Cursor parity, interim): clients without push hooks must PULL the
+        // cross-client experience store — recall-before-theorize, record-what-you-
+        // learn, declare-your-fallback. The textual substitute until Cursor's hook
+        // schema is ported; identical for every client.
+        let block = build_rule_block("cursor", &vec![url_server("goja-ws-a", 8800, "tok", false)]);
+        assert!(
+            block.contains("recall before you theorize"),
+            "names the memory discipline section"
+        );
+        assert!(
+            block.contains("experience(kind=recall, symbol="),
+            "shows the symbol-cue recall call shape"
+        );
+        assert!(block.contains("CLOSED SET"), "carries the classify contract");
+        assert!(
+            block.contains("do not generate a novel cause"),
+            "classify, never generate"
+        );
+        assert!(
+            block.contains("experience(kind=record"),
+            "shows the record call shape"
+        );
+        assert!(
+            block.contains("CROSS-CLIENT"),
+            "states the same store answers in every client"
+        );
+        // Same text in the Claude block (harmless where hooks push anyway).
+        let claude = build_rule_block("claude", &vec![url_server("goja-ws-a", 8800, "tok", false)]);
+        assert!(claude.contains("recall before you theorize"));
     }
 
     #[test]
