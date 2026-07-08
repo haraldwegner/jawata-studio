@@ -413,8 +413,10 @@
       <div class="section-intro">
         <h3>Memory sources</h3>
         <p class="muted">
-          Where load finds your memory files. Claude, Cursor &amp; co. locations are
-          auto-discovered — add extra roots only for anything beyond the conventions.
+          Where load finds your memory files. Auto-discovered: agent INSTRUCTION files
+          (CLAUDE.md, Claude project memory, Cursor/Copilot rules, AGENTS.md) — not your
+          documents. Add your knowledge folders (docs/, sprints, postmortems, ADRs) as
+          extra roots: every .md becomes recallable, anchored to the code it names.
         </p>
       </div>
       <label class="field">
@@ -448,9 +450,10 @@
           </ul>
         {:else}
           <span class="hint">
-            None — load uses the auto-discovered set: layered CLAUDE.md, every
-            ~/.claude/projects/*/memory, .cursor/rules, .cursorrules, AGENTS.md,
-            copilot-instructions.md.
+            None — load uses only the auto-discovered instruction set: layered CLAUDE.md,
+            every ~/.claude/projects/*/memory, .cursor/rules, .cursorrules, AGENTS.md,
+            copilot-instructions.md. Your own docs (sprints, postmortems) are NOT found
+            automatically — add their folders here.
           </span>
         {/if}
       </label>
@@ -544,7 +547,7 @@
           type="button"
           disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
           on:click={runLoad}
-          title={'Seed the store from your memory files — auto-discovered Claude/Cursor & co. locations plus the extra roots. Runs on EVERY reachable workspace of this store (each contributes its own project locations). Idempotent: re-loading replaces, so this is also the re-initialize after a wipe. Say: "load my memory files"'}
+          title={'Seed the store from your memory files — the auto-discovered instruction files plus your extra roots (docs folders and all). Runs on EVERY reachable workspace of this store (each contributes its own project locations). Idempotent: re-loading replaces, so this is also the re-initialize after a wipe. Say: "load my memory files"'}
         >
           Load
         </button>

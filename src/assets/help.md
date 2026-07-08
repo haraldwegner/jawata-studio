@@ -150,10 +150,12 @@ Your GOJA memory store — the knowledge behind the push channel that primes and
 agents. One user-level database by default, shared by every workspace, living at
 `~/.local/share/goja/`. The view has two panels:
 
-- **Memory sources** — where **Load** finds your memory files. The usual locations are
-  auto-discovered: your layered `CLAUDE.md` files, every Claude project memory folder,
-  Cursor rules (`.cursor/rules`, `.cursorrules`), `AGENTS.md`, Copilot instructions.
-  Add extra root folders only for anything outside those conventions. **Store mode**
+- **Memory sources** — where **Load** finds your memory files. Auto-discovered are the
+  agent INSTRUCTION files only: your layered `CLAUDE.md` files, every Claude project
+  memory folder, Cursor rules (`.cursor/rules`, `.cursorrules`), `AGENTS.md`, Copilot
+  instructions. Your own documents are **not** found automatically — add your knowledge
+  folders (`docs/`, sprint docs, postmortems, ADRs) as extra roots; that's where most
+  of a team's real corpus lives (see "Memory from Cursor" below). **Store mode**
   chooses between the shared user-level store (default — your knowledge is recallable
   from every workspace) and a per-workspace store. **Auto-seed on deploy** loads your
   memory into fresh residents automatically after every deploy.
