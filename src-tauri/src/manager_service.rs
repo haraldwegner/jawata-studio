@@ -1796,6 +1796,18 @@ impl ManagerService {
                 }
             }
 
+            // Sprint 22a P1-b: strip the managed Cursor hooks.json entries + scripts
+            // (Cursor only). Leaves user hooks intact.
+            if let (Some(hooks_path), Some(hooks_dir)) =
+                (derive_cursor_hooks_path(client), managed_cursor_hooks_dir())
+            {
+                match remove_managed_cursor_hooks(&hooks_path, &hooks_dir, backup_before_write) {
+                    Ok(true) => changed_sections.push("cursorHooks".into()),
+                    Ok(false) => {}
+                    Err(error) => errors.push(error),
+                }
+            }
+
             if !errors.is_empty() {
                 return DeployClientResult {
                     client: client.to_string(),
@@ -2005,6 +2017,29 @@ impl ManagerService {
                 if let Err(error) = selftest_hook_script(&userprompt_path) {
                     errors.push(error);
                 }
+            }
+        }
+
+        // Sprint 22a P1-b: the managed Cursor hooks.json + scripts (Cursor only) — the
+        // guard (failClosed) + sessionStart primer are full parity; recall is a
+        // side-effect (Cursor cannot inject on beforeSubmitPrompt); the observer is
+        // fire-and-forget. Merged into ~/.cursor/hooks.json preserving user hooks.
+        if let (Some(hooks_path), Some(hooks_dir), Some(server)) = (
+            derive_cursor_hooks_path(client),
+            managed_cursor_hooks_dir(),
+            servers.first(),
+        ) {
+            match write_managed_cursor_hooks(
+                &hooks_path,
+                &hooks_dir,
+                &server.url,
+                &server.token,
+                backup_before_write,
+                matches!(mode, DeployMode::Regenerate),
+            ) {
+                Ok(true) => changed_sections.push("cursorHooks".into()),
+                Ok(false) => {}
+                Err(error) => errors.push(error),
             }
         }
 
@@ -5038,20 +5073,231 @@ cat > /dev/null
 printf '%s\n' '{}'
 "#;
 
+/// The managed sentinel: our Cursor hook scripts all live at `./hooks/goja-*.sh`, so a
+/// command containing this substring is one goja-studio owns — used to replace/remove our
+/// entries while leaving the user's hooks untouched.
+const CURSOR_HOOK_SENTINEL: &str = "hooks/goja-";
+
+/// The four managed (event, entry) pairs — the SINGLE source for both the standalone
+/// `build_cursor_hooks_json` and the merge-into-the-user's-file path, so they never drift.
+fn managed_cursor_hook_entries() -> Vec<(&'static str, serde_json::Value)> {
+    vec![
+        ("sessionStart", serde_json::json!({ "command": "./hooks/goja-session-primer.sh", "timeout": 15 })),
+        ("beforeShellExecution", serde_json::json!({ "command": "./hooks/goja-guard.sh", "timeout": 5, "failClosed": true, "matcher": "grep |rg |sed |awk " })),
+        ("beforeSubmitPrompt", serde_json::json!({ "command": "./hooks/goja-recall.sh", "timeout": 5 })),
+        ("afterMCPExecution", serde_json::json!({ "command": "./hooks/goja-observer.sh", "timeout": 5 })),
+    ]
+}
+
 /// The managed Cursor `hooks.json` (version 1) registering the four managed scripts, with
 /// command paths relative to `~/.cursor/` per the spec. The guard is `failClosed` so a
 /// crash/timeout blocks the Java-grep rather than leaking it.
 fn build_cursor_hooks_json() -> String {
-    serde_json::json!({
-        "version": 1,
-        "hooks": {
-            "sessionStart": [{ "command": "./hooks/goja-session-primer.sh", "timeout": 15 }],
-            "beforeShellExecution": [{ "command": "./hooks/goja-guard.sh", "timeout": 5, "failClosed": true, "matcher": "grep |rg |sed |awk " }],
-            "beforeSubmitPrompt": [{ "command": "./hooks/goja-recall.sh", "timeout": 5 }],
-            "afterMCPExecution": [{ "command": "./hooks/goja-observer.sh", "timeout": 5 }]
+    let mut hooks = serde_json::Map::new();
+    for (event, entry) in managed_cursor_hook_entries() {
+        hooks.insert(event.to_string(), serde_json::Value::Array(vec![entry]));
+    }
+    serde_json::json!({ "version": 1, "hooks": hooks }).to_string()
+}
+
+/// True iff a Cursor hook entry is one goja-studio wrote (its `command` references a
+/// managed `./hooks/goja-*.sh` script).
+fn cursor_entry_is_managed(entry: &serde_json::Value) -> bool {
+    entry
+        .get("command")
+        .and_then(|c| c.as_str())
+        .map(|c| c.contains(CURSOR_HOOK_SENTINEL))
+        .unwrap_or(false)
+}
+
+/// Merge one managed event entry into `hooks_object[event]`: drop any prior managed entry,
+/// KEEP the user's entries, append the fresh one.
+fn merge_cursor_event(
+    hooks_object: &mut serde_json::Map<String, serde_json::Value>,
+    event: &str,
+    entry: serde_json::Value,
+) {
+    let mut arr = hooks_object
+        .get(event)
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    arr.retain(|e| !cursor_entry_is_managed(e));
+    arr.push(entry);
+    hooks_object.insert(event.to_string(), serde_json::Value::Array(arr));
+}
+
+/// Cursor only: `~/.cursor/hooks.json` (the deploy target for the managed hooks). Claude
+/// keeps its `settings.json` path; other clients have no hook surface.
+fn derive_cursor_hooks_path(client: &str) -> Option<String> {
+    if client != "cursor" {
+        return None;
+    }
+    let home = dirs::home_dir()?;
+    Some(display_path(&home.join(".cursor").join("hooks.json")))
+}
+
+/// The dir the managed Cursor scripts live in — `~/.cursor/hooks/`, matching the
+/// `./hooks/goja-*.sh` command paths in `hooks.json` (relative to `~/.cursor/`).
+fn managed_cursor_hooks_dir() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(home.join(".cursor").join("hooks"))
+}
+
+/// Sprint 22a P1-b — deploy the managed Cursor hooks: write the four scripts under
+/// `hooks_dir` and MERGE our four event entries into `hooks.json`, preserving any user
+/// hooks (ours are identified by the `hooks/goja-` command path). Returns Ok(true) when
+/// anything changed. Idempotent: an unchanged re-deploy is a byte-stable no-op.
+fn write_managed_cursor_hooks(
+    hooks_json_path: &str,
+    hooks_dir: &Path,
+    mcp_url: &str,
+    token: &str,
+    backup_before_write: bool,
+    force_rewrite: bool,
+) -> Result<bool, String> {
+    // 1. Write the four managed scripts (goja-studio owns them outright).
+    fs::create_dir_all(hooks_dir)
+        .map_err(|e| format!("failed to create cursor hooks dir {}: {e}", hooks_dir.display()))?;
+    let scripts: [(&str, String); 4] = [
+        ("goja-session-primer.sh", build_cursor_primer_script(mcp_url, token)),
+        ("goja-guard.sh", build_cursor_guard_script()),
+        ("goja-recall.sh", build_cursor_recall_script(mcp_url, token)),
+        ("goja-observer.sh", build_cursor_observer_script()),
+    ];
+    let mut script_changed = false;
+    for (name, body) in &scripts {
+        let p = hooks_dir.join(name);
+        let changed = fs::read_to_string(&p).map(|e| &e != body).unwrap_or(true);
+        if changed || force_rewrite {
+            fs::write(&p, body)
+                .map_err(|e| format!("failed writing cursor hook {}: {e}", p.display()))?;
+            script_changed = true;
         }
-    })
-    .to_string()
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&p, fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    // 2. Merge the managed entries into hooks.json, preserving user hooks.
+    let hooks_buf = PathBuf::from(hooks_json_path);
+    let parent = hooks_buf
+        .parent()
+        .ok_or_else(|| format!("cursor hooks path has no parent: {}", hooks_buf.display()))?;
+    fs::create_dir_all(parent)
+        .map_err(|e| format!("failed to create cursor dir {}: {e}", parent.display()))?;
+
+    let existing = fs::read_to_string(&hooks_buf).ok();
+    let mut root = existing
+        .as_deref()
+        .and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !root.is_object() {
+        root = serde_json::json!({});
+    }
+    {
+        let object = root.as_object_mut().expect("root is an object");
+        object.insert("version".into(), serde_json::json!(1));
+        let hooks = object.entry("hooks").or_insert_with(|| serde_json::json!({}));
+        if !hooks.is_object() {
+            *hooks = serde_json::json!({});
+        }
+        let hooks_object = hooks.as_object_mut().expect("hooks is an object");
+        for (event, entry) in managed_cursor_hook_entries() {
+            merge_cursor_event(hooks_object, event, entry);
+        }
+    }
+
+    let next_json = serde_json::to_string_pretty(&root)
+        .map_err(|e| format!("failed serializing cursor hooks.json: {e}"))?;
+    if !force_rewrite {
+        if let Some(existing) = existing.as_deref() {
+            if existing.trim() == next_json.trim() && !script_changed {
+                return Ok(false);
+            }
+        }
+    }
+    if backup_before_write {
+        crate::backups::backup_before_write(&hooks_buf)
+            .map_err(|e| format!("failed creating centralized cursor hooks backup: {e}"))?;
+    }
+    fs::write(&hooks_buf, format!("{next_json}\n"))
+        .map_err(|e| format!("failed writing cursor hooks {}: {e}", hooks_buf.display()))?;
+    Ok(true)
+}
+
+/// Remove the managed entries from `hooks.json` + delete the four scripts. Leaves user
+/// hooks intact, prunes now-empty event arrays, and removes the file entirely only when
+/// nothing but our (now-stripped) content remained. Returns Ok(true) when anything changed.
+fn remove_managed_cursor_hooks(
+    hooks_json_path: &str,
+    hooks_dir: &Path,
+    backup_before_write: bool,
+) -> Result<bool, String> {
+    let mut changed = false;
+
+    let hooks_buf = PathBuf::from(hooks_json_path);
+    if hooks_buf.exists() {
+        if let Ok(existing) = fs::read_to_string(&hooks_buf) {
+            if let Ok(mut root) = serde_json::from_str::<serde_json::Value>(&existing) {
+                let mut json_changed = false;
+                if let Some(object) = root.as_object_mut() {
+                    if let Some(hooks) = object.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+                        for event in hooks.keys().cloned().collect::<Vec<_>>() {
+                            if let Some(arr) = hooks.get_mut(&event).and_then(|v| v.as_array_mut()) {
+                                let before = arr.len();
+                                arr.retain(|e| !cursor_entry_is_managed(e));
+                                json_changed |= arr.len() != before;
+                                if arr.is_empty() {
+                                    hooks.remove(&event);
+                                }
+                            }
+                        }
+                    }
+                }
+                if json_changed {
+                    let hooks_empty = root
+                        .get("hooks")
+                        .and_then(|h| h.as_object())
+                        .map(|o| o.is_empty())
+                        .unwrap_or(true);
+                    let only_ours = root
+                        .as_object()
+                        .map(|o| o.keys().all(|k| k == "version" || k == "hooks"))
+                        .unwrap_or(false);
+                    if backup_before_write {
+                        crate::backups::backup_before_write(&hooks_buf)
+                            .map_err(|e| format!("failed creating centralized cursor hooks backup: {e}"))?;
+                    }
+                    if hooks_empty && only_ours {
+                        let _ = fs::remove_file(&hooks_buf);
+                    } else {
+                        let next_json = serde_json::to_string_pretty(&root)
+                            .map_err(|e| format!("failed serializing cursor hooks.json: {e}"))?;
+                        fs::write(&hooks_buf, format!("{next_json}\n"))
+                            .map_err(|e| format!("failed writing cursor hooks {}: {e}", hooks_buf.display()))?;
+                    }
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    for name in [
+        "goja-session-primer.sh",
+        "goja-guard.sh",
+        "goja-recall.sh",
+        "goja-observer.sh",
+    ] {
+        let p = hooks_dir.join(name);
+        if p.exists() {
+            let _ = fs::remove_file(&p);
+            changed = true;
+        }
+    }
+    Ok(changed)
 }
 
 /// Sprint 10 v0.10.4: atomic write of `workspace.json` for one workspace.
@@ -6136,6 +6382,173 @@ mod tests {
         let post2 = v2["hooks"]["PostToolUse"].as_array().unwrap();
         assert_eq!(post2.len(), 1, "only the user entry remains");
         assert!(!post2.iter().any(is_managed_posthook_entry));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ===== Sprint 22a P1-b: Cursor hooks.json deploy/remove lifecycle =====
+
+    #[test]
+    fn cursor_hooks_path_is_cursor_only() {
+        assert!(
+            derive_cursor_hooks_path("cursor")
+                .map(|p| p.ends_with("hooks.json"))
+                .unwrap_or(false),
+            "cursor gets ~/.cursor/hooks.json"
+        );
+        for other in ["claude", "antigravity", "claude_desktop", "intellij"] {
+            assert!(derive_cursor_hooks_path(other).is_none(), "{other} has no cursor hooks");
+        }
+    }
+
+    #[test]
+    fn cursor_hooks_write_merges_preserving_user_hooks() {
+        let dir = unique_tempdir("cursor-hooks-merge");
+        let cursor = dir.join(".cursor");
+        let hooks_json = cursor.join("hooks.json");
+        let hooks_path = hooks_json.to_string_lossy().to_string();
+        let hooks_dir = cursor.join("hooks");
+        std::fs::create_dir_all(&cursor).unwrap();
+        // A user already has their own beforeSubmitPrompt hook + a bespoke event.
+        std::fs::write(
+            &hooks_json,
+            r#"{"version":1,"hooks":{"beforeSubmitPrompt":[{"command":"./hooks/my-own.sh"}],"stop":[{"command":"./hooks/user-stop.sh"}]}}"#,
+        )
+        .unwrap();
+
+        assert!(write_managed_cursor_hooks(
+            &hooks_path, &hooks_dir, "http://127.0.0.1:8899/mcp", "tok", false, false
+        )
+        .unwrap());
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&hooks_json).unwrap()).unwrap();
+        assert_eq!(v["version"], 1);
+        let hooks = v["hooks"].as_object().unwrap();
+        for ev in ["sessionStart", "beforeShellExecution", "beforeSubmitPrompt", "afterMCPExecution"] {
+            assert!(hooks.contains_key(ev), "managed event {ev} present");
+        }
+        // beforeSubmitPrompt keeps the user's entry AND adds ours.
+        let bsp = hooks["beforeSubmitPrompt"].as_array().unwrap();
+        assert!(bsp.iter().any(|e| e["command"] == "./hooks/my-own.sh"), "user hook preserved");
+        assert!(bsp.iter().any(|e| e["command"] == "./hooks/goja-recall.sh"), "managed recall added");
+        // The user's bespoke event is untouched.
+        assert!(hooks.contains_key("stop"), "unrelated user event preserved");
+        // The guard is failClosed.
+        let guard = hooks["beforeShellExecution"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["command"] == "./hooks/goja-guard.sh")
+            .unwrap();
+        assert_eq!(guard["failClosed"], true, "guard is failClosed");
+        // Scripts written + executable; the recall script baked the url + token.
+        for name in ["goja-session-primer.sh", "goja-guard.sh", "goja-recall.sh", "goja-observer.sh"] {
+            let p = hooks_dir.join(name);
+            assert!(p.exists(), "{name} written");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&p).unwrap().permissions().mode();
+                assert!(mode & 0o111 != 0, "{name} is executable");
+            }
+        }
+        let recall = std::fs::read_to_string(hooks_dir.join("goja-recall.sh")).unwrap();
+        assert!(
+            recall.contains("http://127.0.0.1:8899/mcp") && recall.contains("tok"),
+            "url + token baked into the recall script"
+        );
+
+        // IDEMPOTENT: unchanged re-deploy is a byte-stable no-op.
+        assert!(
+            !write_managed_cursor_hooks(&hooks_path, &hooks_dir, "http://127.0.0.1:8899/mcp", "tok", false, false).unwrap(),
+            "re-deploy is a no-op"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cursor_hooks_remove_strips_ours_keeps_user() {
+        let dir = unique_tempdir("cursor-hooks-remove");
+        let cursor = dir.join(".cursor");
+        let hooks_json = cursor.join("hooks.json");
+        let hooks_path = hooks_json.to_string_lossy().to_string();
+        let hooks_dir = cursor.join("hooks");
+        std::fs::create_dir_all(&cursor).unwrap();
+        std::fs::write(
+            &hooks_json,
+            r#"{"version":1,"hooks":{"beforeSubmitPrompt":[{"command":"./hooks/my-own.sh"}]}}"#,
+        )
+        .unwrap();
+
+        write_managed_cursor_hooks(&hooks_path, &hooks_dir, "http://u/mcp", "t", false, false).unwrap();
+        assert!(remove_managed_cursor_hooks(&hooks_path, &hooks_dir, false).unwrap());
+
+        // File kept (user content remains); our entries + scripts gone; managed-only event pruned.
+        assert!(hooks_json.exists(), "file kept — user hook remains");
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&hooks_json).unwrap()).unwrap();
+        let hooks = v["hooks"].as_object().unwrap();
+        let bsp = hooks["beforeSubmitPrompt"].as_array().unwrap();
+        assert_eq!(bsp.len(), 1, "only the user entry remains");
+        assert!(bsp.iter().any(|e| e["command"] == "./hooks/my-own.sh"), "user hook preserved");
+        assert!(!hooks.contains_key("sessionStart"), "managed-only event pruned");
+        for name in ["goja-session-primer.sh", "goja-guard.sh", "goja-recall.sh", "goja-observer.sh"] {
+            assert!(!hooks_dir.join(name).exists(), "{name} deleted");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cursor_hooks_remove_deletes_file_when_only_ours() {
+        let dir = unique_tempdir("cursor-hooks-solo");
+        let cursor = dir.join(".cursor");
+        let hooks_json = cursor.join("hooks.json");
+        let hooks_path = hooks_json.to_string_lossy().to_string();
+        let hooks_dir = cursor.join("hooks");
+
+        // Deploy into a virgin ~/.cursor (goja created the file).
+        write_managed_cursor_hooks(&hooks_path, &hooks_dir, "http://u/mcp", "t", false, false).unwrap();
+        assert!(hooks_json.exists());
+        assert!(remove_managed_cursor_hooks(&hooks_path, &hooks_dir, false).unwrap());
+        assert!(!hooks_json.exists(), "file removed when nothing but ours remained");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cursor_scripts_emit_valid_json_over_the_wire() {
+        // Dogfood the emitted BYTES, not just the generated string: run the guard (no
+        // network) and the primer (selftest mode) and assert valid JSON output.
+        let dir = unique_tempdir("cursor-scripts-exec");
+        let hooks_dir = dir.join("hooks");
+        let hooks_path = dir.join("hooks.json").to_string_lossy().to_string();
+        write_managed_cursor_hooks(&hooks_path, &hooks_dir, "http://127.0.0.1:1/mcp", "t", false, false).unwrap();
+
+        use std::process::{Command, Stdio};
+        // guard: empty stdin -> allow -> valid JSON with permission=allow.
+        if let Ok(out) = Command::new("bash")
+            .arg(hooks_dir.join("goja-guard.sh"))
+            .stdin(Stdio::null())
+            .output()
+        {
+            let v: serde_json::Value =
+                serde_json::from_slice(&out.stdout).expect("guard emits valid JSON");
+            assert_eq!(v["permission"], "allow", "an empty command is allowed");
+        }
+        // primer: selftest mode -> valid JSON carrying additional_context.
+        if let Ok(out) = Command::new("bash")
+            .arg(hooks_dir.join("goja-session-primer.sh"))
+            .env("GOJA_HOOK_SELFTEST", "1")
+            .stdin(Stdio::null())
+            .output()
+        {
+            let v: serde_json::Value =
+                serde_json::from_slice(&out.stdout).expect("primer emits valid JSON");
+            assert!(v.get("additional_context").is_some(), "primer selftest injects context");
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
