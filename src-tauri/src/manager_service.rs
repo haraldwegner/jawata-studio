@@ -4787,11 +4787,40 @@ emit_ctx() {
 }
 if [ "${GOJA_HOOK_SELFTEST:-}" = "1" ]; then emit_ctx '[lesson] selftest canned line (accepted)'; exit 0; fi
 command -v curl >/dev/null 2>&1 || exit 0
+# THE recall attempt (Sprint 22a dual-cue): $1 = arg key (symbol|symptom), $2 = cue.
+# On a single fitting fact it injects and exits 0; otherwise returns so the next-
+# ranked cue is tried. Single-fact-or-silence: any \n in data = 2+ facts = skip.
+try_recall() {
+  [ -n "$2" ] || return 1
+  req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"recall","format":"text","'"$1"'":"'"$2"'"}}}'
+  resp="$(curl -s --max-time 2 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$req" "$MCP_URL" 2>/dev/null)"
+  [ -n "$resp" ] || exit 0
+  flat="$(printf '%s' "$resp" | tr -d '\n\r')"
+  inner="$(printf '%s' "$flat" | sed -n 's/.*"text"[[:space:]]*:[[:space:]]*"\(.*\)"[[:space:]]*}[[:space:]]*][[:space:]]*}[[:space:]]*}.*/\1/p' | sed 's/\\"/"/g; s/\\\\/\\/g')"
+  [ -n "$inner" ] || return 1
+  printf '%s' "$inner" | grep -q '"success"[[:space:]]*:[[:space:]]*true' || return 1
+  # data is a quote-sanitized flat string, so [^"]* stops at its closing quote — NOT
+  # greedy .* (which would swallow the trailing ,"meta":{steering} the layer appends).
+  data="$(printf '%s' "$inner" | sed -n 's/.*"data"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  [ -n "$data" ] || return 1
+  case "$data" in No\ known\ knowledge*|No\ domain*) return 1 ;; esac
+  # Terminal-or-absence: any \n in data = 2+ fitting facts = ambiguous -> next cue.
+  case "$data" in *"\n"*) return 1 ;; esac
+  emit_ctx "$data"
+  exit 0
+}
 input="$(cat)"
 flatin="$(printf '%s' "$input" | tr '\n\r' '  ')"
 prompt="$(printf '%s' "$flatin" | sed -n 's/.*"prompt"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
 [ -n "$prompt" ] || exit 0
 case "$prompt" in /*) exit 0 ;; esac
+# Symbol cues (Sprint 22a dual-cue, precise-first): qualified/member identifiers that
+# name a type or member (Type#member, pkg.Type, Outer.Inner), from the ORIGINAL prompt
+# (case-sensitive). They fire kind=recall,symbol= BEFORE the symptom cues and are
+# independent of the >=2-content-word gate, so a bare `Foo#bar` prompt still recalls.
+symcues="$(printf '%s' "$prompt" | grep -oE '[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*#[A-Za-z0-9_]+|[a-z][A-Za-z0-9_]*(\.[a-z][A-Za-z0-9_]*)*\.[A-Z][A-Za-z0-9_]*|[A-Z][A-Za-z0-9_]*(\.[A-Z][A-Za-z0-9_]*)+' 2>/dev/null | head -n 2)"
+try_recall symbol "$(printf '%s\n' "$symcues" | sed -n 1p)"
+try_recall symbol "$(printf '%s\n' "$symcues" | sed -n 2p)"
 # Normalize: lowercase, punctuation -> space; digits/hyphens/underscores survive (rarity marks).
 norm="$(printf '%s' "$prompt" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/ /g')"
 words=""
@@ -4828,30 +4857,11 @@ ngrams() {
 }
 tri="$(ngrams 3)"
 bi="$(ngrams 2)"
-c1="$(printf '%s\n' "$tri" | sed -n 1p)"
-c2="$(printf '%s\n' "$bi" | sed -n 1p)"
-c3="$(printf '%s\n' "$bi" | sed -n 2p)"
-for cue in "$c1" "$c2" "$c3"; do
-  [ -n "$cue" ] || continue
-  req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"recall","format":"text","symptom":"'"$cue"'"}}}'
-  resp="$(curl -s --max-time 2 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$req" "$MCP_URL" 2>/dev/null)"
-  [ -n "$resp" ] || exit 0
-  flat="$(printf '%s' "$resp" | tr -d '\n\r')"
-  inner="$(printf '%s' "$flat" | sed -n 's/.*"text"[[:space:]]*:[[:space:]]*"\(.*\)"[[:space:]]*}[[:space:]]*][[:space:]]*}[[:space:]]*}.*/\1/p' | sed 's/\\"/"/g; s/\\\\/\\/g')"
-  [ -n "$inner" ] || continue
-  printf '%s' "$inner" | grep -q '"success"[[:space:]]*:[[:space:]]*true' || continue
-  # data is a quote-sanitized flat string, so [^"]* stops at its closing quote — NOT greedy
-  # .* (which would swallow the trailing ,"meta":{steering} the result layer appends).
-  data="$(printf '%s' "$inner" | sed -n 's/.*"data"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
-  [ -n "$data" ] || continue
-  case "$data" in No\ known\ knowledge*|No\ domain*) continue ;; esac
-  # Terminal-or-absence at the INJECTION boundary: entry lines are \n-joined and content
-  # backslashes are sanitized away, so ANY \n in data = 2+ fitting facts = ambiguous ->
-  # try the next-ranked cue instead of injecting a pile or a guess.
-  case "$data" in *"\n"*) continue ;; esac
-  emit_ctx "$data"
-  exit 0
-done
+# Symptom cues (unchanged tiering): best trigram once, then two bigrams — now routed
+# through the shared try_recall, AFTER the precise symbol cues above.
+try_recall symptom "$(printf '%s\n' "$tri" | sed -n 1p)"
+try_recall symptom "$(printf '%s\n' "$bi" | sed -n 1p)"
+try_recall symptom "$(printf '%s\n' "$bi" | sed -n 2p)"
 exit 0
 "#;
 
@@ -4908,6 +4918,7 @@ flatin="$(printf '%s' "$input" | tr '\n\r' '  ')"
 tool_name="$(printf '%s' "$flatin" | sed -n 's/.*"tool_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
 case "$tool_name" in
   *rename_symbol*|*extract*|*move*|*refactor*|*inline*|*change_method_signature*|*apply_cleanup*|*apply_null*|*encapsulate*|*replace_duplicates*|*convert_anonymous*) ;;
+  Edit|Write|MultiEdit) ;;   # Sprint 22a: recall on a hand-edit of a source file too
   *) exit 0 ;;
 esac
 # Cue PRIORITY (Sprint 21a dogfood find): the old single alternation with a greedy .*
@@ -4918,6 +4929,13 @@ for key in typeName symbol query newName; do
   sym="$(printf '%s' "$flatin" | sed -n 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
   [ -n "$sym" ] && break
 done
+# Sprint 22a recall-on-Edit: with no refactor-tool key, derive the cue from the edited
+# file's type name (Foo.java -> Foo), so hand-editing source recalls its prior lessons
+# (the Sprint 6d gap: ownership work is hand-authored, never hits a refactor tool).
+if [ -z "$sym" ]; then
+  fp="$(printf '%s' "$flatin" | sed -n 's/.*"file_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+  case "$fp" in *.java) sym="$(basename "$fp" .java)" ;; esac
+fi
 [ -n "$sym" ] || exit 0
 req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"recall","format":"text","symbol":"'"$sym"'"}}}'
 resp="$(curl -s --max-time 3 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$req" "$MCP_URL" 2>/dev/null)"
@@ -6171,8 +6189,10 @@ mod tests {
         assert!(s.contains(r#"MCP_URL="http://127.0.0.1:8890/mcp""#), "bakes the mcp url");
         assert!(s.contains(r#"TOKEN="sekret""#), "bakes the bearer token");
         assert!(
-            s.contains(r#""kind":"recall""#) && s.contains(r#""symptom":"#),
-            "recalls by symptom cue"
+            s.contains(r#""kind":"recall""#)
+                && s.contains("try_recall symptom")
+                && s.contains("try_recall symbol"),
+            "recalls by BOTH symbol and symptom cues (Sprint 22a dual-cue)"
         );
         assert!(s.contains(r#""prompt""#), "reads the prompt from hook stdin");
         assert!(
@@ -6190,11 +6210,37 @@ mod tests {
         // Terminal-or-absence at the injection boundary: entry lines are \n-joined, so
         // any \n in the peeled data = 2+ fitting facts = ambiguous -> next cue, never a pile.
         assert!(
-            s.contains(r#"*"\n"*) continue"#),
+            s.contains(r#"*"\n"*) return 1"#),
             "multi-fact answers are ambiguous — try the next-ranked cue"
         );
         assert!(s.contains("No\\ known\\ knowledge"), "silent on absence");
         assert!(s.contains("--max-time 2"), "short per-attempt timeout");
+    }
+
+    #[test]
+    fn userprompt_script_fires_symbol_cues_precise_first() {
+        // Sprint 22a dual-cue: qualified/member identifiers in the prompt fire a
+        // kind=recall,symbol= attempt BEFORE the symptom cues, via the shared helper.
+        let s = build_userprompt_script("u", "t");
+        assert!(s.contains("symcues="), "extracts symbol cues from the prompt");
+        assert!(s.contains("try_recall symbol"), "tries symbol cues");
+        assert!(
+            s.find("try_recall symbol").unwrap() < s.find("try_recall symptom").unwrap(),
+            "symbol cues are tried before symptom cues (precise-first)"
+        );
+    }
+
+    #[test]
+    fn recall_script_fires_on_java_edit() {
+        // Sprint 22a recall-on-Edit: a hand-edit of a .java file also triggers recall,
+        // with the type name (Foo.java -> Foo) as the symbol cue.
+        let s = build_recall_script("u", "t");
+        assert!(s.contains("Edit|Write|MultiEdit"), "matches Edit/Write of a source file");
+        assert!(s.contains(r#""file_path""#), "reads the edited file path");
+        assert!(
+            s.contains(r#"basename "$fp" .java"#),
+            "derives the type-name cue from the edited .java file"
+        );
     }
 
     #[test]
