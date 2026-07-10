@@ -3320,11 +3320,6 @@ fn write_managed_json_block(
 
         let incoming_ids: HashSet<String> =
             servers.iter().map(|server| server.id.clone()).collect();
-        let should_prune_managed =
-            force_rewrite || matches!(merge_mode, McpMergeMode::ReplaceManagedSection);
-        if should_prune_managed {
-            existing_servers.retain(|key, _| !is_managed_mcp_key(key));
-        }
 
         // Sprint 15 Stage 11: URL form replaces stdio command/args/env.
         // Sprint 16 (bugs.md #10): the entry shape is per-client — see
@@ -3333,11 +3328,16 @@ fn write_managed_json_block(
             existing_servers.insert(server.id.clone(), managed_server_entry(client, server));
         }
 
-        if force_rewrite {
-            existing_servers.retain(|key, _| {
-                !is_managed_mcp_key(key) || incoming_ids.contains(key)
-            });
-        }
+        // Managed-namespace keys (jawata-/goja-/jl-/javalens-) belong to the
+        // studio: any that are not part of THIS deploy are stale generations
+        // (e.g. pre-rebrand goja-* entries, or per-workspace entries after the
+        // gateway consolidates to one). Prune them in EVERY merge mode — user
+        // keys are untouched. Previously this only ran under force_rewrite /
+        // ReplaceManagedSection, so legacy goja-* keys survived a plain deploy
+        // (caught live in the jawata Stage-8 integration run).
+        existing_servers
+            .retain(|key, _| !is_managed_mcp_key(key) || incoming_ids.contains(key));
+        let _ = merge_mode; // merge modes still govern rule/hook block handling
 
         object.insert(
             "mcpServers".into(),
@@ -5979,6 +5979,56 @@ mod tests {
         assert!(is_managed_mcp_key("jl-orb"));
         assert!(is_managed_mcp_key("javalens-orb"));
         assert!(!is_managed_mcp_key("someone-elses-server"));
+    }
+
+    /// Sprint 22b (Stage-8 live catch): a PLAIN deploy (default merge mode, no
+    /// force) must strip stale managed generations (goja-*) while writing the
+    /// jawata-* entries — user servers stay. Previously the prune only ran under
+    /// force_rewrite / ReplaceManagedSection, so legacy keys survived forever.
+    #[test]
+    fn plain_merge_deploy_strips_stale_managed_generations() {
+        let dir = std::env::temp_dir().join(format!("jawata-prune-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("mcp.json");
+        fs::write(
+            &cfg,
+            r#"{"mcpServers":{
+                "eclipse":{"url":"http://user/own"},
+                "goja-goja":{"url":"http://127.0.0.1:8800/mcp"},
+                "goja-orb-strategy":{"url":"http://127.0.0.1:8801/mcp"}
+            }}"#,
+        )
+        .unwrap();
+
+        let servers = vec![
+            url_server("jawata-goja", 8800, "t1", false),
+            url_server("jawata-orb-strategy", 8801, "t2", false),
+        ];
+        write_managed_json_block(
+            cfg.to_str().unwrap(),
+            "cursor",
+            &servers,
+            &McpMergeMode::SafeMerge,
+            false,
+            false, // NOT force_rewrite — the plain deploy path
+        )
+        .unwrap();
+
+        let out: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+        let keys: Vec<&String> = out["mcpServers"].as_object().unwrap().keys().collect();
+        assert!(keys.iter().any(|k| *k == "eclipse"), "user server preserved");
+        assert!(keys.iter().any(|k| *k == "jawata-goja"), "new key written");
+        assert!(
+            keys.iter().any(|k| *k == "jawata-orb-strategy"),
+            "new key written"
+        );
+        assert!(
+            !keys.iter().any(|k| k.starts_with("goja-")),
+            "stale goja-* generations stripped on plain merge deploy, got: {keys:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// Sprint 22b: cursor hooks.json entries written by goja-studio are managed
