@@ -175,9 +175,14 @@ any control for its prompt phrase.
 ### Memory from Cursor (and other clients)
 
 This store is your **cross-client memory**: the same entries answer in Cursor, Claude
-Code, and any MCP client. What differs is delivery — Claude Code *pushes* memory into
-sessions automatically (session primer, recall before refactor tools); every other
-client must be **asked**. Three phrases cover it:
+Code, and any MCP client. The tools and the **guard are identical on every client** —
+what differs is memory *delivery*. **Claude Code: full auto-push** (session primer,
+prompt-boundary recall, recall on edits and before refactor tools). **Cursor:
+best-effort push** — the deploy writes Cursor's hooks too, but Cursor's hook surface
+cannot inject context at every seam (it may drop the session primer), so there the
+knowledge reaches the agent through the deployed rule block and the steering that rides
+on every JAWATA tool result. **Any other MCP client:** ask. Three phrases cover it
+everywhere:
 
 - *"What do we know about `freeSlot`?"* — the agent runs a symbol/symptom **recall**;
   a match returns the closed set of known lessons for exactly that code.
