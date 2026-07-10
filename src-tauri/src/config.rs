@@ -354,7 +354,14 @@ impl ManagerSettings {
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum RuntimeSource {
     Managed,
-    LocalJar { jar_path: String },
+    // `rename_all = "camelCase"` on the enum renames variant names but does NOT
+    // cascade into a struct-variant's fields, so the field must be renamed
+    // explicitly to match the frontend's `jarPath` (else `update_settings`
+    // rejects the save with `missing field jar_path`).
+    LocalJar {
+        #[serde(rename = "jarPath")]
+        jar_path: String,
+    },
 }
 
 impl RuntimeSource {
@@ -1409,6 +1416,33 @@ mod tests {
         let parsed: ManagerSettings =
             serde_json::from_value(v).expect("stale v2.1.0 keys are ignored");
         assert_eq!(parsed.backup_retention, default_backup_retention());
+    }
+
+    #[test]
+    fn local_jar_runtime_source_deserializes_frontend_camelcase_payload() {
+        // Regression (jawata Stage-8 dogfood): the frontend saves the local-JAR
+        // source as {"kind":"localJar","jarPath":"..."} (camelCase). Before the
+        // explicit field rename, serde looked for snake_case `jar_path` and
+        // `update_settings` failed with `missing field jar_path`, making the
+        // local-JAR runtime unselectable.
+        let json = serde_json::json!({ "kind": "localJar", "jarPath": "/tools/jawata/jawata.jar" });
+        let parsed: RuntimeSource =
+            serde_json::from_value(json).expect("frontend camelCase jarPath must deserialize");
+        match parsed {
+            RuntimeSource::LocalJar { jar_path } => {
+                assert_eq!(jar_path, "/tools/jawata/jawata.jar")
+            }
+            other => panic!("expected LocalJar, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn local_jar_runtime_source_round_trips_as_camelcase() {
+        // Serialize must emit the SAME wire name the frontend reads back.
+        let src = RuntimeSource::LocalJar { jar_path: "/x/jawata.jar".into() };
+        let v = serde_json::to_value(&src).unwrap();
+        assert_eq!(v["jarPath"], serde_json::json!("/x/jawata.jar"));
+        assert!(v.get("jar_path").is_none(), "must not emit snake_case jar_path");
     }
 
     #[test]
