@@ -39,7 +39,7 @@ pub enum RuntimePhase {
 }
 
 /// Status record for a project's runtime. Sprint 10 v0.10.4: multiple
-/// projects sharing a `workspace_name` reflect the same underlying goja
+/// projects sharing a `workspace_name` reflect the same underlying jawata
 /// process — same PID, same workspace_dir, same log file. They differ only
 /// in `project_id`. The frontend continues to read these per-project for
 /// rendering, but the underlying process is shared.
@@ -112,12 +112,12 @@ impl RuntimeStatusRecord {
 
 /// Reference to a project's runtime — identifies which workspace process
 /// the project belongs to. Built by manager_service from a `ProjectRecord`
-/// + the resolved goja runtime location.
+/// + the resolved jawata runtime location.
 #[derive(Debug, Clone)]
 pub struct RuntimeReference {
     pub project_id: String,
     pub workspace_name: String,
-    /// Eclipse `-data` directory for the workspace's goja process.
+    /// Eclipse `-data` directory for the workspace's jawata process.
     /// Lives at `<data_root>/workspaces/<workspace_name>/`. Manager_service
     /// writes `workspace.json` into here before spawn.
     pub workspace_dir: String,
@@ -137,7 +137,7 @@ pub struct RuntimeReference {
     pub resident_token: String,
 }
 
-/// Launch request for one goja spawn. Manager_service has already
+/// Launch request for one jawata spawn. Manager_service has already
 /// written `<workspace_dir>/workspace.json` with the full project list of
 /// the workspace before calling `start_runtime`.
 #[derive(Debug, Clone)]
@@ -154,7 +154,7 @@ pub struct CommandSpec {
     pub log_path: String,
 }
 
-/// One goja process owned by the manager. Sprint 10 v0.10.4: shared
+/// One jawata process owned by the manager. Sprint 10 v0.10.4: shared
 /// across every project whose `workspace_name` matches this entry's key.
 struct ManagedRuntime {
     child: Child,
@@ -201,7 +201,7 @@ impl RuntimeManager {
     /// Start (or join) the workspace's runtime for `launch_request.reference`.
     /// If the workspace's process is already running, this just adds the
     /// project as a member and returns the workspace's status. Otherwise
-    /// spawns goja. Caller (manager_service) must have written
+    /// spawns jawata. Caller (manager_service) must have written
     /// `workspace.json` into `workspace_dir` before calling.
     pub fn start_runtime(
         &self,
@@ -213,9 +213,9 @@ impl RuntimeManager {
 
     /// Internal entry point that takes the already-built `CommandSpec`.
     /// Public-in-crate so unit tests can spawn a tiny stand-in command
-    /// (e.g. `sleep`) instead of `java -jar goja.jar` to verify the
+    /// (e.g. `sleep`) instead of `java -jar jawata.jar` to verify the
     /// workspace-grouped membership lifecycle without depending on a real
-    /// goja runtime.
+    /// jawata runtime.
     pub(crate) fn start_runtime_with_spec(
         &self,
         reference: &RuntimeReference,
@@ -259,7 +259,7 @@ impl RuntimeManager {
 
         let mut child = command.spawn().map_err(|error| {
             format!(
-                "failed to launch GOJA. Confirm Java and the resolved runtime path are valid: {error}"
+                "failed to launch JAWATA. Confirm Java and the resolved runtime path are valid: {error}"
             )
         })?;
 
@@ -358,7 +358,7 @@ impl RuntimeManager {
     /// Project leaves the workspace. If the workspace's process has no
     /// remaining members, it is killed. The caller (manager_service) is
     /// responsible for rewriting `workspace.json` so the still-running
-    /// goja (when there are remaining members) drops the leaving
+    /// jawata (when there are remaining members) drops the leaving
     /// project from its in-memory state via the file watcher.
     pub fn stop_runtime(
         &self,
@@ -374,7 +374,7 @@ impl RuntimeManager {
                     handle
                         .child
                         .kill()
-                        .map_err(|error| format!("failed to stop GOJA process: {error}"))?;
+                        .map_err(|error| format!("failed to stop JAWATA process: {error}"))?;
                     let _ = handle.child.wait();
                     killed = true;
                 }
@@ -419,7 +419,7 @@ impl RuntimeManager {
             handle
                 .child
                 .kill()
-                .map_err(|error| format!("failed to stop GOJA process: {error}"))?;
+                .map_err(|error| format!("failed to stop JAWATA process: {error}"))?;
             let _ = handle.child.wait();
 
             // Mark every member's snapshot as Stopped.
@@ -518,7 +518,7 @@ impl RuntimeManager {
         let log_path = self.default_log_path(&launch_request.reference.workspace_name);
         let reference = &launch_request.reference;
 
-        // Sprint 10 v0.10.4: goja reads its project list from
+        // Sprint 10 v0.10.4: jawata reads its project list from
         // <workspace_dir>/workspace.json (written by manager_service).
         //
         // Sprint 15 Stage 10: against fork v1.8.5 the default transport is
@@ -577,7 +577,7 @@ impl RuntimeManager {
         if let Some(exit_status) = handle
             .child
             .try_wait()
-            .map_err(|error| format!("failed to inspect GOJA process state: {error}"))?
+            .map_err(|error| format!("failed to inspect JAWATA process state: {error}"))?
         {
             // Sprint 14 (v0.14.0, bugs.md #2): the process died without the
             // manager initiating the stop. All stop paths (stop_runtime /
@@ -667,7 +667,7 @@ impl RuntimeManager {
         if let Some(exit_status) = handle
             .child
             .try_wait()
-            .map_err(|error| format!("failed to inspect GOJA process state: {error}"))?
+            .map_err(|error| format!("failed to inspect JAWATA process state: {error}"))?
         {
             // Sprint 14 (v0.14.0, bugs.md #2): same external-death case as
             // `try_join_running_workspace`. The readonly variant previously
@@ -781,14 +781,14 @@ mod tests {
 
     fn fake_paths() -> AppPaths {
         AppPaths {
-            config_dir: PathBuf::from("/tmp/goja-studio/config"),
-            state_dir: PathBuf::from("/tmp/goja-studio/state"),
-            cache_dir: PathBuf::from("/tmp/goja-studio/cache"),
-            projects_file: PathBuf::from("/tmp/goja-studio/config/projects.json"),
-            settings_file: PathBuf::from("/tmp/goja-studio/config/settings.json"),
-            runtime_state_file: PathBuf::from("/tmp/goja-studio/state/runtime-state.json"),
-            default_data_root: PathBuf::from("/tmp/goja-studio/cache"),
-            log_dir: PathBuf::from("/tmp/goja-studio/state/logs"),
+            config_dir: PathBuf::from("/tmp/jawata-studio/config"),
+            state_dir: PathBuf::from("/tmp/jawata-studio/state"),
+            cache_dir: PathBuf::from("/tmp/jawata-studio/cache"),
+            projects_file: PathBuf::from("/tmp/jawata-studio/config/projects.json"),
+            settings_file: PathBuf::from("/tmp/jawata-studio/config/settings.json"),
+            runtime_state_file: PathBuf::from("/tmp/jawata-studio/state/runtime-state.json"),
+            default_data_root: PathBuf::from("/tmp/jawata-studio/cache"),
+            log_dir: PathBuf::from("/tmp/jawata-studio/state/logs"),
         }
     }
 
@@ -798,10 +798,10 @@ mod tests {
             reference: RuntimeReference {
                 project_id: "example-service-1".into(),
                 workspace_name: "test-ws".into(),
-                workspace_dir: "/cache/goja/test-ws".into(),
-                runtime_label: "Managed GOJA 1.4.0".into(),
-                resolved_jar_path: "/tools/goja/goja.jar".into(),
-                jvm_properties: vec!["-Dgoja.experience.store=shared".into()],
+                workspace_dir: "/cache/jawata/test-ws".into(),
+                runtime_label: "Managed JAWATA 1.4.0".into(),
+                resolved_jar_path: "/tools/jawata/jawata.jar".into(),
+                jvm_properties: vec!["-Djawata.experience.store=shared".into()],
                 resident_port: 8800,
                 resident_token: "test-token".into(),
             },
@@ -822,11 +822,11 @@ mod tests {
         assert_eq!(
             spec.args,
             vec![
-                "-Dgoja.experience.store=shared",
+                "-Djawata.experience.store=shared",
                 "-jar",
-                "/tools/goja/goja.jar",
+                "/tools/jawata/jawata.jar",
                 "-data",
-                "/cache/goja/test-ws",
+                "/cache/jawata/test-ws",
                 "-port",
                 "8800",
                 "-token",
@@ -834,7 +834,7 @@ mod tests {
             ]
         );
         // Sprint 10 v0.10.4: no JAVA_PROJECT_PATH — workspace.json drives
-        // project loading inside goja.
+        // project loading inside jawata.
         assert!(spec.env.is_empty());
         assert!(spec.log_path.ends_with("test-ws.log"));
     }
@@ -845,13 +845,13 @@ mod tests {
             "project-1".into(),
             "test-ws".into(),
             "/tmp/workspace".into(),
-            "Managed GOJA 1.4.0".into(),
+            "Managed JAWATA 1.4.0".into(),
             "Missing runtime".into(),
         );
 
         assert!(matches!(status.phase, RuntimePhase::Failed));
         assert_eq!(status.workspace_name, "test-ws");
-        assert_eq!(status.runtime_label, "Managed GOJA 1.4.0");
+        assert_eq!(status.runtime_label, "Managed JAWATA 1.4.0");
         assert_eq!(status.detail, "Missing runtime");
     }
 
@@ -859,8 +859,8 @@ mod tests {
     // Sprint 10 v0.10.4: workspace-grouped spawn lifecycle tests.
     //
     // These spawn real processes (a tiny `sleep` command stand-in for
-    // goja) so the membership / kill / join lifecycle is exercised
-    // end-to-end without depending on a real goja runtime.
+    // jawata) so the membership / kill / join lifecycle is exercised
+    // end-to-end without depending on a real jawata runtime.
     // Skipped on non-Unix platforms because `sleep` isn't on Windows.
     // ============================================================
 
@@ -875,7 +875,7 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let dir = std::env::temp_dir().join(format!(
-            "goja-studio-rmtest-{label}-{}-{}-{}",
+            "jawata-studio-rmtest-{label}-{}-{}-{}",
             std::process::id(),
             nanos,
             n
@@ -1366,7 +1366,7 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let dir = std::env::temp_dir().join(format!(
-            "goja-stage10-{}-{}-{}",
+            "jawata-stage10-{}-{}-{}",
             label,
             nanos,
             std::process::id()

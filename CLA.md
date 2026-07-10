@@ -1,6 +1,6 @@
-# GOJA Contributor License Agreement (Individual)
+# JAWATA Contributor License Agreement (Individual)
 
-Thank you for contributing to **GOJA**. This agreement clarifies the intellectual-property
+Thank you for contributing to **JAWATA**. This agreement clarifies the intellectual-property
 terms of your contribution so the project can be maintained and licensed sustainably. It
 does **not** change your right to use your own work for any other purpose.
 

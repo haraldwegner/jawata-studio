@@ -29,11 +29,11 @@ const TRAY_ICON_SIZE: u32 = 32;
 /// Stable id of the singleton tray icon. The tray is built once in setup
 /// and looked up via `app_handle.tray_by_id(TRAY_ICON_ID)` whenever the
 /// menu needs rebuilding.
-const TRAY_ICON_ID: &str = "goja-tray";
+const TRAY_ICON_ID: &str = "jawata-tray";
 
 /// Sprint 13 (v0.13.0): how often to refresh the tray menu in the
 /// background. Catches both (a) status changes from external events
-/// (workspace's goja process killed from a shell) and (b) workspace
+/// (workspace's jawata process killed from a shell) and (b) workspace
 /// composition changes from the main window (rename / add / delete).
 ///
 /// Set to 1 second so a rename in the dashboard propagates to the tray
@@ -45,7 +45,8 @@ const TRAY_REFRESH_INTERVAL_SECS: u64 = 1;
 
 #[derive(Clone, Copy)]
 enum TrayIconVariant {
-    GCircle,
+    /// The jawata arch mark (Sprint 22b brand) on the batik-indigo circle.
+    ArchCircle,
     CoffeeCircle,
 }
 
@@ -58,14 +59,14 @@ struct QuitPromptEvent {
 }
 
 fn selected_tray_icon_variant() -> TrayIconVariant {
-    match std::env::var("GOJA_TRAY_ICON")
+    match std::env::var("JAWATA_TRAY_ICON")
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase()
         .as_str()
     {
         "coffee" | "cup" => TrayIconVariant::CoffeeCircle,
-        _ => TrayIconVariant::GCircle,
+        _ => TrayIconVariant::ArchCircle,
     }
 }
 
@@ -73,7 +74,7 @@ fn build_tray_icon(variant: TrayIconVariant) -> Image<'static> {
     let mut rgba = vec![0u8; (TRAY_ICON_SIZE * TRAY_ICON_SIZE * 4) as usize];
     draw_base_circle(&mut rgba);
     match variant {
-        TrayIconVariant::GCircle => draw_g_glyph(&mut rgba),
+        TrayIconVariant::ArchCircle => draw_arch_glyph(&mut rgba),
         TrayIconVariant::CoffeeCircle => draw_coffee_glyph(&mut rgba),
     }
     Image::new_owned(rgba, TRAY_ICON_SIZE, TRAY_ICON_SIZE)
@@ -124,8 +125,8 @@ fn draw_base_circle(rgba: &mut [u8]) {
     let center = (TRAY_ICON_SIZE as i32) / 2;
     // Draw slightly beyond the nominal radius so the circle nearly fills the tray slot.
     let radius = center + 1;
-    // Brand indigo circle background (#4F46E5)
-    let fill = [79, 70, 229, 255]; // #4F46E5
+    // Brand batik-indigo circle background (#1d2f4e, the jawata palette)
+    let fill = [29, 47, 78, 255]; // #1d2f4e
     for y in 0..TRAY_ICON_SIZE as i32 {
         for x in 0..TRAY_ICON_SIZE as i32 {
             let dx = x - center;
@@ -139,17 +140,62 @@ fn draw_base_circle(rgba: &mut [u8]) {
     }
 }
 
-fn draw_g_glyph(rgba: &mut [u8]) {
-    let white = [255, 255, 255, 255];
-    
-    // Blocky "G" sized to stay readable at small tray sizes: an open "C"
-    // (top / left / bottom strokes), closed on the lower-right, with the
-    // tongue stroke into the middle — the top-right stays open.
-    draw_rect(rgba, 8, 7, 23, 9, white);    // top stroke
-    draw_rect(rgba, 8, 7, 10, 24, white);   // left stroke
-    draw_rect(rgba, 8, 22, 23, 24, white);  // bottom stroke
-    draw_rect(rgba, 21, 16, 23, 24, white); // lower-right edge
-    draw_rect(rgba, 16, 15, 23, 17, white); // inner tongue
+fn draw_disc(rgba: &mut [u8], cx: i32, cy: i32, radius: i32, color: [u8; 4]) {
+    let r2 = radius * radius;
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            if dx * dx + dy * dy <= r2 {
+                set_px(rgba, cx + dx, cy + dy, color);
+            }
+        }
+    }
+}
+
+/// Sprint 22b: the jawata brand mark — the handwritten "arch" (Harald's monoline
+/// abstraction of Javanese *ja*, concept sheet rev 5) — rasterized for the tray:
+/// the cubic segments + flat tail of the agreed path (native box ~8..160 x 0..188)
+/// sampled and stroked as discs, scaled into the 32×32 tray slot.
+fn draw_arch_glyph(rgba: &mut [u8]) {
+    let cream = [234, 227, 210, 255]; // #EAE3D2, per the concept sheet
+    // Control points of the agreed path, cubic segments in order.
+    let segs: [[(f32, f32); 4]; 6] = [
+        [(52.0, 174.0), (40.0, 170.0), (33.0, 160.0), (33.0, 146.0)],
+        [(33.0, 146.0), (30.0, 112.0), (30.0, 78.0), (35.0, 56.0)],
+        [(35.0, 56.0), (42.0, 22.0), (60.0, 12.0), (75.0, 12.0)],
+        [(75.0, 12.0), (92.0, 12.0), (110.0, 24.0), (113.0, 54.0)],
+        [(113.0, 54.0), (115.0, 92.0), (113.0, 124.0), (113.0, 146.0)],
+        [(113.0, 146.0), (113.0, 164.0), (119.0, 174.0), (131.0, 174.0)],
+    ];
+    // Map the native box (x 20..160, y 0..190) into the tray slot with padding.
+    let scale = 20.0 / 190.0;
+    let map = |p: (f32, f32)| -> (i32, i32) {
+        (
+            ((p.0 - 20.0) * scale + 8.5).round() as i32,
+            (p.1 * scale + 6.0).round() as i32,
+        )
+    };
+    for pts in &segs {
+        for i in 0..=24 {
+            let t = i as f32 / 24.0;
+            let u = 1.0 - t;
+            let x = u * u * u * pts[0].0
+                + 3.0 * u * u * t * pts[1].0
+                + 3.0 * u * t * t * pts[2].0
+                + t * t * t * pts[3].0;
+            let y = u * u * u * pts[0].1
+                + 3.0 * u * u * t * pts[1].1
+                + 3.0 * u * t * t * pts[2].1
+                + t * t * t * pts[3].1;
+            let (px, py) = map((x, y));
+            draw_disc(rgba, px, py, 1, cream);
+        }
+    }
+    // The flat tail: L149,173.
+    for i in 0..=6 {
+        let t = i as f32 / 6.0;
+        let (px, py) = map((131.0 + t * 18.0, 174.0 - t));
+        draw_disc(rgba, px, py, 1, cream);
+    }
 }
 
 fn draw_coffee_glyph(rgba: &mut [u8]) {
@@ -188,11 +234,11 @@ pub fn run() {
 
     // Sprint 21b (item E): backups are plumbing — sweep historically scattered
     // .bak-<ms> files into the managed area once per launch, automatically. Only
-    // recognized goja-studio patterns move; unrecognized files are never touched.
+    // recognized jawata-studio patterns move; unrecognized files are never touched.
     let gc = manager_service.backups_gc(false);
     if !gc.items.is_empty() || gc.unrecognized_skipped > 0 {
         eprintln!(
-            "goja-studio: backup GC — {} recognized backup(s) swept into the managed area, {} unrecognized left untouched ({} dirs scanned)",
+            "jawata-studio: backup GC — {} recognized backup(s) swept into the managed area, {} unrecognized left untouched ({} dirs scanned)",
             gc.moved, gc.unrecognized_skipped, gc.scanned_dirs
         );
     }
@@ -295,7 +341,7 @@ pub fn run() {
                             // locally-cached Svelte variables. Payload
                             // is unit — the listener just calls
                             // getDashboard() to pull the fresh state.
-                            let _ = app_handle.emit("goja://settings-changed", ());
+                            let _ = app_handle.emit("jawata://settings-changed", ());
                         }
                         "tray_quit" => {
                             if let Some(window) = app_handle.get_webview_window("main") {
@@ -318,7 +364,7 @@ pub fn run() {
                 .build(app)?;
 
             // Periodic refresh — same cadence and rationale as Sprint 12:
-            // catches external state changes (e.g. a workspace's goja
+            // catches external state changes (e.g. a workspace's jawata
             // process killed from a shell) so the bullet next to each
             // workspace stays current.
             let refresh_handle = app.handle().clone();
@@ -417,7 +463,7 @@ pub fn run() {
             commands::import_workspace_projects,
             commands::update_settings,
             commands::redetect_mcp_client_paths,
-            commands::download_or_update_goja,
+            commands::download_or_update_jawata,
             commands::start_runtime,
             commands::stop_runtime,
             commands::get_runtime_status,
@@ -433,7 +479,7 @@ pub fn run() {
             commands::perform_quit_action,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running goja-studio");
+        .expect("error while running jawata-studio");
 }
 
 fn emit_quit_prompt_event(app_handle: &tauri::AppHandle, source: &str) {
@@ -443,7 +489,7 @@ fn emit_quit_prompt_event(app_handle: &tauri::AppHandle, source: &str) {
         running_services: state.manager_service.running_services_count(),
         tray_enabled: state.manager_service.is_system_tray_enabled(),
     };
-    let _ = app_handle.emit("goja://quit-requested", payload);
+    let _ = app_handle.emit("jawata://quit-requested", payload);
 }
 
 /// Sprint 13 (v0.13.0): monochrome status glyph for the workspace menu
@@ -469,7 +515,7 @@ fn phase_glyph(phase: &RuntimePhase) -> &'static str {
 ///   Open dashboard            (raises the full manager window)
 ///   ─────
 ///   Workspaces                (disabled header — only when ≥1 workspace)
-///     ●  Goja_WS          (toggle on click)
+///     ●  Jawata_WS          (toggle on click)
 ///     ○  BETA-WS
 ///   ─────
 ///   Start all services
@@ -588,17 +634,17 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) {
     let menu = match rebuild_tray_menu(app) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("goja-studio: rebuild_tray_menu failed: {e}");
+            eprintln!("jawata-studio: rebuild_tray_menu failed: {e}");
             return;
         }
     };
     if let Some(tray) = app.tray_by_id(TRAY_ICON_ID) {
         if let Err(e) = tray.set_menu(Some(menu)) {
-            eprintln!("goja-studio: tray.set_menu failed: {e}");
+            eprintln!("jawata-studio: tray.set_menu failed: {e}");
             return;
         }
     } else {
-        eprintln!("goja-studio: tray_by_id({TRAY_ICON_ID}) returned None");
+        eprintln!("jawata-studio: tray_by_id({TRAY_ICON_ID}) returned None");
         return;
     }
 

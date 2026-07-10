@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capability set for the main goja-studio window.","local":true,"windows":["main"],"permissions":["core:default","dialog:default"]}}
+{"default":{"identifier":"default","description":"Default capability set for the main jawata-studio window.","local":true,"windows":["main"],"permissions":["core:default","dialog:default"]}}

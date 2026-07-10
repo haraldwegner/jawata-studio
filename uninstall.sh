@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-APP_NAME="goja-studio"
+APP_NAME="jawata-studio"
 BIN_DIR="$HOME/.local/bin"
 APP_DIR="$HOME/.local/share/applications"
 ICON_DIR="$HOME/.local/share/icons/hicolor/128x128/apps"
@@ -22,4 +22,4 @@ if [ -f "$ICON_DIR/$APP_NAME.png" ]; then
     echo "Removed icon from $ICON_DIR"
 fi
 
-echo "Uninstallation complete. Note: Configuration and data files in ~/.config/goja-studio and ~/.local/state/goja-studio were kept."
+echo "Uninstallation complete. Note: Configuration and data files in ~/.config/jawata-studio and ~/.local/state/jawata-studio were kept."

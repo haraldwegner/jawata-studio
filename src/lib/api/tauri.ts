@@ -47,7 +47,7 @@ export interface ManagerSettings {
   mcpMergeMode: McpMergeMode;
   mcpBackupBeforeWrite: boolean;
   deployTargets: DeployTargetFlags;
-  /** GitHub repo (owner/repo) for the managed GOJA runtime release stream. */
+  /** GitHub repo (owner/repo) for the managed JAWATA runtime release stream. */
   releaseRepo: string;
   lastReleaseCheck?: string | null;
   lastSeenLatestVersion?: string | null;
@@ -86,7 +86,7 @@ export interface DeployTargetFlags {
   intellij: boolean;
 }
 
-/** Source configuration for the GOJA runtime. */
+/** Source configuration for the JAWATA runtime. */
 export type RuntimeSource =
   | {
       kind: "managed";
@@ -177,7 +177,7 @@ export interface ReleaseStatus {
 }
 
 /** Status of a specific project's runtime. Sprint 10 v0.10.4: multiple
- * projects sharing a `workspaceName` reflect the same underlying goja
+ * projects sharing a `workspaceName` reflect the same underlying jawata
  * process — same PID, same workspace dir. */
 export interface RuntimeStatusRecord {
   projectId: string;
@@ -434,9 +434,9 @@ export function redetectMcpClientPaths(): Promise<ManagerDashboard> {
   return invoke("redetect_mcp_client_paths");
 }
 
-/** Downloads or updates the GOJA runtime. */
-export function downloadOrUpdateGoja(): Promise<ManagerDashboard> {
-  return invoke("download_or_update_goja");
+/** Downloads or updates the JAWATA runtime. */
+export function downloadOrUpdateJawata(): Promise<ManagerDashboard> {
+  return invoke("download_or_update_jawata");
 }
 
 /** Starts the runtime for a specific project. */

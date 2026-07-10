@@ -1,6 +1,6 @@
-# goja-studio Help
+# jawata-studio Help
 
-**goja-studio** is the desktop control plane for **GOJA** — it lets you create **named workspaces** of one-or-more Java projects, runs a single shared GOJA MCP service per workspace, and **deploys** the connection details into your AI tools (Cursor, Claude Desktop, Antigravity, IntelliJ-style configs).
+**jawata-studio** is the desktop control plane for **JAWATA** — it lets you create **named workspaces** of one-or-more Java projects, runs a single shared JAWATA MCP service per workspace, and **deploys** the connection details into your AI tools (Cursor, Claude Desktop, Antigravity, IntelliJ-style configs).
 
 The point: it gives your AI agents the same IDE-grade understanding of a Java codebase that a human developer gets in Eclipse or IntelliJ — call hierarchies, type hierarchies, references, refactorings, build classpath, JDK semantics. **Java agents on steroids.**
 
@@ -11,25 +11,25 @@ Use **Dashboard** for day-to-day work, **Settings** for runtime paths and agent 
 **Linux** — the install script downloads the latest `.AppImage` from GitHub Releases (matching your architecture, x86_64 or aarch64), verifies its checksum, and registers a desktop entry:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/haraldwegner/goja-studio/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/haraldwegner/jawata-studio/main/install.sh | bash
 ```
 
-For `.deb` packages, see the [GitHub Releases page](https://github.com/haraldwegner/goja-studio/releases).
+For `.deb` packages, see the [GitHub Releases page](https://github.com/haraldwegner/jawata-studio/releases).
 
-**macOS** (Apple Silicon) — download the `_aarch64.dmg`; unsigned, so clear the Gatekeeper quarantine once (`xattr -d com.apple.quarantine /Applications/goja-studio.app`).
+**macOS** (Apple Silicon) — download the `_aarch64.dmg`; unsigned, so clear the Gatekeeper quarantine once (`xattr -d com.apple.quarantine /Applications/jawata-studio.app`).
 
 **Windows** (x64 and ARM64) — download the `.msi` or `-setup.exe`; unsigned, so the first launch needs a one-time SmartScreen **More info → Run anyway**.
 
-Per-platform detail and the bypass steps are in the [README](https://github.com/haraldwegner/goja-studio#installation).
+Per-platform detail and the bypass steps are in the [README](https://github.com/haraldwegner/jawata-studio#installation).
 
 ---
 
 ## Workspaces — the core concept
 
-A **workspace** is a named group of Java projects loaded into one GOJA process and exposed to agents as **one MCP service** (`goja-<workspace-name>`). The agent sees the combined symbol set of every project in the workspace; cross-project navigation, find-references, and refactorings work across the whole group.
+A **workspace** is a named group of Java projects loaded into one JAWATA process and exposed to agents as **one MCP service** (`jawata-<workspace-name>`). The agent sees the combined symbol set of every project in the workspace; cross-project navigation, find-references, and refactorings work across the whole group.
 
 - **One workspace per cohesive task.** A bundle/multi-module application (e.g. an Eclipse RCP product with 12 OSGi bundles), a monorepo, or a single project that you want isolated — each gets its own workspace.
-- **Live updates.** Add or remove a project from a workspace and the running GOJA picks it up within ~1 second through a `workspace.json` file watcher. No MCP-client restart, no agent-session reload.
+- **Live updates.** Add or remove a project from a workspace and the running JAWATA picks it up within ~1 second through a `workspace.json` file watcher. No MCP-client restart, no agent-session reload.
 - **No ports.** Workspaces are identified by name. There is no port range, no per-project port allocation, no port conflicts.
 - **Tool budget.** Each workspace contributes ~40 tools toward the agent's tool registration cap (Antigravity caps around 100), so roughly two active workspaces fit per Antigravity session; Cursor and Claude Code tolerate more.
 
@@ -62,7 +62,7 @@ Each row in the Workspaces card shows a workspace name, a colored **status lamp*
 1. **Name** — Required. Browsing for a folder fills this in from the folder's last segment (you can edit it).
 2. **Project path** — The root directory of a Java/Maven/Gradle (or Eclipse PDE) project.
 3. **Workspace** — Implicitly the active workspace from the left card. Pick a different one in the Workspaces card to switch.
-4. **Save project** — Registers the project. The manager updates the workspace's `workspace.json` and any running GOJA picks up the new project immediately.
+4. **Save project** — Registers the project. The manager updates the workspace's `workspace.json` and any running JAWATA picks up the new project immediately.
 
 #### Recursive search (autoscan)
 
@@ -104,20 +104,20 @@ If the row you grab is part of an active selection, the **whole selection** move
 
 ### Agent deploy
 
-The **Agent deploy** strip contains **Deploy to Agents**, **Dry run**, **Regenerate**, and **Delete**. These actions do **not** start or stop GOJA — they rebuild MCP entries from your workspaces and read or write **MCP client config files** on disk (see Settings → MCP Config Locations).
+The **Agent deploy** strip contains **Deploy to Agents**, **Dry run**, **Regenerate**, and **Delete**. These actions do **not** start or stop JAWATA — they rebuild MCP entries from your workspaces and read or write **MCP client config files** on disk (see Settings → MCP Config Locations).
 
-- **Deploy to Agents** — Writes manager-owned MCP server entries (one per workspace, keyed `goja-<workspace-name>`) into the selected clients' configs, plus the rule blocks the manager maintains. Each client receives the entry shape its parser accepts: Antigravity gets `{ "serverUrl": …, "headers": … }`; Cursor / Claude Code / IntelliJ get `{ "type": "http", "url": …, "headers": … }`. Workspace add / rename / delete automatically refresh clients you have already deployed to (never-deployed clients stay untouched), and any workspace that cannot be resolved at deploy time is reported in the result instead of being silently omitted.
+- **Deploy to Agents** — Writes manager-owned MCP server entries (one per workspace, keyed `jawata-<workspace-name>`) into the selected clients' configs, plus the rule blocks the manager maintains. Each client receives the entry shape its parser accepts: Antigravity gets `{ "serverUrl": …, "headers": … }`; Cursor / Claude Code / IntelliJ get `{ "type": "http", "url": …, "headers": … }`. Workspace add / rename / delete automatically refresh clients you have already deployed to (never-deployed clients stay untouched), and any workspace that cannot be resolved at deploy time is reported in the result instead of being silently omitted.
 - **Dry run** — Same validation and diff output as Deploy, but no files are written.
 - **Regenerate** — Force-rewrites the manager-managed sections, even if nothing has changed since the last write. Useful after manual edits.
-- **Delete** — Removes only the manager-injected MCP servers and rule blocks from the selected clients. It does not uninstall GOJA or remove your projects.
+- **Delete** — Removes only the manager-injected MCP servers and rule blocks from the selected clients. It does not uninstall JAWATA or remove your projects.
 
 Each of these opens a **target picker**: check Cursor / Claude / Antigravity / IntelliJ for that run only. Defaults come from each client's **Deploy** toggle under Settings → MCP Config Locations.
 
-**Cursor (length limit):** Cursor rejects tools when `serverName + ":" + toolName` exceeds about **59–60** characters. The manager keeps the generated `goja-` ids short so the longest GOJA tool names still fit. **Antigravity** instead caps the total *number* of MCP tools registered across all servers (around 100 in current builds) — that is a separate constraint, and the main reason to keep concurrent workspaces small.
+**Cursor (length limit):** Cursor rejects tools when `serverName + ":" + toolName` exceeds about **59–60** characters. The manager keeps the generated `jawata-` ids short so the longest JAWATA tool names still fit. **Antigravity** instead caps the total *number* of MCP tools registered across all servers (around 100 in current builds) — that is a separate constraint, and the main reason to keep concurrent workspaces small.
 
-### How GOJA works — a compiler-grounded loop, not a bag of tools
+### How JAWATA works — a compiler-grounded loop, not a bag of tools
 
-GOJA is one **Java vertical over your whole workspace**, not a per-project add-on sitting beside ten per-language shims. Its ~40 tools are **parametric front doors** — a `kind`/`action` parameter folds what would otherwise be a hundred narrow tools into a handful, which keeps a multi-workspace setup under Antigravity's ~100-tool cap. But the point isn't the list; it's the **loop the tools compose into**:
+JAWATA is one **Java vertical over your whole workspace**, not a per-project add-on sitting beside ten per-language shims. Its ~40 tools are **parametric front doors** — a `kind`/`action` parameter folds what would otherwise be a hundred narrow tools into a handful, which keeps a multi-workspace setup under Antigravity's ~100-tool cap. But the point isn't the list; it's the **loop the tools compose into**:
 
 - **Detect** — `find_quality_issue` / `find_modernization` surface Fowler smells, SOLID and Kerievsky violations, and modernization candidates — all compiler-resolved, so no regex false positives.
 - **Goal** — `refactor_to_pattern` names the target state: a design pattern to move *toward* (state / command / template method / visitor / compose method) or *away from* (inline singleton).
@@ -126,7 +126,7 @@ GOJA is one **Java vertical over your whole workspace**, not a per-project add-o
 Two supporting ideas ship with that loop:
 
 - **Reuse over reinvent.** When an agent needs a near-duplicate class, letting the **compiler** derive it — `generate(kind=copy_class)` then `extract(kind=superclass)` — is cheaper and safer than the model re-authoring the code by hand. The tools exist so the agent writes *less* code, not more.
-- **Health-gated honesty.** The deployed rule block (and, on Claude Code, a `PreToolUse` hook) instructs the agent: on Java work, when GOJA is unreachable, **ask — don't silently fall back to grep**. When the service is up, text search over `.java` is redirected to GOJA's compiler-accurate tools. Non-Java work is untouched.
+- **Health-gated honesty.** The deployed rule block (and, on Claude Code, a `PreToolUse` hook) instructs the agent: on Java work, when JAWATA is unreachable, **ask — don't silently fall back to grep**. When the service is up, text search over `.java` is redirected to JAWATA's compiler-accurate tools. Non-Java work is untouched.
 
 Every mutating tool applies its change directly and returns `{ filesModified, diff, undoChangeId }` — verify with `compile_workspace`, revert with `undo_refactoring`, or pass `auto_apply: false` to stage a preview-then-commit. Detect tools carry MCP `readOnlyHint`, so a restricted client mode (e.g. Cursor Ask) can analyze without write permission.
 
@@ -136,7 +136,7 @@ The authoritative, always-current list of tools and their descriptions is the ru
 
 ### Selected Project Status
 
-When you click a project row, the bottom strip shows **Name**, **Project path**, **Workspace**, the **PID** of that workspace's GOJA process (if running), and the **Phase / Health** detail from the runtime. Multiple projects in the same workspace share a PID. Use the refresh icon on that strip to re-query without switching views.
+When you click a project row, the bottom strip shows **Name**, **Project path**, **Workspace**, the **PID** of that workspace's JAWATA process (if running), and the **Phase / Health** detail from the runtime. Multiple projects in the same workspace share a PID. Use the refresh icon on that strip to re-query without switching views.
 
 ---
 
@@ -146,9 +146,9 @@ When you click a project row, the bottom strip shows **Name**, **Project path**,
 
 *Memory sources on the left; the store with its five actions and inline results on the right.*
 
-Your GOJA memory store — the knowledge behind the push channel that primes and steers
+Your JAWATA memory store — the knowledge behind the push channel that primes and steers
 agents. One user-level database by default, shared by every workspace, living at
-`~/.local/share/goja/`. The view has two panels:
+`~/.local/share/jawata/`. The view has two panels:
 
 - **Memory sources** — where **Load** finds your memory files. Auto-discovered are the
   agent INSTRUCTION files only: your layered `CLAUDE.md` files, every Claude project
@@ -196,7 +196,7 @@ names its code (`` `SlotManager.freeSlot` ``) is anchored to that symbol
 automatically, no frontmatter needed — the next agent that touches `freeSlot` can be
 handed the postmortem that was written about it.
 
-One warning: if a Cursor agent says "I'll remember that" **without** calling GOJA, it
+One warning: if a Cursor agent says "I'll remember that" **without** calling JAWATA, it
 is remembering into Cursor's own chat memory — opaque, not listable, not exportable,
 and invisible to every other tool. Durable memory is the one you can see in this view.
 
@@ -204,22 +204,22 @@ and invisible to every other tool. Durable memory is the one you can see in this
 
 ## Settings
 
-![Settings — GOJA Runtime and Exposed Services](/help/settings-top.png)
+![Settings — JAWATA Runtime and Exposed Services](/help/settings-top.png)
 
-*Top half of the Settings page: GOJA Runtime and Exposed Services.*
+*Top half of the Settings page: JAWATA Runtime and Exposed Services.*
 
 ![Settings — Machine controls and MCP locations](/help/settings-bottom.png)
 
 *Bottom half: Machine Runtime Controls (with Diagnostics workspace counts) and MCP Config Locations.*
 
-Settings is a **two-by-two grid**: GOJA Runtime and Exposed Services on the first row, Machine Runtime Controls and MCP Config Locations on the second. The page can be taller than the window — scroll to reach **Save settings** at the bottom.
+Settings is a **two-by-two grid**: JAWATA Runtime and Exposed Services on the first row, Machine Runtime Controls and MCP Config Locations on the second. The page can be taller than the window — scroll to reach **Save settings** at the bottom.
 
-### GOJA Runtime
+### JAWATA Runtime
 
-Controls how the global GOJA binary is sourced and updated:
+Controls how the global JAWATA binary is sourced and updated:
 
-- **Release source** — `haraldwegner/goja-mcp` (default) or upstream / custom. Switching saves and downloads the latest release from the new source.
-- **Global GOJA Source** — **Managed runtime** uses the binary the manager downloads and tracks; **Local JAR fallback** points at a specific `goja.jar` on disk.
+- **Release source** — `haraldwegner/jawata-mcp` (default) or upstream / custom. Switching saves and downloads the latest release from the new source.
+- **Global JAWATA Source** — **Managed runtime** uses the binary the manager downloads and tracks; **Local JAR fallback** points at a specific `jawata.jar` on disk.
 - **Active** — Version of the managed runtime, when applicable.
 - **Update policy** — *Ask before updating* vs *Always keep latest*.
 - **Auto-check release source on dashboard load** — When enabled, the manager checks for newer releases when you open the Dashboard.
@@ -227,7 +227,7 @@ Controls how the global GOJA binary is sourced and updated:
 
 ### Exposed Services
 
-**Test Services** runs a live MCP handshake against GOJA and lists the tool names and descriptions the server exposes (count and duration appear after a successful probe). Use this to confirm the runtime is reachable and that the tool surface matches expectations after a version change.
+**Test Services** runs a live MCP handshake against JAWATA and lists the tool names and descriptions the server exposes (count and duration appear after a successful probe). Use this to confirm the runtime is reachable and that the tool surface matches expectations after a version change.
 
 If a probe fails, fix connectivity or runtime issues before relying on **Deploy to Agents**.
 
@@ -244,14 +244,14 @@ If a probe fails, fix connectivity or runtime issues before relying on **Deploy 
     - `◐` starting / stopping
     - `○` stopped
     - `✗` failed
-    Click a row to **toggle** that workspace: stopped/failed → start, running → stop. The bullet refreshes within ~1 s of any state change (rename in the dashboard, external `kill` of a goja process, manual start/stop in the main window).
+    Click a row to **toggle** that workspace: stopped/failed → start, running → stop. The bullet refreshes within ~1 s of any state change (rename in the dashboard, external `kill` of a jawata process, manual start/stop in the main window).
   - **Start all services** / **Reload all services** / **Stop all services** — fan out across every loaded workspace. *Reload all* is a sequenced stop-then-start (30 s deadline) — single click for a clean restart that doesn't race the shutdown sequence.
   - **Autostart on boot** ✓ — checkable item. When set, the manager auto-launches at session login. Synced with the **Settings → System Settings → Autostart on boot** checkbox — toggle from either surface and the other reflects within ~1 s.
   - **Quit** — opens the quit prompt.
 
   *Why monochrome bullets?* GNOME's `gnome-shell-extension-appindicator` strips per-menu-item images at the D-Bus boundary, so colored status disks never reach the user. Monochrome unicode shapes render in the menu's own font (1× line height) and survive the appindicator pipe across every Linux desktop we ship to.
 
-  *Linux note:* the tray relies on a StatusNotifierItem / AppIndicator host. Pop!_OS, Ubuntu 22.04+, KDE / XFCE / Cinnamon / MATE work out of the box; vanilla GNOME (Fedora Workstation, Debian GNOME) needs `gnome-shell-extension-appindicator` installed once. See the [README](https://github.com/haraldwegner/goja-studio#system-tray-on-linux) for distro-specific install commands.
+  *Linux note:* the tray relies on a StatusNotifierItem / AppIndicator host. Pop!_OS, Ubuntu 22.04+, KDE / XFCE / Cinnamon / MATE work out of the box; vanilla GNOME (Fedora Workstation, Debian GNOME) needs `gnome-shell-extension-appindicator` installed once. See the [README](https://github.com/haraldwegner/jawata-studio#system-tray-on-linux) for distro-specific install commands.
 - **Autostart on boot** — Start the manager automatically at session login AND restore the workspaces that were running at last shutdown. Per-OS plumbing for the manager launch: Linux writes `~/.config/autostart/*.desktop`, macOS registers a LaunchAgent, Windows touches the registry Run key. Default is opt-in (off). Mirrored in the tray menu as a checkable item — toggling from either surface updates the other. **Session restoration semantics:** if you Quit from the tray (or close-to-tray then Quit) the running workspaces stay marked Running in the manager's snapshot, and the next launch restores them ~2 s after the UI is up. If you choose **Stop and Quit**, every workspace is cleanly stopped — next launch starts none. Workspaces that were `Failed` at shutdown count as "user wanted this running" and get retried.
 - **Diagnostics** — Read-only summary: paths for the projects store, settings file, state directory, and resolved data root. **Workspaces** and **Project count** mirror the Dashboard totals, useful when reporting issues.
 - **Clean logs** — Removes manager runtime logs (workspaces and settings stay).
@@ -284,11 +284,11 @@ For each supported client (**Cursor**, **Claude**, **Antigravity**, **IntelliJ**
 | Register or import projects | Dashboard left column |
 | Move a project to another workspace | Right-click row → *Move to workspace…* OR drag the row onto a workspace |
 | Bulk-move projects | Tick checkboxes → *Move to workspace ▾* |
-| Start/stop a workspace's GOJA | Workspace header in Managed Projects |
+| Start/stop a workspace's JAWATA | Workspace header in Managed Projects |
 | Push MCP entries into Cursor / Claude / etc. | Dashboard → **Agent deploy** |
 | Change data root or system-tray behavior | Settings → **Machine Runtime Controls** |
 | Point deploy at custom MCP config paths | Settings → **MCP Config Locations** |
-| Verify GOJA exposes MCP tools | Settings → **Exposed Services** → **Test Services** |
+| Verify JAWATA exposes MCP tools | Settings → **Exposed Services** → **Test Services** |
 | Find logs / settings files for a bug report | Settings → **Diagnostics** |
 
 If something fails: check Diagnostics for paths, run **Dry run** before **Deploy**, and keep **Create backup before MCP config write** on until you trust your layout.

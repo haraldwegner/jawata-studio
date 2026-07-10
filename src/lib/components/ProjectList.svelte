@@ -165,7 +165,7 @@
   let draggingProjectIds = new Set<string>();
   let dragOverWorkspace: string | null = null;
 
-  const DND_MIME = "application/x-goja-projects";
+  const DND_MIME = "application/x-jawata-projects";
 
   function handleProjectDragStart(event: DragEvent, project: ProjectRecord) {
     if (disabled) return;
@@ -498,7 +498,7 @@
     const detail =
       projectCount === 0
         ? `Delete workspace "${name}"?`
-        : `Delete workspace "${name}" and all ${projectCount} project(s) inside it?\n\nThis stops the workspace's goja process and removes the JDT data dir on disk. Project paths on your filesystem are not touched.`;
+        : `Delete workspace "${name}" and all ${projectCount} project(s) inside it?\n\nThis stops the workspace's jawata process and removes the JDT data dir on disk. Project paths on your filesystem are not touched.`;
     if (window.confirm(detail)) {
       onDeleteWorkspace(name);
     }
@@ -630,7 +630,7 @@
       <button
         disabled={disabled || projects.length === 0}
         on:click={() => onStartAll()}
-        title="Start every workspace's goja process"
+        title="Start every workspace's jawata process"
         type="button"
       >
         Start all
@@ -638,7 +638,7 @@
       <button
         disabled={disabled || projects.length === 0}
         on:click={() => onStopAll()}
-        title="Stop every running goja process"
+        title="Stop every running jawata process"
         type="button"
       >
         Stop all
@@ -646,7 +646,7 @@
       <button
         disabled={disabled || projects.length === 0}
         on:click={() => onReloadAll()}
-        title="Stop every goja process then restart — single round-trip (~30 s max)"
+        title="Stop every jawata process then restart — single round-trip (~30 s max)"
         type="button"
       >
         Reload all
@@ -842,7 +842,7 @@
 
   {#if projects.length === 0}
     <div class="empty-state">
-      No projects registered yet. Configure GOJA first, then add a Java project on the left.
+      No projects registered yet. Configure JAWATA first, then add a Java project on the left.
     </div>
   {:else}
     <div class="stack project-list-scroll">
@@ -905,7 +905,7 @@
               <button
                 disabled={disabled}
                 on:click={() => startWorkspace(workspace.projects)}
-                title="Start the goja process for this workspace (loads every project under its name)"
+                title="Start the jawata process for this workspace (loads every project under its name)"
                 type="button"
               >
                 Start workspace
@@ -913,7 +913,7 @@
               <button
                 disabled={disabled}
                 on:click={() => stopWorkspace(workspace.projects)}
-                title="Stop the goja process for this workspace"
+                title="Stop the jawata process for this workspace"
                 type="button"
               >
                 Stop workspace
@@ -1005,7 +1005,7 @@
                         <button
                           disabled={disabled}
                           on:click={() => onStart(project.id)}
-                          title="Start this project (joins the workspace's goja process)"
+                          title="Start this project (joins the workspace's jawata process)"
                           type="button"
                         >
                           Start

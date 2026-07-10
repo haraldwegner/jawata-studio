@@ -148,24 +148,24 @@
       managerAppVersion.length > 0
         ? formatManagerVersionForUi(managerAppVersion)
         : "…";
-    const prefix = `goja-studio ${ver} | `;
+    const prefix = `jawata-studio ${ver} | `;
     if (runtimeSource?.kind === "localJar") {
       const jarPath = runtimeSource.jarPath?.trim() ?? "";
       if (!jarPath) {
-        return `${prefix}GOJA local JAR (path not set)`;
+        return `${prefix}JAWATA local JAR (path not set)`;
       }
       const jarName = jarPath.split(/[\\/]/).pop() ?? jarPath;
-      return `${prefix}GOJA local JAR ${jarName}`;
+      return `${prefix}JAWATA local JAR ${jarName}`;
     }
 
     if ($appStore.installedRuntime?.version) {
-      return `${prefix}GOJA ${$appStore.installedRuntime.version}${
+      return `${prefix}JAWATA ${$appStore.installedRuntime.version}${
         $appStore.releaseStatus?.updateAvailable
           ? ` (update: ${$appStore.releaseStatus.latestVersion ?? "available"})`
           : ""
       }`;
     }
-    return `${prefix}GOJA runtime not downloaded`;
+    return `${prefix}JAWATA runtime not downloaded`;
   })();
   // Sprint 10 v0.10.4: workspace + project count summary, shown next to
   // the runtime subtitle so the user sees managed scope at a glance.
@@ -224,7 +224,7 @@
 
   async function subscribeQuitRequested() {
     unlistenQuitRequested = await listen<QuitPromptPayload>(
-      "goja://quit-requested",
+      "jawata://quit-requested",
       async (event) => {
         await handleQuitPrompt(event.payload);
       }
@@ -234,7 +234,7 @@
   async function handleQuitPrompt(payload: QuitPromptPayload) {
     const running = payload.runningServices;
     if (running <= 0) {
-      if (confirm("Do you really want to shut down goja-studio?")) {
+      if (confirm("Do you really want to shut down jawata-studio?")) {
         await performQuitAction("quit");
       }
       return;
@@ -381,7 +381,7 @@
 </script>
 
 <svelte:head>
-  <title>goja-studio</title>
+  <title>jawata-studio</title>
 </svelte:head>
 
 <svelte:window on:contextmenu={handleGlobalContextMenu} />
@@ -390,7 +390,7 @@
   <header class="hero panel">
     <div class="header-content">
       <div>
-        <h1>goja-studio</h1>
+        <h1>jawata-studio</h1>
         <p class="title-subline muted" title={runtimeSubtitleTitle}>{runtimeSubtitle}</p>
         <p class="title-subline muted">{workspaceSubtitle}</p>
       </div>

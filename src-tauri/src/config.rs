@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const APP_NAME: &str = "goja-studio";
+const APP_NAME: &str = "jawata-studio";
 const PROJECTS_FILE_NAME: &str = "projects.json";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const RUNTIME_STATE_FILE_NAME: &str = "runtime-state.json";
@@ -155,7 +155,7 @@ fn default_mcp_client_paths() -> McpClientPaths {
     detect_default_mcp_client_paths()
 }
 
-/// Global settings for the GOJA manager application.
+/// Global settings for the JAWATA manager application.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagerSettings {
@@ -195,7 +195,7 @@ pub struct ManagerSettings {
     pub last_release_check: Option<String>,
     pub last_seen_latest_version: Option<String>,
     /// Sprint 16b/B: single-service gateway. When enabled, the deploy writes ONE
-    /// `goja` MCP entry (the gateway) instead of N per-workspace entries, and the
+    /// `jawata` MCP entry (the gateway) instead of N per-workspace entries, and the
     /// in-process gateway routes each call to the owning resident. Default OFF —
     /// the per-workspace deploy is unchanged until this is turned on.
     #[serde(default = "default_gateway_enabled")]
@@ -214,11 +214,11 @@ pub struct ManagerSettings {
     /// Sprint 21a (item F/H): where the experience store lives — `shared` (the
     /// user-level store, DEFAULT), `workspace` (per-workspace at the stable root),
     /// `memory`, or an explicit directory path. Passed to the resident as
-    /// `-Dgoja.experience.store`.
+    /// `-Djawata.experience.store`.
     #[serde(default = "default_experience_store_mode")]
     pub experience_store_mode: String,
     /// Sprint 21a (item F): extra memory roots for `experience(kind=load|reseed)` —
-    /// passed as `-Dgoja.memory.roots` (platform path-separator list).
+    /// passed as `-Djawata.memory.roots` (platform path-separator list).
     #[serde(default)]
     pub memory_roots: Vec<String>,
     // Sprint 21b: memory_recursive + memory_max_* REMOVED — the crawl finds everything
@@ -249,7 +249,7 @@ pub fn default_auto_seed_on_deploy() -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WriterMode {
-    /// Strip managed goja entries from `~/.cursor/mcp.json` etc.
+    /// Strip managed jawata entries from `~/.cursor/mcp.json` etc.
     /// Clients see no entry at all — autostart=off ↔ no MCP server.
     Remove,
     /// Write the entries with `disabled: true`. Cursor + Claude both
@@ -262,7 +262,7 @@ pub fn default_mcp_disabled_writer_mode() -> WriterMode {
     WriterMode::Remove
 }
 
-/// Default GitHub repo for the managed GOJA runtime release stream.
+/// Default GitHub repo for the managed JAWATA runtime release stream.
 ///
 /// Sprint 15 Stage 12: GitHub username rename hw1964 → haraldwegner
 /// (2026-06-07). The redirect doesn't reliably follow at the
@@ -274,9 +274,9 @@ pub fn default_mcp_disabled_writer_mode() -> WriterMode {
 /// vs the original upstream `pzalutski-pixel/javalens-mcp`.
 ///
 /// Override per-user by editing settings.json or via the
-/// `GOJA_RELEASE_REPO` env var. Format: "<owner>/<repo>".
+/// `JAWATA_RELEASE_REPO` env var. Format: "<owner>/<repo>".
 pub fn default_release_repo() -> String {
-    "haraldwegner/goja-mcp".to_string()
+    "haraldwegner/jawata-mcp".to_string()
 }
 
 /// Sprint 16b/B: gateway is OFF by default — per-workspace deploy is unchanged
@@ -297,10 +297,16 @@ fn default_gateway_port() -> u16 {
 ///   2026-06-07 GitHub username rename to haraldwegner). The GitHub
 ///   redirect on `releases/latest` is unreliable for anonymous polls, so
 ///   the manager rewrites stale config to the new URL on startup.
+/// - `haraldwegner/goja-mcp` / `pzalutski-pixel/goja-mcp` — the pre-jawata
+///   (Sprint 22b rebrand) defaults; persisted settings self-heal on read.
+///   These literals are migration code — they rewrite the old names
+///   (grep-contract exception class 3).
 const LEGACY_DEFAULT_RELEASE_REPOS: &[&str] = &[
     "pzalutski-pixel/javalens-mcp",
     "hw1964/javalens-mcp",
     "haraldwegner/javalens-mcp",
+    "haraldwegner/goja-mcp",
+    "pzalutski-pixel/goja-mcp",
 ];
 
 impl ManagerSettings {
@@ -335,7 +341,7 @@ impl ManagerSettings {
     pub fn tools_dir(&self) -> PathBuf {
         PathBuf::from(&self.data_root)
             .join("tools")
-            .join("goja")
+            .join("jawata")
     }
 
     pub fn workspace_root(&self) -> PathBuf {
@@ -343,7 +349,7 @@ impl ManagerSettings {
     }
 }
 
-/// Source of the GOJA runtime environment.
+/// Source of the JAWATA runtime environment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum RuntimeSource {
@@ -354,7 +360,7 @@ pub enum RuntimeSource {
 impl RuntimeSource {
     pub fn label(&self) -> String {
         match self {
-            RuntimeSource::Managed => "Managed GOJA (Latest)".into(),
+            RuntimeSource::Managed => "Managed JAWATA (Latest)".into(),
             RuntimeSource::LocalJar { jar_path } => format!("Local JAR ({jar_path})"),
         }
     }
@@ -364,7 +370,7 @@ impl RuntimeSource {
 ///
 /// Sprint 10 v0.10.4: `workspace_name` identifies the logical workspace this
 /// project belongs to. Multiple projects sharing a `workspace_name` run as
-/// one MCP service (one goja process per workspace). The legacy
+/// one MCP service (one jawata process per workspace). The legacy
 /// `assigned_port` field is preserved on disk for one release cycle to
 /// support migration from v0.10.3-format projects.json — at runtime it is
 /// ignored. To be removed in Sprint 11.
@@ -472,45 +478,59 @@ pub struct AppPaths {
     pub log_dir: PathBuf,
 }
 
-/// The pre-rebrand application directory name. Sprint 16a migrates
-/// `<base>/javalens-manager` -> `<base>/goja-studio` on first launch so an
-/// existing user's workspaces/settings survive the rebrand.
-const OLD_APP_NAME: &str = "javalens-manager";
+/// The pre-rebrand application directory names, NEWEST FIRST. Sprint 16a
+/// migrated `javalens-manager` -> `goja-studio`; Sprint 22b (the jawata
+/// rebrand) adds the `goja-studio` -> `jawata-studio` hop. On first launch
+/// the newest existing legacy dir is moved, so an existing user's
+/// workspaces/settings survive every rebrand (a javalens-era install hops
+/// straight to jawata-studio). These literals are migration code — they name
+/// the old dirs they move (grep-contract exception class 3).
+const LEGACY_APP_NAMES: &[&str] = &["goja-studio", "javalens-manager"];
 
-/// Best-effort one-time move of `<base>/javalens-manager` ->
-/// `<base>/goja-studio`. Logs on move/error; never blocks startup.
+/// Best-effort one-time move of the newest existing legacy app dir ->
+/// `<base>/jawata-studio`. Logs on move/error; never blocks startup.
+/// Never clobbers: if the new dir already exists, nothing moves.
 fn migrate_legacy_app_dir(base: &Path, label: &str) {
-    let old = base.join(OLD_APP_NAME);
     let new = base.join(APP_NAME);
-    match migrate_dir_if_needed(&old, &new) {
-        Ok(true) => eprintln!(
-            "[goja-studio] migrated {label} dir: {} -> {}",
-            old.display(),
-            new.display()
-        ),
-        Ok(false) => {}
-        Err(e) => eprintln!(
-            "[goja-studio] WARN: could not migrate {label} dir {} -> {}: {e} (continuing with a fresh dir)",
-            old.display(),
-            new.display()
-        ),
+    for legacy in LEGACY_APP_NAMES {
+        let old = base.join(legacy);
+        match migrate_dir_if_needed(&old, &new) {
+            Ok(true) => {
+                eprintln!(
+                    "[jawata-studio] migrated {label} dir: {} -> {}",
+                    old.display(),
+                    new.display()
+                );
+                return;
+            }
+            Ok(false) => {}
+            Err(e) => eprintln!(
+                "[jawata-studio] WARN: could not migrate {label} dir {} -> {}: {e} (continuing with a fresh dir)",
+                old.display(),
+                new.display()
+            ),
+        }
     }
 }
 
-/// Sprint 17 (v1.2.1): rewrite a persisted `data_root` that still names the
-/// pre-rebrand app dir (`.../javalens-manager`) to the goja-studio equivalent.
-/// Only the dedicated app-dir path segment is swapped (mid-path or trailing);
-/// any other value is returned unchanged. Pairs with `migrate_legacy_app_dir`,
-/// which moved the directory but left this persisted string untouched.
+/// Sprint 17 (v1.2.1), extended by Sprint 22b: rewrite a persisted `data_root`
+/// that still names a pre-rebrand app dir (`.../javalens-manager` or
+/// `.../goja-studio`) to the jawata-studio equivalent. Only the dedicated
+/// app-dir path segment is swapped (mid-path or trailing); any other value is
+/// returned unchanged. Pairs with `migrate_legacy_app_dir`, which moved the
+/// directory but left this persisted string untouched.
 fn normalize_legacy_data_root(data_root: &str) -> String {
-    let old_mid = format!("/{OLD_APP_NAME}/");
-    let new_mid = format!("/{APP_NAME}/");
-    let old_end = format!("/{OLD_APP_NAME}");
-    let new_end = format!("/{APP_NAME}");
-    let mut s = data_root.replace(&old_mid, &new_mid);
-    if s.ends_with(&old_end) {
-        s.truncate(s.len() - old_end.len());
-        s.push_str(&new_end);
+    let mut s = data_root.to_string();
+    for legacy in LEGACY_APP_NAMES {
+        let old_mid = format!("/{legacy}/");
+        let new_mid = format!("/{APP_NAME}/");
+        let old_end = format!("/{legacy}");
+        let new_end = format!("/{APP_NAME}");
+        s = s.replace(&old_mid, &new_mid);
+        if s.ends_with(&old_end) {
+            s.truncate(s.len() - old_end.len());
+            s.push_str(&new_end);
+        }
     }
     s
 }
@@ -1034,10 +1054,11 @@ fn sanitize_release_repo(input: String) -> Result<String, String> {
 }
 
 /// Effective GitHub repo for the managed runtime release stream.
-/// GOJA_RELEASE_REPO env var wins over the per-user setting.
+/// JAWATA_RELEASE_REPO env var wins over the per-user setting.
 pub fn effective_release_repo(settings: &ManagerSettings) -> String {
-    std::env::var("GOJA_RELEASE_REPO")
+    std::env::var("JAWATA_RELEASE_REPO")
         .ok()
+        .or_else(|| std::env::var("GOJA_RELEASE_REPO").ok()) /* legacy goja fallback — remove next release */
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| settings.release_repo.clone())
@@ -1094,7 +1115,7 @@ fn read_projects(path: &Path) -> Result<ProjectsFile, String> {
                 Ok(_) => {
                     for orphan in &orphans {
                         eprintln!(
-                            "[goja-studio] pruning orphaned workspace state \
+                            "[jawata-studio] pruning orphaned workspace state \
                              '{}' (port {}) — names no current workspace",
                             orphan.workspace_name, orphan.resident_port
                         );
@@ -1107,7 +1128,7 @@ fn read_projects(path: &Path) -> Result<ProjectsFile, String> {
                 Err(error) => {
                     // No backup → no prune. Keep the data; retry next load.
                     eprintln!(
-                        "[goja-studio] skipping orphan prune — centralized backup \
+                        "[jawata-studio] skipping orphan prune — centralized backup \
                          failed: {error}"
                     );
                 }
@@ -1164,7 +1185,7 @@ fn read_settings(path: &Path, paths: &AppPaths) -> Result<ManagerSettings, Strin
         settings.data_root = display_path(&paths.default_data_root);
     }
     // Sprint 17 (v1.2.1): the rebrand's dir migration renamed
-    // `<base>/javalens-manager` -> `<base>/goja-studio`, but a settings.json
+    // `<base>/javalens-manager` -> `<base>/jawata-studio`, but a settings.json
     // persisted by the pre-rebrand build holds the legacy absolute data_root
     // explicitly — and the empty-check above never rewrites a non-empty value,
     // so the managed runtime + workspaces stayed pinned to `.cache/javalens-manager`.
@@ -1377,7 +1398,7 @@ mod tests {
             projects_file: PathBuf::from("/tmp/config/projects.json"),
             settings_file: PathBuf::from("/tmp/config/settings.json"),
             runtime_state_file: PathBuf::from("/tmp/state/runtime-state.json"),
-            default_data_root: PathBuf::from("/tmp/cache/goja-studio"),
+            default_data_root: PathBuf::from("/tmp/cache/jawata-studio"),
             log_dir: PathBuf::from("/tmp/state/logs"),
         };
         let mut v = serde_json::to_value(ManagerSettings::default_for_paths(&paths)).unwrap();
@@ -1399,20 +1420,20 @@ mod tests {
 
     #[test]
     fn normalize_legacy_data_root_swaps_app_dir() {
-        // trailing legacy segment -> goja-studio (the live bug)
+        // trailing legacy segment -> jawata-studio (the live bug)
         assert_eq!(
             normalize_legacy_data_root("/home/harald/.cache/javalens-manager"),
-            "/home/harald/.cache/goja-studio"
+            "/home/harald/.cache/jawata-studio"
         );
         // mid-path legacy segment
         assert_eq!(
             normalize_legacy_data_root("/home/harald/.cache/javalens-manager/tools"),
-            "/home/harald/.cache/goja-studio/tools"
+            "/home/harald/.cache/jawata-studio/tools"
         );
         // already migrated -> unchanged
         assert_eq!(
-            normalize_legacy_data_root("/home/harald/.cache/goja-studio"),
-            "/home/harald/.cache/goja-studio"
+            normalize_legacy_data_root("/home/harald/.cache/jawata-studio"),
+            "/home/harald/.cache/jawata-studio"
         );
         // unrelated path -> unchanged
         assert_eq!(normalize_legacy_data_root("/opt/custom/data"), "/opt/custom/data");
@@ -1427,7 +1448,7 @@ mod tests {
             projects_file: PathBuf::from("/tmp/config/projects.json"),
             settings_file: PathBuf::from("/tmp/config/settings.json"),
             runtime_state_file: PathBuf::from("/tmp/state/runtime-state.json"),
-            default_data_root: PathBuf::from("/tmp/cache/goja-studio"),
+            default_data_root: PathBuf::from("/tmp/cache/jawata-studio"),
             log_dir: PathBuf::from("/tmp/state/logs"),
         };
 
@@ -1435,7 +1456,7 @@ mod tests {
         assert_eq!(bootstrap.transport, "stdio");
         assert_eq!(bootstrap.health_strategy, "process-liveness-first");
         assert!(bootstrap.settings_file.ends_with("settings.json"));
-        assert!(bootstrap.default_data_root.ends_with("goja-studio"));
+        assert!(bootstrap.default_data_root.ends_with("jawata-studio"));
     }
 
     #[test]
@@ -1447,7 +1468,7 @@ mod tests {
               "id": "legacy-1",
               "name": "Legacy",
               "projectPath": "/tmp/project",
-              "javalensJarPath": "/tmp/goja.jar",
+              "javalensJarPath": "/tmp/jawata.jar",
               "workspaceDir": "/tmp/workspace"
             }
           ]
@@ -1471,14 +1492,14 @@ mod tests {
             projects_file: PathBuf::from("/tmp/config/projects.json"),
             settings_file: PathBuf::from("/tmp/config/settings.json"),
             runtime_state_file: PathBuf::from("/tmp/state/runtime-state.json"),
-            default_data_root: PathBuf::from("/tmp/cache/goja-studio"),
+            default_data_root: PathBuf::from("/tmp/cache/jawata-studio"),
             log_dir: PathBuf::from("/tmp/state/logs"),
         };
 
         let settings = ManagerSettings::default_for_paths(&paths);
         assert_eq!(settings.update_policy, UpdatePolicy::Ask);
         assert!(settings.auto_check_for_updates);
-        assert_eq!(settings.data_root, "/tmp/cache/goja-studio");
+        assert_eq!(settings.data_root, "/tmp/cache/jawata-studio");
     }
 
     // ============================================================
@@ -1497,7 +1518,7 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let dir = std::env::temp_dir().join(format!(
-            "goja-studio-test-{label}-{}-{}-{}",
+            "jawata-studio-test-{label}-{}-{}-{}",
             std::process::id(),
             nanos,
             n
@@ -1526,7 +1547,7 @@ mod tests {
         let root = unique_tempdir("rebrand-migrate");
 
         // Branch 1: old present, new absent -> move (data carries over).
-        let old1 = root.join("c1").join(OLD_APP_NAME);
+        let old1 = root.join("c1").join(LEGACY_APP_NAMES[1]);
         let new1 = root.join("c1").join(APP_NAME);
         fs::create_dir_all(old1.join("workspaces")).unwrap();
         fs::write(old1.join("settings.json"), b"{}").unwrap();
@@ -1536,7 +1557,7 @@ mod tests {
         assert!(!old1.exists(), "old dir moved away");
 
         // Branch 2: new already present -> no clobber, no move.
-        let old2 = root.join("c2").join(OLD_APP_NAME);
+        let old2 = root.join("c2").join(LEGACY_APP_NAMES[1]);
         let new2 = root.join("c2").join(APP_NAME);
         fs::create_dir_all(&old2).unwrap();
         fs::create_dir_all(&new2).unwrap();
@@ -1546,10 +1567,76 @@ mod tests {
         assert_eq!(fs::read(new2.join("keep.txt")).unwrap(), b"new", "new untouched");
 
         // Branch 3: both absent -> noop, fresh start.
-        let old3 = root.join("c3").join(OLD_APP_NAME);
+        let old3 = root.join("c3").join(LEGACY_APP_NAMES[1]);
         let new3 = root.join("c3").join(APP_NAME);
         assert!(!migrate_dir_if_needed(&old3, &new3).unwrap(), "nothing to move");
         assert!(!new3.exists(), "no dir conjured");
+    }
+
+    /// Sprint 22b: the legacy chain — a goja-studio dir (the newest legacy
+    /// generation) is preferred over a javalens-manager one; a javalens-era
+    /// install with no goja hop still lands on jawata-studio directly.
+    #[test]
+    fn migrate_legacy_app_dir_prefers_newest_generation() {
+        let root = unique_tempdir("rebrand-chain");
+
+        // goja-studio + javalens-manager both present -> goja-studio moves,
+        // javalens left in place (never clobber, one move only).
+        let base1 = root.join("b1");
+        fs::create_dir_all(base1.join("goja-studio")).unwrap();
+        fs::write(base1.join("goja-studio").join("settings.json"), b"{\"g\":1}").unwrap();
+        fs::create_dir_all(base1.join("javalens-manager")).unwrap();
+        migrate_legacy_app_dir(&base1, "test");
+        assert_eq!(
+            fs::read(base1.join(APP_NAME).join("settings.json")).unwrap(),
+            b"{\"g\":1}",
+            "goja-studio generation carried over"
+        );
+        assert!(base1.join("javalens-manager").exists(), "older generation untouched");
+        assert!(!base1.join("goja-studio").exists(), "goja dir moved away");
+
+        // Only javalens-manager present -> hops straight to jawata-studio.
+        let base2 = root.join("b2");
+        fs::create_dir_all(base2.join("javalens-manager")).unwrap();
+        fs::write(base2.join("javalens-manager").join("settings.json"), b"{\"j\":1}").unwrap();
+        migrate_legacy_app_dir(&base2, "test");
+        assert_eq!(
+            fs::read(base2.join(APP_NAME).join("settings.json")).unwrap(),
+            b"{\"j\":1}",
+            "javalens-era install migrates directly"
+        );
+
+        // jawata-studio already present -> nothing moves (never clobber).
+        let base3 = root.join("b3");
+        fs::create_dir_all(base3.join(APP_NAME)).unwrap();
+        fs::write(base3.join(APP_NAME).join("keep.txt"), b"new").unwrap();
+        fs::create_dir_all(base3.join("goja-studio")).unwrap();
+        migrate_legacy_app_dir(&base3, "test");
+        assert!(base3.join("goja-studio").exists(), "legacy left for manual review");
+        assert_eq!(fs::read(base3.join(APP_NAME).join("keep.txt")).unwrap(), b"new");
+    }
+
+    /// Sprint 22b: persisted data_root strings naming EITHER legacy generation
+    /// normalize to the jawata-studio path.
+    #[test]
+    fn normalize_legacy_data_root_handles_both_generations() {
+        assert_eq!(
+            normalize_legacy_data_root("/home/x/.cache/goja-studio/workspaces"),
+            "/home/x/.cache/jawata-studio/workspaces"
+        );
+        assert_eq!(
+            normalize_legacy_data_root("/home/x/.cache/goja-studio"),
+            "/home/x/.cache/jawata-studio"
+        );
+        assert_eq!(
+            normalize_legacy_data_root("/home/x/.cache/javalens-manager/workspaces"),
+            "/home/x/.cache/jawata-studio/workspaces"
+        );
+        assert_eq!(
+            normalize_legacy_data_root("/home/x/elsewhere/data"),
+            "/home/x/elsewhere/data",
+            "unrelated paths untouched"
+        );
     }
 
     #[test]

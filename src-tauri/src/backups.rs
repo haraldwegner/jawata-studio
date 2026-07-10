@@ -141,7 +141,7 @@ pub struct GcReport {
     pub unrecognized_skipped: usize,
 }
 
-/// Recognize a goja-studio-authored scattered backup file name. Returns the ORIGINAL
+/// Recognize a jawata-studio-authored scattered backup file name. Returns the ORIGINAL
 /// file name + the version stamp. Two shapes were ever written:
 /// `<name>.bak-<epoch-ms>` (managed writes) and `<name>.json.bak.<epoch-ms>`
 /// (`write_json`). Anything else is NOT ours and is never touched.
@@ -162,7 +162,7 @@ fn recognize(file_name: &str) -> Option<(String, String)> {
     None
 }
 
-/// Sweep the direct children of each given dir for scattered goja-studio backups and
+/// Sweep the direct children of each given dir for scattered jawata-studio backups and
 /// move them into the managed area (then prune to retention). `dry_run` reports the
 /// exact plan without touching anything. Unrecognized files are never touched.
 pub fn gc_scattered_backups(dirs: &[PathBuf], dry_run: bool) -> GcReport {
@@ -236,7 +236,7 @@ mod tests {
 
     fn tempdir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "goja-backups-{tag}-{}",
+            "jawata-backups-{tag}-{}",
             crate::config::current_timestamp_millis()
         ));
         fs::create_dir_all(&dir).unwrap();

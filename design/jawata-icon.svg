@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- jawata brand icon: the handwritten "arch" — Harald's monoline abstraction of
+       Javanese ja (concept sheet, decided 2026-07-06 rev 5) on batik indigo. -->
+  <rect width="1024" height="1024" fill="#1d2f4e"/>
+  <!-- the arch path (native viewBox 8 0 152 188) centered + scaled: 168x188 -> 780 wide -->
+  <g transform="translate(122,80) scale(4.6)">
+    <path d="M52,174 C40,170 33,160 33,146 C30,112 30,78 35,56 C42,22 60,12 75,12
+             C92,12 110,24 113,54 C115,92 113,124 113,146 C113,164 119,174 131,174
+             L149,173" fill="none" stroke="#EAE3D2" stroke-width="15"
+          stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

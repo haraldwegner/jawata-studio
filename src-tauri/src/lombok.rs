@@ -2,14 +2,14 @@
 //!
 //! Lombok synthesizes members (`@Data` getters/setters, `@Builder`, …) that the
 //! Eclipse compiler only "sees" when its bytecode is patched by the Lombok
-//! agent at JVM start. GOJA *is* JDT/ECJ, so for its analysis tools to
+//! agent at JVM start. JAWATA *is* JDT/ECJ, so for its analysis tools to
 //! understand Lombok-using code the resident JVM must launch with
 //! `-javaagent:lombok.jar`.
 //!
 //! That patch is expensive and only relevant to Lombok-using workspaces, so it
 //! is applied **conditionally**: this module detects Lombok in the workspace's
 //! project(s) and, only then, points `-javaagent` at the `lombok.jar` shipped
-//! inside the GOJA product (Option B — version-locked to the product's own
+//! inside the JAWATA product (Option B — version-locked to the product's own
 //! JDT, not the analyzed project's compile version).
 //!
 //! Mirror of the fork's source-only `LombokDetector` (different runtime: Rust
@@ -66,7 +66,7 @@ fn file_mentions_lombok(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Locate the `lombok.jar` shipped inside the GOJA product, given the
+/// Locate the `lombok.jar` shipped inside the JAWATA product, given the
 /// resolved resident jar path. The product is an Equinox tree; the agent jar is
 /// a product root file, so it sits at — or one/two levels above — the launcher
 /// jar. Returns the first existing candidate.
@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn javaagent_arg_requires_both_lombok_and_jar() {
         let product = tmp();
-        let jar = product.join("goja.jar");
+        let jar = product.join("jawata.jar");
         fs::write(&jar, "x").unwrap();
 
         let lombok_proj = tmp();

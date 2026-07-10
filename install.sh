@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
-REPO="haraldwegner/goja-studio"
-APP_NAME="goja-studio"
+REPO="haraldwegner/jawata-studio"
+APP_NAME="jawata-studio"
 BIN_DIR="$HOME/.local/bin"
 APP_DIR="$HOME/.local/share/applications"
 ICON_DIR="$HOME/.local/share/icons/hicolor/128x128/apps"
@@ -138,7 +138,7 @@ curl -sSL -o "$ICON_DIR/$APP_NAME.png" "https://raw.githubusercontent.com/$REPO/
 
 cat > "$APP_DIR/$APP_NAME.desktop" <<EOF
 [Desktop Entry]
-Name=goja-studio
+Name=jawata-studio
 Exec=$BIN_DIR/$APP_NAME
 Icon=$ICON_DIR/$APP_NAME.png
 Type=Application

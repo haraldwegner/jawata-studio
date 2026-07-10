@@ -197,8 +197,8 @@ pub fn redetect_mcp_client_paths(state: State<'_, AppState>) -> Result<ManagerDa
 }
 
 #[tauri::command]
-pub fn download_or_update_goja(state: State<'_, AppState>) -> Result<ManagerDashboard, String> {
-    state.manager_service.download_or_update_goja()
+pub fn download_or_update_jawata(state: State<'_, AppState>) -> Result<ManagerDashboard, String> {
+    state.manager_service.download_or_update_jawata()
 }
 
 #[tauri::command]

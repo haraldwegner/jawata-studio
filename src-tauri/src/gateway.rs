@@ -1,6 +1,6 @@
-//! Sprint 16b/B — the single-service GOJA gateway.
+//! Sprint 16b/B — the single-service JAWATA gateway.
 //!
-//! The client sees ONE MCP service (`goja`) at a stable port + Bearer token.
+//! The client sees ONE MCP service (`jawata`) at a stable port + Bearer token.
 //! The gateway is a thin blocking HTTP multiplexer: it terminates the client's
 //! MCP/HTTP connection and forwards each JSON-RPC call to the right per-workspace
 //! resident (which stays an isolated JVM with its own heap). It holds no JDT
@@ -248,7 +248,7 @@ fn handle(
         Target::NoResident => {
             let err = json!({
                 "jsonrpc": "2.0", "id": id,
-                "error": {"code": -32001, "message": "No GOJA workspace resident is running"}
+                "error": {"code": -32001, "message": "No JAWATA workspace resident is running"}
             });
             respond_json(request, 200, &err.to_string());
             return;
@@ -258,10 +258,10 @@ fn handle(
             // what a subagent that omitted projectKey now gets instead of a silent
             // mis-route into an arbitrary/empty workspace.
             let message = format!(
-                "GOJA gateway: multiple workspaces are deployed and this call carried no \
+                "JAWATA gateway: multiple workspaces are deployed and this call carried no \
                  workspace locator, so it cannot be routed deterministically. Re-issue with \
                  `projectKey` set to one of {:?} (or pass an absolute `filePath` under the target \
-                 project). Tip: drive GOJA from the main loop, which holds the workspace context; \
+                 project). Tip: drive JAWATA from the main loop, which holds the workspace context; \
                  subagents must pass `projectKey` explicitly.",
                 keys
             );

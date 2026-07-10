@@ -8,7 +8,7 @@ import {
   deployToAgents as deployToAgentsApi,
   deleteAllProjects,
   deleteProject,
-  downloadOrUpdateGoja,
+  downloadOrUpdateJawata,
   getDashboard,
   getRuntimeStatus,
   probeServices as probeServicesApi,
@@ -108,7 +108,7 @@ export function createAppStore() {
       // app process's lifetime.
       if (!settingsChangedListenerAttached) {
         settingsChangedListenerAttached = true;
-        listen("goja://settings-changed", async () => {
+        listen("jawata://settings-changed", async () => {
           try {
             syncDashboard(await getDashboard());
           } catch (e) {
@@ -352,7 +352,7 @@ export function createAppStore() {
     update((state) => ({ ...state, isBusy: true, error: undefined }));
 
     try {
-      syncDashboard(await downloadOrUpdateGoja());
+      syncDashboard(await downloadOrUpdateJawata());
     } catch (error) {
       update((state) => ({
         ...state,

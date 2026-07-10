@@ -31,13 +31,13 @@
   <!-- svelte-ignore a11y-click-events-have-key-events -->
   <div class="modal-content panel stack" on:click|stopPropagation role="dialog" aria-modal="true" tabindex="-1">
     <div class="modal-header">
-      <h2>About goja-studio</h2>
+      <h2>About jawata-studio</h2>
       <button class="close-button" on:click={handleClose} aria-label="Close modal">×</button>
     </div>
 
     <div class="modal-body stack">
       <div class="about-hero">
-        <div class="app-title">goja-studio</div>
+        <div class="app-title">jawata-studio</div>
         <div class="app-version muted">
           {#if appVersion}
             Version {formatManagerVersionForUi(appVersion)}
@@ -64,10 +64,10 @@
         <h3>Credits & Acknowledgements</h3>
         <ul class="credits-list">
           <li>
-            <strong>goja-mcp</strong> (the analysis engine, downloaded separately)<br />
+            <strong>jawata-mcp</strong> (the analysis engine, downloaded separately)<br />
             Builds on the <strong>MIT-licensed</strong> upstream
             <a href="https://github.com/pzalutski-pixel/javalens-mcp" target="_blank" rel="noopener noreferrer">javalens-mcp</a>
-            by <strong>Peter&nbsp;Zalutski</strong>; the retained MIT notice ships in goja-mcp's
+            by <strong>Peter&nbsp;Zalutski</strong>; the retained MIT notice ships in jawata-mcp's
             <code>NOTICE</code>.
           </li>
           <li>

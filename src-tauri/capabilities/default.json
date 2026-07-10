@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability set for the main goja-studio window.",
+  "description": "Default capability set for the main jawata-studio window.",
   "windows": ["main"],
   "permissions": ["core:default", "dialog:default"]
 }

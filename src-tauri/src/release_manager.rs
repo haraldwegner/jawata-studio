@@ -16,7 +16,7 @@ use walkdir::WalkDir;
 use zip::ZipArchive;
 
 /// Compose the GitHub releases-API URL for the configured release repo.
-/// Source of truth: GOJA_RELEASE_REPO env var, then settings.release_repo.
+/// Source of truth: JAWATA_RELEASE_REPO env var, then settings.release_repo.
 fn latest_release_url(settings: &ManagerSettings) -> String {
     format!(
         "https://api.github.com/repos/{}/releases/latest",
@@ -24,7 +24,7 @@ fn latest_release_url(settings: &ManagerSettings) -> String {
     )
 }
 
-/// Represents a cached, managed GOJA runtime installation.
+/// Represents a cached, managed JAWATA runtime installation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagedRuntimeRecord {
@@ -46,7 +46,7 @@ pub enum ReleaseStatusKind {
     CheckingDisabled,
 }
 
-/// Detailed status information about the managed GOJA release.
+/// Detailed status information about the managed JAWATA release.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReleaseStatus {
@@ -71,8 +71,8 @@ struct GitHubAsset {
     browser_download_url: String,
 }
 
-/// Sprint 21a dogfood fix: the platform token in goja release asset names
-/// (`goja-v2.1.0-linux-x64.tar.gz` → `linux-x64`).
+/// Sprint 21a dogfood fix: the platform token in jawata release asset names
+/// (`jawata-v2.1.0-linux-x64.tar.gz` → `linux-x64`).
 fn platform_asset_token() -> String {
     let os = if cfg!(target_os = "windows") {
         "win32"
@@ -115,7 +115,7 @@ enum ArchiveKind {
     Zip,
 }
 
-/// Manages downloading, caching, and updating the GOJA runtime.
+/// Manages downloading, caching, and updating the JAWATA runtime.
 pub struct ReleaseManager {
     client: Client,
 }
@@ -124,7 +124,7 @@ impl ReleaseManager {
     /// Creates a new release manager with a configured HTTP client.
     pub fn new() -> Result<Self, String> {
         let client = Client::builder()
-            .user_agent("goja-studio/0.1.0")
+            .user_agent("jawata-studio/0.1.0")
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(10))
             .build()
@@ -151,7 +151,7 @@ impl ReleaseManager {
                 default_version: installed.as_ref().map(|r| r.version.clone()),
                 checked_at: settings.last_release_check.clone(),
                 update_available: false,
-                detail: "Automatic GOJA release checks are disabled.".into(),
+                detail: "Automatic JAWATA release checks are disabled.".into(),
             };
             return Ok((installed, status));
         }
@@ -169,7 +169,7 @@ impl ReleaseManager {
                     || (settings.update_policy == UpdatePolicy::Always && !latest_installed);
 
                 let mut detail = if installed.is_none() {
-                    "No managed GOJA runtime is cached yet.".to_string()
+                    "No managed JAWATA runtime is cached yet.".to_string()
                 } else {
                     format!("Latest upstream release is {}.", release.version)
                 };
@@ -178,7 +178,7 @@ impl ReleaseManager {
                     let runtime = self.install_release(&release, settings)?;
                     installed = self.get_installed_runtime(settings)?;
                     detail = format!(
-                        "Downloaded GOJA {} into the managed tools cache.",
+                        "Downloaded JAWATA {} into the managed tools cache.",
                         runtime.version
                     );
                 }
@@ -200,7 +200,7 @@ impl ReleaseManager {
                     settings,
                     None,
                     Some(format!(
-                        "Could not check the latest GOJA release: {error}"
+                        "Could not check the latest JAWATA release: {error}"
                     )),
                 );
                 Ok((installed, status))
@@ -208,7 +208,7 @@ impl ReleaseManager {
         }
     }
 
-    /// Forces a download and installation of the latest upstream GOJA release.
+    /// Forces a download and installation of the latest upstream JAWATA release.
     pub fn download_latest_runtime(
         &self,
         settings: &mut ManagerSettings,
@@ -289,7 +289,7 @@ impl ReleaseManager {
         let version = normalize_version(&release.tag_name);
 
         let asset = select_release_asset(&release.assets, &platform_asset_token())
-            .ok_or("latest GOJA release did not include a downloadable archive")?;
+            .ok_or("latest JAWATA release did not include a downloadable archive")?;
 
         let archive_kind = if asset.name.ends_with(".tar.gz") {
             ArchiveKind::TarGz
@@ -318,7 +318,7 @@ impl ReleaseManager {
                 tools_dir.display()
             )
         })?;
-        let target_dir = tools_dir.join(format!("goja-{}", release.version));
+        let target_dir = tools_dir.join(format!("jawata-{}", release.version));
         let manifest_path = target_dir.join("runtime.json");
 
         if manifest_path.exists() {
@@ -342,11 +342,11 @@ impl ReleaseManager {
             .client
             .get(&release.download_url)
             .send()
-            .map_err(|error| format!("failed to download GOJA release archive: {error}"))?
+            .map_err(|error| format!("failed to download JAWATA release archive: {error}"))?
             .error_for_status()
-            .map_err(|error| format!("GOJA archive download failed: {error}"))?
+            .map_err(|error| format!("JAWATA archive download failed: {error}"))?
             .bytes()
-            .map_err(|error| format!("failed to read GOJA archive bytes: {error}"))?;
+            .map_err(|error| format!("failed to read JAWATA archive bytes: {error}"))?;
 
         let tmp_dir = tools_dir.join(format!(
             ".tmp-{}-{}",
@@ -366,15 +366,15 @@ impl ReleaseManager {
                 let decoder = GzDecoder::new(Cursor::new(bytes));
                 let mut archive = Archive::new(decoder);
                 archive.unpack(&extract_root).map_err(|error| {
-                    format!("failed to unpack GOJA tar.gz archive: {error}")
+                    format!("failed to unpack JAWATA tar.gz archive: {error}")
                 })?;
             }
             ArchiveKind::Zip => {
                 let mut archive = ZipArchive::new(Cursor::new(bytes))
-                    .map_err(|error| format!("failed to read GOJA zip archive: {error}"))?;
+                    .map_err(|error| format!("failed to read JAWATA zip archive: {error}"))?;
                 for index in 0..archive.len() {
                     let mut file = archive.by_index(index).map_err(|error| {
-                        format!("failed to inspect GOJA zip entry: {error}")
+                        format!("failed to inspect JAWATA zip entry: {error}")
                     })?;
                     let enclosed = file
                         .enclosed_name()
@@ -399,13 +399,13 @@ impl ReleaseManager {
                         }
                         let mut output_file = fs::File::create(&output_path).map_err(|error| {
                             format!(
-                                "failed to create extracted GOJA file {}: {error}",
+                                "failed to create extracted JAWATA file {}: {error}",
                                 output_path.display()
                             )
                         })?;
                         std::io::copy(&mut file, &mut output_file).map_err(|error| {
                             format!(
-                                "failed to write extracted GOJA file {}: {error}",
+                                "failed to write extracted JAWATA file {}: {error}",
                                 output_path.display()
                             )
                         })?;
@@ -425,7 +425,7 @@ impl ReleaseManager {
         // 1. Extract to a tmp dir (above).
         // 2. Rename tmp → versioned target dir.
         // 3. Atomically swap `current` → new versioned dir.
-        // 4. Clean up older `goja-*` dirs (single-cached-runtime
+        // 4. Clean up older `jawata-*` dirs (single-cached-runtime
         //    invariant preserved from pre-bug-#8 behaviour).
         // 5. Write runtime.json with the stable `current/...` jar path.
 
@@ -451,7 +451,7 @@ impl ReleaseManager {
             Ok(()) => tools_dir.join("current").join(&jar_relative_path),
             Err(error) => {
                 eprintln!(
-                    "goja-studio: falling back to versioned jar path ({}). \
+                    "jawata-studio: falling back to versioned jar path ({}). \
                      Bug #8 mitigation degraded on this platform.",
                     error
                 );
@@ -459,13 +459,13 @@ impl ReleaseManager {
             }
         };
 
-        // Clean up older goja-* dirs (NOT the current one).
+        // Clean up older jawata-* dirs (NOT the current one).
         if let Ok(entries) = fs::read_dir(&tools_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
                     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        if name.starts_with("goja-") && name != target_dir_name {
+                        if name.starts_with("jawata-") && name != target_dir_name {
                             let _ = fs::remove_dir_all(&path);
                         }
                     }
@@ -540,7 +540,7 @@ impl ReleaseManager {
                             release.version
                         )
                     } else {
-                        format!("Managed GOJA runtime {} is up to date.", release.version)
+                        format!("Managed JAWATA runtime {} is up to date.", release.version)
                     }
                 }),
             };
@@ -577,7 +577,7 @@ impl ReleaseManager {
                 default_version: installed.map(|r| r.version.clone()),
                 checked_at: settings.last_release_check.clone(),
                 update_available: false,
-                detail: "Automatic GOJA release checks are disabled.".into(),
+                detail: "Automatic JAWATA release checks are disabled.".into(),
             };
         }
 
@@ -594,7 +594,7 @@ impl ReleaseManager {
 
             let detail = if installed.is_none() {
                 format!(
-                    "No managed GOJA runtime is cached yet. Last known upstream release is {}.",
+                    "No managed JAWATA runtime is cached yet. Last known upstream release is {}.",
                     latest_version
                 )
             } else if update_available {
@@ -604,7 +604,7 @@ impl ReleaseManager {
                 )
             } else {
                 format!(
-                    "Managed GOJA runtime {} matches the last known upstream release.",
+                    "Managed JAWATA runtime {} matches the last known upstream release.",
                     latest_version
                 )
             };
@@ -654,7 +654,7 @@ pub fn compare_version_strings(left: &str, right: &str) -> std::cmp::Ordering {
 }
 
 /// Atomically updates the `current` symlink in `tools_dir` to point at
-/// `target_dir_name` (a sibling directory name like `goja-1.8.5`).
+/// `target_dir_name` (a sibling directory name like `jawata-1.8.5`).
 ///
 /// On POSIX: creates a relative symlink at `tools_dir/.current.tmp-<ts>`
 /// then `rename(2)`s it over the existing `tools_dir/current` — atomic
@@ -707,19 +707,19 @@ fn update_current_symlink(tools_dir: &Path, target_dir_name: &str) -> Result<(),
 fn find_relative_jar_path(root: &Path) -> Result<PathBuf, String> {
     for entry in WalkDir::new(root) {
         let entry =
-            entry.map_err(|error| format!("failed to walk extracted GOJA archive: {error}"))?;
-        if entry.file_type().is_file() && entry.file_name() == "goja.jar" {
+            entry.map_err(|error| format!("failed to walk extracted JAWATA archive: {error}"))?;
+        if entry.file_type().is_file() && entry.file_name() == "jawata.jar" {
             return entry
                 .path()
                 .strip_prefix(root)
                 .map(PathBuf::from)
                 .map_err(|error| {
-                    format!("failed to compute extracted GOJA jar path: {error}")
+                    format!("failed to compute extracted JAWATA jar path: {error}")
                 });
         }
     }
 
-    Err("downloaded GOJA archive did not contain goja.jar".into())
+    Err("downloaded JAWATA archive did not contain jawata.jar".into())
 }
 
 #[cfg(test)]
@@ -740,19 +740,19 @@ mod tests {
         // Sprint 21a dogfood find: the first-.tar.gz pick installed linux-arm64 on an
         // x86_64 machine (GitHub lists assets alphabetically) → wrong SWT, resident dead.
         let assets = vec![
-            gh_asset("goja-v2.1.0-linux-arm64.tar.gz"),
-            gh_asset("goja-v2.1.0-linux-x64.tar.gz"),
-            gh_asset("goja-v2.1.0-macos-arm64.zip"),
-            gh_asset("goja-v2.1.0-macos-x64.zip"),
-            gh_asset("goja-v2.1.0-win32-x64.zip"),
+            gh_asset("jawata-v2.1.0-linux-arm64.tar.gz"),
+            gh_asset("jawata-v2.1.0-linux-x64.tar.gz"),
+            gh_asset("jawata-v2.1.0-macos-arm64.zip"),
+            gh_asset("jawata-v2.1.0-macos-x64.zip"),
+            gh_asset("jawata-v2.1.0-win32-x64.zip"),
             gh_asset("checksums.txt"),
         ];
         for (token, expected) in [
-            ("linux-x64", "goja-v2.1.0-linux-x64.tar.gz"),
-            ("linux-arm64", "goja-v2.1.0-linux-arm64.tar.gz"),
-            ("macos-arm64", "goja-v2.1.0-macos-arm64.zip"),
-            ("macos-x64", "goja-v2.1.0-macos-x64.zip"),
-            ("win32-x64", "goja-v2.1.0-win32-x64.zip"),
+            ("linux-x64", "jawata-v2.1.0-linux-x64.tar.gz"),
+            ("linux-arm64", "jawata-v2.1.0-linux-arm64.tar.gz"),
+            ("macos-arm64", "jawata-v2.1.0-macos-arm64.zip"),
+            ("macos-x64", "jawata-v2.1.0-macos-x64.zip"),
+            ("win32-x64", "jawata-v2.1.0-win32-x64.zip"),
         ] {
             assert_eq!(
                 select_release_asset(&assets, token).unwrap().name,
@@ -761,10 +761,10 @@ mod tests {
             );
         }
         // Legacy single-archive releases (no platform suffix) keep working.
-        let legacy = vec![gh_asset("goja-v1.7.0.tar.gz")];
+        let legacy = vec![gh_asset("jawata-v1.7.0.tar.gz")];
         assert_eq!(
             select_release_asset(&legacy, "linux-x64").unwrap().name,
-            "goja-v1.7.0.tar.gz"
+            "jawata-v1.7.0.tar.gz"
         );
         // The token this build computes matches the release naming scheme.
         let token = platform_asset_token();
@@ -791,21 +791,21 @@ mod tests {
             projects_file: PathBuf::from("/tmp/config/projects.json"),
             settings_file: PathBuf::from("/tmp/config/settings.json"),
             runtime_state_file: PathBuf::from("/tmp/state/runtime-state.json"),
-            default_data_root: PathBuf::from("/tmp/cache/goja-studio"),
+            default_data_root: PathBuf::from("/tmp/cache/jawata-studio"),
             log_dir: PathBuf::from("/tmp/state/logs"),
         };
         let manager = ReleaseManager::new().expect("failed to build release manager");
         let settings = ManagerSettings::default_for_paths(&paths);
         let installed = Some(ManagedRuntimeRecord {
             version: "1.1.5".into(),
-            install_dir: "/tmp/cache/tools/goja/goja-1.1.5".into(),
-            jar_path: "/tmp/cache/tools/goja/goja-1.1.5/goja.jar".into(),
-            asset_name: "goja-v1.1.5.tar.gz".into(),
+            install_dir: "/tmp/cache/tools/jawata/jawata-1.1.5".into(),
+            jar_path: "/tmp/cache/tools/jawata/jawata-1.1.5/jawata.jar".into(),
+            asset_name: "jawata-v1.1.5.tar.gz".into(),
             installed_at: "123".into(),
         });
         let release = RemoteRelease {
             version: "1.2.0".into(),
-            asset_name: "goja-v1.2.0.tar.gz".into(),
+            asset_name: "jawata-v1.2.0.tar.gz".into(),
             download_url: "https://example.com".into(),
             published_at: Some("124".into()),
             archive_kind: ArchiveKind::TarGz,
@@ -827,7 +827,7 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let dir = std::env::temp_dir().join(format!(
-            "goja-stage8-{}-{}-{}",
+            "jawata-stage8-{}-{}-{}",
             label,
             nanos,
             std::process::id()
@@ -840,11 +840,11 @@ mod tests {
     #[test]
     fn current_symlink_points_at_target() {
         let tools_dir = unique_test_dir("symlink-points");
-        let target = "goja-1.8.0";
+        let target = "jawata-1.8.0";
         let target_dir = tools_dir.join(target);
         fs::create_dir_all(target_dir.join("inner"))
             .expect("create target dir");
-        fs::write(target_dir.join("inner/goja.jar"), b"fake-jar")
+        fs::write(target_dir.join("inner/jawata.jar"), b"fake-jar")
             .expect("write jar fixture");
 
         update_current_symlink(&tools_dir, target).expect("symlink");
@@ -852,7 +852,7 @@ mod tests {
         let current = tools_dir.join("current");
         assert!(current.exists(), "current symlink must exist");
         // Reading through the symlink should hit the jar contents.
-        let bytes = fs::read(current.join("inner/goja.jar"))
+        let bytes = fs::read(current.join("inner/jawata.jar"))
             .expect("read jar through current symlink");
         assert_eq!(&bytes[..], b"fake-jar");
 
@@ -866,19 +866,19 @@ mod tests {
         // up resolving to v2. This mirrors the real upgrade flow.
         let tools_dir = unique_test_dir("symlink-latest");
 
-        let v1_name = "goja-1.8.0";
+        let v1_name = "jawata-1.8.0";
         let v1_dir = tools_dir.join(v1_name);
         fs::create_dir_all(v1_dir.join("inner")).expect("create v1 dir");
-        fs::write(v1_dir.join("inner/goja.jar"), b"v1-jar").expect("v1 jar");
+        fs::write(v1_dir.join("inner/jawata.jar"), b"v1-jar").expect("v1 jar");
         update_current_symlink(&tools_dir, v1_name).expect("symlink v1");
 
-        let v2_name = "goja-1.8.5";
+        let v2_name = "jawata-1.8.5";
         let v2_dir = tools_dir.join(v2_name);
         fs::create_dir_all(v2_dir.join("inner")).expect("create v2 dir");
-        fs::write(v2_dir.join("inner/goja.jar"), b"v2-jar").expect("v2 jar");
+        fs::write(v2_dir.join("inner/jawata.jar"), b"v2-jar").expect("v2 jar");
         update_current_symlink(&tools_dir, v2_name).expect("symlink v2 (re-point)");
 
-        let bytes = fs::read(tools_dir.join("current/inner/goja.jar"))
+        let bytes = fs::read(tools_dir.join("current/inner/jawata.jar"))
             .expect("read jar through current after re-point");
         assert_eq!(&bytes[..], b"v2-jar",
             "current must resolve to v2 jar after re-point");
@@ -894,17 +894,17 @@ mod tests {
     #[test]
     fn current_symlink_overwrites_existing_symlink_atomically() {
         let tools_dir = unique_test_dir("symlink-swap");
-        fs::create_dir_all(tools_dir.join("goja-a")).unwrap();
-        fs::create_dir_all(tools_dir.join("goja-b")).unwrap();
+        fs::create_dir_all(tools_dir.join("jawata-a")).unwrap();
+        fs::create_dir_all(tools_dir.join("jawata-b")).unwrap();
 
-        update_current_symlink(&tools_dir, "goja-a").expect("first symlink");
+        update_current_symlink(&tools_dir, "jawata-a").expect("first symlink");
         // Re-point: the swap must succeed even though `current` already
         // exists (POSIX rename overwrites).
-        update_current_symlink(&tools_dir, "goja-b").expect("re-point");
+        update_current_symlink(&tools_dir, "jawata-b").expect("re-point");
 
         let resolved = fs::read_link(tools_dir.join("current"))
             .expect("read symlink target");
-        assert_eq!(resolved, std::path::Path::new("goja-b"));
+        assert_eq!(resolved, std::path::Path::new("jawata-b"));
 
         // No leftover .current.tmp-* litter.
         let leftovers: Vec<_> = fs::read_dir(&tools_dir)
@@ -931,24 +931,24 @@ mod tests {
             projects_file: PathBuf::from("/tmp/config/projects.json"),
             settings_file: PathBuf::from("/tmp/config/settings.json"),
             runtime_state_file: PathBuf::from("/tmp/state/runtime-state.json"),
-            default_data_root: PathBuf::from("/tmp/cache/goja-studio"),
+            default_data_root: PathBuf::from("/tmp/cache/jawata-studio"),
             log_dir: PathBuf::from("/tmp/state/logs"),
         };
         let mut settings = ManagerSettings::default_for_paths(&paths);
         // Ensure env var is not influencing this test.
-        std::env::remove_var("GOJA_RELEASE_REPO");
+        std::env::remove_var("JAWATA_RELEASE_REPO");
 
         // Default: fork at the post-rename URL (haraldwegner).
         assert_eq!(
             latest_release_url(&settings),
-            "https://api.github.com/repos/haraldwegner/goja-mcp/releases/latest"
+            "https://api.github.com/repos/haraldwegner/jawata-mcp/releases/latest"
         );
 
         // Custom override (e.g. legacy upstream or another fork).
-        settings.release_repo = "pzalutski-pixel/goja-mcp".into();
+        settings.release_repo = "example-org/custom-mcp".into();
         assert_eq!(
             latest_release_url(&settings),
-            "https://api.github.com/repos/pzalutski-pixel/goja-mcp/releases/latest"
+            "https://api.github.com/repos/example-org/custom-mcp/releases/latest"
         );
     }
 }

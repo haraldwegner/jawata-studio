@@ -1,14 +1,14 @@
-# Contributing to GOJA Studio (goja-studio)
+# Contributing to JAWATA Studio (jawata-studio)
 
-Thanks for your interest in GOJA Studio — the desktop control plane (Tauri + Rust + Svelte)
-that manages GOJA workspaces and deploys the MCP server into your agent's config. A few ground
+Thanks for your interest in JAWATA Studio — the desktop control plane (Tauri + Rust + Svelte)
+that manages JAWATA workspaces and deploys the MCP server into your agent's config. A few ground
 rules keep the project sustainable and safe to change.
 
 ## Licence & CLA
 
-goja-studio is licensed under **AGPL-3.0** (see [`LICENSE`](LICENSE) / [`NOTICE`](NOTICE)).
+jawata-studio is licensed under **AGPL-3.0** (see [`LICENSE`](LICENSE) / [`NOTICE`](NOTICE)).
 
-By contributing you agree to the **GOJA Contributor License Agreement** ([`CLA.md`](CLA.md)),
+By contributing you agree to the **JAWATA Contributor License Agreement** ([`CLA.md`](CLA.md)),
 recorded automatically via **CLA-assistant** on your first pull request. The CLA lets the
 maintainer keep the project sustainably licensed (including any future dual-licensing) while
 **you retain full rights to your own work**.

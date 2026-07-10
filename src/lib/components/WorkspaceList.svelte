@@ -26,7 +26,7 @@
     | ((workspaceName: string, projectIds: string[]) => void)
     | undefined = undefined;
 
-  const DND_MIME = "application/x-goja-projects";
+  const DND_MIME = "application/x-jawata-projects";
   let dragOverRowName: string | null = null;
 
   function rowDragOver(event: DragEvent) {

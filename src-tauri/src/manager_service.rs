@@ -269,9 +269,9 @@ impl ManagerService {
             let token = ensure_gateway_token(&config_store, &settings);
             match gateway::spawn(settings.gateway_port, token, Arc::clone(&routing_table)) {
                 Ok(handle) => {
-                    eprintln!("[goja-studio] gateway listening on 127.0.0.1:{}", handle.port)
+                    eprintln!("[jawata-studio] gateway listening on 127.0.0.1:{}", handle.port)
                 }
-                Err(error) => eprintln!("[goja-studio] gateway failed to start: {error}"),
+                Err(error) => eprintln!("[jawata-studio] gateway failed to start: {error}"),
             }
         }
 
@@ -301,7 +301,7 @@ impl ManagerService {
     /// Adds a new project to the manager. The project's workspace is
     /// determined by `input.workspace_name`; empty input defaults to
     /// `"workspace-default"`. After persisting, rewrites the workspace's
-    /// `workspace.json` so any running goja for that workspace picks
+    /// `workspace.json` so any running jawata for that workspace picks
     /// up the new project via the file watcher.
     pub fn add_project(&self, input: AddProjectInput) -> Result<ProjectRecord, String> {
         let project = self.config_store.add_project(input)?;
@@ -314,7 +314,7 @@ impl ManagerService {
 
     /// Sprint 10 v0.10.4: move a project to a different workspace.
     /// Rewrites both the source and destination `workspace.json` files so
-    /// running goja processes drop / pick up the project via the
+    /// running jawata processes drop / pick up the project via the
     /// file watcher.
     pub fn set_project_workspace(
         &self,
@@ -372,7 +372,7 @@ impl ManagerService {
     }
 
     /// Sprint 10 v0.10.4: delete a workspace entirely. Kills any running
-    /// goja subprocess for the workspace, deletes the JDT data dir,
+    /// jawata subprocess for the workspace, deletes the JDT data dir,
     /// and deletes every ProjectRecord whose `workspace_name` matched.
     /// Returns the dashboard reflecting the new state.
     pub fn delete_workspace(&self, workspace_name: &str) -> Result<ManagerDashboard, String> {
@@ -407,7 +407,7 @@ impl ManagerService {
     }
 
     /// Deletes a project by its ID. After removal, rewrites the workspace's
-    /// `workspace.json` so the running goja drops the project via the
+    /// `workspace.json` so the running jawata drops the project via the
     /// file watcher (no respawn needed when other members remain).
     pub fn delete_project(&self, project_id: &str) -> Result<ManagerDashboard, String> {
         // Capture the workspace before deletion.
@@ -445,7 +445,7 @@ impl ManagerService {
 
     /// Starts runtimes for all configured projects.
     /// Sprint 10 v0.10.4: writes `workspace.json` once per workspace
-    /// before spawning any goja process. Multiple projects sharing
+    /// before spawning any jawata process. Multiple projects sharing
     /// a `workspace_name` collapse into one spawn per workspace; the
     /// remaining projects "join" the running process via runtime_manager.
     pub fn start_all_runtimes(&self) -> Result<ManagerDashboard, String> {
@@ -601,7 +601,7 @@ impl ManagerService {
         let (servers, resolve_errors) = self.build_deploy_servers(&settings, &projects);
 
         // Sprint 16b/B: with the gateway on, refresh its routing table and write
-        // ONE `goja` entry to clients instead of N per-workspace entries. Off by
+        // ONE `jawata` entry to clients instead of N per-workspace entries. Off by
         // default → `client_servers` is just `servers` (unchanged behaviour).
         let client_servers: Vec<ManagedDeployServer> = if settings.gateway_enabled {
             *self
@@ -690,9 +690,9 @@ impl ManagerService {
                             serde_json::json!({"kind": "load"}),
                             10,
                         ) {
-                            Ok(_) => eprintln!("[goja-studio] auto-seed ok: {url}"),
+                            Ok(_) => eprintln!("[jawata-studio] auto-seed ok: {url}"),
                             Err(error) => {
-                                eprintln!("[goja-studio] auto-seed skipped ({url}): {error}")
+                                eprintln!("[jawata-studio] auto-seed skipped ({url}): {error}")
                             }
                         }
                     }
@@ -813,7 +813,7 @@ impl ManagerService {
     }
 
     /// Sprint 21a (item E): GC the historically scattered `.bak` files (dry-run first).
-    /// Sweeps the dirs goja-studio ever wrote beside: `$HOME`, `~/.claude`, `~/.cursor`,
+    /// Sweeps the dirs jawata-studio ever wrote beside: `$HOME`, `~/.claude`, `~/.cursor`,
     /// the studio config dir, and every registered project dir.
     pub fn backups_gc(&self, dry_run: bool) -> crate::backups::GcReport {
         let settings = self.config_store.get_settings();
@@ -1019,8 +1019,8 @@ impl ManagerService {
         Ok(())
     }
 
-    /// Downloads or updates the GOJA runtime.
-    pub fn download_or_update_goja(&self) -> Result<ManagerDashboard, String> {
+    /// Downloads or updates the JAWATA runtime.
+    pub fn download_or_update_jawata(&self) -> Result<ManagerDashboard, String> {
         let mut settings = self.config_store.get_settings();
         self.release_manager
             .download_latest_runtime(&mut settings)?;
@@ -1201,7 +1201,7 @@ impl ManagerService {
 
     /// Starts the runtime for a specific project. Writes workspace.json
     /// for the project's workspace before spawning so the spawning
-    /// goja picks up the full workspace member list.
+    /// jawata picks up the full workspace member list.
     /// Sprint 12 (v0.12.0): toggle every project in the named workspace —
     /// stop them when the workspace's aggregated phase is Running or
     /// Starting, start them otherwise (Stopped or Failed).
@@ -1277,8 +1277,8 @@ impl ManagerService {
             .ok_or_else(|| format!("Unknown project id: {project_id}"))?;
         let reference = self.resolve_runtime_reference(&project)?;
 
-        // Tell goja to drop this project: rewrite workspace.json
-        // without it (the file watcher in goja will call removeProject
+        // Tell jawata to drop this project: rewrite workspace.json
+        // without it (the file watcher in jawata will call removeProject
         // within ~1 s).
         let projects = self.config_store.list_projects();
         let remaining: Vec<&ProjectRecord> = projects
@@ -1388,7 +1388,7 @@ impl ManagerService {
     ) -> Result<RuntimeReference, String> {
         // Sprint 10 v0.10.4: workspace_dir is keyed by workspace_name, not
         // project id — so all projects sharing a workspace share one
-        // Eclipse JDT data dir + one goja process.
+        // Eclipse JDT data dir + one jawata process.
         let workspace_dir = crate::config::display_path(
             &settings.workspace_root().join(&project.workspace_name),
         );
@@ -1404,13 +1404,13 @@ impl ManagerService {
         match &settings.global_runtime_source {
             RuntimeSource::Managed => {
                 let runtime = installed_runtime
-                    .ok_or_else(|| "No managed GOJA runtime is installed. Download the latest release first.".to_string())?;
+                    .ok_or_else(|| "No managed JAWATA runtime is installed. Download the latest release first.".to_string())?;
 
                 Ok(RuntimeReference {
                     project_id: project.id.clone(),
                     workspace_name: project.workspace_name.clone(),
                     workspace_dir,
-                    runtime_label: format!("Managed GOJA {}", runtime.version),
+                    runtime_label: format!("Managed JAWATA {}", runtime.version),
                     resolved_jar_path: runtime.jar_path.clone(),
                     jvm_properties: knowledge_jvm_properties(settings),
                     resident_port: workspace_state.resident_port,
@@ -1421,7 +1421,7 @@ impl ManagerService {
                 project_id: project.id.clone(),
                 workspace_name: project.workspace_name.clone(),
                 workspace_dir,
-                runtime_label: "Local GOJA JAR".into(),
+                runtime_label: "Local JAWATA JAR".into(),
                 resolved_jar_path: jar_path.clone(),
                 jvm_properties: knowledge_jvm_properties(settings),
                 resident_port: workspace_state.resident_port,
@@ -1436,7 +1436,7 @@ impl ManagerService {
     /// atomic file I/O.
     ///
     /// Called after every projects.json mutation that affects a workspace's
-    /// member list. Running goja processes pick up the change via
+    /// member list. Running jawata processes pick up the change via
     /// `WorkspaceFileWatcher` (~1 s latency).
     fn write_workspace_json_for(&self, workspace_name: &str) -> Result<(), String> {
         let settings = self.config_store.get_settings();
@@ -1578,7 +1578,7 @@ impl ManagerService {
     }
 
     /// Sprint 16 (bugs.md #14a): re-run the deploy for clients that ALREADY
-    /// hold goja-managed entries, so deployed configs track workspace
+    /// hold jawata-managed entries, so deployed configs track workspace
     /// adds / renames / deletes without a manual Deploy click. Clients that
     /// were never deployed to are left untouched. Best-effort by design:
     /// failures are logged and never block the workspace mutation itself.
@@ -1606,12 +1606,12 @@ impl ManagerService {
         }) {
             Ok(result) if result.ok => {}
             Ok(result) => eprintln!(
-                "[goja-studio] auto-refresh of deployed configs completed \
+                "[jawata-studio] auto-refresh of deployed configs completed \
                  with failures: {}",
                 result.detail
             ),
             Err(error) => eprintln!(
-                "[goja-studio] auto-refresh of deployed configs failed: {error}"
+                "[jawata-studio] auto-refresh of deployed configs failed: {error}"
             ),
         }
     }
@@ -1826,7 +1826,7 @@ impl ManagerService {
                     client: client.to_string(),
                     target_path: path,
                     status: DeployClientStatus::Skipped,
-                    message: "No managed GOJA deploy sections found.".into(),
+                    message: "No managed JAWATA deploy sections found.".into(),
                     backup_path: None,
                     changed_sections,
                     validation_errors: Vec::new(),
@@ -1838,7 +1838,7 @@ impl ManagerService {
                 client: client.to_string(),
                 target_path: path,
                 status: DeployClientStatus::Success,
-                message: "Delete successful. Removed managed GOJA deploy sections.".into(),
+                message: "Delete successful. Removed managed JAWATA deploy sections.".into(),
                 backup_path,
                 changed_sections,
                 validation_errors: Vec::new(),
@@ -1870,6 +1870,15 @@ impl ManagerService {
                 matches!(mode, DeployMode::Regenerate),
             )
         });
+        // Sprint 22b: a pre-rebrand deploy left a goja-studio-named rule FILE beside
+        // the new one (e.g. .cursor/rules/goja-studio.mdc) — both would steer the
+        // agent. Remove the legacy sibling (centralized backup first); no-op for
+        // shared files like CLAUDE.md, whose old block the marker logic replaces.
+        for rp in std::iter::once(rule_path.as_str()).chain(global_rule_path.as_deref()) {
+            if let Err(error) = remove_legacy_rule_sibling(rp) {
+                eprintln!("[jawata-studio] WARN: {error}");
+            }
+        }
 
         let mut changed_sections = Vec::new();
         let mut errors = Vec::new();
@@ -1955,7 +1964,7 @@ impl ManagerService {
         // Sprint 21 (v2.0): write the knowledge PUSH hooks (Claude Code only) — the
         // SessionStart domain primer + the PreToolUse cue-gated recall. Both bake the
         // resident `/mcp` URL + Bearer token so they can live-call experience(...); they
-        // fail safe (goja down / empty / absence → inject nothing).
+        // fail safe (jawata down / empty / absence → inject nothing).
         if let Some(server) = servers.first() {
             let regenerate = matches!(mode, DeployMode::Regenerate);
             if let (Some(settings_path), Some(primer_path)) =
@@ -2149,22 +2158,22 @@ impl ManagerService {
         let runtime = match &settings.global_runtime_source {
             RuntimeSource::Managed => {
                 let runtime = installed.ok_or_else(|| {
-                    "No managed GOJA runtime is installed. Download latest first.".to_string()
+                    "No managed JAWATA runtime is installed. Download latest first.".to_string()
                 })?;
                 ProbeRuntime {
                     jar_path: runtime.jar_path,
-                    runtime_label: format!("Managed GOJA {}", runtime.version),
+                    runtime_label: format!("Managed JAWATA {}", runtime.version),
                 }
             }
             RuntimeSource::LocalJar { jar_path } => ProbeRuntime {
                 jar_path: jar_path.clone(),
-                runtime_label: "Local GOJA JAR".into(),
+                runtime_label: "Local JAWATA JAR".into(),
             },
         };
 
         if !PathBuf::from(&runtime.jar_path).exists() {
             return Err(format!(
-                "Configured GOJA JAR does not exist: {}",
+                "Configured JAWATA JAR does not exist: {}",
                 runtime.jar_path
             ));
         }
@@ -2208,7 +2217,7 @@ impl ManagerService {
             Ok(child) => child,
             Err(error) => {
                 return self.probe_failure(
-                    format!("Failed to start GOJA probe process: {error}"),
+                    format!("Failed to start JAWATA probe process: {error}"),
                     started_at,
                     None,
                 );
@@ -2239,7 +2248,7 @@ impl ManagerService {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {},
                     "clientInfo": {
-                        "name": "goja-studio",
+                        "name": "jawata-studio",
                         "version": "0.1.0"
                     }
                 }
@@ -2363,7 +2372,7 @@ fn read_mcp_message(reader: &mut BufReader<ChildStdout>) -> Result<serde_json::V
         }
         if !trimmed.starts_with('{') {
             return Err(format!(
-                "received non-JSON output from GOJA stdout: {trimmed}"
+                "received non-JSON output from JAWATA stdout: {trimmed}"
             ));
         }
 
@@ -2928,24 +2937,24 @@ fn derive_rule_path(client: &str, mcp_target_path: &str) -> String {
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
     match client {
-        "cursor" => display_path(&parent.join("rules").join("goja-studio.mdc")),
+        "cursor" => display_path(&parent.join("rules").join("jawata-studio.mdc")),
         "claude" => display_path(&parent.join("CLAUDE.md")),
         "antigravity" => display_path(&parent.join("AGENTS.md")),
-        "intellij" => display_path(&parent.join("goja-studio-rules.md")),
-        _ => display_path(&parent.join("goja-studio-rules.md")),
+        "intellij" => display_path(&parent.join("jawata-studio-rules.md")),
+        _ => display_path(&parent.join("jawata-studio-rules.md")),
     }
 }
 
 /// Sprint 16b/C: the client's GLOBAL / always-loaded instruction file — the one
 /// loaded into every session regardless of cwd. The deploy writes the managed
 /// rule block here IN ADDITION to the config-sibling (`derive_rule_path`) so the
-/// "use GOJA, not grep" rule survives MCP schema deferral.
+/// "use JAWATA, not grep" rule survives MCP schema deferral.
 ///
 /// - `claude` → `~/.claude/CLAUDE.md`. The sibling for Claude Code is `~/CLAUDE.md`
 ///   (next to `~/.claude.json`), which is NOT always-loaded; `~/.claude/CLAUDE.md`
 ///   is. This is the gap the rebrand left stale.
 /// - `cursor` → `None`: the default Cursor sibling is already `~/.cursor/rules/
-///   goja-studio.mdc` (a global rules dir), so the sibling already covers it.
+///   jawata-studio.mdc` (a global rules dir), so the sibling already covers it.
 /// - `antigravity` / others → `None`: no confirmed always-loaded global file;
 ///   don't guess a path. Revisit if/when one is confirmed.
 fn derive_global_rule_path(client: &str) -> Option<String> {
@@ -3037,18 +3046,18 @@ fn validate_client_config_shape(
 fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
     // Sprint A0 (v0.17.0): the rule block deployed into each client's rule file
     // (CLAUDE.md / .cursor/rules/*.mdc / AGENTS.md / …). It is the cross-client
-    // delivery vehicle for "use goja, not grep, for Java" — the prior
+    // delivery vehicle for "use jawata, not grep, for Java" — the prior
     // one-line policy was too vague to change agent behaviour. Three imperative
-    // sections: a Java→goja routing table, the health-gated fallback (ASK when
-    // GOJA is down on Java work, silent on non-Java), then the TDD-refactor loop.
+    // sections: a Java→jawata routing table, the health-gated fallback (ASK when
+    // JAWATA is down on Java work, silent on non-Java), then the TDD-refactor loop.
     // Keep it tight and scannable; a long rule gets ignored. Identical text for
     // every client (only the marker name differs) so the idempotent
     // marker-replace in write_managed_rule_block stays simple.
     let mut lines = vec![
-        format!("<!-- goja-studio:{client}:start -->"),
-        "## GOJA MCP — use it for Java, before shell text tools".to_string(),
+        format!("<!-- jawata-studio:{client}:start -->"),
+        "## JAWATA MCP — use it for Java, before shell text tools".to_string(),
         String::new(),
-        "These workspaces are served by GOJA MCP (compiler-accurate, JDT-backed). For \
+        "These workspaces are served by JAWATA MCP (compiler-accurate, JDT-backed). For \
          ANY Java semantic task, call the MCP tool BEFORE reaching for `grep`/`rg`/`find`/\
          `sed`/`awk` or hand-reading `.java` files:"
             .to_string(),
@@ -3067,15 +3076,15 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
          NOT hand-edit a rename/move/extract."
             .to_string(),
         String::new(),
-        "Shell text search is a FALLBACK only — when GOJA is unavailable, or for \
+        "Shell text search is a FALLBACK only — when JAWATA is unavailable, or for \
          non-Java / non-semantic matches (build files, configs, comments, log strings)."
             .to_string(),
         String::new(),
         "**Try-first, or justify — the deployed hook ENFORCES this.** A `grep`/`rg` over a \
-         `.java` file, or a hand-edit of a `.java` file, is BLOCKED unless you tried goja first \
-         (a search) or use a goja tool (an edit) — OR you declare \
-         `goja-fallback: <why goja is inadequate for THIS case>` in the command (it is logged). \
-         It is meant to be inconvenient NOT to use goja; you are never stuck — the justified \
+         `.java` file, or a hand-edit of a `.java` file, is BLOCKED unless you tried jawata first \
+         (a search) or use a jawata tool (an edit) — OR you declare \
+         `jawata-fallback: <why jawata is inadequate for THIS case>` in the command (it is logged). \
+         It is meant to be inconvenient NOT to use jawata; you are never stuck — the justified \
          fallback always proceeds."
             .to_string(),
         String::new(),
@@ -3089,21 +3098,21 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
          (parity-gated, reversible)"
             .to_string(),
         String::new(),
-        "## When GOJA is unavailable — ASK, don't silently degrade".to_string(),
+        "## When JAWATA is unavailable — ASK, don't silently degrade".to_string(),
         String::new(),
-        "If a GOJA tool is unreachable (the server is not running — e.g. not started after a \
+        "If a JAWATA tool is unreachable (the server is not running — e.g. not started after a \
          reboot, autostart off) and you are doing **Java** semantic/structural work, do NOT \
          quietly fall back to grep or hand-editing. **STOP and ask** how to proceed (wait while \
          it is started · grep this once, degraded · abort) — silently losing the \
          compiler-accurate layer is worse than pausing. On **non-Java** work (Rust, Python, \
-         configs, docs) GOJA does not apply: proceed normally, no question. And never use \
-         \"GOJA is down\" as a reason to reclassify Java work as something else to dodge this check."
+         configs, docs) JAWATA does not apply: proceed normally, no question. And never use \
+         \"JAWATA is down\" as a reason to reclassify Java work as something else to dodge this check."
             .to_string(),
         String::new(),
         "## Refactor in small, verified steps".to_string(),
         String::new(),
         "1. Confirm a green baseline (`compile_workspace`; run the relevant tests).".to_string(),
-        "2. Apply ONE refactoring via a GOJA tool (it returns a diff + `undoChangeId`)."
+        "2. Apply ONE refactoring via a JAWATA tool (it returns a diff + `undoChangeId`)."
             .to_string(),
         "3. Re-check: `compile_workspace` + run the tests again.".to_string(),
         "4. Green → keep going. Red → `undo_refactoring` and rethink. One step at a time."
@@ -3113,7 +3122,7 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
         // memory, but only Claude Code has push hooks (primer/recall). Every other
         // client must PULL — this section is the textual substitute until its hook
         // schema is ported. Identical text everywhere (harmless where hooks push too).
-        "## GOJA memory — recall before you theorize, record what you learn".to_string(),
+        "## JAWATA memory — recall before you theorize, record what you learn".to_string(),
         String::new(),
         "The experience store is the CROSS-CLIENT memory: the same store answers in \
          Cursor and Claude Code. Clients without hook injection must PULL it:"
@@ -3132,7 +3141,7 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
          `experience(kind=record, type=lesson, summary=..., symbol=...)` — it becomes \
          recallable by symbol from every client."
             .to_string(),
-        "- Shell fallback on Java anyway? Declare `goja-fallback: <why>` in the \
+        "- Shell fallback on Java anyway? Declare `jawata-fallback: <why>` in the \
          command — the declaration is the audit trail."
             .to_string(),
         String::new(),
@@ -3141,29 +3150,29 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
     for server in servers {
         lines.push(format!("- {}", server.id));
     }
-    lines.push(format!("<!-- goja-studio:{client}:end -->"));
+    lines.push(format!("<!-- jawata-studio:{client}:end -->"));
     lines.join("\n")
 }
 
 /// Cursor enforces `len(server_id) + 1 + len(tool_name) <= 59` (reports as "exceeds 60 characters").
 /// Antigravity is limited by a separate ~100 *services* / tool-budget; no shared constant here.
 const CURSOR_MCP_COMBINED_MAX: usize = 59;
-/// Upper bound on a single goja-mcp tool name length (e.g. `get_call_hierarchy_outgoing` ~ 28; keep buffer for future tools).
-const GOJA_TOOL_NAME_BUDGET: usize = 32;
+/// Upper bound on a single jawata-mcp tool name length (e.g. `get_call_hierarchy_outgoing` ~ 28; keep buffer for future tools).
+const JAWATA_TOOL_NAME_BUDGET: usize = 32;
 
 fn max_mcp_server_id_len_for_cursor() -> usize {
     CURSOR_MCP_COMBINED_MAX
         .saturating_sub(1) // ":"
-        .saturating_sub(GOJA_TOOL_NAME_BUDGET)
+        .saturating_sub(JAWATA_TOOL_NAME_BUDGET)
 }
 
 /// Sprint 10 v0.10.4: MCP service ID derived from the workspace name.
-/// Format: `goja-<sanitized-workspace-name>`, capped at the Cursor server-id
+/// Format: `jawata-<sanitized-workspace-name>`, capped at the Cursor server-id
 /// budget. Single-workspace mode means each MCP service represents one
 /// logical workspace, not one project.
 fn mcp_server_id_for_workspace(workspace_name: &str) -> String {
     let max_id = max_mcp_server_id_len_for_cursor();
-    let prefix = "goja-";
+    let prefix = "jawata-";
     if prefix.len() >= max_id {
         return prefix.to_string();
     }
@@ -3231,14 +3240,18 @@ fn mcp_label_slug(name: &str, project_path: &str, max_chars: usize) -> String {
     out
 }
 
-/// Keys for MCP servers written by goja-studio: `goja-…`, plus legacy `jl-…` /
-/// `javalens-…` recognised for cleanup/migration of pre-rebrand deploys.
-fn is_goja_managed_mcp_key(key: &str) -> bool {
-    key.starts_with("goja-") || key.starts_with("jl-") || key.starts_with("javalens-")
+/// Keys for MCP servers written by jawata-studio: `jawata-…`, plus the legacy
+/// generations `goja-…` (pre-22b rebrand) / `jl-…` / `javalens-…` recognised for
+/// cleanup/migration of pre-rebrand deploys (migration literals, exception class 3).
+fn is_managed_mcp_key(key: &str) -> bool {
+    key.starts_with("jawata-")
+        || key.starts_with("goja-")
+        || key.starts_with("jl-")
+        || key.starts_with("javalens-")
 }
 
 /// Sprint 16 (bugs.md #14a): true when the client's MCP config file already
-/// carries at least one goja-managed server entry — the marker that the
+/// carries at least one jawata-managed server entry — the marker that the
 /// user deployed there before, making it an auto-refresh target.
 fn path_has_managed_entries(path: &str) -> bool {
     let Ok(contents) = fs::read_to_string(path) else {
@@ -3250,7 +3263,7 @@ fn path_has_managed_entries(path: &str) -> bool {
     value
         .get("mcpServers")
         .and_then(|servers| servers.as_object())
-        .map(|servers| servers.keys().any(|key| is_goja_managed_mcp_key(key)))
+        .map(|servers| servers.keys().any(|key| is_managed_mcp_key(key)))
         .unwrap_or(false)
 }
 
@@ -3296,8 +3309,8 @@ fn write_managed_json_block(
 
     let mut next_value = root_value;
 
-    // Merge managed GOJA servers into the client's real MCP schema.
-    // Clients load "mcpServers", not our internal gojaManager metadata.
+    // Merge managed JAWATA servers into the client's real MCP schema.
+    // Clients load "mcpServers", not our internal jawataManager metadata.
     if let Some(object) = next_value.as_object_mut() {
         let mut existing_servers = object
             .get("mcpServers")
@@ -3310,7 +3323,7 @@ fn write_managed_json_block(
         let should_prune_managed =
             force_rewrite || matches!(merge_mode, McpMergeMode::ReplaceManagedSection);
         if should_prune_managed {
-            existing_servers.retain(|key, _| !is_goja_managed_mcp_key(key));
+            existing_servers.retain(|key, _| !is_managed_mcp_key(key));
         }
 
         // Sprint 15 Stage 11: URL form replaces stdio command/args/env.
@@ -3322,7 +3335,7 @@ fn write_managed_json_block(
 
         if force_rewrite {
             existing_servers.retain(|key, _| {
-                !is_goja_managed_mcp_key(key) || incoming_ids.contains(key)
+                !is_managed_mcp_key(key) || incoming_ids.contains(key)
             });
         }
 
@@ -3331,7 +3344,7 @@ fn write_managed_json_block(
             serde_json::Value::Object(existing_servers),
         );
         // Remove legacy payload from earlier deploy versions.
-        object.remove("gojaManager");
+        object.remove("jawataManager");
     }
 
     let next_json = serde_json::to_string_pretty(&next_value)
@@ -3381,13 +3394,13 @@ fn remove_managed_json_block(path: &str, backup_before_write: bool) -> Result<bo
             .cloned()
             .unwrap_or_default();
         let previous_len = existing_servers.len();
-        existing_servers.retain(|key, _| !is_goja_managed_mcp_key(key));
+        existing_servers.retain(|key, _| !is_managed_mcp_key(key));
         changed |= existing_servers.len() != previous_len;
         object.insert(
             "mcpServers".into(),
             serde_json::Value::Object(existing_servers),
         );
-        changed |= object.remove("gojaManager").is_some();
+        changed |= object.remove("jawataManager").is_some();
     }
 
     if !changed {
@@ -3441,7 +3454,7 @@ fn managed_server_entry(client: &str, server: &ManagedDeployServer) -> serde_jso
         }),
     );
     // Sprint 16b/C: Claude Code (CLI, v2.1.121+) honours a per-server
-    // `alwaysLoad` flag — mark the managed GOJA server so its (post-collapse)
+    // `alwaysLoad` flag — mark the managed JAWATA server so its (post-collapse)
     // tool surface loads upfront and never defers behind MCP tool-search.
     // Cursor caps at 40 tools and Antigravity has no such flag, so this is
     // Claude-only; the universal levers are the collapse + the always-loaded
@@ -3495,10 +3508,10 @@ fn build_routing_table(servers: &[ManagedDeployServer]) -> gateway::RoutingTable
     )
 }
 
-/// Sprint 16b/B: the single client-facing `goja` entry that points at the gateway.
+/// Sprint 16b/B: the single client-facing `jawata` entry that points at the gateway.
 fn gateway_entry(port: u16, token: &str, disabled: bool) -> ManagedDeployServer {
     ManagedDeployServer {
-        id: "goja".to_string(),
+        id: "jawata".to_string(),
         workspace_name: "gateway".to_string(),
         project_names: Vec::new(),
         project_paths: Vec::new(),
@@ -3531,10 +3544,19 @@ fn write_managed_rule_block(
         .last()
         .ok_or("managed rule block missing end marker")?;
 
-    let next = if let (Some(start_idx), Some(end_idx)) =
-        (existing.find(start_marker), existing.find(end_marker))
-    {
-        let end_inclusive = end_idx + end_marker.len();
+    // Sprint 22b: a file last written by goja-studio carries the legacy markers —
+    // find those too, so the redeploy REPLACES the old block instead of appending
+    // a duplicate beside it.
+    let legacy_start = legacy_sentinel(start_marker);
+    let legacy_end = legacy_sentinel(end_marker);
+    let found = match (existing.find(start_marker), existing.find(end_marker)) {
+        (Some(s), Some(e)) => Some((s, e + end_marker.len())),
+        _ => match (existing.find(&legacy_start), existing.find(&legacy_end)) {
+            (Some(s), Some(e)) => Some((s, e + legacy_end.len())),
+            _ => None,
+        },
+    };
+    let next = if let Some((start_idx, end_inclusive)) = found {
         format!(
             "{}{}{}",
             &existing[..start_idx],
@@ -3571,8 +3593,14 @@ fn remove_managed_rule_block(
     }
     let existing = fs::read_to_string(&path_buf)
         .map_err(|error| format!("failed to read rule file {}: {error}", path_buf.display()))?;
-    let start_marker = format!("<!-- goja-studio:{client}:start -->");
-    let end_marker = format!("<!-- goja-studio:{client}:end -->");
+    let start_marker = format!("<!-- jawata-studio:{client}:start -->");
+    let end_marker = format!("<!-- jawata-studio:{client}:end -->");
+    // Sprint 22b: also remove blocks written by goja-studio (legacy markers).
+    let (start_marker, end_marker) = if existing.contains(&start_marker) {
+        (start_marker, end_marker)
+    } else {
+        (legacy_sentinel(&start_marker), legacy_sentinel(&end_marker))
+    };
 
     let Some(start_idx) = existing.find(&start_marker) else {
         return Ok(false);
@@ -3613,11 +3641,11 @@ fn latest_backup_path(path: &str) -> Option<String> {
 
 // ===== Sprint 18 Track 2 / Stage 9: PreToolUse enforcement hook (Claude Code) =====
 //
-// Level 3 of "make the agent use GOJA" (available → recommended → ENFORCED; the
+// Level 3 of "make the agent use JAWATA" (available → recommended → ENFORCED; the
 // rule block is level 2). Claude Code fires a `PreToolUse` hook before it runs a
 // tool; a hook that exits 2 blocks the call and feeds its stderr back to the
 // model. We register a hook on `Bash|Grep` that redirects Java *text search*
-// (grep/rg/find/sed/awk over `.java`, or the Grep tool aimed at Java) to the GOJA
+// (grep/rg/find/sed/awk over `.java`, or the Grep tool aimed at Java) to the JAWATA
 // semantic tools. It is HEALTH-GATED: the same block carries a different message
 // when the resident is up (redirect to the tool) vs down (diagnosis + how to
 // start, or proceed grep-degraded on purpose). Non-Java calls, and edits, pass
@@ -3627,10 +3655,43 @@ fn latest_backup_path(path: &str) -> Option<String> {
 
 /// Sentinel embedded in the managed guard command so we can find + replace + remove
 /// exactly our `PreToolUse` entries without disturbing user-authored hooks.
-const GOJA_HOOK_SENTINEL: &str = "goja-studio/pretooluse-guard.sh";
+const JAWATA_HOOK_SENTINEL: &str = "jawata-studio/pretooluse-guard.sh";
+
+/// Sprint 22b: the pre-rebrand (goja) twin of a managed sentinel/marker —
+/// recognised so a redeploy REPLACES entries/blocks written by goja-studio
+/// instead of duplicating beside them, and removal cleans both generations.
+/// Migration literal (grep-contract exception class 3); drop with the legacy
+/// layer next release.
+fn legacy_sentinel(sentinel: &str) -> String {
+    sentinel.replace("jawata", "goja")
+}
+
+/// Sprint 22b: a pre-rebrand deploy left a `goja-studio…`-named rule FILE beside
+/// the renamed one (e.g. `.cursor/rules/goja-studio.mdc`, `goja-studio-rules.md`);
+/// both would steer the agent. Remove the legacy sibling after the new file is
+/// written (centralized backup first). No-op when the rule file is a shared file
+/// (CLAUDE.md — no `jawata-studio` in its name).
+fn remove_legacy_rule_sibling(rule_path: &str) -> Result<bool, String> {
+    let p = PathBuf::from(rule_path);
+    let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+        return Ok(false);
+    };
+    if !name.contains("jawata-studio") {
+        return Ok(false);
+    }
+    let legacy = p.with_file_name(legacy_sentinel(name));
+    if legacy.exists() {
+        crate::backups::backup_before_write(&legacy)
+            .map_err(|e| format!("failed backing up legacy rule file {}: {e}", legacy.display()))?;
+        fs::remove_file(&legacy)
+            .map_err(|e| format!("failed removing legacy rule file {}: {e}", legacy.display()))?;
+        return Ok(true);
+    }
+    Ok(false)
+}
 
 /// Sprint 22 (POST layer): sentinel for the managed PostToolUse observer entry.
-const GOJA_POSTHOOK_SENTINEL: &str = "goja-studio/posttooluse-observer.sh";
+const JAWATA_POSTHOOK_SENTINEL: &str = "jawata-studio/posttooluse-observer.sh";
 
 /// The client whose settings file receives the enforcement hook. Claude Code only:
 /// its `~/.claude/settings.json` hook schema is the one we target; Cursor/
@@ -3643,26 +3704,42 @@ fn derive_hook_settings_path(client: &str) -> Option<String> {
     Some(display_path(&home.join(".claude").join("settings.json")))
 }
 
-/// Absolute path of the managed guard script goja-studio writes + owns. Lives under
-/// `~/.claude/goja-studio/` so the settings.json entry is a stable one-liner and all
+/// The managed Claude-side scripts dir `~/.claude/jawata-studio/`, with the Sprint-22b
+/// one-time legacy move: an existing `~/.claude/goja-studio/` (pre-rebrand deploys —
+/// scripts, trygate/editgate state, outcomes.log) is RENAMED to the new dir on first
+/// touch, never clobbered (if the new dir already exists, the old one is left alone).
+/// The redeploy then overwrites the scripts; the state/logs carry over.
+fn claude_scripts_dir() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    let new = home.join(".claude").join("jawata-studio");
+    let old = home.join(".claude").join("goja-studio"); // migration literal (exception class 3)
+    if old.exists() && !new.exists() {
+        match fs::rename(&old, &new) {
+            Ok(()) => eprintln!(
+                "[jawata-studio] migrated claude scripts dir: {} -> {}",
+                old.display(),
+                new.display()
+            ),
+            Err(e) => eprintln!(
+                "[jawata-studio] WARN: could not migrate claude scripts dir {} -> {}: {e}",
+                old.display(),
+                new.display()
+            ),
+        }
+    }
+    Some(new)
+}
+
+/// Absolute path of the managed guard script jawata-studio writes + owns. Lives under
+/// `~/.claude/jawata-studio/` so the settings.json entry is a stable one-liner and all
 /// the branching logic lives in a shell file we overwrite on every deploy.
 fn managed_guard_script_path() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    Some(
-        home.join(".claude")
-            .join("goja-studio")
-            .join("pretooluse-guard.sh"),
-    )
+    Some(claude_scripts_dir()?.join("pretooluse-guard.sh"))
 }
 
 /// Absolute path of the managed PostToolUse observer script (sibling of the guard).
 fn managed_observer_script_path() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    Some(
-        home.join(".claude")
-            .join("goja-studio")
-            .join("posttooluse-observer.sh"),
-    )
+    Some(claude_scripts_dir()?.join("posttooluse-observer.sh"))
 }
 
 /// The bash guard. `health_url` (the deployed gateway `/mcp` URL) is baked in so the
@@ -3672,24 +3749,24 @@ fn managed_observer_script_path() -> Option<PathBuf> {
 fn build_guard_script(health_url: &str) -> String {
     format!(
         r#"#!/usr/bin/env bash
-# <goja-studio managed PreToolUse guard — do not edit; overwritten on deploy>
+# <jawata-studio managed PreToolUse guard — do not edit; overwritten on deploy>
 # Redirects Java SYMBOL SEARCH (grep/rg over *.java files, or the Grep tool aimed
-# at Java) to GOJA's compiler-accurate tools. Health-gated: a different
-# message when GOJA is up (use the tool) vs down (start it, or grep on purpose).
-# Non-Java calls pass through untouched; a Java hand-edit is redirected to goja
+# at Java) to JAWATA's compiler-accurate tools. Health-gated: a different
+# message when JAWATA is up (use the tool) vs down (start it, or grep on purpose).
+# Non-Java calls pass through untouched; a Java hand-edit is redirected to jawata
 # refactor tools (Sprint 22). Exit 2 blocks + tells the model why; exit 0 lets it run.
 set -u
 
 HEALTH_URL="{health_url}"
 
-# Append a DECLARED fallback to the audit log, stamped with the deployed goja engine
-# version (derived from the install path). A "goja vX can't do Y" entry is then a
+# Append a DECLARED fallback to the audit log, stamped with the deployed jawata engine
+# version (derived from the install path). A "jawata vX can't do Y" entry is then a
 # versioned signal — scoring substrate + feature backlog. Rare (only on an explicit
 # fallback), so the version lookup cost is paid only then.
-goja_log_fallback() {{
-  ver="$(ls -1d "${{XDG_CACHE_HOME:-$HOME/.cache}}/goja-studio/tools/goja/current"/goja-* 2>/dev/null | head -n1 | sed 's#.*/goja-##')"
+jawata_log_fallback() {{
+  ver="$(ls -1d "${{XDG_CACHE_HOME:-$HOME/.cache}}/jawata-studio/tools/jawata/current"/jawata-* 2>/dev/null | head -n1 | sed 's#.*/jawata-##')"
   [ -n "$ver" ] || ver="unknown"
-  dir="$HOME/.claude/goja-studio"; mkdir -p "$dir" 2>/dev/null
+  dir="$HOME/.claude/jawata-studio"; mkdir -p "$dir" 2>/dev/null
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
   printf '%s\t%s\tdeclared-fallback\t%s\n' "$ts" "$ver" "$1" >> "$dir/fallback.log" 2>/dev/null
 }}
@@ -3701,88 +3778,88 @@ flat="$(printf '%s' "$input" | tr '\n\r' '  ')"
 tool_name="$(printf '%s' "$flat" | sed -n 's/.*"tool_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
 
 # v1.4.0 (Sprint 22): per-session "try-first" state, keyed by the hook stdin
-# session_id. Later stages log goja calls here and consult it to gate grep. Derived
+# session_id. Later stages log jawata calls here and consult it to gate grep. Derived
 # once. An empty session_id (older clients) leaves the file empty → gates degrade open.
 session_id="$(printf '%s' "$flat" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
-goja_state_dir="$HOME/.claude/goja-studio/trygate"
-if [ -n "$session_id" ]; then goja_state_file="$goja_state_dir/$session_id"; else goja_state_file=""; fi
+jawata_state_dir="$HOME/.claude/jawata-studio/trygate"
+if [ -n "$session_id" ]; then jawata_state_file="$jawata_state_dir/$session_id"; else jawata_state_file=""; fi
 
 # v1.5.1 (Sprint 22 refinement): AUTHORING permit. Adding NEW Java code is authoring,
-# not a refactor goja can express — and a text-level hook cannot reliably tell authoring
+# not a refactor jawata can express — and a text-level hook cannot reliably tell authoring
 # from restructuring (that judgment needs the AST; it is the intelligent-injector's job).
 # So the clean escape for a structured Edit/Write — with no marker polluting the source —
-# is a SEPARATE declaration: run a Bash command containing 'goja-author: <reason>' to open
+# is a SEPARATE declaration: run a Bash command containing 'jawata-author: <reason>' to open
 # a short, session-scoped authoring window; subsequent .java edits then pass and are logged.
-goja_editgate_dir="$HOME/.claude/goja-studio/editgate"
-if [ -n "$session_id" ]; then goja_editgate="$goja_editgate_dir/$session_id"; else goja_editgate=""; fi
-if [ "$tool_name" = "Bash" ] && printf '%s' "$flat" | grep -qiE 'goja-author:'; then
-  ar="$(printf '%s' "$input" | sed -n 's/.*goja-author:[[:space:]]*//p' | head -n1 | sed 's/\\.*//' | sed 's/".*//' | sed 's/[[:space:]]*$//' | head -c 200)"
-  if [ -n "$goja_editgate" ]; then
-    mkdir -p "$goja_editgate_dir" 2>/dev/null
-    printf '%s\t%s\n' "$(date +%s 2>/dev/null)" "$ar" > "$goja_editgate" 2>/dev/null
+jawata_editgate_dir="$HOME/.claude/jawata-studio/editgate"
+if [ -n "$session_id" ]; then jawata_editgate="$jawata_editgate_dir/$session_id"; else jawata_editgate=""; fi
+if [ "$tool_name" = "Bash" ] && printf '%s' "$flat" | grep -qiE 'jawata-author:'; then
+  ar="$(printf '%s' "$input" | sed -n 's/.*jawata-author:[[:space:]]*//p' | head -n1 | sed 's/\\.*//' | sed 's/".*//' | sed 's/[[:space:]]*$//' | head -c 200)"
+  if [ -n "$jawata_editgate" ]; then
+    mkdir -p "$jawata_editgate_dir" 2>/dev/null
+    printf '%s\t%s\n' "$(date +%s 2>/dev/null)" "$ar" > "$jawata_editgate" 2>/dev/null
   fi
-  goja_log_fallback "authoring-window: $ar"
+  jawata_log_fallback "authoring-window: $ar"
   exit 0
 fi
 
 # The matcher fires for Bash|Grep (search gate), Edit|Write|MultiEdit (edit
-# enforcement — Stage 3) and mcp__goja* (goja-call logging — Stage 1). Stage 0 wires
+# enforcement — Stage 3) and mcp__jawata* (jawata-call logging — Stage 1). Stage 0 wires
 # the state above and still routes only search to the gates below; the other tools
 # pass through until their stages add branches.
 case "$tool_name" in
-  mcp__goja*)
-    # Stage 1: record that goja was TRIED for these targets — the try-first signal
-    # the search gate (Stage 2) consults. Goja calls are never blocked; we just log
+  mcp__jawata*)
+    # Stage 1: record that jawata was TRIED for these targets — the try-first signal
+    # the search gate (Stage 2) consults. Jawata calls are never blocked; we just log
     # the target tokens (query / typeName / symbol / newName / filePath basename),
     # lowercased, one per line.
-    if [ -n "$goja_state_file" ]; then
-      mkdir -p "$goja_state_dir" 2>/dev/null
+    if [ -n "$jawata_state_file" ]; then
+      mkdir -p "$jawata_state_dir" 2>/dev/null
       printf '%s' "$flat" \
         | grep -oiE '"(query|typeName|symbol|newName|filePath)"[[:space:]]*:[[:space:]]*"[^"]*"' \
         | sed -E 's/.*:[[:space:]]*"//; s/"$//; s#.*/##' \
         | tr 'A-Z' 'a-z' \
-        >> "$goja_state_file" 2>/dev/null
+        >> "$jawata_state_file" 2>/dev/null
     fi
     exit 0 ;;
   Edit|Write|MultiEdit)
     # v1.4.0 (Sprint 22) EDIT ENFORCEMENT: a hand-edit of a .java file must go through a
-    # goja refactor tool, or be justified. Non-.java, brand-new files, and goja-down pass.
+    # jawata refactor tool, or be justified. Non-.java, brand-new files, and jawata-down pass.
     edit_path="$(printf '%s' "$flat" | sed -n 's/.*"file_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
     case "$edit_path" in
       *.java) ;;
       *) exit 0 ;;
     esac
     # Declared fallback → proceed + log (versioned).
-    if printf '%s' "$flat" | grep -qiE 'goja-fallback:'; then
-      er="$(printf '%s' "$input" | sed -n 's/.*goja-fallback:[[:space:]]*//p' | head -n1 | sed 's/\\.*//' | sed 's/".*//' | sed 's/[[:space:]]*$//' | head -c 200)"
-      goja_log_fallback "$er"
+    if printf '%s' "$flat" | grep -qiE 'jawata-fallback:'; then
+      er="$(printf '%s' "$input" | sed -n 's/.*jawata-fallback:[[:space:]]*//p' | head -n1 | sed 's/\\.*//' | sed 's/".*//' | sed 's/[[:space:]]*$//' | head -c 200)"
+      jawata_log_fallback "$er"
       exit 0
     fi
-    # v1.5.1: a fresh AUTHORING window (declared via a 'goja-author:' Bash command this
+    # v1.5.1: a fresh AUTHORING window (declared via a 'jawata-author:' Bash command this
     # session) covers structured .java edits — authoring new code is not a refactor. The
     # window is TTL-bounded (30 min); each covered edit is logged so the trail stays complete.
-    if [ -n "$goja_editgate" ] && [ -f "$goja_editgate" ]; then
-      pts="$(cut -f1 "$goja_editgate" 2>/dev/null)"; nows="$(date +%s 2>/dev/null)"
+    if [ -n "$jawata_editgate" ] && [ -f "$jawata_editgate" ]; then
+      pts="$(cut -f1 "$jawata_editgate" 2>/dev/null)"; nows="$(date +%s 2>/dev/null)"
       if [ -n "$pts" ] && [ -n "$nows" ] && [ "$((nows - pts))" -lt 1800 ]; then
-        goja_log_fallback "authored-edit ($edit_path)"
+        jawata_log_fallback "authored-edit ($edit_path)"
         exit 0
       fi
     fi
-    # GOJA down → its refactor tools are unreachable → allow the hand-edit.
-    goja_up=0
-    if command -v curl >/dev/null 2>&1; then curl -s -o /dev/null --max-time 1 "$HEALTH_URL" && goja_up=1
-    elif command -v wget >/dev/null 2>&1; then wget -q -O /dev/null --timeout=1 "$HEALTH_URL" && goja_up=1
-    else hp="$(printf '%s' "$HEALTH_URL" | sed -E 's#^https?://([^/]+).*#\1#')"; h="${{hp%%:*}}"; p="${{hp##*:}}"; [ "$p" = "$hp" ] && p=80; (exec 3<>"/dev/tcp/$h/$p") >/dev/null 2>&1 && goja_up=1; fi
-    [ "$goja_up" -eq 1 ] || exit 0
+    # JAWATA down → its refactor tools are unreachable → allow the hand-edit.
+    jawata_up=0
+    if command -v curl >/dev/null 2>&1; then curl -s -o /dev/null --max-time 1 "$HEALTH_URL" && jawata_up=1
+    elif command -v wget >/dev/null 2>&1; then wget -q -O /dev/null --timeout=1 "$HEALTH_URL" && jawata_up=1
+    else hp="$(printf '%s' "$HEALTH_URL" | sed -E 's#^https?://([^/]+).*#\1#')"; h="${{hp%%:*}}"; p="${{hp##*:}}"; [ "$p" = "$hp" ] && p=80; (exec 3<>"/dev/tcp/$h/$p") >/dev/null 2>&1 && jawata_up=1; fi
+    [ "$jawata_up" -eq 1 ] || exit 0
     # Brand-new file (Write to a non-existent path) → nothing to refactor → allow.
     if [ "$tool_name" = "Write" ] && [ ! -e "$edit_path" ]; then exit 0; fi
     {{
-      echo "USE A GOJA REFACTOR TOOL — hand-editing $edit_path (a .java file) is blocked."
+      echo "USE A JAWATA REFACTOR TOOL — hand-editing $edit_path (a .java file) is blocked."
       echo "Rename → rename_symbol (updates ALL references). Move → move / move_in_hierarchy."
       echo "Extract method/variable/constant/superclass → extract. Duplicate a class → generate(kind=copy_class)."
       echo "Any structural change → refactoring(action=plan) then apply_plan (parity-gated, reversible)."
-      echo "Authoring NEW code (not a refactor)? Declare a window: run a Bash command with 'goja-author: <reason>', then edit (session-scoped, logged)."
-      echo "If this is a genuinely non-structural edit GOJA cannot do, re-run with 'goja-fallback: <why>' (declared + logged)."
+      echo "Authoring NEW code (not a refactor)? Declare a window: run a Bash command with 'jawata-author: <reason>', then edit (session-scoped, logged)."
+      echo "If this is a genuinely non-structural edit JAWATA cannot do, re-run with 'jawata-fallback: <why>' (declared + logged)."
     }} 1>&2
     exit 2 ;;
   Bash|Grep) ;;
@@ -3811,60 +3888,60 @@ printf '%s' "$flat" | grep -qiE '([A-Za-z0-9_$]\.java|\*\.java)([^a-zA-Z]|$)' ||
 
 # (3) v1.3.0 escape valve: a DECLARED fallback proceeds — and is logged. This turns
 #     a silent, lazy skip into an explicit, auditable decision (the friction that
-#     defeats laziness). Works whether GOJA is up or down: the agent asserts goja
-#     cannot or need not answer THIS search. Grammar: put 'goja-fallback: <reason>'
+#     defeats laziness). Works whether JAWATA is up or down: the agent asserts jawata
+#     cannot or need not answer THIS search. Grammar: put 'jawata-fallback: <reason>'
 #     in the Bash command (e.g. a trailing comment). The Grep tool has no free field,
 #     so falling back means using Bash grep with the marker — deliberately.
-if printf '%s' "$flat" | grep -qiE 'goja-fallback:'; then
+if printf '%s' "$flat" | grep -qiE 'jawata-fallback:'; then
   # v1.3.1: capture ONLY the reason on the marker's own line. Read from the
   # UN-flattened input (so other lines of a multi-line command can't bleed in),
   # then trim at the first backslash (a JSON escape / \n) or double-quote (the JSON
   # string close), strip trailing space, and cap. fallback.log is the audit trail
   # (and training data for the intelligent-injector sprint), so keep it clean.
-  goja_reason="$(printf '%s' "$input" | sed -n 's/.*goja-fallback:[[:space:]]*//p' | head -n1 | sed 's/\\.*//' | sed 's/".*//' | sed 's/[[:space:]]*$//' | head -c 200)"
-  goja_log_fallback "$goja_reason"
+  jawata_reason="$(printf '%s' "$input" | sed -n 's/.*jawata-fallback:[[:space:]]*//p' | head -n1 | sed 's/\\.*//' | sed 's/".*//' | sed 's/[[:space:]]*$//' | head -c 200)"
+  jawata_log_fallback "$jawata_reason"
   exit 0
 fi
 
 # (4) v1.4.0 (Sprint 22) TRY-FIRST gate: if this search's target was already looked
-#     up via goja THIS session (its token is in the per-session state), the agent
-#     tried goja first → grep is a legitimate follow-up, allow it. Only an UN-tried
-#     java-symbol search reaches the block below. Conservative: match any goja-queried
+#     up via jawata THIS session (its token is in the per-session state), the agent
+#     tried jawata first → grep is a legitimate follow-up, allow it. Only an UN-tried
+#     java-symbol search reaches the block below. Conservative: match any jawata-queried
 #     token (>=3 chars) that appears in the command; when in doubt, allow.
-if [ -s "$goja_state_file" ] && printf '%s' "$flat" | grep -qiFf <(grep -E '^.{{3,}}$' "$goja_state_file") 2>/dev/null; then
+if [ -s "$jawata_state_file" ] && printf '%s' "$flat" | grep -qiFf <(grep -E '^.{{3,}}$' "$jawata_state_file") 2>/dev/null; then
   exit 0
 fi
 
-# GOJA liveness: any HTTP response on the gateway = up; connection refused = down.
-goja_up=0
+# JAWATA liveness: any HTTP response on the gateway = up; connection refused = down.
+jawata_up=0
 if command -v curl >/dev/null 2>&1; then
-  curl -s -o /dev/null --max-time 1 "$HEALTH_URL" && goja_up=1
+  curl -s -o /dev/null --max-time 1 "$HEALTH_URL" && jawata_up=1
 elif command -v wget >/dev/null 2>&1; then
-  wget -q -O /dev/null --timeout=1 "$HEALTH_URL" && goja_up=1
+  wget -q -O /dev/null --timeout=1 "$HEALTH_URL" && jawata_up=1
 else
   # No HTTP client: fall back to a raw TCP connect via bash /dev/tcp.
   hostport="$(printf '%s' "$HEALTH_URL" | sed -E 's#^https?://([^/]+).*#\1#')"
   host="${{hostport%%:*}}"; port="${{hostport##*:}}"
   [ "$port" = "$hostport" ] && port=80
-  (exec 3<>"/dev/tcp/$host/$port") >/dev/null 2>&1 && goja_up=1
+  (exec 3<>"/dev/tcp/$host/$port") >/dev/null 2>&1 && jawata_up=1
 fi
 
-if [ "$goja_up" -eq 1 ]; then
+if [ "$jawata_up" -eq 1 ]; then
   {{
-    echo "TRY GOJA FIRST — you have not looked this up via GOJA yet this session."
+    echo "TRY JAWATA FIRST — you have not looked this up via JAWATA yet this session."
     echo "For a symbol: search_symbols. Callers/usages: find_references."
     echo "Type shape/members/hierarchy: analyze / inspect. Jump: go_to_definition."
-    echo "Once you have queried it via GOJA, grep is a fine follow-up (this gate then passes)."
-    echo "(GOJA is compiler-accurate; grep over .java misses/overmatches symbols.)"
-    echo "If this genuinely is NOT a symbol search, re-run with 'goja-fallback: <reason>' to proceed (declared + logged)."
+    echo "Once you have queried it via JAWATA, grep is a fine follow-up (this gate then passes)."
+    echo "(JAWATA is compiler-accurate; grep over .java misses/overmatches symbols.)"
+    echo "If this genuinely is NOT a symbol search, re-run with 'jawata-fallback: <reason>' to proceed (declared + logged)."
   }} 1>&2
   exit 2
 else
   {{
-    echo "GOJA MCP appears to be DOWN (no response at $HEALTH_URL) and this is Java work."
+    echo "JAWATA MCP appears to be DOWN (no response at $HEALTH_URL) and this is Java work."
     echo "Per the collaboration rules, do not silently grep Java semantics — decide first:"
-    echo "  1) Start GOJA (open goja-studio and start the resident), then use search_symbols / find_references / analyze."
-    echo "  2) Or proceed deliberately: re-run with 'goja-fallback: <reason>' in the command (e.g. a trailing comment) — declared + logged, not a silent skip."
+    echo "  1) Start JAWATA (open jawata-studio and start the resident), then use search_symbols / find_references / analyze."
+    echo "  2) Or proceed deliberately: re-run with 'jawata-fallback: <reason>' in the command (e.g. a trailing comment) — declared + logged, not a silent skip."
     echo "Non-Java work is unaffected."
   }} 1>&2
   exit 2
@@ -3876,19 +3953,19 @@ fi
 
 /// The single `PreToolUse` matcher entry that invokes the guard. Matchers are
 /// unanchored regex: `Bash|Grep` (search gate), `Edit|Write|MultiEdit` (edit
-/// enforcement), and `mcp__goja.*` (goja-call logging for the try-first gate).
+/// enforcement), and `mcp__jawata.*` (jawata-call logging for the try-first gate).
 /// Kept deterministic so the settings.json write is idempotent.
 fn build_managed_hook_entry(guard_path: &Path) -> serde_json::Value {
     let command = display_path(guard_path);
     serde_json::json!({
-        "matcher": "Bash|Grep|Edit|Write|MultiEdit|mcp__goja.*",
+        "matcher": "Bash|Grep|Edit|Write|MultiEdit|mcp__jawata.*",
         "hooks": [
             { "type": "command", "command": command }
         ]
     })
 }
 
-/// True iff a `PreToolUse` entry is one goja-studio wrote (its command references
+/// True iff a `PreToolUse` entry is one jawata-studio wrote (its command references
 /// the managed guard script). Used to replace/remove our entries and leave the
 /// user's hooks alone.
 fn is_managed_hook_entry(entry: &serde_json::Value) -> bool {
@@ -3899,7 +3976,8 @@ fn is_managed_hook_entry(entry: &serde_json::Value) -> bool {
             hooks.iter().any(|hook| {
                 hook.get("command")
                     .and_then(|command| command.as_str())
-                    .map(|command| command.contains(GOJA_HOOK_SENTINEL))
+                    .map(|command| command.contains(JAWATA_HOOK_SENTINEL)
+                        || command.contains(&legacy_sentinel(JAWATA_HOOK_SENTINEL)))
                     .unwrap_or(false)
             })
         })
@@ -3917,7 +3995,7 @@ fn write_managed_hook(
     backup_before_write: bool,
     force_rewrite: bool,
 ) -> Result<bool, String> {
-    // 1. Write the guard script (goja-studio owns it outright).
+    // 1. Write the guard script (jawata-studio owns it outright).
     let script_parent = guard_path
         .parent()
         .ok_or_else(|| format!("guard path has no parent: {}", guard_path.display()))?;
@@ -4071,7 +4149,7 @@ fn remove_managed_hook(
 }
 
 /// Sprint 22 (POST layer): the PostToolUse observer. Reactive — PostToolUse cannot
-/// block — it appends three signals to `~/.claude/goja-studio/outcomes.log` (the
+/// block — it appends three signals to `~/.claude/jawata-studio/outcomes.log` (the
 /// scoring substrate) and steers after a declared-fallback slip. Deterministic so a
 /// re-deploy is a byte-stable no-op.
 fn build_observer_script(mcp_url: &str, token: &str) -> String {
@@ -4079,40 +4157,40 @@ fn build_observer_script(mcp_url: &str, token: &str) -> String {
 }
 
 const OBSERVER_TEMPLATE: &str = r#"#!/usr/bin/env bash
-# <goja-studio managed PostToolUse observer — do not edit; overwritten on deploy>
+# <jawata-studio managed PostToolUse observer — do not edit; overwritten on deploy>
 # Reactive, never blocks. Appends three POST signals to a versioned outcomes log:
-#   slip            a declared goja-fallback the PRE guard allowed (+ a steering note)
-#   read-ungrounded a Read of a .java file not preceded by a GOJA lookup this session
+#   slip            a declared jawata-fallback the PRE guard allowed (+ a steering note)
+#   read-ungrounded a Read of a .java file not preceded by a JAWATA lookup this session
 #   verify          a compile/diagnostics/test event (correlates a preceding change)
 # Sprint 21a (item J): slips are also BRIDGED into the experience store as candidates.
-dir="$HOME/.claude/goja-studio"; mkdir -p "$dir" 2>/dev/null
+dir="$HOME/.claude/jawata-studio"; mkdir -p "$dir" 2>/dev/null
 log="$dir/outcomes.log"
 MCP_URL="__MCP_URL__"
 TOKEN="__TOKEN__"
 
 # The one steering payload — selftest and the real slip path share these bytes.
-slip_ctx='{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"goja-fallback recorded. Next: verify with compile_workspace + get_diagnostics. A declared fallback is a GOJA feature request — if a newer GOJA version can do it, prefer GOJA next time."}}'
-if [ "${GOJA_HOOK_SELFTEST:-}" = "1" ]; then printf '%s' "$slip_ctx"; exit 0; fi
+slip_ctx='{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"jawata-fallback recorded. Next: verify with compile_workspace + get_diagnostics. A declared fallback is a JAWATA feature request — if a newer JAWATA version can do it, prefer JAWATA next time."}}'
+if [ "${JAWATA_HOOK_SELFTEST:-}" = "1" ]; then printf '%s' "$slip_ctx"; exit 0; fi
 
-goja_ver() {
-  ls -1d "${XDG_CACHE_HOME:-$HOME/.cache}/goja-studio/tools/goja/current"/goja-* 2>/dev/null \
-    | head -n1 | sed 's#.*/goja-##'
+jawata_ver() {
+  ls -1d "${XDG_CACHE_HOME:-$HOME/.cache}/jawata-studio/tools/jawata/current"/jawata-* 2>/dev/null \
+    | head -n1 | sed 's#.*/jawata-##'
 }
 emit() {
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
-  printf '%s\t%s\t%s\t%s\n' "$ts" "$(goja_ver)" "$1" "$2" >> "$log" 2>/dev/null
+  printf '%s\t%s\t%s\t%s\n' "$ts" "$(jawata_ver)" "$1" "$2" >> "$log" 2>/dev/null
 }
 # v1.5.1: log a declared-fallback slip + steer. Callers gate this to a REAL .java-targeted
 # op, so a non-.java edit whose content merely contains the marker is not counted.
 # Sprint 21a (item J): the slip is also recorded into the experience store (candidate) —
-# the first conversation-level auto-learn path. Fail-safe: goja down -> log-only.
+# the first conversation-level auto-learn path. Fail-safe: jawata down -> log-only.
 emit_slip() {
   reason="$(printf '%s' "$flat" | sed -nE 's/.*[Gg][Oo][Jj][Aa]-[Ff][Aa][Ll][Ll][Bb][Aa][Cc][Kk]:[[:space:]]*([^"\\]*).*/\1/p' | head -n1 | sed -E 's/[[:space:]]*$//')"
   emit "slip" "$tool_name	$reason"
   if command -v curl >/dev/null 2>&1 && [ -n "$MCP_URL" ]; then
     sr="$(printf '%s: %s' "$tool_name" "$reason" | sed 's/["\\]/ /g' | tr -d '[:cntrl:]' | cut -c1-200)"
     curl -s --max-time 3 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-      -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"record","type":"failure_mode","operation":"goja-fallback-slip","summary":"goja-fallback slip: '"$sr"'","symptoms":["goja fallback slip"]}}}' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"record","type":"failure_mode","operation":"jawata-fallback-slip","summary":"jawata-fallback slip: '"$sr"'","symptoms":["jawata fallback slip"]}}}' \
       "$MCP_URL" >/dev/null 2>&1 || true
   fi
   printf '%s' "$slip_ctx"
@@ -4121,7 +4199,7 @@ emit_slip() {
 input="$(cat)"
 flat="$(printf '%s' "$input" | tr '\n' ' ')"
 # Sprint 21a (item J): judge the REQUEST only. tool_response may echo file contents that
-# merely mention '.java' or 'goja-fallback:' (a cat of a hook script logged a false slip).
+# merely mention '.java' or 'jawata-fallback:' (a cat of a hook script logged a false slip).
 flat="$(printf '%s' "$flat" | sed 's/"tool_response".*$//')"
 tool_name="$(printf '%s' "$flat" | grep -oE '"tool_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed -E 's/.*"([^"]*)"$/\1/')"
 session_id="$(printf '%s' "$flat" | grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed -E 's/.*"([^"]*)"$/\1/')"
@@ -4147,10 +4225,10 @@ case "$tool_name" in
     ;;
   Edit|Write|MultiEdit)
     # v1.5.1: a slip counts only for a .java edit the PRE edit-gate allowed via the marker —
-    # a non-.java edit whose CONTENT merely contains 'goja-fallback:' is not a gated op.
+    # a non-.java edit whose CONTENT merely contains 'jawata-fallback:' is not a gated op.
     ef="$(printf '%s' "$flat" | grep -oE '"file_path"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed -E 's/.*"([^"]*)"$/\1/')"
     case "$ef" in
-      *.java) printf '%s' "$flat" | grep -qiE 'goja-fallback:' && emit_slip ;;
+      *.java) printf '%s' "$flat" | grep -qiE 'jawata-fallback:' && emit_slip ;;
     esac
     ;;
   Bash|Grep)
@@ -4161,7 +4239,7 @@ case "$tool_name" in
     elif printf '%s' "$flat" | grep -qiE '(^|[^a-zA-Z])(grep|egrep|fgrep|rg|ripgrep|ag|ack)([^a-zA-Z]|$)'; then st=1; fi
     if [ "$st" = "1" ] \
        && printf '%s' "$flat" | grep -qiE '([A-Za-z0-9_$]\.java|\*\.java)' \
-       && printf '%s' "$flat" | grep -qiE 'goja-fallback:'; then emit_slip; fi
+       && printf '%s' "$flat" | grep -qiE 'jawata-fallback:'; then emit_slip; fi
     ;;
 esac
 exit 0
@@ -4171,22 +4249,22 @@ exit 0
 /// resident JVM as `-D` system properties (they MUST precede `-jar`).
 fn knowledge_jvm_properties(settings: &ManagerSettings) -> Vec<String> {
     let mut props = vec![format!(
-        "-Dgoja.experience.store={}",
+        "-Djawata.experience.store={}",
         settings.experience_store_mode
     )];
     if !settings.memory_roots.is_empty() {
         let separator = if cfg!(windows) { ";" } else { ":" };
         props.push(format!(
-            "-Dgoja.memory.roots={}",
+            "-Djawata.memory.roots={}",
             settings.memory_roots.join(separator)
         ));
     }
-    // Sprint 21b: no -Dgoja.memory.max* — the resident's defaults are runaway backstops
+    // Sprint 21b: no -Djawata.memory.max* — the resident's defaults are runaway backstops
     // ("the crawl finds everything"); the properties remain honored for manual launches.
     props
 }
 
-/// Sprint 21a (item F): call `experience(...)` on a resident and peel goja's fixed MCP
+/// Sprint 21a (item F): call `experience(...)` on a resident and peel jawata's fixed MCP
 /// envelope — the body carries the JSON-RPC result whose `content[0].text` is the
 /// DOUBLE-ENCODED ToolResponse (`{success, data, ...}`), returned decoded.
 fn call_experience(
@@ -4278,7 +4356,7 @@ fn call_resident_tool(
 /// Sprint 21a (item J): the post-deploy hook self-check — the v2.0.x dogfood lesson
 /// institutionalized. Unit tests on the TEMPLATE were green while the EMITTED bytes were
 /// broken (greedy peel, printf `\n`); so after writing a hook, drive its
-/// `GOJA_HOOK_SELFTEST=1` path (which shares the live emit format) and validate the bytes
+/// `JAWATA_HOOK_SELFTEST=1` path (which shares the live emit format) and validate the bytes
 /// it prints parse as the hook JSON contract. Fail-OPEN when bash is unavailable (the
 /// check cannot judge), fail-CLOSED on empty/invalid output (the deploy reports it).
 fn selftest_hook_script(script: &Path) -> Result<(), String> {
@@ -4288,7 +4366,7 @@ fn selftest_hook_script(script: &Path) -> Result<(), String> {
     }
     let output = match Command::new("bash")
         .arg(script)
-        .env("GOJA_HOOK_SELFTEST", "1")
+        .env("JAWATA_HOOK_SELFTEST", "1")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -4330,14 +4408,14 @@ fn selftest_hook_script(script: &Path) -> Result<(), String> {
 fn build_managed_posthook_entry(observer_path: &Path) -> serde_json::Value {
     let command = display_path(observer_path);
     serde_json::json!({
-        "matcher": "Bash|Grep|Edit|Write|MultiEdit|Read|mcp__goja.*",
+        "matcher": "Bash|Grep|Edit|Write|MultiEdit|Read|mcp__jawata.*",
         "hooks": [
             { "type": "command", "command": command }
         ]
     })
 }
 
-/// True iff a `PostToolUse` entry is one goja-studio wrote (its command references the
+/// True iff a `PostToolUse` entry is one jawata-studio wrote (its command references the
 /// managed observer script).
 fn is_managed_posthook_entry(entry: &serde_json::Value) -> bool {
     entry
@@ -4347,7 +4425,8 @@ fn is_managed_posthook_entry(entry: &serde_json::Value) -> bool {
             hooks.iter().any(|hook| {
                 hook.get("command")
                     .and_then(|command| command.as_str())
-                    .map(|command| command.contains(GOJA_POSTHOOK_SENTINEL))
+                    .map(|command| command.contains(JAWATA_POSTHOOK_SENTINEL)
+                        || command.contains(&legacy_sentinel(JAWATA_POSTHOOK_SENTINEL)))
                     .unwrap_or(false)
             })
         })
@@ -4497,53 +4576,41 @@ fn remove_managed_posthook(
 }
 
 // ===== Sprint 21 (v2.0): the knowledge PUSH hooks — SessionStart domain primer +
-// PreToolUse cue-gated recall. Both live-call experience(...) on the deployed GOJA
-// resident (Bearer token baked in like health_url), peel goja's FIXED MCP envelope
+// PreToolUse cue-gated recall. Both live-call experience(...) on the deployed JAWATA
+// resident (Bearer token baked in like health_url), peel jawata's FIXED MCP envelope
 // (POST /mcp returns the JSON-RPC result in the body — no handshake), and inject via
-// `additionalContext`. FAIL-SAFE by construction: goja down / empty / absence / any
+// `additionalContext`. FAIL-SAFE by construction: jawata down / empty / absence / any
 // parse miss → emit nothing, so the session/tool call proceeds unchanged. Rendering
 // lives in the mcp (`experience(..., format=text)`, reactor-tested + sanitized), so
 // these scripts only peel the fixed envelope and never parse variable tool structure. =====
 
 /// Sentinel for the managed SessionStart primer entry.
-const GOJA_PRIMER_SENTINEL: &str = "goja-studio/sessionstart-primer.sh";
+const JAWATA_PRIMER_SENTINEL: &str = "jawata-studio/sessionstart-primer.sh";
 /// Sentinel for the managed PreToolUse recall entry (distinct from the guard's entry).
-const GOJA_RECALL_SENTINEL: &str = "goja-studio/pretooluse-recall.sh";
+const JAWATA_RECALL_SENTINEL: &str = "jawata-studio/pretooluse-recall.sh";
 /// Sentinel for the managed UserPromptSubmit recall entry (Sprint 21c item D).
-const GOJA_USERPROMPT_SENTINEL: &str = "goja-studio/userpromptsubmit-recall.sh";
+const JAWATA_USERPROMPT_SENTINEL: &str = "jawata-studio/userpromptsubmit-recall.sh";
 
 /// Absolute path of the managed SessionStart primer script (sibling of the guard).
 fn managed_primer_script_path() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    Some(
-        home.join(".claude")
-            .join("goja-studio")
-            .join("sessionstart-primer.sh"),
-    )
+    Some(claude_scripts_dir()?.join("sessionstart-primer.sh"))
 }
 
 /// Absolute path of the managed PreToolUse recall script (sibling of the guard).
 fn managed_recall_script_path() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    Some(
-        home.join(".claude")
-            .join("goja-studio")
-            .join("pretooluse-recall.sh"),
-    )
+    Some(claude_scripts_dir()?.join("pretooluse-recall.sh"))
 }
 
 /// Absolute path of the managed UserPromptSubmit recall script (Sprint 21c item D).
 fn managed_userprompt_script_path() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    Some(
-        home.join(".claude")
-            .join("goja-studio")
-            .join("userpromptsubmit-recall.sh"),
-    )
+    Some(claude_scripts_dir()?.join("userpromptsubmit-recall.sh"))
 }
 
 /// True iff a hook entry's command references the given managed sentinel.
 fn entry_command_contains(entry: &serde_json::Value, needle: &str) -> bool {
+    // Sprint 22b: a redeploy must also match entries written by goja-studio
+    // (the pre-rebrand sentinels) so they are replaced, not duplicated.
+    let legacy = legacy_sentinel(needle);
     entry
         .get("hooks")
         .and_then(|hooks| hooks.as_array())
@@ -4551,7 +4618,7 @@ fn entry_command_contains(entry: &serde_json::Value, needle: &str) -> bool {
             hooks.iter().any(|hook| {
                 hook.get("command")
                     .and_then(|command| command.as_str())
-                    .map(|command| command.contains(needle))
+                    .map(|command| command.contains(needle) || command.contains(&legacy))
                     .unwrap_or(false)
             })
         })
@@ -4559,10 +4626,10 @@ fn entry_command_contains(entry: &serde_json::Value, needle: &str) -> bool {
 }
 
 fn is_managed_primer_entry(entry: &serde_json::Value) -> bool {
-    entry_command_contains(entry, GOJA_PRIMER_SENTINEL)
+    entry_command_contains(entry, JAWATA_PRIMER_SENTINEL)
 }
 fn is_managed_recall_entry(entry: &serde_json::Value) -> bool {
-    entry_command_contains(entry, GOJA_RECALL_SENTINEL)
+    entry_command_contains(entry, JAWATA_RECALL_SENTINEL)
 }
 
 /// SessionStart entry: no matcher (fires on every session start).
@@ -4571,15 +4638,15 @@ fn build_managed_primer_entry(primer_path: &Path) -> serde_json::Value {
         "hooks": [ { "type": "command", "command": display_path(primer_path) } ]
     })
 }
-/// PreToolUse entry for recall: fires on goja tool calls (the script gates to refactor verbs).
+/// PreToolUse entry for recall: fires on jawata tool calls (the script gates to refactor verbs).
 fn build_managed_recall_entry(recall_path: &Path) -> serde_json::Value {
     serde_json::json!({
-        "matcher": "mcp__goja.*",
+        "matcher": "mcp__jawata.*",
         "hooks": [ { "type": "command", "command": display_path(recall_path) } ]
     })
 }
 fn is_managed_userprompt_entry(entry: &serde_json::Value) -> bool {
-    entry_command_contains(entry, GOJA_USERPROMPT_SENTINEL)
+    entry_command_contains(entry, JAWATA_USERPROMPT_SENTINEL)
 }
 /// UserPromptSubmit entry: no matcher (fires on every user prompt; the script gates itself).
 fn build_managed_userprompt_entry(script_path: &Path) -> serde_json::Value {
@@ -4797,7 +4864,7 @@ fn build_primer_script(mcp_url: &str, token: &str) -> String {
     PRIMER_TEMPLATE.replace("__MCP_URL__", mcp_url).replace("__TOKEN__", token)
 }
 /// The PreToolUse recall script (URL + Bearer token baked in). Same peel; gated to
-/// refactor-ish goja verbs with a symbol cue.
+/// refactor-ish jawata verbs with a symbol cue.
 fn build_recall_script(mcp_url: &str, token: &str) -> String {
     RECALL_TEMPLATE.replace("__MCP_URL__", mcp_url).replace("__TOKEN__", token)
 }
@@ -4808,7 +4875,7 @@ fn build_userprompt_script(mcp_url: &str, token: &str) -> String {
 }
 
 const USERPROMPT_TEMPLATE: &str = r#"#!/usr/bin/env bash
-# <goja-studio managed UserPromptSubmit recall — do not edit; overwritten on deploy>
+# <jawata-studio managed UserPromptSubmit recall — do not edit; overwritten on deploy>
 # Sprint 21c (item D): prompt -> keywords -> recall -> injected FACT. Extracts content-
 # bearing cues from the user's prompt (longest n-grams first, rarity-marked tokens
 # preferred within a tier, >=2 content tokens), asks the store terminally, and injects
@@ -4818,9 +4885,9 @@ MCP_URL="__MCP_URL__"
 TOKEN="__TOKEN__"
 # THE emit path — selftest and the live path share this one printf format (Sprint 21a item J).
 emit_ctx() {
-  printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"GOJA recalled a prior fact for this topic:\\n%s"}}' "$1"
+  printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"JAWATA recalled a prior fact for this topic:\\n%s"}}' "$1"
 }
-if [ "${GOJA_HOOK_SELFTEST:-}" = "1" ]; then emit_ctx '[lesson] selftest canned line (accepted)'; exit 0; fi
+if [ "${JAWATA_HOOK_SELFTEST:-}" = "1" ]; then emit_ctx '[lesson] selftest canned line (accepted)'; exit 0; fi
 command -v curl >/dev/null 2>&1 || exit 0
 # THE recall attempt (Sprint 22a dual-cue): $1 = arg key (symbol|symptom), $2 = cue.
 # On a single fitting fact it injects and exits 0; otherwise returns so the next-
@@ -4901,10 +4968,10 @@ exit 0
 "#;
 
 const PRIMER_TEMPLATE: &str = r#"#!/usr/bin/env bash
-# <goja-studio managed SessionStart primer — do not edit; overwritten on deploy>
+# <jawata-studio managed SessionStart primer — do not edit; overwritten on deploy>
 # Injects the DOMAIN-layer knowledge primer at session start (the always-on half of the
-# knowledge push channel). Live-calls experience(kind=primer, format=text), peels goja's
-# fixed MCP envelope, emits the lines as SessionStart context. FAIL-SAFE: goja down /
+# knowledge push channel). Live-calls experience(kind=primer, format=text), peels jawata's
+# fixed MCP envelope, emits the lines as SessionStart context. FAIL-SAFE: jawata down /
 # empty / absence / any parse miss -> emit nothing; the session proceeds unchanged.
 set -u
 MCP_URL="__MCP_URL__"
@@ -4912,9 +4979,9 @@ TOKEN="__TOKEN__"
 # THE emit path — selftest and the live path share this one printf format, so the deploy
 # self-check validates the exact bytes the real injection will produce (Sprint 21a item J).
 emit_ctx() {
-  printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"GOJA domain primer (what this codebase is about):\\n%s"}}' "$1"
+  printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"JAWATA domain primer (what this codebase is about):\\n%s"}}' "$1"
 }
-if [ "${GOJA_HOOK_SELFTEST:-}" = "1" ]; then emit_ctx '[domain_fact] selftest canned line (accepted)'; exit 0; fi
+if [ "${JAWATA_HOOK_SELFTEST:-}" = "1" ]; then emit_ctx '[domain_fact] selftest canned line (accepted)'; exit 0; fi
 command -v curl >/dev/null 2>&1 || exit 0
 req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"primer","format":"text","limit":12}}}'
 resp="$(curl -s --max-time 3 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$req" "$MCP_URL" 2>/dev/null)"
@@ -4935,18 +5002,18 @@ exit 0
 "#;
 
 const RECALL_TEMPLATE: &str = r#"#!/usr/bin/env bash
-# <goja-studio managed PreToolUse recall — do not edit; overwritten on deploy>
-# Before a GOJA refactor, injects the terminal recall for the target symbol (prior
+# <jawata-studio managed PreToolUse recall — do not edit; overwritten on deploy>
+# Before a JAWATA refactor, injects the terminal recall for the target symbol (prior
 # hazards / lessons / failure modes), or stays silent on absence. Never blocks (exit 0).
-# FAIL-SAFE: goja down / no cue / absence / any parse miss -> emit nothing.
+# FAIL-SAFE: jawata down / no cue / absence / any parse miss -> emit nothing.
 set -u
 MCP_URL="__MCP_URL__"
 TOKEN="__TOKEN__"
 # THE emit path — selftest and the live path share this one printf format (Sprint 21a item J).
 emit_ctx() {
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"GOJA recalled prior knowledge for %s:\\n%s"}}' "$1" "$2"
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"JAWATA recalled prior knowledge for %s:\\n%s"}}' "$1" "$2"
 }
-if [ "${GOJA_HOOK_SELFTEST:-}" = "1" ]; then emit_ctx 'com.example.SelfTest' '[lesson] selftest canned line (accepted)'; exit 0; fi
+if [ "${JAWATA_HOOK_SELFTEST:-}" = "1" ]; then emit_ctx 'com.example.SelfTest' '[lesson] selftest canned line (accepted)'; exit 0; fi
 command -v curl >/dev/null 2>&1 || exit 0
 input="$(cat)"
 flatin="$(printf '%s' "$input" | tr '\n\r' '  ')"
@@ -4990,7 +5057,7 @@ exit 0
 
 // ===================== Sprint 22a P1-b: Cursor hooks (client parity) =====================
 // Cursor's beforeSubmitPrompt CANNOT inject context (only continue/user_message), so the
-// recalled fact reaches the model via the goja-studio rule block + sessionStart primer +
+// recalled fact reaches the model via the jawata-studio rule block + sessionStart primer +
 // MCP meta.steering — NOT a 1:1 UserPromptSubmit port (cursor.com/docs/hooks, verified
 // 2026-07-08). These scripts follow Cursor's contract: one JSON object on stdin; a
 // {continue, permission, additional_context} object on stdout. Guard + primer are full
@@ -5000,11 +5067,11 @@ fn build_cursor_primer_script(mcp_url: &str, token: &str) -> String {
     CURSOR_PRIMER_TEMPLATE.replace("__MCP_URL__", mcp_url).replace("__TOKEN__", token)
 }
 const CURSOR_PRIMER_TEMPLATE: &str = r#"#!/usr/bin/env bash
-# <goja-studio managed Cursor sessionStart primer — do not edit; overwritten on deploy>
+# <jawata-studio managed Cursor sessionStart primer — do not edit; overwritten on deploy>
 set -u
 MCP_URL="__MCP_URL__"
 TOKEN="__TOKEN__"
-if [ "${GOJA_HOOK_SELFTEST:-}" = "1" ]; then printf '%s\n' '{"additional_context":"[domain_fact] selftest (accepted)"}'; exit 0; fi
+if [ "${JAWATA_HOOK_SELFTEST:-}" = "1" ]; then printf '%s\n' '{"additional_context":"[domain_fact] selftest (accepted)"}'; exit 0; fi
 cat > /dev/null
 command -v curl >/dev/null 2>&1 || { printf '%s\n' '{}'; exit 0; }
 req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"primer","format":"text","limit":12}}}'
@@ -5016,22 +5083,22 @@ printf '%s' "$inner" | grep -q '"success"[[:space:]]*:[[:space:]]*true' || { pri
 data="$(printf '%s' "$inner" | sed -n 's/.*"data"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
 [ -n "$data" ] || { printf '%s\n' '{}'; exit 0; }
 case "$data" in No\ domain*) printf '%s\n' '{}'; exit 0 ;; esac
-printf '{"additional_context":"GOJA domain primer:\\n%s"}\n' "$data"
+printf '{"additional_context":"JAWATA domain primer:\\n%s"}\n' "$data"
 "#;
 
 fn build_cursor_guard_script() -> String {
     CURSOR_GUARD_TEMPLATE.to_string()
 }
 const CURSOR_GUARD_TEMPLATE: &str = r#"#!/usr/bin/env bash
-# <goja-studio managed Cursor beforeShellExecution guard — do not edit; overwritten on deploy>
+# <jawata-studio managed Cursor beforeShellExecution guard — do not edit; overwritten on deploy>
 set -u
 input="$(cat)"
 cmd="$(printf '%s' "$input" | tr '\n\r' '  ')"
-# Deny Java-semantic shell text search/edit; steer to GOJA MCP. failClosed in hooks.json
+# Deny Java-semantic shell text search/edit; steer to JAWATA MCP. failClosed in hooks.json
 # means a crash/timeout also blocks. Everything else is allowed.
 case "$cmd" in
   *grep*.java*|*\ rg\ *.java*|*sed*.java*|*awk*.java*)
-    printf '%s\n' '{"continue":true,"permission":"deny","user_message":"Blocked: use GOJA MCP for Java semantic search.","agent_message":"Shell text search on .java is blocked — call search_symbols / find_references via GOJA MCP (or declare a goja-fallback)."}'
+    printf '%s\n' '{"continue":true,"permission":"deny","user_message":"Blocked: use JAWATA MCP for Java semantic search.","agent_message":"Shell text search on .java is blocked — call search_symbols / find_references via JAWATA MCP (or declare a jawata-fallback)."}'
     exit 0 ;;
 esac
 printf '%s\n' '{"continue":true,"permission":"allow"}'
@@ -5041,13 +5108,13 @@ fn build_cursor_recall_script(mcp_url: &str, token: &str) -> String {
     CURSOR_RECALL_TEMPLATE.replace("__MCP_URL__", mcp_url).replace("__TOKEN__", token)
 }
 const CURSOR_RECALL_TEMPLATE: &str = r#"#!/usr/bin/env bash
-# <goja-studio managed Cursor beforeSubmitPrompt recall (SIDE-EFFECT only — Cursor cannot
-# inject context on this event; the recalled fact reaches the model via the goja-studio rule
+# <jawata-studio managed Cursor beforeSubmitPrompt recall (SIDE-EFFECT only — Cursor cannot
+# inject context on this event; the recalled fact reaches the model via the jawata-studio rule
 # block + sessionStart primer + MCP meta.steering) — do not edit; overwritten on deploy>
 set -u
 MCP_URL="__MCP_URL__"
 TOKEN="__TOKEN__"
-if [ "${GOJA_HOOK_SELFTEST:-}" = "1" ]; then printf '%s\n' '{"continue":true}'; exit 0; fi
+if [ "${JAWATA_HOOK_SELFTEST:-}" = "1" ]; then printf '%s\n' '{"continue":true}'; exit 0; fi
 input="$(cat)"
 if command -v curl >/dev/null 2>&1; then
   flatin="$(printf '%s' "$input" | tr '\n\r' '  ')"
@@ -5065,7 +5132,7 @@ fn build_cursor_observer_script() -> String {
     CURSOR_OBSERVER_TEMPLATE.to_string()
 }
 const CURSOR_OBSERVER_TEMPLATE: &str = r#"#!/usr/bin/env bash
-# <goja-studio managed Cursor afterMCPExecution observer (fire-and-forget side-effect) — do not edit; overwritten on deploy>
+# <jawata-studio managed Cursor afterMCPExecution observer (fire-and-forget side-effect) — do not edit; overwritten on deploy>
 set -u
 cat > /dev/null
 # afterMCPExecution responses are not enforced; reserved for slip->store / fallback.log
@@ -5073,19 +5140,19 @@ cat > /dev/null
 printf '%s\n' '{}'
 "#;
 
-/// The managed sentinel: our Cursor hook scripts all live at `./hooks/goja-*.sh`, so a
-/// command containing this substring is one goja-studio owns — used to replace/remove our
+/// The managed sentinel: our Cursor hook scripts all live at `./hooks/jawata-*.sh`, so a
+/// command containing this substring is one jawata-studio owns — used to replace/remove our
 /// entries while leaving the user's hooks untouched.
-const CURSOR_HOOK_SENTINEL: &str = "hooks/goja-";
+const CURSOR_HOOK_SENTINEL: &str = "hooks/jawata-";
 
 /// The four managed (event, entry) pairs — the SINGLE source for both the standalone
 /// `build_cursor_hooks_json` and the merge-into-the-user's-file path, so they never drift.
 fn managed_cursor_hook_entries() -> Vec<(&'static str, serde_json::Value)> {
     vec![
-        ("sessionStart", serde_json::json!({ "command": "./hooks/goja-session-primer.sh", "timeout": 15 })),
-        ("beforeShellExecution", serde_json::json!({ "command": "./hooks/goja-guard.sh", "timeout": 5, "failClosed": true, "matcher": "grep |rg |sed |awk " })),
-        ("beforeSubmitPrompt", serde_json::json!({ "command": "./hooks/goja-recall.sh", "timeout": 5 })),
-        ("afterMCPExecution", serde_json::json!({ "command": "./hooks/goja-observer.sh", "timeout": 5 })),
+        ("sessionStart", serde_json::json!({ "command": "./hooks/jawata-session-primer.sh", "timeout": 15 })),
+        ("beforeShellExecution", serde_json::json!({ "command": "./hooks/jawata-guard.sh", "timeout": 5, "failClosed": true, "matcher": "grep |rg |sed |awk " })),
+        ("beforeSubmitPrompt", serde_json::json!({ "command": "./hooks/jawata-recall.sh", "timeout": 5 })),
+        ("afterMCPExecution", serde_json::json!({ "command": "./hooks/jawata-observer.sh", "timeout": 5 })),
     ]
 }
 
@@ -5100,13 +5167,14 @@ fn build_cursor_hooks_json() -> String {
     serde_json::json!({ "version": 1, "hooks": hooks }).to_string()
 }
 
-/// True iff a Cursor hook entry is one goja-studio wrote (its `command` references a
-/// managed `./hooks/goja-*.sh` script).
+/// True iff a Cursor hook entry is one jawata-studio wrote (its `command` references a
+/// managed `./hooks/jawata-*.sh` script).
 fn cursor_entry_is_managed(entry: &serde_json::Value) -> bool {
     entry
         .get("command")
         .and_then(|c| c.as_str())
-        .map(|c| c.contains(CURSOR_HOOK_SENTINEL))
+        .map(|c| c.contains(CURSOR_HOOK_SENTINEL)
+            || c.contains(&legacy_sentinel(CURSOR_HOOK_SENTINEL)))
         .unwrap_or(false)
 }
 
@@ -5138,7 +5206,7 @@ fn derive_cursor_hooks_path(client: &str) -> Option<String> {
 }
 
 /// The dir the managed Cursor scripts live in — `~/.cursor/hooks/`, matching the
-/// `./hooks/goja-*.sh` command paths in `hooks.json` (relative to `~/.cursor/`).
+/// `./hooks/jawata-*.sh` command paths in `hooks.json` (relative to `~/.cursor/`).
 fn managed_cursor_hooks_dir() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     Some(home.join(".cursor").join("hooks"))
@@ -5146,7 +5214,7 @@ fn managed_cursor_hooks_dir() -> Option<PathBuf> {
 
 /// Sprint 22a P1-b — deploy the managed Cursor hooks: write the four scripts under
 /// `hooks_dir` and MERGE our four event entries into `hooks.json`, preserving any user
-/// hooks (ours are identified by the `hooks/goja-` command path). Returns Ok(true) when
+/// hooks (ours are identified by the `hooks/jawata-` command path). Returns Ok(true) when
 /// anything changed. Idempotent: an unchanged re-deploy is a byte-stable no-op.
 fn write_managed_cursor_hooks(
     hooks_json_path: &str,
@@ -5156,14 +5224,14 @@ fn write_managed_cursor_hooks(
     backup_before_write: bool,
     force_rewrite: bool,
 ) -> Result<bool, String> {
-    // 1. Write the four managed scripts (goja-studio owns them outright).
+    // 1. Write the four managed scripts (jawata-studio owns them outright).
     fs::create_dir_all(hooks_dir)
         .map_err(|e| format!("failed to create cursor hooks dir {}: {e}", hooks_dir.display()))?;
     let scripts: [(&str, String); 4] = [
-        ("goja-session-primer.sh", build_cursor_primer_script(mcp_url, token)),
-        ("goja-guard.sh", build_cursor_guard_script()),
-        ("goja-recall.sh", build_cursor_recall_script(mcp_url, token)),
-        ("goja-observer.sh", build_cursor_observer_script()),
+        ("jawata-session-primer.sh", build_cursor_primer_script(mcp_url, token)),
+        ("jawata-guard.sh", build_cursor_guard_script()),
+        ("jawata-recall.sh", build_cursor_recall_script(mcp_url, token)),
+        ("jawata-observer.sh", build_cursor_observer_script()),
     ];
     let mut script_changed = false;
     for (name, body) in &scripts {
@@ -5178,6 +5246,15 @@ fn write_managed_cursor_hooks(
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = fs::set_permissions(&p, fs::Permissions::from_mode(0o755));
+        }
+        // Sprint 22b: drop the pre-rebrand twin (goja-*.sh) so only one generation
+        // of managed scripts remains; hooks.json entries pointing at it are replaced
+        // by the merge (legacy-aware cursor_entry_is_managed).
+        let legacy = hooks_dir.join(legacy_sentinel(name));
+        if legacy.exists() {
+            fs::remove_file(&legacy)
+                .map_err(|e| format!("failed removing legacy cursor hook {}: {e}", legacy.display()))?;
+            script_changed = true;
         }
     }
 
@@ -5286,15 +5363,18 @@ fn remove_managed_cursor_hooks(
     }
 
     for name in [
-        "goja-session-primer.sh",
-        "goja-guard.sh",
-        "goja-recall.sh",
-        "goja-observer.sh",
+        "jawata-session-primer.sh",
+        "jawata-guard.sh",
+        "jawata-recall.sh",
+        "jawata-observer.sh",
     ] {
-        let p = hooks_dir.join(name);
-        if p.exists() {
-            let _ = fs::remove_file(&p);
-            changed = true;
+        // Remove both generations — the managed script and its pre-rebrand
+        // (goja-*) twin, if a pre-22b deploy left one behind.
+        for p in [hooks_dir.join(name), hooks_dir.join(legacy_sentinel(name))] {
+            if p.exists() {
+                let _ = fs::remove_file(&p);
+                changed = true;
+            }
         }
     }
     Ok(changed)
@@ -5308,7 +5388,7 @@ fn remove_managed_cursor_hooks(
 /// - `paths.is_empty()` → the file is removed if present (no member =
 ///   no workspace.json on disk).
 /// - Otherwise: writes to a `.tmp` sibling and renames atomically so the
-///   `WorkspaceFileWatcher` in goja never observes a half-written
+///   `WorkspaceFileWatcher` in jawata never observes a half-written
 ///   file. Creates the workspace dir if missing.
 pub(crate) fn write_workspace_json_to_dir(
     workspace_dir: &Path,
@@ -5458,7 +5538,7 @@ mod tests {
     #[test]
     fn mcp_server_id_for_workspace_simple_name() {
         let id = mcp_server_id_for_workspace("alpha");
-        assert_eq!(id, "goja-alpha");
+        assert_eq!(id, "jawata-alpha");
     }
 
     #[test]
@@ -5467,7 +5547,7 @@ mod tests {
         // (collapsing consecutive). The exact slug shape is internal but
         // the result must be a valid Cursor server id (only [a-z0-9-_]).
         let id = mcp_server_id_for_workspace("My Workspace!");
-        assert!(id.starts_with("goja-"));
+        assert!(id.starts_with("jawata-"));
         assert!(id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
     }
 
@@ -5478,7 +5558,7 @@ mod tests {
         // cap so the longest tool name still passes.
         let long = "a".repeat(200);
         let id = mcp_server_id_for_workspace(&long);
-        assert!(id.starts_with("goja-"));
+        assert!(id.starts_with("jawata-"));
         assert!(id.len() <= max_mcp_server_id_len_for_cursor());
     }
 
@@ -5488,8 +5568,8 @@ mod tests {
         // mcp_server_id_for_workspace falls back to a deterministic hash
         // suffix so the id is still unique-ish and parseable.
         let id = mcp_server_id_for_workspace("   ");
-        assert!(id.starts_with("goja-"));
-        assert!(id.len() > "goja-".len(), "empty name must yield a hash-suffixed id, got '{id}'");
+        assert!(id.starts_with("jawata-"));
+        assert!(id.len() > "jawata-".len(), "empty name must yield a hash-suffixed id, got '{id}'");
     }
 
     #[test]
@@ -5529,7 +5609,7 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let dir = std::env::temp_dir().join(format!(
-            "goja-studio-mstest-{label}-{}-{}-{}",
+            "jawata-studio-mstest-{label}-{}-{}-{}",
             std::process::id(),
             nanos,
             n
@@ -5659,7 +5739,7 @@ mod tests {
 
     #[test]
     fn rule_block_has_routing_table_and_tdd_loop() {
-        let servers = vec![url_server("goja-ws-a", 8800, "tok", false)];
+        let servers = vec![url_server("jawata-ws-a", 8800, "tok", false)];
         let block = build_rule_block("cursor", &servers);
 
         // Routing-table section: names the key tools + the grep-fallback rule.
@@ -5677,19 +5757,19 @@ mod tests {
         assert!(block.contains("undo_refactoring"), "mentions undo on red");
 
         // Contract preserved: markers + managed-id list still render.
-        assert!(block.starts_with("<!-- goja-studio:cursor:start -->"));
-        assert!(block.trim_end().ends_with("<!-- goja-studio:cursor:end -->"));
+        assert!(block.starts_with("<!-- jawata-studio:cursor:start -->"));
+        assert!(block.trim_end().ends_with("<!-- jawata-studio:cursor:end -->"));
         assert!(block.contains("Managed service ids:"));
-        assert!(block.contains("- goja-ws-a"));
+        assert!(block.contains("- jawata-ws-a"));
     }
 
     #[test]
     fn rule_block_has_try_or_justify_rule_and_edit_mappings() {
         // Sprint 22 Stage 1: the rule block carries the enforcement contract (the
         // hook's try-or-justify) + the edit-side intent→tool mappings.
-        let block = build_rule_block("claude", &vec![url_server("goja-ws-a", 8800, "tok", false)]);
+        let block = build_rule_block("claude", &vec![url_server("jawata-ws-a", 8800, "tok", false)]);
         assert!(block.contains("Try-first, or justify"), "states the enforcement contract");
-        assert!(block.contains("goja-fallback:"), "names the declared-fallback escape");
+        assert!(block.contains("jawata-fallback:"), "names the declared-fallback escape");
         assert!(
             block.to_lowercase().contains("inconvenient") && block.contains("never stuck"),
             "inconvenient-not-to-use, but never stuck"
@@ -5709,7 +5789,7 @@ mod tests {
         // cross-client experience store — recall-before-theorize, record-what-you-
         // learn, declare-your-fallback. The textual substitute until Cursor's hook
         // schema is ported; identical for every client.
-        let block = build_rule_block("cursor", &vec![url_server("goja-ws-a", 8800, "tok", false)]);
+        let block = build_rule_block("cursor", &vec![url_server("jawata-ws-a", 8800, "tok", false)]);
         assert!(
             block.contains("recall before you theorize"),
             "names the memory discipline section"
@@ -5736,22 +5816,22 @@ mod tests {
             "states the same store answers in every client"
         );
         // Same text in the Claude block (harmless where hooks push anyway).
-        let claude = build_rule_block("claude", &vec![url_server("goja-ws-a", 8800, "tok", false)]);
+        let claude = build_rule_block("claude", &vec![url_server("jawata-ws-a", 8800, "tok", false)]);
         assert!(claude.contains("recall before you theorize"));
     }
 
     #[test]
-    fn guard_logs_goja_calls_for_try_first() {
-        // Sprint 22 Stage 1: the guard records goja-call target tokens to the
-        // per-session state file (the "tried goja" signal), never blocking goja.
+    fn guard_logs_jawata_calls_for_try_first() {
+        // Sprint 22 Stage 1: the guard records jawata-call target tokens to the
+        // per-session state file (the "tried jawata" signal), never blocking jawata.
         let script = build_guard_script("http://127.0.0.1:8890/mcp");
-        assert!(script.contains("mcp__goja*)"), "has a branch for goja tool calls");
+        assert!(script.contains("mcp__jawata*)"), "has a branch for jawata tool calls");
         assert!(
             script.contains("query|typeName|symbol|newName|filePath"),
             "extracts the target tokens from tool_input"
         );
         assert!(
-            script.contains("$goja_state_file"),
+            script.contains("$jawata_state_file"),
             "appends the tokens to the per-session try-first state"
         );
         // Stage 2: the search gate consults that state — an un-tried symbol is blocked.
@@ -5768,7 +5848,7 @@ mod tests {
         let script = build_guard_script("http://127.0.0.1:8890/mcp");
         assert!(script.contains("Edit|Write|MultiEdit)"), "has the edit-enforcement branch");
         assert!(
-            script.contains("USE A GOJA REFACTOR TOOL"),
+            script.contains("USE A JAWATA REFACTOR TOOL"),
             "blocks a Java hand-edit with a refactor-tool redirect"
         );
         assert!(
@@ -5776,18 +5856,18 @@ mod tests {
             "names the refactor tools"
         );
         assert!(
-            script.contains("goja_log_fallback") && script.contains("tools/goja/current"),
+            script.contains("jawata_log_fallback") && script.contains("tools/jawata/current"),
             "the fallback log is versioned by the deployed engine version"
         );
     }
 
     #[test]
     fn guard_authoring_window_permits_java_edits() {
-        // v1.5.1 (Sprint 22 refinement): a 'goja-author:' Bash declaration opens a
+        // v1.5.1 (Sprint 22 refinement): a 'jawata-author:' Bash declaration opens a
         // session-scoped, TTL-bounded window during which .java edits pass + are logged —
         // the clean escape for authoring NEW code (not a refactor), no marker in the source.
         let script = build_guard_script("http://127.0.0.1:8890/mcp");
-        assert!(script.contains("goja-author:"), "recognizes the authoring declaration");
+        assert!(script.contains("jawata-author:"), "recognizes the authoring declaration");
         assert!(script.contains("editgate"), "keeps a per-session authoring-window state");
         assert!(
             script.contains("authoring-window:") && script.contains("authored-edit"),
@@ -5802,10 +5882,10 @@ mod tests {
 
     #[test]
     fn rule_block_has_health_gated_fallback() {
-        let servers = vec![url_server("goja-ws-a", 8800, "tok", false)];
+        let servers = vec![url_server("jawata-ws-a", 8800, "tok", false)];
         let block = build_rule_block("claude", &servers);
         // The ASK-when-down section: pause + ask on Java work, stay silent on non-Java, no dodging.
-        assert!(block.contains("When GOJA is unavailable"), "has the health-gated section header");
+        assert!(block.contains("When JAWATA is unavailable"), "has the health-gated section header");
         assert!(
             block.contains("STOP and ask") && block.to_lowercase().contains("degraded"),
             "instructs to stop and ask rather than silently degrade"
@@ -5816,15 +5896,15 @@ mod tests {
 
     #[test]
     fn rule_block_marker_name_is_per_client_but_body_is_identical() {
-        let servers = vec![url_server("goja-ws-a", 8800, "tok", false)];
+        let servers = vec![url_server("jawata-ws-a", 8800, "tok", false)];
         let cursor = build_rule_block("cursor", &servers);
         let claude = build_rule_block("claude", &servers);
-        assert!(cursor.contains("goja-studio:cursor:start"));
-        assert!(claude.contains("goja-studio:claude:start"));
+        assert!(cursor.contains("jawata-studio:cursor:start"));
+        assert!(claude.contains("jawata-studio:claude:start"));
         // Strip the client-specific markers; the guidance body must match.
         let strip = |s: &str, c: &str| {
-            s.replace(&format!("<!-- goja-studio:{c}:start -->"), "")
-                .replace(&format!("<!-- goja-studio:{c}:end -->"), "")
+            s.replace(&format!("<!-- jawata-studio:{c}:start -->"), "")
+                .replace(&format!("<!-- jawata-studio:{c}:end -->"), "")
         };
         assert_eq!(strip(&cursor, "cursor"), strip(&claude, "claude"));
     }
@@ -5832,14 +5912,136 @@ mod tests {
     #[test]
     fn rule_block_is_deterministic_idempotent() {
         let servers = vec![
-            url_server("goja-ws-a", 8800, "tok-a", false),
-            url_server("goja-ws-b", 8801, "tok-b", false),
+            url_server("jawata-ws-a", 8800, "tok-a", false),
+            url_server("jawata-ws-b", 8801, "tok-b", false),
         ];
         // Same inputs → byte-identical output (so a re-deploy is a no-op write).
         assert_eq!(
             build_rule_block("claude", &servers),
             build_rule_block("claude", &servers)
         );
+    }
+
+    /// Sprint 22b: a rule file last written by goja-studio (legacy markers) is
+    /// REPLACED by the redeploy — never duplicated beside the old block.
+    #[test]
+    fn legacy_goja_rule_block_is_replaced_not_duplicated() {
+        let dir = std::env::temp_dir().join(format!("jawata-legacy-rule-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("CLAUDE.md");
+        fs::write(
+            &path,
+            "# my file\n\n<!-- goja-studio:claude:start -->\nOLD goja content\n<!-- goja-studio:claude:end -->\n\ntrailing user text\n",
+        )
+        .unwrap();
+
+        let servers = vec![url_server("jawata-ws-a", 8800, "tok-a", false)];
+        let block = build_rule_block("claude", &servers);
+        write_managed_rule_block(path.to_str().unwrap(), &block, false, false).unwrap();
+
+        let out = fs::read_to_string(&path).unwrap();
+        assert!(!out.contains("goja-studio:claude:start"), "legacy block gone");
+        assert!(!out.contains("OLD goja content"), "legacy body gone");
+        assert_eq!(out.matches("jawata-studio:claude:start").count(), 1, "exactly one new block");
+        assert!(out.contains("# my file"), "user prefix preserved");
+        assert!(out.contains("trailing user text"), "user suffix preserved");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Sprint 22b: removal cleans blocks of EITHER generation.
+    #[test]
+    fn remove_managed_rule_block_removes_legacy_generation() {
+        let dir = std::env::temp_dir().join(format!("jawata-legacy-rm-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("CLAUDE.md");
+        fs::write(
+            &path,
+            "keep me\n\n<!-- goja-studio:claude:start -->\nold\n<!-- goja-studio:claude:end -->\n",
+        )
+        .unwrap();
+        let changed = remove_managed_rule_block(path.to_str().unwrap(), "claude", false).unwrap();
+        assert!(changed, "legacy block was found and removed");
+        let out = fs::read_to_string(&path).unwrap();
+        assert!(!out.contains("goja-studio"), "no legacy remnants");
+        assert!(out.contains("keep me"), "user content preserved");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Sprint 22b: managed-key recognition spans every generation the studio
+    /// ever wrote — jawata (current), goja, jl, javalens — so redeploys replace
+    /// and removals clean pre-rebrand entries.
+    #[test]
+    fn managed_mcp_key_recognizes_all_generations() {
+        assert!(is_managed_mcp_key("jawata-orb"));
+        assert!(is_managed_mcp_key("goja-orb"));
+        assert!(is_managed_mcp_key("jl-orb"));
+        assert!(is_managed_mcp_key("javalens-orb"));
+        assert!(!is_managed_mcp_key("someone-elses-server"));
+    }
+
+    /// Sprint 22b: cursor hooks.json entries written by goja-studio are managed
+    /// (replaced on merge), and the legacy goja-*.sh scripts are dropped when the
+    /// new scripts are written.
+    #[test]
+    fn cursor_legacy_entries_and_scripts_are_migrated() {
+        assert!(cursor_entry_is_managed(&serde_json::json!({
+            "command": "./hooks/goja-guard.sh", "timeout": 5
+        })), "legacy goja entry recognized as managed");
+
+        let dir = std::env::temp_dir().join(format!("jawata-cursor-mig-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let hooks_dir = dir.join("hooks");
+        fs::create_dir_all(&hooks_dir).unwrap();
+        fs::write(hooks_dir.join("goja-guard.sh"), "#!/bin/sh\nold").unwrap();
+        let hooks_json = dir.join("hooks.json");
+        fs::write(
+            &hooks_json,
+            r#"{"version":1,"hooks":{"beforeShellExecution":[{"command":"./hooks/goja-guard.sh"},{"command":"./hooks/user-own.sh"}]}}"#,
+        )
+        .unwrap();
+
+        write_managed_cursor_hooks(
+            hooks_json.to_str().unwrap(),
+            &hooks_dir,
+            "http://127.0.0.1:8800/mcp",
+            "tok",
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert!(!hooks_dir.join("goja-guard.sh").exists(), "legacy script removed");
+        assert!(hooks_dir.join("jawata-guard.sh").exists(), "new script written");
+        let out: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&hooks_json).unwrap()).unwrap();
+        let shell = out["hooks"]["beforeShellExecution"].as_array().unwrap();
+        assert!(
+            shell.iter().any(|e| e["command"] == "./hooks/user-own.sh"),
+            "user hook preserved"
+        );
+        assert!(
+            shell.iter().all(|e| e["command"] != "./hooks/goja-guard.sh"),
+            "legacy managed entry replaced"
+        );
+        assert!(
+            shell.iter().any(|e| e["command"] == "./hooks/jawata-guard.sh"),
+            "new managed entry present"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Sprint 22b: a settings.json hook entry pointing at the pre-rebrand
+    /// script path is recognized as managed (so redeploys replace it).
+    #[test]
+    fn legacy_goja_hook_entry_is_recognized_as_managed() {
+        let entry = serde_json::json!({
+            "matcher": "Bash",
+            "hooks": [{ "type": "command",
+                "command": "/home/x/.claude/goja-studio/pretooluse-guard.sh" }]
+        });
+        assert!(is_managed_hook_entry(&entry));
     }
 
     #[test]
@@ -5879,10 +6081,10 @@ mod tests {
 
     #[test]
     fn claude_entry_marks_always_load() {
-        let servers = vec![url_server("goja-ws", 8800, "tok", false)];
+        let servers = vec![url_server("jawata-ws", 8800, "tok", false)];
         let json = build_client_mcp_json("claude", &servers);
         assert_eq!(
-            json["mcpServers"]["goja-ws"]["alwaysLoad"],
+            json["mcpServers"]["jawata-ws"]["alwaysLoad"],
             serde_json::Value::Bool(true),
             "Claude entry must carry alwaysLoad:true so the surface never defers"
         );
@@ -5890,11 +6092,11 @@ mod tests {
 
     #[test]
     fn non_claude_entries_omit_always_load() {
-        let servers = vec![url_server("goja-ws", 8800, "tok", false)];
+        let servers = vec![url_server("jawata-ws", 8800, "tok", false)];
         for client in ["cursor", "antigravity", "intellij", "claude_desktop"] {
             let json = build_client_mcp_json(client, &servers);
             assert!(
-                json["mcpServers"]["goja-ws"].get("alwaysLoad").is_none(),
+                json["mcpServers"]["jawata-ws"].get("alwaysLoad").is_none(),
                 "{client} entry must not carry alwaysLoad (Claude-only flag)"
             );
         }
@@ -5925,14 +6127,14 @@ mod tests {
         let dir = unique_tempdir("rule-global");
         let file = dir.join(".claude").join("CLAUDE.md");
         let path = file.to_string_lossy().to_string();
-        let servers = vec![url_server("goja-ws", 8800, "tok", false)];
+        let servers = vec![url_server("jawata-ws", 8800, "tok", false)];
         let block = build_rule_block("claude", &servers);
 
         // (1) NEW FILE: parent dir created, block written.
         write_managed_rule_block(&path, &block, false, false).unwrap();
         let after_new = std::fs::read_to_string(&file).unwrap();
-        assert!(after_new.contains("<!-- goja-studio:claude:start -->"));
-        assert!(after_new.contains("GOJA MCP"));
+        assert!(after_new.contains("<!-- jawata-studio:claude:start -->"));
+        assert!(after_new.contains("JAWATA MCP"));
 
         // (2) IDEMPOTENT: same block again is a byte-stable no-op.
         write_managed_rule_block(&path, &block, false, false).unwrap();
@@ -5951,12 +6153,12 @@ mod tests {
         assert!(appended.contains("# My own notes"), "user content preserved");
         assert!(appended.contains("keep me"), "user content preserved");
         assert!(
-            appended.contains("<!-- goja-studio:claude:start -->"),
+            appended.contains("<!-- jawata-studio:claude:start -->"),
             "block appended"
         );
 
         // (4) REPLACE BETWEEN MARKERS: a stale block is spliced out, user text kept.
-        let stale = "# Header\n\n<!-- goja-studio:claude:start -->\nOLD STALE BODY\n<!-- goja-studio:claude:end -->\n\n# Footer\n";
+        let stale = "# Header\n\n<!-- jawata-studio:claude:start -->\nOLD STALE BODY\n<!-- jawata-studio:claude:end -->\n\n# Footer\n";
         let replace_file = dir.join("replace.md");
         let replace_path = replace_file.to_string_lossy().to_string();
         std::fs::write(&replace_file, stale).unwrap();
@@ -5965,7 +6167,7 @@ mod tests {
         assert!(replaced.contains("# Header"), "leading user text kept");
         assert!(replaced.contains("# Footer"), "trailing user text kept");
         assert!(!replaced.contains("OLD STALE BODY"), "stale body replaced");
-        assert!(replaced.contains("GOJA MCP"), "new body present");
+        assert!(replaced.contains("JAWATA MCP"), "new body present");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -5993,9 +6195,9 @@ mod tests {
         let script = build_guard_script("http://127.0.0.1:8890/mcp");
         // Health URL baked in; both branches present.
         assert!(script.contains("http://127.0.0.1:8890/mcp"), "health url baked in");
-        assert!(script.contains("TRY GOJA FIRST"), "up branch: try-first redirect");
+        assert!(script.contains("TRY JAWATA FIRST"), "up branch: try-first redirect");
         assert!(script.contains("appears to be DOWN"), "down branch: diagnosis");
-        assert!(script.contains("search_symbols"), "names the GOJA tool to use instead");
+        assert!(script.contains("search_symbols"), "names the JAWATA tool to use instead");
         // Java-scoped + content-search-scoped; edits/non-Java pass.
         assert!(script.contains(r"\.java"), "scoped to Java source");
         assert!(script.contains("exit 0"), "has a pass path");
@@ -6019,7 +6221,7 @@ mod tests {
 
         // v1.3.0 escape valve: a declared fallback proceeds and is logged.
         assert!(
-            script.contains("goja-fallback:"),
+            script.contains("jawata-fallback:"),
             "recognises the declared-fallback escape grammar"
         );
         assert!(
@@ -6029,12 +6231,12 @@ mod tests {
         // v1.3.1: the reason is captured from the UN-flattened input (marker's own
         // line only), so a multi-line command's other lines can't bleed into the log.
         assert!(
-            script.contains(r#"printf '%s' "$input" | sed -n 's/.*goja-fallback:"#),
+            script.contains(r#"printf '%s' "$input" | sed -n 's/.*jawata-fallback:"#),
             "reason captured from un-flattened input (clean audit line)"
         );
         // The down-branch must point at the real escape, not the old false promise.
         assert!(
-            !script.contains("this guard only warns once GOJA is confirmed down"),
+            !script.contains("this guard only warns once JAWATA is confirmed down"),
             "the false 're-run' promise is gone"
         );
 
@@ -6050,14 +6252,14 @@ mod tests {
 
     #[test]
     fn managed_hook_entry_shape() {
-        let guard = PathBuf::from("/home/u/.claude/goja-studio/pretooluse-guard.sh");
+        let guard = PathBuf::from("/home/u/.claude/jawata-studio/pretooluse-guard.sh");
         let entry = build_managed_hook_entry(&guard);
         assert_eq!(
-            entry["matcher"], "Bash|Grep|Edit|Write|MultiEdit|mcp__goja.*",
-            "fires for search (Bash|Grep), edits (Edit|Write|MultiEdit) and goja calls (mcp__goja.*)"
+            entry["matcher"], "Bash|Grep|Edit|Write|MultiEdit|mcp__jawata.*",
+            "fires for search (Bash|Grep), edits (Edit|Write|MultiEdit) and jawata calls (mcp__jawata.*)"
         );
         let cmd = entry["hooks"][0]["command"].as_str().unwrap();
-        assert!(cmd.contains(GOJA_HOOK_SENTINEL), "command references the managed guard");
+        assert!(cmd.contains(JAWATA_HOOK_SENTINEL), "command references the managed guard");
         assert_eq!(entry["hooks"][0]["type"], "command");
         assert!(is_managed_hook_entry(&entry), "our own entry is recognised as managed");
         // A user's unrelated PreToolUse entry must NOT be flagged as managed.
@@ -6075,7 +6277,7 @@ mod tests {
         let settings_path = settings.to_string_lossy().to_string();
         let guard = dir
             .join(".claude")
-            .join("goja-studio")
+            .join("jawata-studio")
             .join("pretooluse-guard.sh");
         let health = "http://127.0.0.1:8890/mcp";
 
@@ -6130,14 +6332,14 @@ mod tests {
 
     #[test]
     fn managed_posthook_entry_shape() {
-        let observer = PathBuf::from("/home/u/.claude/goja-studio/posttooluse-observer.sh");
+        let observer = PathBuf::from("/home/u/.claude/jawata-studio/posttooluse-observer.sh");
         let entry = build_managed_posthook_entry(&observer);
         assert_eq!(
-            entry["matcher"], "Bash|Grep|Edit|Write|MultiEdit|Read|mcp__goja.*",
+            entry["matcher"], "Bash|Grep|Edit|Write|MultiEdit|Read|mcp__jawata.*",
             "fires for Read (ungrounded capture), verify MCP tools, and search/edit slips"
         );
         let cmd = entry["hooks"][0]["command"].as_str().unwrap();
-        assert!(cmd.contains(GOJA_POSTHOOK_SENTINEL), "command references the managed observer");
+        assert!(cmd.contains(JAWATA_POSTHOOK_SENTINEL), "command references the managed observer");
         assert!(is_managed_posthook_entry(&entry), "our own entry is recognised as managed");
         let user = serde_json::json!({
             "matcher": "Bash",
@@ -6153,7 +6355,7 @@ mod tests {
         assert!(s.contains("read-ungrounded"), "captures ungrounded .java reads");
         assert!(s.contains("emit \"slip\""), "captures declared-fallback slips");
         assert!(s.contains("emit \"verify\""), "captures verify events");
-        assert!(s.contains("goja-fallback"), "keys the slip off the declared fallback");
+        assert!(s.contains("jawata-fallback"), "keys the slip off the declared fallback");
         assert!(s.contains("additionalContext"), "steers after a slip");
         assert!(s.contains("emit_slip"), "slip logging is factored so callers can gate it to real .java ops");
         assert!(s.contains("not a gated op"), "v1.5.1: slip scoped to .java-targeted ops — no false slip on an incidental marker in edited content");
@@ -6168,7 +6370,7 @@ mod tests {
     #[test]
     fn observer_judges_tool_input_only() {
         // Sprint 21a (item J): a cat of a file whose CONTENT mentions '.java' +
-        // 'goja-fallback:' logged a false slip — the observer grepped the whole payload
+        // 'jawata-fallback:' logged a false slip — the observer grepped the whole payload
         // including tool_response. The response must be stripped BEFORE any matching.
         let s = build_observer_script("u", "t");
         let strip = s.find(r#"sed 's/"tool_response".*$//'"#)
@@ -6180,7 +6382,7 @@ mod tests {
     #[test]
     fn observer_bridges_slips_into_the_experience_store() {
         // Sprint 21a (items G+J): the first conversation-level auto-learn path — a slip
-        // becomes a candidate entry, fail-safe when goja is down.
+        // becomes a candidate entry, fail-safe when jawata is down.
         let s = build_observer_script("http://127.0.0.1:8890/mcp", "sekret");
         assert!(s.contains(r#"MCP_URL="http://127.0.0.1:8890/mcp""#), "bakes the resident url");
         assert!(s.contains(r#"TOKEN="sekret""#), "bakes the bearer token");
@@ -6202,7 +6404,7 @@ mod tests {
             build_recall_script("u", "t"),
             build_userprompt_script("u", "t"),
         ] {
-            assert!(s.contains("GOJA_HOOK_SELFTEST"), "has a selftest entry point");
+            assert!(s.contains("JAWATA_HOOK_SELFTEST"), "has a selftest entry point");
             assert!(s.contains("emit_ctx"), "emits through the shared function");
             assert_eq!(
                 s.matches("hookSpecificOutput").count(),
@@ -6211,7 +6413,7 @@ mod tests {
             );
         }
         let observer = build_observer_script("u", "t");
-        assert!(observer.contains("GOJA_HOOK_SELFTEST"));
+        assert!(observer.contains("JAWATA_HOOK_SELFTEST"));
         assert_eq!(
             observer.matches("hookSpecificOutput").count(),
             1,
@@ -6223,7 +6425,7 @@ mod tests {
 
     fn seed_server(url: &str, token: &str) -> ManagedDeployServer {
         ManagedDeployServer {
-            id: "goja-test".into(),
+            id: "jawata-test".into(),
             workspace_name: "test".into(),
             project_names: vec![],
             project_paths: vec![],
@@ -6257,18 +6459,18 @@ mod tests {
             projects_file: std::path::PathBuf::from("/tmp/config/projects.json"),
             settings_file: std::path::PathBuf::from("/tmp/config/settings.json"),
             runtime_state_file: std::path::PathBuf::from("/tmp/state/runtime-state.json"),
-            default_data_root: std::path::PathBuf::from("/tmp/cache/goja-studio"),
+            default_data_root: std::path::PathBuf::from("/tmp/cache/jawata-studio"),
             log_dir: std::path::PathBuf::from("/tmp/state/logs"),
         };
         let mut settings = ManagerSettings::default_for_paths(&paths);
         settings.memory_roots = vec!["/home/x/.claude".into()];
         let props = knowledge_jvm_properties(&settings);
         assert_eq!(props.len(), 2, "store mode + roots, nothing else");
-        assert!(props[0].starts_with("-Dgoja.experience.store="));
-        assert!(props[1].starts_with("-Dgoja.memory.roots="));
+        assert!(props[0].starts_with("-Djawata.experience.store="));
+        assert!(props[1].starts_with("-Djawata.memory.roots="));
         assert!(
-            props.iter().all(|p| !p.contains("goja.memory.max")),
-            "no -Dgoja.memory.max* from studio"
+            props.iter().all(|p| !p.contains("jawata.memory.max")),
+            "no -Djawata.memory.max* from studio"
         );
     }
 
@@ -6344,7 +6546,7 @@ mod tests {
         let settings_path = settings.to_string_lossy().to_string();
         let observer = dir
             .join(".claude")
-            .join("goja-studio")
+            .join("jawata-studio")
             .join("posttooluse-observer.sh");
 
         std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
@@ -6431,7 +6633,7 @@ mod tests {
         // beforeSubmitPrompt keeps the user's entry AND adds ours.
         let bsp = hooks["beforeSubmitPrompt"].as_array().unwrap();
         assert!(bsp.iter().any(|e| e["command"] == "./hooks/my-own.sh"), "user hook preserved");
-        assert!(bsp.iter().any(|e| e["command"] == "./hooks/goja-recall.sh"), "managed recall added");
+        assert!(bsp.iter().any(|e| e["command"] == "./hooks/jawata-recall.sh"), "managed recall added");
         // The user's bespoke event is untouched.
         assert!(hooks.contains_key("stop"), "unrelated user event preserved");
         // The guard is failClosed.
@@ -6439,11 +6641,11 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .find(|e| e["command"] == "./hooks/goja-guard.sh")
+            .find(|e| e["command"] == "./hooks/jawata-guard.sh")
             .unwrap();
         assert_eq!(guard["failClosed"], true, "guard is failClosed");
         // Scripts written + executable; the recall script baked the url + token.
-        for name in ["goja-session-primer.sh", "goja-guard.sh", "goja-recall.sh", "goja-observer.sh"] {
+        for name in ["jawata-session-primer.sh", "jawata-guard.sh", "jawata-recall.sh", "jawata-observer.sh"] {
             let p = hooks_dir.join(name);
             assert!(p.exists(), "{name} written");
             #[cfg(unix)]
@@ -6453,7 +6655,7 @@ mod tests {
                 assert!(mode & 0o111 != 0, "{name} is executable");
             }
         }
-        let recall = std::fs::read_to_string(hooks_dir.join("goja-recall.sh")).unwrap();
+        let recall = std::fs::read_to_string(hooks_dir.join("jawata-recall.sh")).unwrap();
         assert!(
             recall.contains("http://127.0.0.1:8899/mcp") && recall.contains("tok"),
             "url + token baked into the recall script"
@@ -6494,7 +6696,7 @@ mod tests {
         assert_eq!(bsp.len(), 1, "only the user entry remains");
         assert!(bsp.iter().any(|e| e["command"] == "./hooks/my-own.sh"), "user hook preserved");
         assert!(!hooks.contains_key("sessionStart"), "managed-only event pruned");
-        for name in ["goja-session-primer.sh", "goja-guard.sh", "goja-recall.sh", "goja-observer.sh"] {
+        for name in ["jawata-session-primer.sh", "jawata-guard.sh", "jawata-recall.sh", "jawata-observer.sh"] {
             assert!(!hooks_dir.join(name).exists(), "{name} deleted");
         }
 
@@ -6509,7 +6711,7 @@ mod tests {
         let hooks_path = hooks_json.to_string_lossy().to_string();
         let hooks_dir = cursor.join("hooks");
 
-        // Deploy into a virgin ~/.cursor (goja created the file).
+        // Deploy into a virgin ~/.cursor (jawata created the file).
         write_managed_cursor_hooks(&hooks_path, &hooks_dir, "http://u/mcp", "t", false, false).unwrap();
         assert!(hooks_json.exists());
         assert!(remove_managed_cursor_hooks(&hooks_path, &hooks_dir, false).unwrap());
@@ -6530,7 +6732,7 @@ mod tests {
         use std::process::{Command, Stdio};
         // guard: empty stdin -> allow -> valid JSON with permission=allow.
         if let Ok(out) = Command::new("bash")
-            .arg(hooks_dir.join("goja-guard.sh"))
+            .arg(hooks_dir.join("jawata-guard.sh"))
             .stdin(Stdio::null())
             .output()
         {
@@ -6540,8 +6742,8 @@ mod tests {
         }
         // primer: selftest mode -> valid JSON carrying additional_context.
         if let Ok(out) = Command::new("bash")
-            .arg(hooks_dir.join("goja-session-primer.sh"))
-            .env("GOJA_HOOK_SELFTEST", "1")
+            .arg(hooks_dir.join("jawata-session-primer.sh"))
+            .env("JAWATA_HOOK_SELFTEST", "1")
             .stdin(Stdio::null())
             .output()
         {
@@ -6562,7 +6764,7 @@ mod tests {
         crate::backups::set_backups_root(dir.to_string_lossy().as_ref());
         let settings = dir.join(".claude").join("settings.json");
         let settings_path = settings.to_string_lossy().to_string();
-        let guard = dir.join(".claude").join("goja-studio").join("pretooluse-guard.sh");
+        let guard = dir.join(".claude").join("jawata-studio").join("pretooluse-guard.sh");
         std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
         std::fs::write(&settings, "{}").unwrap();
 
@@ -6587,7 +6789,7 @@ mod tests {
         let dir = unique_tempdir("hook-prune");
         let settings = dir.join("settings.json");
         let settings_path = settings.to_string_lossy().to_string();
-        let guard = dir.join("goja-studio").join("pretooluse-guard.sh");
+        let guard = dir.join("jawata-studio").join("pretooluse-guard.sh");
 
         // Only our entry exists → after removal the containers vanish.
         write_managed_hook(&settings_path, &guard, "http://127.0.0.1:8890/mcp", false, false)
@@ -6632,7 +6834,7 @@ mod tests {
         assert!(s.contains(r#""kind":"recall""#), "calls experience(kind=recall)");
         assert!(
             s.contains("rename_symbol") && s.contains("refactor") && s.contains("extract"),
-            "gated to refactor-ish goja verbs"
+            "gated to refactor-ish jawata verbs"
         );
         assert!(
             s.contains("typeName") && s.contains("symbol") && s.contains("newName"),
@@ -6765,7 +6967,7 @@ mod tests {
             assert!(v["hooks"][ev].is_array(), "event {ev} registered");
         }
         assert_eq!(v["hooks"]["beforeShellExecution"][0]["failClosed"], true, "guard fails closed");
-        assert_eq!(v["hooks"]["sessionStart"][0]["command"], "./hooks/goja-session-primer.sh");
+        assert_eq!(v["hooks"]["sessionStart"][0]["command"], "./hooks/jawata-session-primer.sh");
     }
 
     #[test]
@@ -6780,7 +6982,7 @@ mod tests {
         let s = build_cursor_guard_script();
         assert!(s.contains(r#""permission":"deny""#), "denies");
         assert!(s.contains("grep") && s.contains(".java"), "targets Java grep");
-        assert!(s.contains(r#""agent_message""#), "steers the agent to GOJA");
+        assert!(s.contains(r#""agent_message""#), "steers the agent to JAWATA");
     }
 
     #[test]
@@ -6805,7 +7007,7 @@ mod tests {
         let settings_path = settings.to_string_lossy().to_string();
         let script = dir
             .join(".claude")
-            .join("goja-studio")
+            .join("jawata-studio")
             .join("userpromptsubmit-recall.sh");
         std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
         std::fs::write(
@@ -6857,7 +7059,7 @@ mod tests {
         let settings_path = settings.to_string_lossy().to_string();
         let primer = dir
             .join(".claude")
-            .join("goja-studio")
+            .join("jawata-studio")
             .join("sessionstart-primer.sh");
         std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
         std::fs::write(
@@ -6897,8 +7099,8 @@ mod tests {
         let dir = unique_tempdir("push-recall");
         let settings = dir.join(".claude").join("settings.json");
         let settings_path = settings.to_string_lossy().to_string();
-        let guard = dir.join(".claude").join("goja-studio").join("pretooluse-guard.sh");
-        let recall = dir.join(".claude").join("goja-studio").join("pretooluse-recall.sh");
+        let guard = dir.join(".claude").join("jawata-studio").join("pretooluse-guard.sh");
+        let recall = dir.join(".claude").join("jawata-studio").join("pretooluse-recall.sh");
         std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
 
         write_managed_hook(&settings_path, &guard, "http://127.0.0.1:8890/mcp", false, false).unwrap();
@@ -6939,24 +7141,24 @@ mod tests {
     }
 
     #[test]
-    fn gateway_entry_is_single_goja_pointing_at_gateway_port() {
+    fn gateway_entry_is_single_jawata_pointing_at_gateway_port() {
         let entry = gateway_entry(8790, "gtok", false);
-        assert_eq!(entry.id, "goja");
+        assert_eq!(entry.id, "jawata");
         assert_eq!(entry.url, "http://127.0.0.1:8790/mcp");
         assert_eq!(entry.token, "gtok");
         // The client sees exactly one entry with the standard http shape.
         let json = build_client_mcp_json("cursor", &[entry]);
         let servers = json["mcpServers"].as_object().unwrap();
         assert_eq!(servers.len(), 1, "client sees ONE service");
-        assert_eq!(servers["goja"]["url"], "http://127.0.0.1:8790/mcp");
-        assert_eq!(servers["goja"]["headers"]["Authorization"], "Bearer gtok");
+        assert_eq!(servers["jawata"]["url"], "http://127.0.0.1:8790/mcp");
+        assert_eq!(servers["jawata"]["headers"]["Authorization"], "Bearer gtok");
     }
 
     #[test]
     fn routing_table_maps_each_workspace_and_routes_by_path() {
         let servers = vec![
-            ws_server("goja-a", "a", 8800, "ta", &["/p/a"]),
-            ws_server("goja-b", "b", 8801, "tb", &["/p/b"]),
+            ws_server("jawata-a", "a", 8800, "ta", &["/p/a"]),
+            ws_server("jawata-b", "b", 8801, "tb", &["/p/b"]),
         ];
         let table = build_routing_table(&servers);
         assert_eq!(table.routes.len(), 2);
@@ -7015,9 +7217,9 @@ mod tests {
         // Sprint 16 (bugs.md #10): Antigravity's Windsurf-lineage parser
         // rejects `type`+`url` ("serverURL or command must be specified");
         // it wants `serverUrl` and no `type`. Verified live 2026-06-10.
-        let servers = vec![url_server("goja-ws", 8805, "tok", false)];
+        let servers = vec![url_server("jawata-ws", 8805, "tok", false)];
         let json = build_client_mcp_json("antigravity", &servers);
-        let entry = &json["mcpServers"]["goja-ws"];
+        let entry = &json["mcpServers"]["jawata-ws"];
 
         assert_eq!(entry["serverUrl"], "http://127.0.0.1:8805/mcp");
         assert!(entry.get("url").is_none(), "antigravity must not get `url`");
@@ -7027,9 +7229,9 @@ mod tests {
 
     #[test]
     fn deploy_writer_antigravity_honours_disabled_flag() {
-        let servers = vec![url_server("goja-ws", 8805, "tok", true)];
+        let servers = vec![url_server("jawata-ws", 8805, "tok", true)];
         let json = build_client_mcp_json("antigravity", &servers);
-        let entry = &json["mcpServers"]["goja-ws"];
+        let entry = &json["mcpServers"]["jawata-ws"];
         assert_eq!(entry["disabled"], serde_json::Value::Bool(true));
         assert_eq!(entry["serverUrl"], "http://127.0.0.1:8805/mcp");
     }
@@ -7038,9 +7240,9 @@ mod tests {
     fn deploy_writer_claude_desktop_gets_http_shape() {
         // Sprint 16.1 (bugs.md #17): Claude Desktop is a native-HTTP client
         // like Claude Code / Cursor — NOT the antigravity serverUrl shape.
-        let servers = vec![url_server("goja-ws", 8805, "tok", false)];
+        let servers = vec![url_server("jawata-ws", 8805, "tok", false)];
         let json = build_client_mcp_json("claude_desktop", &servers);
-        let entry = &json["mcpServers"]["goja-ws"];
+        let entry = &json["mcpServers"]["jawata-ws"];
         assert_eq!(entry["type"], "http");
         assert_eq!(entry["url"], "http://127.0.0.1:8805/mcp");
         assert!(entry.get("serverUrl").is_none());
@@ -7054,9 +7256,9 @@ mod tests {
     fn deploy_writer_claude_cursor_shape_unchanged_by_per_client_branch() {
         // The v0.15.1 shape stays byte-stable for claude + cursor.
         for client in ["claude", "cursor"] {
-            let servers = vec![url_server("goja-ws", 8805, "tok", false)];
+            let servers = vec![url_server("jawata-ws", 8805, "tok", false)];
             let json = build_client_mcp_json(client, &servers);
-            let entry = &json["mcpServers"]["goja-ws"];
+            let entry = &json["mcpServers"]["jawata-ws"];
             assert_eq!(entry["type"], "http", "{client} keeps type");
             assert_eq!(entry["url"], "http://127.0.0.1:8805/mcp", "{client} keeps url");
             assert!(entry.get("serverUrl").is_none(), "{client} must not get serverUrl");
@@ -7065,7 +7267,7 @@ mod tests {
 
     #[test]
     fn validator_accepts_per_client_shapes() {
-        let servers = vec![url_server("goja-ws", 8805, "tok", false)];
+        let servers = vec![url_server("jawata-ws", 8805, "tok", false)];
 
         let antigravity_json = build_client_mcp_json("antigravity", &servers);
         assert!(
@@ -7200,13 +7402,13 @@ mod tests {
         let managed = dir.join("managed.json");
         std::fs::write(
             &managed,
-            r#"{ "mcpServers": { "goja-my-ws": { "url": "http://x" }, "other": {} } }"#,
+            r#"{ "mcpServers": { "jawata-my-ws": { "url": "http://x" }, "other": {} } }"#,
         )
         .unwrap();
         assert!(path_has_managed_entries(managed.to_str().unwrap()));
 
         // Legacy pre-rebrand keys (`jl-…` / `javalens-…`) are still recognised as managed,
-        // so the manager can find and clean up deployments written before the GOJA rebrand.
+        // so the manager can find and clean up deployments written before the JAWATA rebrand.
         let legacy = dir.join("legacy.json");
         std::fs::write(
             &legacy,

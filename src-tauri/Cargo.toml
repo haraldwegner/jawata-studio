@@ -1,12 +1,12 @@
 [package]
-name = "goja-studio"
+name = "jawata-studio"
 version = "2.6.0"
-description = "Desktop manager for running GOJA MCP across multiple Java projects."
+description = "Desktop manager for running JAWATA MCP across multiple Java projects."
 license = "AGPL-3.0-only"
 edition = "2021"
 
 [lib]
-name = "goja_studio_lib"
+name = "jawata_studio_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

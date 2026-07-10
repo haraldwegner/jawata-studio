@@ -1462,28 +1462,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "goja-studio"
-version = "2.6.0"
-dependencies = [
- "dirs 6.0.0",
- "flate2",
- "getrandom 0.2.17",
- "reqwest 0.12.28",
- "semver",
- "serde",
- "serde_json",
- "tar",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-dialog",
- "tauri-plugin-single-instance",
- "tiny_http",
- "walkdir",
- "zip",
-]
-
-[[package]]
 name = "gtk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1930,6 +1908,28 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
+]
+
+[[package]]
+name = "jawata-studio"
+version = "2.6.0"
+dependencies = [
+ "dirs 6.0.0",
+ "flate2",
+ "getrandom 0.2.17",
+ "reqwest 0.12.28",
+ "semver",
+ "serde",
+ "serde_json",
+ "tar",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-dialog",
+ "tauri-plugin-single-instance",
+ "tiny_http",
+ "walkdir",
+ "zip",
 ]
 
 [[package]]

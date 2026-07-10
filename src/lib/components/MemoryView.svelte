@@ -321,7 +321,7 @@
     if (!selectedRow || busyAction) return;
     const path = await save({
       title: "Export memory store",
-      defaultPath: "goja-memory-export.json",
+      defaultPath: "jawata-memory-export.json",
       filters: [{ name: "JSON", extensions: ["json"] }]
     });
     if (!path) return;
@@ -402,7 +402,7 @@
   <div>
     <h2>Memory / Database</h2>
     <p class="muted">
-      Your memory store behind the GOJA push channel. Everything else — refresh, curation,
+      Your memory store behind the JAWATA push channel. Everything else — refresh, curation,
       backups — runs automatically or by prompt.
     </p>
   </div>

@@ -65,7 +65,7 @@ jobs:
 
           # --- AppImage: extract → patch AppRun → repack ---
           pushd src-tauri/target/release/bundle/appimage
-          APP_IMAGE=$(ls goja-studio_*.AppImage | head -1)
+          APP_IMAGE=$(ls jawata-studio_*.AppImage | head -1)
           chmod +x "$APP_IMAGE"
           ./"$APP_IMAGE" --appimage-extract >/dev/null
           if ! grep -q '^exec ' squashfs-root/AppRun; then
@@ -88,13 +88,13 @@ jobs:
 
           # --- .deb: unpack → move binary + write wrapper → repack ---
           pushd src-tauri/target/release/bundle/deb
-          DEB=$(ls goja-studio_*.deb | head -1)
+          DEB=$(ls jawata-studio_*.deb | head -1)
           rm -rf /tmp/deb-extract
           mkdir -p /tmp/deb-extract
           dpkg-deb -R "$DEB" /tmp/deb-extract
-          mkdir -p /tmp/deb-extract/usr/lib/goja-studio
-          mv /tmp/deb-extract/usr/bin/goja-studio /tmp/deb-extract/usr/lib/goja-studio/goja-studio
-          # Wrapper at /usr/bin/goja-studio: sets the env-var,
+          mkdir -p /tmp/deb-extract/usr/lib/jawata-studio
+          mv /tmp/deb-extract/usr/bin/jawata-studio /tmp/deb-extract/usr/lib/jawata-studio/jawata-studio
+          # Wrapper at /usr/bin/jawata-studio: sets the env-var,
           # then execs the real binary. Covers BOTH shell launches
           # and GNOME/KDE app-menu launches (which exec via PATH).
           printf '%s\n' \
@@ -102,9 +102,9 @@ jobs:
             '# Sprint 14 (v0.14.0, bugs.md #1): baked at .deb build time so' \
             '# users who install via `dpkg -i` get the blank-webview fix.' \
             'export WEBKIT_DISABLE_DMABUF_RENDERER=1' \
-            'exec /usr/lib/goja-studio/goja-studio "$@"' \
-            > /tmp/deb-extract/usr/bin/goja-studio
-          chmod +x /tmp/deb-extract/usr/bin/goja-studio
+            'exec /usr/lib/jawata-studio/jawata-studio "$@"' \
+            > /tmp/deb-extract/usr/bin/jawata-studio
+          chmod +x /tmp/deb-extract/usr/bin/jawata-studio
           dpkg-deb -b /tmp/deb-extract "$DEB"
           rm -rf /tmp/deb-extract
           popd
@@ -114,7 +114,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: 'goja-studio ${{ github.ref_name }}'
+          name: 'jawata-studio ${{ github.ref_name }}'
           body: 'See the assets to download this version and install.'
           draft: true
           prerelease: false

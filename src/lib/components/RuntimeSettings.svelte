@@ -70,24 +70,25 @@
   let runtimeKind: "managed" | "localJar" = "managed";
   let localJarPath = "";
   let releaseRepo = "";
-  const DEFAULT_RELEASE_REPO = "haraldwegner/goja-mcp";
-  const UPSTREAM_RELEASE_REPO = "pzalutski-pixel/goja-mcp";
+  const DEFAULT_RELEASE_REPO = "haraldwegner/jawata-mcp";
+  // Sprint 22b: the "(upstream)" release source is GONE — post-fork there is one
+  // source (ours); the old pzalutski option pointed at a repo that no longer
+  // exists and produced a 404 banner on Settings load. Persisted legacy values
+  // self-heal to the default on the backend (LEGACY_DEFAULT_RELEASE_REPOS).
 
-  type ReleaseRepoChoice = "default" | "upstream" | "custom";
+  type ReleaseRepoChoice = "default" | "custom";
   let releaseRepoChoice: ReleaseRepoChoice = "default";
   let customRepoText = "";
   let releaseRepoChoiceHydrated = false;
 
   function deriveChoiceFromRepo(repo: string): { choice: ReleaseRepoChoice; custom: string } {
     if (!repo || repo === DEFAULT_RELEASE_REPO) return { choice: "default", custom: "" };
-    if (repo === UPSTREAM_RELEASE_REPO) return { choice: "upstream", custom: "" };
     return { choice: "custom", custom: repo };
   }
 
   function repoFromChoice(choice: ReleaseRepoChoice, custom: string): string {
     switch (choice) {
       case "default": return DEFAULT_RELEASE_REPO;
-      case "upstream": return UPSTREAM_RELEASE_REPO;
       case "custom": return custom.trim();
     }
   }
@@ -414,7 +415,7 @@
     const selected = await open({
       directory: false,
       multiple: false,
-      title: "Select GOJA JAR",
+      title: "Select JAWATA JAR",
       filters: [
         {
           name: "Java archive",
@@ -525,22 +526,22 @@
 <section class="panel stack runtime-settings-root">
   <div>
     <h2>Settings</h2>
-    <p class="muted">Configure GOJA runtime, machine controls, diagnostics, and MCP location metadata.</p>
+    <p class="muted">Configure JAWATA runtime, machine controls, diagnostics, and MCP location metadata.</p>
   </div>
 
   <div class="settings-grid">
     <section class="panel stack settings-section runtime-section">
       <div class="section-intro">
-        <h3>GOJA Runtime</h3>
+        <h3>JAWATA Runtime</h3>
         <p class="muted">
           Runtime source and update behavior.
           <a
-            href="https://github.com/haraldwegner/goja-studio/releases"
+            href="https://github.com/haraldwegner/jawata-studio/releases"
             target="_blank"
             rel="noopener noreferrer"
             style="color: #60a5fa; text-decoration: underline; margin-left: 0.5rem;"
           >
-            Check for goja-studio updates
+            Check for jawata-studio updates
           </a>
         </p>
       </div>
@@ -552,8 +553,7 @@
           disabled={interactionDisabled}
           on:change={applyReleaseSourceChange}
         >
-          <option value="default">{DEFAULT_RELEASE_REPO} (recommended fork)</option>
-          <option value="upstream">{UPSTREAM_RELEASE_REPO} (upstream)</option>
+          <option value="default">{DEFAULT_RELEASE_REPO} (default)</option>
           <option value="custom">Custom…</option>
         </select>
         <span class="hint">
@@ -576,7 +576,7 @@
       {/if}
 
       <label class="field">
-        <span>Global GOJA Source</span>
+        <span>Global JAWATA Source</span>
         <select bind:value={runtimeKind} disabled={interactionDisabled} on:change={handleBoundEdit}>
           <option disabled={!installedRuntime} value="managed">Managed runtime</option>
           <option value="localJar">Local JAR fallback</option>
@@ -600,20 +600,20 @@
 
       {#if runtimeKind === "localJar"}
         <label class="field">
-          <span>Local GOJA JAR path</span>
+          <span>Local JAWATA JAR path</span>
           <div class="field-row">
             <input
               bind:value={localJarPath}
               disabled={interactionDisabled}
               on:input={handleBoundEdit}
-              placeholder="/path/to/goja.jar"
+              placeholder="/path/to/jawata.jar"
               required={runtimeKind === "localJar"}
-              title="Absolute path to a local goja.jar (overrides the managed runtime)"
+              title="Absolute path to a local jawata.jar (overrides the managed runtime)"
             />
             <button
               disabled={interactionDisabled}
               on:click={chooseLocalJar}
-              title="Open a file picker to select a local goja.jar"
+              title="Open a file picker to select a local jawata.jar"
               type="button"
             >Browse</button>
           </div>
@@ -638,7 +638,7 @@
           <button
             disabled={interactionDisabled}
             on:click={() => dispatch("download")}
-            title="Download and install the latest goja release from the configured source"
+            title="Download and install the latest jawata release from the configured source"
             type="button"
           >
             Download update v{releaseStatus.latestVersion}
@@ -650,7 +650,7 @@
     <section class="panel stack settings-section services-section">
       <div class="section-intro">
         <h3>Exposed Services</h3>
-        <p class="muted">Probe GOJA live to detect exposed MCP tools.</p>
+        <p class="muted">Probe JAWATA live to detect exposed MCP tools.</p>
       </div>
       {#if !lastServiceProbe && !serviceProbeBusy}
         <p class="hint">Click <strong>Test Services</strong> to run a live MCP handshake and list tools.</p>
@@ -659,7 +659,7 @@
         <button
           disabled={disabled || serviceProbeBusy}
           on:click={() => dispatch("probeServices")}
-          title="Spawn goja, run an MCP handshake, and list the exposed tools"
+          title="Spawn jawata, run an MCP handshake, and list the exposed tools"
           type="button"
         >
           {serviceProbeBusy ? "Testing..." : "Test Services"}
@@ -680,8 +680,8 @@
               {#each lastServiceProbe.services as service}
                 <li class="service-item">
                   <strong title={service.name}>{service.name}</strong>
-                  <span class="hint" title={service.description ?? "No description provided by GOJA."}>
-                    {service.description ?? "No description provided by GOJA."}
+                  <span class="hint" title={service.description ?? "No description provided by JAWATA."}>
+                    {service.description ?? "No description provided by JAWATA."}
                   </span>
                 </li>
               {/each}

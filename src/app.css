@@ -402,7 +402,7 @@ button {
 
 .settings-section {
   align-content: start;
-  /* Ensure paired panels (e.g. GOJA Runtime + Exposed Services) end at
+  /* Ensure paired panels (e.g. JAWATA Runtime + Exposed Services) end at
      the same y so their bottom borders line up regardless of content
      length differences. align-items: stretch on the parent grid handles
      this for most browsers; this explicit height removes the corner cases. */
@@ -583,7 +583,7 @@ button {
 /* Inside the Exposed Services settings panel, let the probe-result + its
    inner service list fill the panel height so the right-hand card no
    longer leaves dead space below the list — without growing the panel
-   beyond its peer (the GOJA Runtime panel on the left). Trick:
+   beyond its peer (the JAWATA Runtime panel on the left). Trick:
    flex: 1 1 0 (zero base) on the probe-result and inner list. The
    probe-result contributes 0 to .services-section's intrinsic height,
    so grid-stretch pairs the panel to the left card's height; flex:1

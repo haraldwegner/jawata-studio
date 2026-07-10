@@ -32,6 +32,6 @@ jobs:
           PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_SIGNATURES_TOKEN }}
         with:
           path-to-signatures: 'signatures/cla.json'
-          path-to-document: 'https://github.com/haraldwegner/goja-studio/blob/main/CLA.md'
+          path-to-document: 'https://github.com/haraldwegner/jawata-studio/blob/main/CLA.md'
           branch: 'main'
           allowlist: 'haraldwegner,dependabot[bot]'

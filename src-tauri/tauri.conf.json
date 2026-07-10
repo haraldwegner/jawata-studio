@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "goja-studio",
+  "productName": "jawata-studio",
   "version": "2.6.0",
-  "identifier": "com.haraldwegner.goja-studio",
+  "identifier": "com.haraldwegner.jawata-studio",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "GOJA Studio",
+        "title": "JAWATA Studio",
         "width": 1280,
         "height": 880,
         "resizable": true
