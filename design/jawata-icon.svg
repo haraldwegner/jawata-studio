@@ -1,12 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <!-- jawata brand icon: the handwritten "arch" — Harald's monoline abstraction of
-       Javanese ja (concept sheet, decided 2026-07-06 rev 5) on batik indigo. -->
-  <rect width="1024" height="1024" fill="#1d2f4e"/>
-  <!-- the arch path (native viewBox 8 0 152 188) centered + scaled: 168x188 -> 780 wide -->
-  <g transform="translate(122,80) scale(4.6)">
-    <path d="M52,174 C40,170 33,160 33,146 C30,112 30,78 35,56 C42,22 60,12 75,12
-             C92,12 110,24 113,54 C115,92 113,124 113,146 C113,164 119,174 131,174
-             L149,173" fill="none" stroke="#EAE3D2" stroke-width="15"
+       Javanese ja (concept sheet, decided 2026-07-06 rev 5) on batik indigo.
+       v2.7.1 (Harald 2026-07-10): rounded corners like the goja-era icon (rx 224
+       ≈ 22%, transparent outside), glyph squashed to 85% height (baked into the
+       path's y-coords so the monoline stays even), stroke 15 → 19 (fatter). -->
+  <rect width="1024" height="1024" rx="224" fill="#1d2f4e"/>
+  <!-- arch path: original y-coords × 0.85 (glyph box now 119×137.8), scale 4.6
+       -> 547×634 on the 1024 canvas, centered. -->
+  <g transform="translate(100,148) scale(4.6)">
+    <path d="M52,147.9 C40,144.5 33,136 33,124.1 C30,95.2 30,66.3 35,47.6 C42,18.7 60,10.2 75,10.2
+             C92,10.2 110,20.4 113,45.9 C115,78.2 113,105.4 113,124.1 C113,139.4 119,147.9 131,147.9
+             L149,147.05" fill="none" stroke="#EAE3D2" stroke-width="19"
           stroke-linecap="round" stroke-linejoin="round"/>
   </g>
 </svg>
