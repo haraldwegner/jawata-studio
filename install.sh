@@ -106,7 +106,10 @@ echo "Detected architecture: $MACHINE -> $APPIMAGE_ARCH"
 
 echo "Fetching latest release from GitHub..."
 LATEST_RELEASE=$(curl -sSL "https://api.github.com/repos/$REPO/releases/latest")
-APPIMAGE_URL=$(echo "$LATEST_RELEASE" | grep -oP "\"browser_download_url\": \"\K(.*_${APPIMAGE_ARCH}\.AppImage)(?=\")")
+# `|| true`: a no-match grep exits 1 and would kill the script under
+# `set -e` BEFORE the friendly error below (seen live 2026-07-10 when
+# the only release was a draft and /releases/latest returned 404).
+APPIMAGE_URL=$(echo "$LATEST_RELEASE" | grep -oP "\"browser_download_url\": \"\K(.*_${APPIMAGE_ARCH}\.AppImage)(?=\")" || true)
 
 if [ -z "$APPIMAGE_URL" ]; then
     echo "Error: Could not find an .AppImage for architecture '$APPIMAGE_ARCH' in the latest release."
