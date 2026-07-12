@@ -4201,6 +4201,11 @@ flat="$(printf '%s' "$input" | tr '\n' ' ')"
 # Sprint 21a (item J): judge the REQUEST only. tool_response may echo file contents that
 # merely mention '.java' or 'jawata-fallback:' (a cat of a hook script logged a false slip).
 flat="$(printf '%s' "$flat" | sed 's/"tool_response".*$//')"
+# v2.9.1 (D3b): the request JSON carries newlines as literal \n — a grep STARTING a
+# line is preceded by the letter 'n' and failed the word-boundary check below, so
+# the slip was silently never recorded. Gate checks run on the normalized copy;
+# reason extraction stays on $flat (its capture stops at the raw backslash).
+nflat="$(printf '%s' "$flat" | sed 's/\\[ntr]/ /g')"
 tool_name="$(printf '%s' "$flat" | grep -oE '"tool_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed -E 's/.*"([^"]*)"$/\1/')"
 session_id="$(printf '%s' "$flat" | grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed -E 's/.*"([^"]*)"$/\1/')"
 state="$dir/trygate/$session_id"
@@ -4236,10 +4241,10 @@ case "$tool_name" in
     # require a content-search tool AND a .java target (the PRE dual-gate) plus the marker.
     st=0
     if [ "$tool_name" = "Grep" ]; then st=1
-    elif printf '%s' "$flat" | grep -qiE '(^|[^a-zA-Z])(grep|egrep|fgrep|rg|ripgrep|ag|ack)([^a-zA-Z]|$)'; then st=1; fi
+    elif printf '%s' "$nflat" | grep -qiE '(^|[^a-zA-Z])(grep|egrep|fgrep|rg|ripgrep|ag|ack)([^a-zA-Z]|$)'; then st=1; fi
     if [ "$st" = "1" ] \
-       && printf '%s' "$flat" | grep -qiE '([A-Za-z0-9_$]\.java|\*\.java)' \
-       && printf '%s' "$flat" | grep -qiE 'jawata-fallback:'; then emit_slip; fi
+       && printf '%s' "$nflat" | grep -qiE '([A-Za-z0-9_$]\.java|\*\.java)' \
+       && printf '%s' "$nflat" | grep -qiE 'jawata-fallback:'; then emit_slip; fi
     ;;
 esac
 exit 0
