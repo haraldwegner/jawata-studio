@@ -4185,7 +4185,7 @@ emit() {
 # Sprint 21a (item J): the slip is also recorded into the experience store (candidate) —
 # the first conversation-level auto-learn path. Fail-safe: jawata down -> log-only.
 emit_slip() {
-  reason="$(printf '%s' "$flat" | sed -nE 's/.*[Gg][Oo][Jj][Aa]-[Ff][Aa][Ll][Ll][Bb][Aa][Cc][Kk]:[[:space:]]*([^"\\]*).*/\1/p' | head -n1 | sed -E 's/[[:space:]]*$//')"
+  reason="$(printf '%s' "$flat" | sed -nE 's/.*[Jj][Aa][Ww][Aa][Tt][Aa]-[Ff][Aa][Ll][Ll][Bb][Aa][Cc][Kk]:[[:space:]]*([^"\\]*).*/\1/p' | head -n1 | sed -E 's/[[:space:]]*$//')"
   emit "slip" "$tool_name	$reason"
   if command -v curl >/dev/null 2>&1 && [ -n "$MCP_URL" ]; then
     sr="$(printf '%s: %s' "$tool_name" "$reason" | sed 's/["\\]/ /g' | tr -d '[:cntrl:]' | cut -c1-200)"
