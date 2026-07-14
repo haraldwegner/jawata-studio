@@ -3858,6 +3858,7 @@ case "$tool_name" in
       echo "Rename → rename_symbol (updates ALL references). Move → move / move_in_hierarchy."
       echo "Extract method/variable/constant/superclass → extract. Duplicate a class → generate(kind=copy_class)."
       echo "Any structural change → refactoring(action=plan) then apply_plan (parity-gated, reversible)."
+      echo "Only adding a print/log to observe a value at runtime? Don't edit source — attach with debug and set a probe: probe_set kind=logpoint (also field_watch / method_trace) streams values while the program keeps running."
       echo "Authoring NEW code (not a refactor)? Declare a window: run a Bash command with 'jawata-author: <reason>', then edit (session-scoped, logged)."
       echo "If this is a genuinely non-structural edit JAWATA cannot do, re-run with 'jawata-fallback: <why>' (declared + logged)."
     }} 1>&2
