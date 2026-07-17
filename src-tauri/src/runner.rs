@@ -123,8 +123,10 @@ pub struct SeatDefinition {
     pub name: String,
     pub model: String,
     pub effort: Option<String>,
-    /// Cron-like five-field schedule (`m h dom mon dow`), honored by the
-    /// manager's scheduler (8b). `None` = ad-hoc only.
+    /// Cron-like five-field schedule (`m h dom mon dow`). Parsed and matched
+    /// by `scheduler_tick` (library-level, test-proven); NOT yet fired by the
+    /// manager — production scheduling ships with Lane B in Sprint 28.
+    /// `None` = ad-hoc only.
     pub schedule: Option<String>,
     /// Tool allowlist injected into the seat prompt (advisory for the CLI
     /// v1 contract; hard enforcement is a later graduation).
@@ -1306,8 +1308,10 @@ pub fn record_human_verdict(
 }
 
 // ============================================================
-// Schedule — cron-like five-field subset (m h dom mon dow),
-// honored by the manager's scheduler thread
+// Schedule — cron-like five-field subset (m h dom mon dow).
+// Library layer only: `scheduler_tick` computes the due seats and is
+// test-proven; no manager thread invokes it yet — production firing is
+// staged to Sprint 28 (Lane B), per the Sprint-25 agent-part audit (F1).
 // ============================================================
 
 /// A parsed five-field cron expression supporting `*`, plain numbers and
@@ -3327,6 +3331,50 @@ You are the echo seat. You document what you are told to document.
                 assert!(names.contains(&expected), "gate {expected} missing: {names:?}");
             }
             assert!(report.gates.iter().all(|g| g.passed));
+            // Numeric pinning (agent-part audit F2): the fixture baselines are
+            // deterministic (5 missed lines / 4 missed branches; 6 mutants
+            // killed / 3 surviving) and the D5 body claims are coverage RAISED
+            // + ≥1 previously-surviving mutant KILLED — assert the numbers,
+            // not just gate presence.
+            let detail = |name: &str| -> String {
+                report
+                    .gates
+                    .iter()
+                    .find(|g| g.name == name)
+                    .unwrap_or_else(|| panic!("gate {name} missing"))
+                    .detail
+                    .clone()
+            };
+            let after = |s: &str, prefix: &str| -> u32 {
+                s.split(prefix)
+                    .nth(1)
+                    .unwrap_or_else(|| panic!("'{prefix}' not in: {s}"))
+                    .split(|c: char| !c.is_ascii_digit())
+                    .next()
+                    .unwrap()
+                    .parse()
+                    .unwrap()
+            };
+            let cov = detail("coverage_improves");
+            assert!(
+                cov.contains("lines 5→") && cov.contains("branches 4→"),
+                "fixture baselines (5 lines / 4 branches missed) expected: {cov}"
+            );
+            let (lines_after, branches_after) =
+                (after(&cov, "lines 5→"), after(&cov, "branches 4→"));
+            assert!(
+                lines_after < 5 || branches_after < 4,
+                "coverage must measurably improve: {cov}"
+            );
+            let mutation = detail("mutation_bite");
+            assert!(
+                mutation.contains("killed 6→"),
+                "fixture baseline (6 mutants killed) expected: {mutation}"
+            );
+            assert!(
+                after(&mutation, "killed 6→") > 6,
+                "≥1 previously-surviving mutant must be newly killed: {mutation}"
+            );
             // Ambiguous intent pinned AND flagged.
             let record = report.proposal_dir.expect("record");
             let diff = fs::read_to_string(record.join("diff.patch")).unwrap();
