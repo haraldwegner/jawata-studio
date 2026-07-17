@@ -139,6 +139,27 @@
       pinnedEmptyWorkspaces = pinnedEmptyWorkspaces;
     }
   }
+
+  // v3.0.1 (dogfood, Harald hit this 3-4x): deleting a workspace WIPES it
+  // fully — its runtime, every project in it, and its JDT analysis data.
+  // The delete-workspace control sits next to the deploy/redeploy controls,
+  // so it was mis-hit when the intent was "remove deploy to agent and
+  // redeploy". Every other destructive action already confirms; these did
+  // not. Guard each delete behind an explicit, consequence-naming confirm.
+  function confirmDeleteWorkspace(name: string): boolean {
+    const count = ($appStore.projects ?? []).filter(
+      (p) => p.workspaceName === name,
+    ).length;
+    const scope =
+      count > 0
+        ? `its ${count} project${count === 1 ? "" : "s"} and their analysis data`
+        : "its analysis data";
+    return confirm(
+      `Delete the ENTIRE workspace "${name}"?\n\n` +
+        `This removes its running service, ${scope}, and cannot be undone. ` +
+        `To only change agent deployment, use the deploy controls instead.`,
+    );
+  }
   $: selectedStatus = selectedProject
     ? $appStore.runtimeStatuses?.[selectedProject.id]
     : undefined;
@@ -450,6 +471,7 @@
               onSelect={activateWorkspace}
               onRename={(oldName, newName) => appStore.renameWorkspaceEntry(oldName, newName)}
               onDelete={(name) => {
+                if (!confirmDeleteWorkspace(name)) return;
                 appStore.deleteWorkspaceEntry(name);
                 pinnedEmptyWorkspaces.delete(name);
                 pinnedEmptyWorkspaces = pinnedEmptyWorkspaces;
@@ -499,6 +521,19 @@
                 // workspaces calling delete_workspace (which wipes
                 // each one fully); then resets client-side pin state
                 // and active workspace.
+                // v3.0.1 (dogfood): ONE strong confirm for the whole
+                // wipe, not one prompt per workspace.
+                const n = knownWorkspaces.length;
+                if (
+                  n === 0 ||
+                  !confirm(
+                    `Delete ALL ${n} workspace${n === 1 ? "" : "s"}?\n\n` +
+                      `This removes every running service, every project and all ` +
+                      `analysis data across all workspaces, and cannot be undone.`,
+                  )
+                ) {
+                  return;
+                }
                 for (const name of [...knownWorkspaces]) {
                   await appStore.deleteWorkspaceEntry(name);
                 }
@@ -511,6 +546,7 @@
               onRenameProject={(projectId, name) => appStore.renameProjectEntry(projectId, name)}
               onRenameWorkspace={(oldName, newName) => appStore.renameWorkspaceEntry(oldName, newName)}
               onDeleteWorkspace={(name) => {
+                if (!confirmDeleteWorkspace(name)) return;
                 appStore.deleteWorkspaceEntry(name);
                 pinnedEmptyWorkspaces.delete(name);
                 pinnedEmptyWorkspaces = pinnedEmptyWorkspaces;
