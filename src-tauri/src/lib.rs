@@ -6,6 +6,8 @@ mod lombok;
 mod manager_service;
 mod release_manager;
 mod resident;
+#[allow(dead_code)] // Sprint 25 Stage 8: consumed by the seat stages (9-14) + UI wiring
+mod runner;
 mod runtime_manager;
 
 use config::ConfigStore;
