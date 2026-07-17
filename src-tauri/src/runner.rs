@@ -1243,6 +1243,15 @@ fn write_proposal_record(
     );
     fs::write(dir.join("proposal.md"), md).map_err(|e| e.to_string())?;
     fs::write(dir.join("diff.patch"), &proposal.diff).map_err(|e| e.to_string())?;
+    // FILE-BLOCK proposals also ship the staged files verbatim — the
+    // apply path (and any measurement) uses THESE, not patch arithmetic.
+    for file in &proposal.files {
+        let target = dir.join("files").join(&file.path);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::write(&target, &file.content).map_err(|e| e.to_string())?;
+    }
     let gates_json = serde_json::to_string_pretty(gates).map_err(|e| e.to_string())?;
     fs::write(dir.join("gates.json"), gates_json).map_err(|e| e.to_string())?;
     Ok(dir)
@@ -3893,6 +3902,203 @@ You are the echo seat. You document what you are told to document.
             );
             let journal = fs::read_to_string(dir.join("journal.jsonl")).unwrap();
             assert!(journal.contains("debugger"));
+        });
+        let _ = resident.kill();
+        let _ = resident.wait();
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    /// Stage-13 (D7) tiering PROBE — measures, does not gate: the
+    /// javadoc-writer fixture (N≥20 public symbols, 4 types) per tier with
+    /// identical gates; per-item pass rate = javadoc_lack count before vs
+    /// on the gated shadow after. Test-writer second probe: full D5 chain
+    /// per tier. Prints the table rows; sanity asserts only.
+    ///   JW_TIERS=claude-haiku-4-5,claude-sonnet-5 cargo test --lib tiering_probe -- --ignored --nocapture
+    #[cfg(unix)]
+    #[test]
+    #[ignore]
+    fn tiering_probe() {
+        let tiers: Vec<String> = std::env::var("JW_TIERS")
+            .unwrap_or_else(|_| "claude-haiku-4-5,claude-sonnet-5".into())
+            .split(',')
+            .map(str::to_string)
+            .collect();
+        let dir = unique_tempdir("tiering");
+        let (mut resident, url) = spawn_sandbox(&dir, "tier-token");
+        println!("sandbox: {url}");
+        let result = std::panic::catch_unwind(|| {
+            let exec = ResidentGateExecutor::new(url.clone(), "tier-token".into(), None);
+            for tier in &tiers {
+                // ---- probe 1: javadoc-writer ----
+                let fixture = dir.join(format!("jw-{tier}"));
+                copy_tree(
+                    &Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/javadoc-seat"),
+                    &fixture,
+                )
+                .unwrap();
+                exec.call_tool(
+                    "load_project",
+                    serde_json::json!({ "projectPath": fixture.to_string_lossy() }),
+                )
+                .expect("load");
+                let count_lack = |e: &ResidentGateExecutor| -> u64 {
+                    e.call_tool(
+                        "find_quality_issue",
+                        serde_json::json!({ "kind": "javadoc_lack" }),
+                    )
+                    .ok()
+                    .and_then(|v| {
+                        serde_json::from_str::<serde_json::Value>(&extract_tool_text(&v))
+                            .ok()?
+                            .pointer("/data/count")?
+                            .as_u64()
+                    })
+                    .unwrap_or(0)
+                };
+                let before = count_lack(&exec);
+                assert!(before >= 20, "fixture must carry ≥20 findings, has {before}");
+                let seat_text = fs::read_to_string(
+                    Path::new(env!("CARGO_MANIFEST_DIR")).join("../seats/javadoc-writer.md"),
+                )
+                .unwrap();
+                let seat = parse_seat_definition(&seat_text).unwrap();
+                let adapter = ClaudeCodeAdapter {
+                    model: Some(tier.clone()),
+                    max_turns: 8,
+                    ..Default::default()
+                };
+                let store = ResidentStoreRecorder {
+                    executor: ResidentGateExecutor::new(url.clone(), "tier-token".into(), None),
+                };
+                let request = RunRequest {
+                    seat: &seat,
+                    scope: vec!["src/main/java/".into()],
+                    workdir: fixture.clone(),
+                    runs_dir: dir.join("runs").join(format!("jw-{tier}")),
+                    journal_path: dir.join("journal.jsonl"),
+                    pre_detected: None,
+                };
+                let report = run_javadoc_writer(request, &exec, &adapter, &ShadowJavaGateExecutor {
+                    workdir: fixture.clone(),
+                }, &store)
+                .expect("run");
+                let (after, gates_green) = match (&report.verdict, &report.proposal_dir) {
+                    (Verdict::Proposed, Some(_)) => {
+                        // Count remaining findings on the GATED shadow.
+                        let diff_files: Vec<ProposalFile> = {
+                            // Re-read the staged files from the record's diff is
+                            // lossy; instead re-stage from the journal isn't
+                            // stored either — reparse the diff via shadow apply.
+                            Vec::new()
+                        };
+                        let _ = diff_files;
+                        let record = report.proposal_dir.as_ref().unwrap();
+                        let files_root = record.join("files");
+                        let mut staged: Vec<ProposalFile> = Vec::new();
+                        for f in ShadowJavaGateExecutor::java_files_under(&files_root) {
+                            staged.push(ProposalFile {
+                                path: f
+                                    .strip_prefix(&files_root)
+                                    .unwrap()
+                                    .to_string_lossy()
+                                    .into_owned(),
+                                content: fs::read_to_string(&f).unwrap(),
+                            });
+                        }
+                        let shadow =
+                            shadow_stage_files(&fixture, &staged).expect("shadow for count");
+                        exec.call_tool(
+                            "load_project",
+                            serde_json::json!({ "projectPath": shadow.to_string_lossy() }),
+                        )
+                        .expect("load shadow");
+                        let a = count_lack(&exec);
+                        let _ = fs::remove_dir_all(&shadow);
+                        (a, report.gates.iter().all(|g| g.passed))
+                    }
+                    _ => (before, false),
+                };
+                println!(
+                    "TIER-ROW javadoc-writer tier={tier} findings_before={before} after={after} items_fixed={} item_rate={:.0}% gates_all_green={} verdict={:?} cost=${:.3}",
+                    before - after,
+                    100.0 * (before - after) as f64 / before as f64,
+                    gates_green,
+                    report.verdict,
+                    report.cost_usd,
+                );
+
+                // ---- probe 2: test-writer (the D5 chain) ----
+                let tw_fixture = dir.join(format!("tw-{tier}"));
+                copy_tree(
+                    &Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/test-writer-seat"),
+                    &tw_fixture,
+                )
+                .unwrap();
+                exec.call_tool(
+                    "load_project",
+                    serde_json::json!({ "projectPath": tw_fixture.to_string_lossy() }),
+                )
+                .expect("load tw");
+                let baseline_tests = vec!["com.example.PricingTest".to_string()];
+                let mut gates = TestWriterGates {
+                    executor: ResidentGateExecutor::new(url.clone(), "tier-token".into(), None),
+                    workdir: tw_fixture.clone(),
+                    target_class: "com.example.Pricing".into(),
+                    baseline_tests: baseline_tests.clone(),
+                    baseline: TestWriterBaseline {
+                        lines_missed: 0,
+                        branches_missed: 0,
+                        mutants_killed: 0,
+                        mutants_surviving: 0,
+                    },
+                };
+                let (_, ok) = gates.run_suite_once("baseline", true);
+                assert!(ok);
+                let (lines, branches) = gates.missed_counts().unwrap();
+                let (killed, surviving) = gates.mutation_counts(&baseline_tests).unwrap();
+                gates.baseline = TestWriterBaseline {
+                    lines_missed: lines,
+                    branches_missed: branches,
+                    mutants_killed: killed,
+                    mutants_surviving: surviving,
+                };
+                let tw_seat_text = fs::read_to_string(
+                    Path::new(env!("CARGO_MANIFEST_DIR")).join("../seats/test-writer.md"),
+                )
+                .unwrap();
+                let tw_seat = parse_seat_definition(&tw_seat_text).unwrap();
+                let tw_request = RunRequest {
+                    seat: &tw_seat,
+                    scope: vec!["src/test/java/".into()],
+                    workdir: tw_fixture.clone(),
+                    runs_dir: dir.join("runs").join(format!("tw-{tier}")),
+                    journal_path: dir.join("journal.jsonl"),
+                    pre_detected: None,
+                };
+                let tw_report = run_test_writer(
+                    tw_request,
+                    &exec,
+                    &adapter,
+                    &gates,
+                    &store,
+                    "com.example.Pricing",
+                    &baseline_tests,
+                )
+                .expect("tw run");
+                let chain: Vec<String> = tw_report
+                    .gates
+                    .iter()
+                    .map(|g| format!("{}={}", g.name, if g.passed { "P" } else { "F" }))
+                    .collect();
+                println!(
+                    "TIER-ROW test-writer tier={tier} verdict={:?} chain=[{}] cost=${:.3}",
+                    tw_report.verdict,
+                    chain.join(","),
+                    tw_report.cost_usd,
+                );
+            }
         });
         let _ = resident.kill();
         let _ = resident.wait();

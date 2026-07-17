@@ -1,6 +1,7 @@
 ---
 name: profiler
-model: claude-sonnet-5
+model: claude-haiku-4-5
+# tier justification (C12: symbol-named report + percentiles + proven/inferred clean on the small tier)
 effort: low
 tools: []
 gates: []

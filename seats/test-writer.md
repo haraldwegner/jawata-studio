@@ -1,6 +1,7 @@
 ---
 name: test-writer
-model: claude-sonnet-5
+model: claude-haiku-4-5
+# tier justification (C13: full D5 chain green both probes (also C10 live) at 1/3 the cost)
 effort: low
 tools: []
 gates: [tests]

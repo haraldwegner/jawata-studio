@@ -1,6 +1,7 @@
 ---
 name: javadoc-writer
-model: claude-sonnet-5
+model: claude-haiku-4-5
+# tier justification (C13: 21/22 items (95%), all gates green at 1/5 the cost; the detector re-finds the tail next run)
 effort: low
 tools: []
 gates: [docs]
