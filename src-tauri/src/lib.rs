@@ -3,6 +3,7 @@ mod commands;
 mod config;
 mod gateway;
 mod lombok;
+mod conductor;
 mod manager_service;
 mod release_manager;
 mod resident;
