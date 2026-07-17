@@ -1661,6 +1661,298 @@ fn clip(s: &str, max: usize) -> &str {
 }
 
 // ============================================================
+// Seat harness: the test-writer (Stage 10, spec D5)
+// ============================================================
+
+/// Mutation/coverage numbers a test-writer run is judged against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TestWriterBaseline {
+    pub lines_missed: u64,
+    pub branches_missed: u64,
+    pub mutants_killed: u64,
+    pub mutants_surviving: u64,
+}
+
+/// The ordered D5 gate chain, judged on a SHADOW the sandbox resident
+/// re-loads as its project: compiles+passes → passes ×3 (flake screen) →
+/// coverage improves on the target class → mutation-bite (≥1 previously-
+/// surviving mutant killed). First failure stops the chain; a gate that
+/// cannot run (mutation machinery unreachable) FAILS loudly.
+pub struct TestWriterGates {
+    pub executor: ResidentGateExecutor,
+    pub workdir: PathBuf,
+    pub target_class: String,
+    pub baseline_tests: Vec<String>,
+    pub baseline: TestWriterBaseline,
+}
+
+impl TestWriterGates {
+    fn run_suite_once(&self, name: &str, coverage: bool) -> (GateOutcome, bool) {
+        let mut args = serde_json::json!({
+            "scope": { "kind": "package", "packageName": "com.example" },
+            "timeoutSeconds": 300,
+        });
+        if coverage {
+            args["coverage"] = serde_json::Value::Bool(true);
+        }
+        match self.executor.call_tool("run_tests", args) {
+            Ok(v) => {
+                let text = extract_tool_text(&v);
+                let d: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+                let passed = d.pointer("/data/summary/passed").and_then(|x| x.as_u64());
+                let failed = d.pointer("/data/summary/failed").and_then(|x| x.as_u64());
+                match (passed, failed) {
+                    (Some(p), Some(0)) if p > 0 => (
+                        GateOutcome::pass(GateClass::Tests, name, &format!("{p} passed, 0 failed")),
+                        true,
+                    ),
+                    (p, f) => (
+                        GateOutcome::fail(
+                            GateClass::Tests,
+                            name,
+                            &format!("passed={p:?} failed={f:?}: {}", clip(&text, 400)),
+                        ),
+                        false,
+                    ),
+                }
+            }
+            Err(e) => (GateOutcome::fail(GateClass::Tests, name, &e), false),
+        }
+    }
+
+    fn missed_counts(&self) -> Result<(u64, u64), String> {
+        let v = self.executor.call_tool(
+            "run_tests",
+            serde_json::json!({ "action": "coverage_uncovered", "target": self.target_class }),
+        )?;
+        let text = extract_tool_text(&v);
+        let d: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("uncovered parse: {e}"))?;
+        let mut lines = 0u64;
+        let mut branches = 0u64;
+        if let Some(facts) = d.pointer("/data/facts").and_then(|f| f.as_array()) {
+            for fact in facts {
+                if let Some(methods) = fact.get("methods").and_then(|m| m.as_array()) {
+                    for m in methods {
+                        lines += m.get("linesMissed").and_then(|x| x.as_u64()).unwrap_or(0);
+                        branches += m.get("branchesMissed").and_then(|x| x.as_u64()).unwrap_or(0);
+                    }
+                }
+            }
+        }
+        Ok((lines, branches))
+    }
+
+    fn mutation_counts(&self, tests: &[String]) -> Result<(u64, u64), String> {
+        let v = self.executor.call_tool(
+            "run_tests",
+            serde_json::json!({
+                "action": "coverage_mutation",
+                "targetClasses": [self.target_class],
+                "targetTests": tests,
+                "timeoutSeconds": 300,
+            }),
+        )?;
+        let text = extract_tool_text(&v);
+        let d: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("mutation parse: {e}"))?;
+        let killed = d
+            .pointer("/data/summary/killed")
+            .and_then(|x| x.as_u64())
+            .ok_or_else(|| format!("no killed count in: {}", clip(&text, 300)))?;
+        let survived = d
+            .pointer("/data/summary/survived")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        Ok((killed, survived))
+    }
+}
+
+/// Fully-qualified test class names of the proposal's test files.
+pub fn proposed_test_classes(proposal: &Proposal) -> Vec<String> {
+    proposal
+        .files
+        .iter()
+        .filter_map(|f| {
+            f.path
+                .strip_prefix("src/test/java/")
+                .and_then(|p| p.strip_suffix(".java"))
+                .map(|p| p.replace('/', "."))
+        })
+        .collect()
+}
+
+impl GateExecutor for TestWriterGates {
+    fn run_class(&self, class: GateClass, proposal: &Proposal) -> Vec<GateOutcome> {
+        match class {
+            GateClass::Always => {
+                // Compile-verify = the forked runner building + running the
+                // SHADOW (proposal staged, resident re-loaded onto it).
+                let shadow = match shadow_stage_files(&self.workdir, &proposal.files) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return vec![GateOutcome::fail(GateClass::Always, "shadow_stage", &e)]
+                    }
+                };
+                if let Err(e) = self.executor.call_tool(
+                    "load_project",
+                    serde_json::json!({ "projectPath": shadow.to_string_lossy() }),
+                ) {
+                    return vec![GateOutcome::fail(GateClass::Always, "shadow_load", &e)];
+                }
+                let (outcome, ok) = self.run_suite_once("compile_and_pass_1", false);
+                vec![GateOutcome {
+                    class: GateClass::Always,
+                    name: outcome.name,
+                    passed: ok,
+                    detail: outcome.detail,
+                }]
+            }
+            GateClass::Tests => {
+                let mut outcomes = Vec::new();
+                // pass ×3 total (flake screen) — run 1 was the Always gate.
+                for attempt in 2..=3u8 {
+                    let (outcome, ok) = self.run_suite_once(&format!("pass_{attempt}"), false);
+                    outcomes.push(outcome);
+                    if !ok {
+                        return outcomes;
+                    }
+                }
+                // Coverage must IMPROVE on the target class.
+                let (cov_gate, cov_ok) = match self
+                    .run_suite_once("coverage_run", true)
+                {
+                    (_, true) => match self.missed_counts() {
+                        Ok((lines, branches))
+                            if lines < self.baseline.lines_missed
+                                || branches < self.baseline.branches_missed =>
+                        {
+                            (
+                                GateOutcome::pass(
+                                    GateClass::Tests,
+                                    "coverage_improves",
+                                    &format!(
+                                        "missed lines {}→{lines}, branches {}→{branches}",
+                                        self.baseline.lines_missed, self.baseline.branches_missed
+                                    ),
+                                ),
+                                true,
+                            )
+                        }
+                        Ok((lines, branches)) => (
+                            GateOutcome::fail(
+                                GateClass::Tests,
+                                "coverage_improves",
+                                &format!(
+                                    "no improvement: missed lines {}→{lines}, branches {}→{branches}",
+                                    self.baseline.lines_missed, self.baseline.branches_missed
+                                ),
+                            ),
+                            false,
+                        ),
+                        Err(e) => (
+                            GateOutcome::fail(GateClass::Tests, "coverage_improves", &e),
+                            false,
+                        ),
+                    },
+                    (o, false) => (o, false),
+                };
+                outcomes.push(cov_gate);
+                if !cov_ok {
+                    return outcomes;
+                }
+                // Mutation-bite: ≥1 previously-surviving mutant killed.
+                let mut tests = self.baseline_tests.clone();
+                tests.extend(proposed_test_classes(proposal));
+                outcomes.push(match self.mutation_counts(&tests) {
+                    Ok((killed, survived)) if killed > self.baseline.mutants_killed => {
+                        GateOutcome::pass(
+                            GateClass::Tests,
+                            "mutation_bite",
+                            &format!(
+                                "killed {}→{killed}, surviving {}→{survived}",
+                                self.baseline.mutants_killed, self.baseline.mutants_surviving
+                            ),
+                        )
+                    }
+                    Ok((killed, survived)) => GateOutcome::fail(
+                        GateClass::Tests,
+                        "mutation_bite",
+                        &format!(
+                            "no new kills: killed {}→{killed}, surviving {}→{survived}",
+                            self.baseline.mutants_killed, self.baseline.mutants_surviving
+                        ),
+                    ),
+                    // No mutation support / unreachable machinery = LOUD stop,
+                    // never a silently-green gate (the degraded-and-declared branch).
+                    Err(e) => GateOutcome::fail(GateClass::Tests, "mutation_bite", &e),
+                });
+                outcomes
+            }
+            other => vec![GateOutcome::fail(
+                other,
+                "test_writer_gates",
+                "class not part of the test-writer chain",
+            )],
+        }
+    }
+}
+
+/// Detector-driven test-writer run: coverage_uncovered + the mutation
+/// survivors' candidate assertions ARE the work list; sources ride as facts.
+pub fn run_test_writer(
+    mut request: RunRequest,
+    detector: &ResidentGateExecutor,
+    adapter: &dyn CliAdapter,
+    gates: &dyn GateExecutor,
+    store: &dyn StoreRecorder,
+    target_class: &str,
+    baseline_tests: &[String],
+) -> Result<RunReport, String> {
+    let uncovered = detector.call_tool(
+        "run_tests",
+        serde_json::json!({ "action": "coverage_uncovered", "target": target_class }),
+    )?;
+    let uncovered_text = extract_tool_text(&uncovered);
+    let mutation = detector.call_tool(
+        "run_tests",
+        serde_json::json!({
+            "action": "coverage_mutation",
+            "targetClasses": [target_class],
+            "targetTests": baseline_tests,
+            "timeoutSeconds": 300,
+        }),
+    )?;
+    let mutation_text = extract_tool_text(&mutation);
+    let mut facts = format!(
+        "== UNCOVERED (JaCoCo, per method) ==\n{}\n\n== SURVIVING MUTANTS (PIT — each names a missing assertion) ==\n{}\n\n== SOURCES ==\n",
+        clip(&uncovered_text, 15_000),
+        clip(&mutation_text, 15_000)
+    );
+    {
+        let src_root = request.workdir.join("src");
+        for file in ShadowJavaGateExecutor::java_files_under(&src_root) {
+            if let Ok(src) = fs::read_to_string(&file) {
+                let rel = file
+                    .strip_prefix(&request.workdir)
+                    .unwrap_or(&file)
+                    .to_path_buf();
+                facts.push_str(&format!("\n--- {} ---\n{src}\n", rel.display()));
+            }
+        }
+    }
+    request.pre_detected = Some(PreDetected {
+        work: format!(
+            "write characterization tests for {target_class} covering the uncovered \
+             branches and killing surviving mutants; pin actual behavior; ambiguous \
+             intent (scale) → pin-and-flag"
+        ),
+        facts: clip(&facts, 60_000).to_string(),
+    });
+    run_seat(&request, adapter, gates, store)
+}
+
+// ============================================================
 // Seat discovery + the manager's scheduler machinery
 // ============================================================
 
@@ -2542,6 +2834,195 @@ You are the echo seat. You document what you are told to document.
             assert!(
                 recalled_text.contains("seat javadoc-writer"),
                 "store outcome present: {recalled_text}"
+            );
+        });
+
+        let _ = resident.kill();
+        let _ = resident.wait();
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    /// LIVE Stage-10 gate (C10): the test-writer seat against the sandbox
+    /// resident's coverage + mutation machinery. Run explicitly:
+    ///   cargo test --lib test_writer_live -- --ignored --nocapture
+    #[cfg(unix)]
+    #[test]
+    #[ignore]
+    fn test_writer_live_run() {
+        let jar = std::env::var("JAWATA_JAR").unwrap_or_else(|_| {
+            format!(
+                "{}/.cache/jawata-studio/tools/jawata/current/jawata-v2.14.1/jawata.jar",
+                std::env::var("HOME").unwrap()
+            )
+        });
+        assert!(Path::new(&jar).is_file(), "no jawata jar at {jar}");
+        let dir = unique_tempdir("tw-live");
+        let fixture_dir = dir.join("fixture");
+        let repo_fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/test-writer-seat");
+        copy_tree(&repo_fixture, &fixture_dir).unwrap();
+
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let token = "tw-live-test-token";
+        let mut resident = Command::new("java")
+            .arg(format!(
+                "-Djawata.experience.shared.dir={}",
+                dir.join("store").display()
+            ))
+            .arg("-jar")
+            .arg(&jar)
+            .arg("-data")
+            .arg(dir.join("ws"))
+            .arg("-port")
+            .arg(port.to_string())
+            .arg("-token")
+            .arg(token)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("resident spawn");
+        let stdout = resident.stdout.take().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                if line.contains("READY") {
+                    let _ = ready_tx.send(line);
+                }
+            }
+        });
+        let ready = ready_rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("resident never became READY");
+        let url = format!(
+            "{}/mcp",
+            ready
+                .split_whitespace()
+                .find_map(|t| t.strip_prefix("url="))
+                .expect("READY url=")
+                .trim_end_matches('/')
+        );
+        println!("sandbox resident: {url}");
+
+        let result = std::panic::catch_unwind(|| {
+            let exec = ResidentGateExecutor::new(url.clone(), token.into(), None);
+            exec.call_tool(
+                "load_project",
+                serde_json::json!({ "projectPath": fixture_dir.to_string_lossy() }),
+            )
+            .expect("load_project");
+
+            // --- baselines on the ORIGINAL fixture ---
+            let baseline_tests = vec!["com.example.PricingTest".to_string()];
+            let mut gates = TestWriterGates {
+                executor: ResidentGateExecutor::new(url.clone(), token.into(), None),
+                workdir: fixture_dir.clone(),
+                target_class: "com.example.Pricing".into(),
+                baseline_tests: baseline_tests.clone(),
+                baseline: TestWriterBaseline {
+                    lines_missed: 0,
+                    branches_missed: 0,
+                    mutants_killed: 0,
+                    mutants_surviving: 0,
+                },
+            };
+            let (b1, ok) = gates.run_suite_once("baseline_coverage_run", true);
+            assert!(ok, "baseline coverage run: {}", b1.detail);
+            let (lines, branches) = gates.missed_counts().expect("baseline uncovered");
+            let (killed, surviving) = gates.mutation_counts(&baseline_tests).expect("baseline pit");
+            println!(
+                "baseline: missed lines={lines} branches={branches}, killed={killed} surviving={surviving}"
+            );
+            assert!(lines > 0 && surviving > 0, "fixture must have real gaps");
+            gates.baseline = TestWriterBaseline {
+                lines_missed: lines,
+                branches_missed: branches,
+                mutants_killed: killed,
+                mutants_surviving: surviving,
+            };
+
+            let seat_text = fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../seats/test-writer.md"),
+            )
+            .expect("seat definition");
+            let seat = parse_seat_definition(&seat_text).expect("seat parses");
+            let request = RunRequest {
+                seat: &seat,
+                scope: vec!["src/test/java/".into()],
+                workdir: fixture_dir.clone(),
+                runs_dir: dir.join("runs"),
+                journal_path: dir.join("journal.jsonl"),
+                pre_detected: None,
+            };
+            let live_model = std::env::var("JW_MODEL").unwrap_or_else(|_| seat.model.clone());
+            println!("live model tier: {live_model}");
+            let adapter = ClaudeCodeAdapter {
+                model: Some(live_model),
+                max_turns: 8,
+                ..Default::default()
+            };
+            let store = ResidentStoreRecorder {
+                executor: ResidentGateExecutor::new(url.clone(), token.into(), None),
+            };
+            let original =
+                fs::read_to_string(fixture_dir.join("src/main/java/com/example/Pricing.java"))
+                    .unwrap();
+
+            let report = run_test_writer(
+                request,
+                &exec,
+                &adapter,
+                &gates,
+                &store,
+                "com.example.Pricing",
+                &baseline_tests,
+            )
+            .expect("run");
+            println!("verdict: {:?}, cost: {}", report.verdict, report.cost_usd);
+            for g in &report.gates {
+                println!("gate {:?}/{}: {} — {}", g.class, g.name, g.passed, g.detail);
+            }
+
+            // --- C10 assertions: the ordered gate chain, all green ---
+            assert_eq!(report.verdict, Verdict::Proposed, "gates: {:?}", report.gates);
+            let names: Vec<&str> = report.gates.iter().map(|g| g.name.as_str()).collect();
+            for expected in [
+                "purity",
+                "compile_and_pass_1",
+                "pass_2",
+                "pass_3",
+                "coverage_improves",
+                "mutation_bite",
+            ] {
+                assert!(names.contains(&expected), "gate {expected} missing: {names:?}");
+            }
+            assert!(report.gates.iter().all(|g| g.passed));
+            // Ambiguous intent pinned AND flagged.
+            let record = report.proposal_dir.expect("record");
+            let diff = fs::read_to_string(record.join("diff.patch")).unwrap();
+            assert!(
+                diff.contains("FLAGGED"),
+                "ambiguous scale() tests must carry the FLAGGED marker:\n{diff}"
+            );
+            // Propose mode: production source untouched.
+            assert_eq!(
+                fs::read_to_string(fixture_dir.join("src/main/java/com/example/Pricing.java"))
+                    .unwrap(),
+                original
+            );
+            // Store outcome present.
+            let recalled = exec
+                .call_tool("experience", serde_json::json!({ "kind": "list", "limit": 10 }))
+                .expect("experience list");
+            assert!(
+                extract_tool_text(&recalled).contains("seat test-writer"),
+                "store outcome present"
             );
         });
 
