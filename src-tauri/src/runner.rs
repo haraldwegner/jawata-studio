@@ -1953,6 +1953,49 @@ pub fn run_test_writer(
 }
 
 // ============================================================
+// Advisory seats (Stage 11): the report IS the product
+// ============================================================
+
+/// Gate executor for ADVISORY seats (the architect): the proposal is a
+/// report file, not a code change — compile/test gates don't apply; purity
+/// still confines the seat to its report path.
+pub struct AdvisoryGateExecutor;
+
+impl GateExecutor for AdvisoryGateExecutor {
+    fn run_class(&self, class: GateClass, _proposal: &Proposal) -> Vec<GateOutcome> {
+        match class {
+            GateClass::Always => vec![GateOutcome::pass(
+                GateClass::Always,
+                "advisory",
+                "advisory seat — the report is the product, no code changes to verify",
+            )],
+            other => vec![GateOutcome::fail(
+                other,
+                "advisory",
+                "advisory seats declare no verification gate classes",
+            )],
+        }
+    }
+}
+
+/// One scheduler tick: fires `on_due` for every seat whose cron schedule
+/// matches the given wall-clock minute — the manager's loop calls this once
+/// per minute; tests call it with a fixed clock.
+pub fn scheduler_tick<F: FnMut(&SeatDefinition)>(
+    seats: &[SeatDefinition],
+    minute: u32,
+    hour: u32,
+    dom: u32,
+    mon: u32,
+    dow: u32,
+    mut on_due: F,
+) {
+    for seat in due_seats(seats, minute, hour, dom, mon, dow) {
+        on_due(seat);
+    }
+}
+
+// ============================================================
 // Seat discovery + the manager's scheduler machinery
 // ============================================================
 
@@ -3024,6 +3067,232 @@ You are the echo seat. You document what you are told to document.
                 extract_tool_text(&recalled).contains("seat test-writer"),
                 "store outcome present"
             );
+        });
+
+        let _ = resident.kill();
+        let _ = resident.wait();
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    /// LIVE Stage-11 gate (C11, fixture half): the architect seat — seeded
+    /// smells swept through the resident, ad-hoc AND schedule-triggered
+    /// runs, baseline trend, checkpoint-diff review, dispatch + noise
+    /// budget + decay-by-record. Run explicitly:
+    ///   cargo test --lib architect_live -- --ignored --nocapture
+    #[cfg(unix)]
+    #[test]
+    #[ignore]
+    fn architect_live_run() {
+        let jar = std::env::var("JAWATA_JAR").unwrap_or_else(|_| {
+            format!(
+                "{}/.cache/jawata-studio/tools/jawata/current/jawata-v2.14.1/jawata.jar",
+                std::env::var("HOME").unwrap()
+            )
+        });
+        let dir = unique_tempdir("arch-live");
+        let fixture_dir = dir.join("fixture");
+        copy_tree(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/architect-seat"),
+            &fixture_dir,
+        )
+        .unwrap();
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let token = "arch-live-test-token";
+        let mut resident = Command::new("java")
+            .arg(format!(
+                "-Djawata.experience.shared.dir={}",
+                dir.join("store").display()
+            ))
+            .arg("-jar")
+            .arg(&jar)
+            .arg("-data")
+            .arg(dir.join("ws"))
+            .arg("-port")
+            .arg(port.to_string())
+            .arg("-token")
+            .arg(token)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("resident spawn");
+        let stdout = resident.stdout.take().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                if line.contains("READY") {
+                    let _ = ready_tx.send(line);
+                }
+            }
+        });
+        let ready = ready_rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("resident READY");
+        let url = format!(
+            "{}/mcp",
+            ready
+                .split_whitespace()
+                .find_map(|t| t.strip_prefix("url="))
+                .unwrap()
+                .trim_end_matches('/')
+        );
+        println!("sandbox resident: {url}");
+
+        let result = std::panic::catch_unwind(|| {
+            let exec = ResidentGateExecutor::new(url.clone(), token.into(), None);
+            exec.call_tool(
+                "load_project",
+                serde_json::json!({ "projectPath": fixture_dir.to_string_lossy() }),
+            )
+            .expect("load_project");
+
+            // --- sweep + baseline trend machinery (save → diff) ---
+            let sweep = |args: serde_json::Value| -> String {
+                extract_tool_text(&exec.call_tool("find_quality_issue", args).expect("sweep"))
+            };
+            let fowler_save =
+                sweep(serde_json::json!({ "family": "fowler", "baseline": "save", "summary": true }));
+            let fowler = sweep(serde_json::json!({ "family": "fowler", "limit": 40 }));
+            let solid = sweep(serde_json::json!({ "family": "solid", "limit": 40 }));
+            let type_code = sweep(serde_json::json!({ "kind": "type_code" }));
+            let trend =
+                sweep(serde_json::json!({ "family": "fowler", "baseline": "diff", "summary": true }));
+            println!("baseline save: {}", clip(&fowler_save, 150));
+            println!("trend diff: {}", clip(&trend, 300));
+            assert!(
+                fowler.contains("LegacyOrderService") || type_code.contains("LegacyOrderService"),
+                "seeded smells must be found"
+            );
+
+            // --- decay-by-record: a previously-declined proposal in the store ---
+            exec.call_tool(
+                "experience",
+                serde_json::json!({
+                    "kind": "record", "type": "seat_triage", "status": "accepted",
+                    "summary": "DECLINED (human triage): rewrite ReportFacade.header formatting — declined as cosmetic, target unchanged since",
+                    "operation": "seat:architect",
+                }),
+            )
+            .expect("record declined");
+            let recalled = extract_tool_text(
+                &exec
+                    .call_tool(
+                        "experience",
+                        serde_json::json!({ "kind": "recall", "operation": "seat:architect", "format": "text" }),
+                    )
+                    .expect("recall"),
+            );
+
+            // --- checkpoint-diff review material (a REAL diff of this sprint) ---
+            let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+            let diff_out = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .arg("show")
+                .arg("--stat")
+                .arg("-U3")
+                .arg("a46d3d1")
+                .output()
+                .expect("git show");
+            let checkpoint_diff = String::from_utf8_lossy(&diff_out.stdout).into_owned();
+
+            // --- facts + sources ---
+            let mut facts = format!(
+                "== SWEEP: fowler ==\n{}\n\n== SWEEP: solid ==\n{}\n\n== SWEEP: type_code ==\n{}\n\n\
+                 == TREND (baseline=diff since the saved anchor) ==\n{}\n\n\
+                 == PRIOR TRIAGE RECORDS (decay-by-record) ==\n{}\n\n\
+                 == CHECKPOINT DIFF UNDER REVIEW (commit a46d3d1) ==\n{}\n\n== SOURCES ==\n",
+                clip(&fowler, 8_000),
+                clip(&solid, 8_000),
+                clip(&type_code, 4_000),
+                clip(&trend, 2_000),
+                clip(&recalled, 2_000),
+                clip(&checkpoint_diff, 12_000),
+            );
+            for file in ShadowJavaGateExecutor::java_files_under(&fixture_dir.join("src")) {
+                if let Ok(src) = fs::read_to_string(&file) {
+                    facts.push_str(&format!(
+                        "\n--- {} ---\n{src}\n",
+                        file.strip_prefix(&fixture_dir).unwrap().display()
+                    ));
+                }
+            }
+
+            let seat_text = fs::read_to_string(repo.join("seats/architect.md")).unwrap();
+            let seat = parse_seat_definition(&seat_text).expect("seat parses");
+            let live_model = std::env::var("JW_MODEL").unwrap_or_else(|_| seat.model.clone());
+            println!("live model tier: {live_model}");
+            let adapter = ClaudeCodeAdapter {
+                model: Some(live_model),
+                max_turns: 8,
+                ..Default::default()
+            };
+            let store = ResidentStoreRecorder {
+                executor: ResidentGateExecutor::new(url.clone(), token.into(), None),
+            };
+            let run_architect = |label: &str| -> RunReport {
+                let request = RunRequest {
+                    seat: &seat,
+                    scope: vec!["ARCHITECT-REPORT".into()],
+                    workdir: fixture_dir.clone(),
+                    runs_dir: dir.join("runs").join(label),
+                    journal_path: dir.join("journal.jsonl"),
+                    pre_detected: Some(PreDetected {
+                        work: "triage the sweep, dispatch actuators, review the checkpoint diff"
+                            .into(),
+                        facts: clip(&facts, 60_000).to_string(),
+                    }),
+                };
+                run_seat(&request, &adapter, &AdvisoryGateExecutor, &store).expect("run")
+            };
+
+            // --- run 1: AD-HOC ---
+            let adhoc = run_architect("adhoc");
+            println!("ad-hoc verdict: {:?}, cost {}", adhoc.verdict, adhoc.cost_usd);
+            assert_eq!(adhoc.verdict, Verdict::Proposed, "gates: {:?}", adhoc.gates);
+            let report = fs::read_to_string(
+                adhoc.proposal_dir.as_ref().unwrap().join("diff.patch"),
+            )
+            .unwrap();
+            println!("--- report (excerpt) ---\n{}", clip(&report, 1_800));
+            assert!(report.contains("ReportFacade"), "incomplete delegation named");
+            assert!(report.contains("LegacyOrderService"), "seeded smells named");
+            assert!(
+                report.to_lowercase().contains("plan"),
+                "a refactoring-plan dispatch named"
+            );
+            assert!(
+                report.to_lowercase().contains("declined")
+                    || report.to_lowercase().contains("skipped"),
+                "decay-by-record honored in the report"
+            );
+
+            // --- run 2: SCHEDULE-TRIGGERED (the manager-honored cadence) ---
+            let seats = vec![seat.clone()];
+            let mut fired = 0u32;
+            scheduler_tick(&seats, 0, 6, 17, 7, 5, |due| {
+                assert_eq!(due.name, "architect");
+                fired += 1;
+                let scheduled = run_architect("scheduled");
+                assert_eq!(scheduled.verdict, Verdict::Proposed);
+            });
+            assert_eq!(fired, 1, "the 0 6 * * * schedule fires at 06:00");
+
+            // Both runs journaled + in the store.
+            let journal = fs::read_to_string(dir.join("journal.jsonl")).unwrap();
+            assert_eq!(journal.lines().count(), 2, "two runs journaled");
+            let listed = extract_tool_text(
+                &exec
+                    .call_tool("experience", serde_json::json!({ "kind": "list", "limit": 20 }))
+                    .unwrap(),
+            );
+            assert!(listed.contains("seat architect"));
         });
 
         let _ = resident.kill();
