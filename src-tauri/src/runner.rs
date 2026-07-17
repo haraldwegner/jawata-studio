@@ -247,32 +247,137 @@ fn parse_inline_list(value: &str) -> Result<Vec<String>, String> {
 pub struct Proposal {
     /// The one-line work description from the DETECT phase.
     pub work: String,
-    /// Prose the seat emitted before the diff markers — its evidence.
+    /// Prose the seat emitted before the proposal markers — its evidence.
     pub evidence: String,
-    /// The unified diff between the markers, verbatim.
+    /// The unified diff. In FILE-BLOCK mode (preferred) the RUNNER computes
+    /// it deterministically from the emitted files; in legacy diff mode it
+    /// is the seat's verbatim diff. Either way it is what the human reads.
     pub diff: String,
-    /// Files the diff touches (parsed from `+++ b/…` / `--- a/…` headers).
+    /// FILE-BLOCK mode: full new contents per touched file. Models are
+    /// reliable at whole files and notoriously unreliable at hunk headers —
+    /// live C9 produced miscounted AND overlapping hunks before this.
+    pub files: Vec<ProposalFile>,
+    /// Files the proposal touches.
     pub touched_files: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProposalFile {
+    pub path: String,
+    pub content: String,
+}
+
+pub const FILE_BLOCK_PREFIX: &str = "===FILE:";
+pub const FILE_BLOCK_SUFFIX: &str = "===";
+pub const FILE_BLOCK_END: &str = "===END-FILE===";
+
 /// Extracts the proposal block from a DO-phase answer. `None` when the
 /// markers are missing or empty — the caller refuses with the reason.
+/// FILE-BLOCK mode is detected by `===FILE:` inside the markers; otherwise
+/// the body is treated as a legacy unified diff.
 pub fn parse_proposal(work: &str, text: &str) -> Option<Proposal> {
     let begin = text.find(PROPOSAL_BEGIN)?;
     let after_begin = begin + PROPOSAL_BEGIN.len();
     let end_rel = text[after_begin..].find(PROPOSAL_END)?;
-    let diff = text[after_begin..after_begin + end_rel].trim().to_string();
-    if diff.is_empty() {
+    let body = text[after_begin..after_begin + end_rel].trim().to_string();
+    if body.is_empty() {
         return None;
     }
     let evidence = text[..begin].trim().to_string();
-    let touched_files = touched_files_of(&diff);
+    if body.contains(FILE_BLOCK_PREFIX) {
+        let files = parse_file_blocks(&body)?;
+        if files.is_empty() {
+            return None;
+        }
+        let touched_files = files.iter().map(|f| f.path.clone()).collect();
+        return Some(Proposal {
+            work: work.to_string(),
+            evidence,
+            diff: String::new(), // computed by the runner against the workdir
+            files,
+            touched_files,
+        });
+    }
+    let touched_files = touched_files_of(&body);
     Some(Proposal {
         work: work.to_string(),
         evidence,
-        diff,
+        diff: body,
+        files: Vec::new(),
         touched_files,
     })
+}
+
+fn parse_file_blocks(body: &str) -> Option<Vec<ProposalFile>> {
+    let mut files = Vec::new();
+    let mut rest = body;
+    while let Some(start) = rest.find(FILE_BLOCK_PREFIX) {
+        let after = &rest[start + FILE_BLOCK_PREFIX.len()..];
+        let header_end = after.find(FILE_BLOCK_SUFFIX)?;
+        let path = after[..header_end].trim().to_string();
+        let content_start = header_end + FILE_BLOCK_SUFFIX.len();
+        let content_area = &after[content_start..];
+        let end = content_area.find(FILE_BLOCK_END)?;
+        let mut content = content_area[..end]
+            .trim_start_matches(['\r', '\n'])
+            .trim_end()
+            .to_string();
+        content.push('\n');
+        if path.is_empty() || path.contains("..") || path.starts_with('/') {
+            return None; // a traversal-shaped path refuses the whole block
+        }
+        files.push(ProposalFile { path, content });
+        rest = &content_area[end + FILE_BLOCK_END.len()..];
+    }
+    Some(files)
+}
+
+/// Computes the record diff for a FILE-BLOCK proposal: stage the files in a
+/// shadow, `git diff --no-index` old vs new per file. Deterministic — the
+/// human reads a real diff regardless of how the seat expressed the change.
+pub fn compute_files_diff(workdir: &Path, files: &[ProposalFile]) -> String {
+    let mut out = String::new();
+    for file in files {
+        let old = workdir.join(&file.path);
+        let tmp = std::env::temp_dir().join(format!(
+            "jawata-newfile-{}-{}",
+            std::process::id(),
+            out.len()
+        ));
+        if fs::write(&tmp, &file.content).is_err() {
+            continue;
+        }
+        let output = Command::new("git")
+            .arg("diff")
+            .arg("--no-index")
+            .arg("--")
+            .arg(if old.is_file() {
+                old.as_os_str().to_os_string()
+            } else {
+                std::ffi::OsString::from("/dev/null")
+            })
+            .arg(&tmp)
+            .output();
+        if let Ok(o) = output {
+            let text = String::from_utf8_lossy(&o.stdout).into_owned();
+            // Rewrite the temp/abs headers to repo-relative a/ b/ paths.
+            for line in text.lines() {
+                if line.starts_with("--- ") {
+                    out.push_str(&format!("--- a/{}\n", file.path));
+                } else if line.starts_with("+++ ") {
+                    out.push_str(&format!("+++ b/{}\n", file.path));
+                } else if line.starts_with("diff --git") || line.starts_with("index ") {
+                    // drop the synthetic header lines
+                } else {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        }
+        let _ = fs::remove_file(&tmp);
+    }
+    out
 }
 
 fn touched_files_of(diff: &str) -> Vec<String> {
@@ -605,6 +710,7 @@ impl CliAdapter for ClaudeCodeAdapter {
             .arg(prompt)
             .arg("--output-format")
             .arg("stream-json")
+            .arg("--verbose")
             .arg("--max-turns")
             .arg(self.max_turns.to_string());
         if let Some(model) = &self.model {
@@ -624,11 +730,24 @@ impl CliAdapter for ClaudeCodeAdapter {
     fn parse_text(&self, line: &str) -> Option<String> {
         let value: serde_json::Value = serde_json::from_str(line).ok()?;
         match value.get("type")?.as_str()? {
+            // The final result event carries the whole answer.
             "result" => value.get("result")?.as_str().map(str::to_string),
-            "assistant" => value
-                .pointer("/message/content/0/text")
-                .and_then(|t| t.as_str())
-                .map(str::to_string),
+            // Assistant events: content is an ARRAY that may open with a
+            // `thinking` block — collect every `text` entry, not just [0].
+            "assistant" => {
+                let parts: Vec<&str> = value
+                    .pointer("/message/content")?
+                    .as_array()?
+                    .iter()
+                    .filter(|c| c.get("type").and_then(|t| t.as_str()) == Some("text"))
+                    .filter_map(|c| c.get("text").and_then(|t| t.as_str()))
+                    .collect();
+                if parts.is_empty() {
+                    None
+                } else {
+                    Some(parts.join("\n"))
+                }
+            }
             _ => None,
         }
     }
@@ -812,6 +931,19 @@ pub struct RunRequest<'a> {
     pub runs_dir: PathBuf,
     /// The journal jsonl (appended once per run).
     pub journal_path: PathBuf,
+    /// Detector-driven detection (Stage 9+): when a deterministic detector
+    /// (e.g. `javadoc_lack` through the resident) already found the work,
+    /// the adapter DETECT phase is skipped and the DO prompt carries the
+    /// detector's findings as COMPILER FACTS — grounded generation.
+    pub pre_detected: Option<PreDetected>,
+}
+
+/// Work found by a deterministic detector before the run: the one-line
+/// work item plus the raw findings the DO prompt embeds as ground truth.
+#[derive(Debug, Clone)]
+pub struct PreDetected {
+    pub work: String,
+    pub facts: String,
 }
 
 /// One journal line — Sprint 26's corpus shape. `human_verdict` is null at
@@ -916,46 +1048,63 @@ pub fn run_seat(
         }
         iterations += 1;
 
-        // --- DETECT ---
-        let detect_prompt = format!(
-            "{stance}\n\n== PHASE: DETECT ==\nWork scope (the ONLY files you may touch): {scope:?}.\n\
-             Inspect the scope and answer with exactly one line:\n\
-             either 'WORK: <one-line description of the single next work item>'\n\
-             or '{nothing}' if the scope needs nothing.",
-            stance = request.seat.stance,
-            scope = request.scope,
-            nothing = NOTHING_TO_DO,
-        );
-        let detect = run_phase(adapter, &detect_prompt, &request.workdir, deadline)?;
-        cost_total += detect.cost_usd;
-        if detect.reaped {
-            verdict = Verdict::Reaped(CeilingKind::WallTtl.as_str().into());
-            break;
+        // --- DETECT (adapter-driven, unless a detector already found it) ---
+        let mut facts = String::new();
+        if let Some(pre) = &request.pre_detected {
+            work_line = pre.work.clone();
+            facts = pre.facts.clone();
+        } else {
+            let detect_prompt = format!(
+                "{stance}\n\n== PHASE: DETECT ==\nWork scope (the ONLY files you may touch): {scope:?}.\n\
+                 Inspect the scope and answer with exactly one line:\n\
+                 either 'WORK: <one-line description of the single next work item>'\n\
+                 or '{nothing}' if the scope needs nothing.",
+                stance = request.seat.stance,
+                scope = request.scope,
+                nothing = NOTHING_TO_DO,
+            );
+            let detect = run_phase(adapter, &detect_prompt, &request.workdir, deadline)?;
+            cost_total += detect.cost_usd;
+            if detect.reaped {
+                verdict = Verdict::Reaped(CeilingKind::WallTtl.as_str().into());
+                break;
+            }
+            if cost_total > request.seat.ceilings.cost_budget_usd {
+                verdict = Verdict::Reaped(CeilingKind::CostBudget.as_str().into());
+                break;
+            }
+            if detect.text.contains(NOTHING_TO_DO) {
+                verdict = Verdict::NothingToDo;
+                break;
+            }
+            work_line = detect
+                .text
+                .lines()
+                .find_map(|l| l.trim().strip_prefix(WORK_PREFIX).map(|w| w.trim().to_string()))
+                .unwrap_or_else(|| "unspecified work item".into());
         }
-        if cost_total > request.seat.ceilings.cost_budget_usd {
-            verdict = Verdict::Reaped(CeilingKind::CostBudget.as_str().into());
-            break;
-        }
-        if detect.text.contains(NOTHING_TO_DO) {
-            verdict = Verdict::NothingToDo;
-            break;
-        }
-        work_line = detect
-            .text
-            .lines()
-            .find_map(|l| l.trim().strip_prefix(WORK_PREFIX).map(|w| w.trim().to_string()))
-            .unwrap_or_else(|| "unspecified work item".into());
 
         // --- DO ---
+        let facts_block = if facts.is_empty() {
+            String::new()
+        } else {
+            format!("\n== COMPILER FACTS (ground truth — never contradict) ==\n{facts}\n")
+        };
         let do_prompt = format!(
-            "{stance}\n\n== PHASE: PROPOSE ==\nWork item: {work}.\n\
-             Produce ONE unified diff implementing exactly this work item, touching only\n\
-             files under {scope:?}. First state your evidence (what you read, why the\n\
-             change is right), then emit the diff between the markers:\n\
-             {begin}\n<unified diff>\n{end}\n\
-             DO NOT apply anything — the diff is a PROPOSAL for a human.",
+            "{stance}\n\n== PHASE: PROPOSE ==\nWork item: {work}.\n{facts_block}\
+             Implement exactly this work item, touching only files under {scope:?}.\n\
+             First state your evidence (what you read, why the change is right), then\n\
+             emit the COMPLETE NEW CONTENT of every file you change — never a diff —\n\
+             between the markers, one block per file:\n\
+             {begin}\n\
+             ===FILE: relative/path/File.java===\n\
+             <the file's full new content>\n\
+             ===END-FILE===\n\
+             {end}\n\
+             DO NOT apply anything — this is a PROPOSAL for a human.",
             stance = request.seat.stance,
             work = work_line,
+            facts_block = facts_block,
             scope = request.scope,
             begin = PROPOSAL_BEGIN,
             end = PROPOSAL_END,
@@ -970,15 +1119,22 @@ pub fn run_seat(
             verdict = Verdict::Reaped(CeilingKind::CostBudget.as_str().into());
             break;
         }
-        let proposal = match parse_proposal(&work_line, &do_phase.text) {
+        let mut proposal = match parse_proposal(&work_line, &do_phase.text) {
             Some(p) => p,
             None => {
                 verdict = Verdict::Refused(
                     "DO phase produced no proposal block between the markers".into(),
                 );
+                // Keep the raw phase output — the refusal must be diagnosable.
+                let raw = request.runs_dir.join(&run_id).join("do-phase-raw.txt");
+                let _ = fs::create_dir_all(raw.parent().unwrap_or(&request.runs_dir));
+                let _ = fs::write(&raw, &do_phase.text);
                 break;
             }
         };
+        if !proposal.files.is_empty() {
+            proposal.diff = compute_files_diff(&request.workdir, &proposal.files);
+        }
         evidence = proposal.evidence.clone();
 
         // --- VERIFY: purity first (local), then the gate classes ---
@@ -1186,6 +1342,321 @@ impl Schedule {
             CronField::Exact(n) => *n == v,
             CronField::Step(n) => *n != 0 && v % n == 0,
         })
+    }
+}
+
+/// Journals + store-records a run the harness short-circuited (its
+/// detector found nothing) — negatives are corpus rows too.
+pub fn journal_nothing_to_do(
+    request: &RunRequest,
+    adapter_name: &str,
+    store: &dyn StoreRecorder,
+) -> Result<RunReport, String> {
+    let run_id = new_run_id(&request.seat.name);
+    let entry = JournalEntry {
+        schema: JOURNAL_SCHEMA,
+        ts: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        run_id: run_id.clone(),
+        seat: request.seat.name.clone(),
+        model: request.seat.model.clone(),
+        adapter: adapter_name.to_string(),
+        target: request.scope.join(","),
+        work: String::new(),
+        evidence: "detector found no work".into(),
+        gates: vec![],
+        verdict: Verdict::NothingToDo,
+        human_verdict: None,
+        outcome: "nothing_to_do".into(),
+        cost_usd: 0.0,
+        iterations: 0,
+        wall_secs: 0,
+    };
+    append_journal(&request.journal_path, &entry)?;
+    let _ = store.record_outcome(&entry);
+    Ok(RunReport {
+        run_id,
+        verdict: Verdict::NothingToDo,
+        gates: vec![],
+        proposal_dir: None,
+        cost_usd: 0.0,
+        iterations: 0,
+    })
+}
+
+// ============================================================
+// Shadow gates — gates judge the PROPOSED state, not the workdir
+// ============================================================
+
+/// Copies the workdir to a temp shadow and applies the proposal diff there
+/// (`patch -p1`). Propose mode stays intact: the real workdir is never
+/// touched; gates run against the shadow — the future the human would get.
+pub fn shadow_apply(workdir: &Path, diff: &str) -> Result<PathBuf, String> {
+    let shadow = shadow_dir_name();
+    copy_tree(workdir, &shadow)?;
+    let mut diff_text = diff.to_string();
+    if !diff_text.ends_with('\n') {
+        diff_text.push('\n');
+    }
+    let diff_file = shadow.join(".jawata-proposal.diff");
+    fs::write(&diff_file, &diff_text).map_err(|e| e.to_string())?;
+    // `git apply --recount` recomputes hunk-header line counts from the
+    // hunk bodies — model-generated diffs routinely miscount them; the
+    // CONTENT (context + changes) stays strictly verified. Works outside a
+    // git repository. -C1 tolerates a drifted context line at hunk edges.
+    let output = Command::new("git")
+        .arg("apply")
+        .arg("--recount")
+        .arg("-C1")
+        .arg("--whitespace=nowarn")
+        .arg(&diff_file)
+        .current_dir(&shadow)
+        .output()
+        .map_err(|e| format!("git apply: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "proposal diff does not apply: {}{}",
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let _ = fs::remove_file(&diff_file);
+    Ok(shadow)
+}
+
+/// FILE-BLOCK staging: shadow = tree copy + the proposal's files written
+/// over it. No patch arithmetic anywhere — the seat's whole-file content
+/// IS the proposed state.
+pub fn shadow_stage_files(workdir: &Path, files: &[ProposalFile]) -> Result<PathBuf, String> {
+    let shadow = shadow_dir_name();
+    copy_tree(workdir, &shadow)?;
+    for file in files {
+        let target = shadow.join(&file.path);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::write(&target, &file.content).map_err(|e| format!("{}: {e}", file.path))?;
+    }
+    Ok(shadow)
+}
+
+fn shadow_dir_name() -> PathBuf {
+    static SHADOW_NAME_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = SHADOW_NAME_COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "jawata-shadow-{}-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+        n
+    ))
+}
+
+fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+    fs::create_dir_all(to).map_err(|e| e.to_string())?;
+    for entry in fs::read_dir(from).map_err(|e| format!("read {}: {e}", from.display()))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let target = to.join(entry.file_name());
+        let ftype = entry.file_type().map_err(|e| e.to_string())?;
+        if ftype.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else if ftype.is_file() {
+            fs::copy(entry.path(), &target).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Fixture-scale gate executor: judges the SHADOW (proposal applied) with
+/// the local toolchain — `javac` as compile-verify, `javadoc -Xdoclint:all`
+/// as the docs gate. Workspace-scale seats use the resident-backed
+/// executor; this one serves self-contained fixture projects, where a full
+/// resident per gate call would be ceremony.
+pub struct ShadowJavaGateExecutor {
+    pub workdir: PathBuf,
+}
+
+impl ShadowJavaGateExecutor {
+    fn java_files_under(dir: &Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            if let Ok(entries) = fs::read_dir(&d) {
+                for entry in entries.filter_map(Result::ok) {
+                    let p = entry.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else if p.extension().is_some_and(|e| e == "java") {
+                        files.push(p);
+                    }
+                }
+            }
+        }
+        files.sort();
+        files
+    }
+}
+
+impl GateExecutor for ShadowJavaGateExecutor {
+    fn run_class(&self, class: GateClass, proposal: &Proposal) -> Vec<GateOutcome> {
+        let staged = if proposal.files.is_empty() {
+            shadow_apply(&self.workdir, &proposal.diff)
+        } else {
+            shadow_stage_files(&self.workdir, &proposal.files)
+        };
+        let shadow = match staged {
+            Ok(s) => s,
+            Err(e) => {
+                return vec![GateOutcome::fail(
+                    class,
+                    "shadow_apply",
+                    &format!("cannot stage the proposal: {e}"),
+                )]
+            }
+        };
+        let outcome = match class {
+            GateClass::Always => {
+                let files = Self::java_files_under(&shadow);
+                if files.is_empty() {
+                    GateOutcome::fail(GateClass::Always, "compile_verify", "no .java in shadow")
+                } else {
+                    let classes_dir = shadow.join(".classes");
+                    let _ = fs::create_dir_all(&classes_dir);
+                    let mut cmd = Command::new("javac");
+                    cmd.arg("-d").arg(&classes_dir).current_dir(&shadow);
+                    for f in &files {
+                        cmd.arg(f);
+                    }
+                    match cmd.output() {
+                        Ok(out) if out.status.success() => GateOutcome::pass(
+                            GateClass::Always,
+                            "compile_verify",
+                            &format!("javac clean on {} file(s) (shadow)", files.len()),
+                        ),
+                        Ok(out) => GateOutcome::fail(
+                            GateClass::Always,
+                            "compile_verify",
+                            String::from_utf8_lossy(&out.stderr).trim(),
+                        ),
+                        Err(e) => {
+                            GateOutcome::fail(GateClass::Always, "compile_verify", &e.to_string())
+                        }
+                    }
+                }
+            }
+            GateClass::Docs => {
+                let touched: Vec<PathBuf> = proposal
+                    .touched_files
+                    .iter()
+                    .filter(|f| f.ends_with(".java"))
+                    .map(|f| shadow.join(f))
+                    .filter(|p| p.is_file())
+                    .collect();
+                if touched.is_empty() {
+                    GateOutcome::pass(GateClass::Docs, "doclint", "no .java files touched")
+                } else {
+                    let mut cmd = Command::new("javadoc");
+                    cmd.arg("-Xdoclint:all")
+                        .arg("-quiet")
+                        .arg("-d")
+                        .arg(shadow.join(".apidocs"))
+                        .current_dir(&shadow);
+                    for f in &touched {
+                        cmd.arg(f);
+                    }
+                    match cmd.output() {
+                        Ok(out) if out.status.success() => GateOutcome::pass(
+                            GateClass::Docs,
+                            "doclint",
+                            &format!("doclint clean on {} touched file(s) (shadow)", touched.len()),
+                        ),
+                        Ok(out) => GateOutcome::fail(
+                            GateClass::Docs,
+                            "doclint",
+                            String::from_utf8_lossy(&out.stderr).trim(),
+                        ),
+                        Err(e) => GateOutcome::fail(GateClass::Docs, "doclint", &e.to_string()),
+                    }
+                }
+            }
+            other => GateOutcome::fail(
+                other,
+                "shadow_executor",
+                "class not implemented at fixture scale — use the resident-backed executor",
+            ),
+        };
+        let _ = fs::remove_dir_all(&shadow);
+        vec![outcome]
+    }
+}
+
+// ============================================================
+// Seat harness: the javadoc-writer (Stage 9, spec D3b)
+// ============================================================
+
+/// Detector-driven javadoc-writer run: `javadoc_lack` through the resident
+/// finds the work (the deterministic detect the spec demands); the scope's
+/// sources ride the prompt as compiler facts (grounded generation — the
+/// seat needs no tools); gates judge the SHADOW; journal + store close it.
+pub fn run_javadoc_writer(
+    mut request: RunRequest,
+    detector: &ResidentGateExecutor,
+    adapter: &dyn CliAdapter,
+    gates: &dyn GateExecutor,
+    store: &dyn StoreRecorder,
+) -> Result<RunReport, String> {
+    let findings = detector.call_tool(
+        "find_quality_issue",
+        serde_json::json!({ "kind": "javadoc_lack" }),
+    )?;
+    let text = extract_tool_text(&findings);
+    let count = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.pointer("/data/count").and_then(|c| c.as_u64()))
+        .unwrap_or(0);
+    if count == 0 {
+        return journal_nothing_to_do(&request, &adapter.name(), store);
+    }
+    let mut facts = format!(
+        "javadoc_lack findings ({count}) — document EXACTLY these symbols:\n{}\n\n\
+         == SOURCES IN SCOPE (the ground truth) ==\n",
+        clip(&text, 20_000)
+    );
+    for prefix in &request.scope {
+        for file in ShadowJavaGateExecutor::java_files_under(&request.workdir.join(prefix)) {
+            if let Ok(src) = fs::read_to_string(&file) {
+                let rel = file
+                    .strip_prefix(&request.workdir)
+                    .unwrap_or(&file)
+                    .to_path_buf();
+                facts.push_str(&format!("\n--- {} ---\n{src}\n", rel.display()));
+            }
+        }
+    }
+    request.pre_detected = Some(PreDetected {
+        work: format!(
+            "write Javadoc for every symbol in the findings list ({count} findings, \
+             all types in one diff); conservative-or-refuse rules apply"
+        ),
+        facts: clip(&facts, 60_000).to_string(),
+    });
+    run_seat(&request, adapter, gates, store)
+}
+
+fn clip(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        s
+    } else {
+        // Clip on a char boundary at or below max.
+        let mut end = max;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        &s[..end]
     }
 }
 
@@ -1401,6 +1872,7 @@ You are the echo seat. You document what you are told to document.
                 "do the thing",
                 "--output-format",
                 "stream-json",
+                "--verbose",
                 "--max-turns",
                 "7",
                 "--model",
@@ -1498,6 +1970,7 @@ You are the echo seat. You document what you are told to document.
             workdir: dir.join("fixture"),
             runs_dir: dir.join("runs"),
             journal_path: dir.join("runner").join("journal.jsonl"),
+            pre_detected: None,
         }
     }
 
@@ -1771,6 +2244,107 @@ You are the echo seat. You document what you are told to document.
     }
 
     #[test]
+    fn file_block_proposal_parses_and_computes_its_own_diff() {
+        let dir = unique_tempdir("fileblock");
+        let src = dir.join("fixture/src/main/java/com/example");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("Foo.java"), "public class Foo {\n}\n").unwrap();
+        let text = format!(
+            "Evidence prose.\n{PROPOSAL_BEGIN}\n\
+             ===FILE: src/main/java/com/example/Foo.java===\n\
+             /** Doc. */\npublic class Foo {{\n}}\n\
+             ===END-FILE===\n{PROPOSAL_END}\n"
+        );
+        let mut p = parse_proposal("document Foo", &text).expect("parses");
+        assert_eq!(p.files.len(), 1);
+        assert_eq!(p.touched_files, vec!["src/main/java/com/example/Foo.java"]);
+        assert!(p.files[0].content.ends_with("}\n"));
+        // The runner computes the diff deterministically.
+        p.diff = compute_files_diff(&dir.join("fixture"), &p.files);
+        assert!(p.diff.contains("+/** Doc. */"), "computed diff:\n{}", p.diff);
+        assert!(p.diff.contains("--- a/src/main/java/com/example/Foo.java"));
+        // Staging writes the file into the shadow, not the workdir.
+        let shadow = shadow_stage_files(&dir.join("fixture"), &p.files).unwrap();
+        assert!(fs::read_to_string(shadow.join("src/main/java/com/example/Foo.java"))
+            .unwrap()
+            .contains("/** Doc. */"));
+        assert!(!fs::read_to_string(src.join("Foo.java")).unwrap().contains("Doc"));
+        let _ = fs::remove_dir_all(&shadow);
+        // Traversal-shaped paths refuse the whole block.
+        let evil = format!(
+            "{PROPOSAL_BEGIN}\n===FILE: ../evil.java===\nx\n===END-FILE===\n{PROPOSAL_END}"
+        );
+        assert!(parse_proposal("w", &evil).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shadow_gates_judge_the_proposed_state_not_the_workdir() {
+        let dir = unique_tempdir("shadow");
+        let src = dir.join("fixture/src/main/java/com/example");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(
+            src.join("Foo.java"),
+            "package com.example;\n\npublic class Foo {\n    public int id() { return 1; }\n}\n",
+        )
+        .unwrap();
+        let workdir = dir.join("fixture");
+        let original = fs::read_to_string(src.join("Foo.java")).unwrap();
+
+        // A diff adding class + method Javadoc: doclint on the SHADOW must
+        // pass even though the workdir file is still undocumented.
+        let good = Proposal {
+            work: "document Foo".into(),
+            evidence: String::new(),
+            files: Vec::new(),
+            diff: "\
+--- a/src/main/java/com/example/Foo.java
++++ b/src/main/java/com/example/Foo.java
+@@ -1,5 +1,10 @@
+ package com.example;
+
++/** A documented example. */
+ public class Foo {
++    /**
++     * Returns the id.
++     * @return the id
++     */
+     public int id() { return 1; }
+ }
+"
+            .into(),
+            touched_files: vec!["src/main/java/com/example/Foo.java".into()],
+        };
+        let gates = ShadowJavaGateExecutor {
+            workdir: workdir.clone(),
+        };
+        let always = gates.run_class(GateClass::Always, &good);
+        assert!(always[0].passed, "compile on shadow: {}", always[0].detail);
+        let docs = gates.run_class(GateClass::Docs, &good);
+        assert!(docs[0].passed, "doclint on shadow: {}", docs[0].detail);
+        // Propose mode: the workdir is untouched by gating.
+        assert_eq!(fs::read_to_string(src.join("Foo.java")).unwrap(), original);
+
+        // A diff that breaks compilation is refused by the Always class.
+        let broken = Proposal {
+            diff: good.diff.replace("/** A documented example. */", "syntax error here"),
+            ..good.clone()
+        };
+        let always = gates.run_class(GateClass::Always, &broken);
+        assert!(!always[0].passed, "broken shadow must fail compile");
+
+        // A diff that does not apply is a loud shadow_apply failure.
+        let inapplicable = Proposal {
+            diff: "--- a/nope.java\n+++ b/nope.java\n@@ -1,1 +1,1 @@\n-x\n+y\n".into(),
+            touched_files: vec!["nope.java".into()],
+            ..good.clone()
+        };
+        let out = gates.run_class(GateClass::Always, &inapplicable);
+        assert!(!out[0].passed);
+        assert!(out[0].name == "shadow_apply", "{}", out[0].detail);
+    }
+
+    #[test]
     fn seat_loading_reports_malformed_files_loudly() {
         let dir = unique_tempdir("seat-load");
         let seats_dir = dir.join("seats");
@@ -1811,6 +2385,171 @@ You are the echo seat. You document what you are told to document.
         let paths = RunnerPaths::from_config_dir(Path::new("/cfg"));
         assert!(paths.seats_dir.ends_with("seats"));
         assert!(paths.journal_path.ends_with("runner/journal.jsonl"));
+    }
+
+    /// LIVE Stage-9 gate (C9): sandbox resident from the deployed jar,
+    /// javadoc_lack detection, the REAL Claude Code CLI as the seat driver,
+    /// shadow gates, journal + store. Run explicitly:
+    ///   cargo test --lib javadoc_writer_live -- --ignored --nocapture
+    /// (env JAWATA_JAR overrides the deployed-jar default.)
+    #[cfg(unix)]
+    #[test]
+    #[ignore]
+    fn javadoc_writer_live_run() {
+        let jar = std::env::var("JAWATA_JAR").unwrap_or_else(|_| {
+            format!(
+                "{}/.cache/jawata-studio/tools/jawata/current/jawata-v2.14.1/jawata.jar",
+                std::env::var("HOME").unwrap()
+            )
+        });
+        assert!(Path::new(&jar).is_file(), "no jawata jar at {jar}");
+        let dir = unique_tempdir("jw-live");
+        let fixture_dir = dir.join("fixture");
+        let repo_fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/javadoc-seat");
+        copy_tree(&repo_fixture, &fixture_dir).unwrap();
+
+        // --- sandbox resident (isolated store + workspace, ephemeral port) ---
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let token = "jw-live-test-token";
+        let mut resident = Command::new("java")
+            .arg(format!(
+                "-Djawata.experience.shared.dir={}",
+                dir.join("store").display()
+            ))
+            .arg("-jar")
+            .arg(&jar)
+            .arg("-data")
+            .arg(dir.join("ws"))
+            .arg("-port")
+            .arg(port.to_string())
+            .arg("-token")
+            .arg(token)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("resident spawn");
+        let stdout = resident.stdout.take().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<String>();
+        // Drain stdout FOREVER (a full pipe deadlocks the JVM — the v2.9 lesson);
+        // forward only the READY line.
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                if line.contains("READY") {
+                    let _ = ready_tx.send(line);
+                }
+            }
+        });
+        let ready = ready_rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("resident never became READY");
+        // The READY line prints the BASE url; the JSON-RPC endpoint is /mcp
+        // (HttpTransport.createContext("/mcp", …)).
+        let url = format!(
+            "{}/mcp",
+            ready
+                .split_whitespace()
+                .find_map(|t| t.strip_prefix("url="))
+                .expect("READY line carries url=")
+                .trim_end_matches('/')
+        );
+        println!("sandbox resident: {url}");
+
+        let result = std::panic::catch_unwind(|| {
+            let exec = ResidentGateExecutor::new(url.clone(), token.into(), None);
+            let loaded = exec
+                .call_tool(
+                    "load_project",
+                    serde_json::json!({ "projectPath": fixture_dir.to_string_lossy() }),
+                )
+                .expect("load_project");
+            println!("loaded: {}", extract_tool_text(&loaded).chars().take(200).collect::<String>());
+
+            // --- the seat, from the versioned definition ---
+            let seat_text = fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../seats/javadoc-writer.md"),
+            )
+            .expect("seat definition");
+            let seat = parse_seat_definition(&seat_text).expect("seat parses");
+            let request = RunRequest {
+                seat: &seat,
+                scope: vec!["src/main/java/".into()],
+                workdir: fixture_dir.clone(),
+                runs_dir: dir.join("runs"),
+                journal_path: dir.join("journal.jsonl"),
+                pre_detected: None,
+            };
+            // JW_MODEL overrides the seat's tier for the live gate (e.g. a
+            // model-pool outage); the override is printed so the record is
+            // honest about which tier actually ran.
+            let live_model = std::env::var("JW_MODEL").unwrap_or_else(|_| seat.model.clone());
+            println!("live model tier: {live_model}");
+            let adapter = ClaudeCodeAdapter {
+                model: Some(live_model),
+                max_turns: 8,
+                ..Default::default()
+            };
+            let gates = ShadowJavaGateExecutor {
+                workdir: fixture_dir.clone(),
+            };
+            let store = ResidentStoreRecorder {
+                executor: ResidentGateExecutor::new(url.clone(), token.into(), None),
+            };
+            let original_thin =
+                fs::read_to_string(fixture_dir.join("src/main/java/com/example/ThinFacts.java"))
+                    .unwrap();
+
+            let report =
+                run_javadoc_writer(request, &exec, &adapter, &gates, &store).expect("run");
+            println!("verdict: {:?}, cost: {}", report.verdict, report.cost_usd);
+            for g in &report.gates {
+                println!("gate {:?}/{}: {} — {}", g.class, g.name, g.passed, g.detail);
+            }
+
+            // --- C9 assertions ---
+            assert_eq!(report.verdict, Verdict::Proposed, "gates: {:?}", report.gates);
+            let record = report.proposal_dir.expect("proposal record");
+            let diff = fs::read_to_string(record.join("diff.patch")).unwrap();
+            println!("--- proposal diff ---\n{diff}\n---");
+            assert!(diff.contains("/**"), "diff adds Javadoc");
+            assert!(
+                diff.contains("Account.java") && diff.contains("ThinFacts.java"),
+                "both fixture types documented"
+            );
+            // The thin-facts symbol yields a STUB, never invented behavior.
+            assert!(
+                diff.contains("TODO"),
+                "ThinFacts must be a marked stub (TODO), got:\n{diff}"
+            );
+            // Propose mode: the fixture is untouched.
+            assert_eq!(
+                fs::read_to_string(fixture_dir.join("src/main/java/com/example/ThinFacts.java"))
+                    .unwrap(),
+                original_thin
+            );
+            // Store outcome verified through the resident.
+            let recalled = exec
+                .call_tool(
+                    "experience",
+                    serde_json::json!({ "kind": "list", "limit": 10 }),
+                )
+                .expect("experience list");
+            let recalled_text = extract_tool_text(&recalled);
+            assert!(
+                recalled_text.contains("seat javadoc-writer"),
+                "store outcome present: {recalled_text}"
+            );
+        });
+
+        let _ = resident.kill();
+        let _ = resident.wait();
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
     }
 
     #[test]
@@ -1856,6 +2595,7 @@ You are the echo seat. You document what you are told to document.
             work: "w".into(),
             evidence: String::new(),
             diff: DIFF.into(),
+            files: Vec::new(),
             touched_files: vec!["src/main/java/com/example/Foo.java".into()],
         };
         let gates = ScriptedGates { fail_class: None };
