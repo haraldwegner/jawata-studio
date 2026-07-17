@@ -482,7 +482,15 @@ impl ResidentGateExecutor {
             url,
             token,
             project_key,
-            http: reqwest::blocking::Client::new(),
+            // pool_max_idle_per_host(0): a pooled keep-alive connection
+            // goes stale while a model phase runs (~minutes idle) and the
+            // resident's JDK http server closes it — the next POST then
+            // fails with 'error sending request' (hit live at C12). Fresh
+            // connection per call is free on localhost.
+            http: reqwest::blocking::Client::builder()
+                .pool_max_idle_per_host(0)
+                .build()
+                .expect("http client"),
             next_id: AtomicU64::new(1),
         }
     }
@@ -511,7 +519,7 @@ impl ResidentGateExecutor {
             .header("Authorization", format!("Bearer {}", self.token))
             .json(&body)
             .send()
-            .map_err(|e| format!("resident call {name} failed: {e}"))?;
+            .map_err(|e| format!("resident call {name} failed: {e:?}"))?;
         let status = response.status();
         let value: serde_json::Value = response
             .json()
@@ -1953,6 +1961,264 @@ pub fn run_test_writer(
 }
 
 // ============================================================
+// Seat harnesses: profiler + debugger (Stage 12, spec D6b)
+// ============================================================
+
+/// One raw adapter exchange outside the run loop — the debugger seat's
+/// phase A (choose the observation) uses this; the verdict phase goes
+/// through the normal run_seat machinery.
+pub fn ask_adapter(
+    adapter: &dyn CliAdapter,
+    prompt: &str,
+    workdir: &Path,
+    ttl_secs: u64,
+) -> Result<(String, f64), String> {
+    let out = run_phase(
+        adapter,
+        prompt,
+        workdir,
+        Instant::now() + Duration::from_secs(ttl_secs),
+    )?;
+    if out.reaped {
+        return Err("adapter phase hit its deadline".into());
+    }
+    Ok((out.text, out.cost_usd))
+}
+
+/// The observation a debugger seat names (its ONE cheapest discriminating
+/// observation, phase A of the protocol).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChosenObservation {
+    pub kind: String,
+    pub class_name: String,
+    pub line: u32,
+    pub condition: Option<String>,
+    pub capture: String,
+}
+
+/// Parses `OBSERVATION: kind=… class=… line=… [condition=…] capture=…`.
+/// `capture` is always LAST and may contain spaces; `condition` runs from
+/// its key to the capture key.
+pub fn parse_observation(text: &str) -> Result<ChosenObservation, String> {
+    let line = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("OBSERVATION:"))
+        .ok_or("no OBSERVATION: line in the seat's answer")?
+        .trim_start()
+        .trim_start_matches("OBSERVATION:")
+        .trim()
+        .to_string();
+    let capture_at = line.find("capture=").ok_or("OBSERVATION lacks capture=")?;
+    let capture = line[capture_at + "capture=".len()..].trim().to_string();
+    let head = &line[..capture_at];
+    let condition = head.find("condition=").map(|i| {
+        head[i + "condition=".len()..].trim().to_string()
+    });
+    let head_wo_cond = match head.find("condition=") {
+        Some(i) => &head[..i],
+        None => head,
+    };
+    let mut kind = None;
+    let mut class_name = None;
+    let mut line_no = None;
+    for token in head_wo_cond.split_whitespace() {
+        if let Some(v) = token.strip_prefix("kind=") {
+            kind = Some(v.to_string());
+        } else if let Some(v) = token.strip_prefix("class=") {
+            class_name = Some(v.to_string());
+        } else if let Some(v) = token.strip_prefix("line=") {
+            line_no = Some(v.parse::<u32>().map_err(|e| format!("line=: {e}"))?);
+        }
+    }
+    Ok(ChosenObservation {
+        kind: kind.ok_or("OBSERVATION lacks kind=")?,
+        class_name: class_name.ok_or("OBSERVATION lacks class=")?,
+        line: line_no.ok_or("OBSERVATION lacks line=")?,
+        condition,
+        capture,
+    })
+}
+
+/// Redacts fixture giveaway comments (the seeded-bug annotations) while
+/// KEEPING line numbers stable, so a breakpoint the seat picks from the
+/// sanitized source lands on the real file.
+pub fn sanitize_fixture_source(source: &str) -> String {
+    source
+        .lines()
+        .map(|l| {
+            let lower = l.to_lowercase();
+            if lower.contains("seeded") || lower.contains("bug") {
+                "// (redacted)"
+            } else {
+                l
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Executes the seat's chosen observation against a live target through
+/// the resident's debug tool: launch HELD → arm → resume → wait → evaluate
+/// the capture in the hit frame → detach. Returns the evidence text.
+pub fn execute_observation(
+    resident: &ResidentGateExecutor,
+    obs: &ChosenObservation,
+    main_class: &str,
+    classpath: &str,
+    workdir: &Path,
+) -> Result<String, String> {
+    let launch = resident.call_tool(
+        "debug",
+        serde_json::json!({
+            "action": "launch", "mainClass": main_class, "classpath": classpath,
+            "workingDirectory": workdir.to_string_lossy(),
+        }),
+    )?;
+    let launch_text = extract_tool_text(&launch);
+    let session: serde_json::Value = serde_json::from_str(&launch_text).unwrap_or_default();
+    let session_id = session
+        .pointer("/data/sessionId")
+        .and_then(|s| s.as_str())
+        .ok_or_else(|| format!("no sessionId in launch: {}", clip(&launch_text, 300)))?
+        .to_string();
+    let result = (|| -> Result<String, String> {
+        let mut bp = serde_json::json!({
+            "action": "breakpoint_set", "sessionId": session_id,
+            "kind": obs.kind, "className": obs.class_name, "line": obs.line,
+        });
+        if let Some(cond) = &obs.condition {
+            bp["condition"] = serde_json::Value::String(cond.clone());
+        }
+        let bp_text = extract_tool_text(&resident.call_tool("debug", bp)?);
+        resident.call_tool(
+            "debug",
+            serde_json::json!({ "action": "resume", "sessionId": session_id }),
+        )?;
+        let hit_text = extract_tool_text(&resident.call_tool(
+            "debug",
+            serde_json::json!({ "action": "wait", "sessionId": session_id, "timeoutMillis": 60_000 }),
+        )?);
+        let hit: serde_json::Value = serde_json::from_str(&hit_text).unwrap_or_default();
+        let thread_id = hit
+            .pointer("/data/threadId")
+            .or_else(|| hit.pointer("/data/hit/threadId"))
+            .and_then(|t| t.as_i64());
+        let eval_text = match thread_id {
+            Some(tid) => extract_tool_text(&resident.call_tool(
+                "debug",
+                serde_json::json!({
+                    "action": "evaluate", "sessionId": session_id,
+                    "threadId": tid, "expression": obs.capture,
+                }),
+            )?),
+            None => format!("(no hit within the wait window: {})", clip(&hit_text, 300)),
+        };
+        Ok(format!(
+            "== BREAKPOINT ARMED ==\n{}\n\n== HIT ==\n{}\n\n== CAPTURED ({}) ==\n{}",
+            clip(&bp_text, 800),
+            clip(&hit_text, 1_500),
+            obs.capture,
+            clip(&eval_text, 1_500)
+        ))
+    })();
+    let _ = resident.call_tool(
+        "debug",
+        serde_json::json!({ "action": "detach", "sessionId": session_id }),
+    );
+    result
+}
+
+/// Collects the profiler seat's evidence: launch under the preset, sample,
+/// cpu+wall hotspots, latency on the named seam, call-hierarchy closure.
+pub fn collect_profile_evidence(
+    resident: &ResidentGateExecutor,
+    main_class: &str,
+    classpath: &str,
+    workdir: &Path,
+    seam_class: &str,
+    seam_method: &str,
+) -> Result<String, String> {
+    let launch = resident.call_tool(
+        "debug",
+        serde_json::json!({
+            "action": "launch", "mainClass": main_class, "classpath": classpath,
+            "workingDirectory": workdir.to_string_lossy(),
+        }),
+    )?;
+    let launch_text = extract_tool_text(&launch);
+    let session: serde_json::Value = serde_json::from_str(&launch_text).unwrap_or_default();
+    let session_id = session
+        .pointer("/data/sessionId")
+        .and_then(|s| s.as_str())
+        .ok_or_else(|| format!("no sessionId: {}", clip(&launch_text, 300)))?
+        .to_string();
+    let result = (|| -> Result<String, String> {
+        resident.call_tool(
+            "debug",
+            serde_json::json!({ "action": "resume", "sessionId": session_id }),
+        )?;
+        let sample_text = extract_tool_text(&resident.call_tool(
+            "profile",
+            serde_json::json!({ "action": "sample", "sessionId": session_id, "durationSeconds": 6 }),
+        )?);
+        let sample: serde_json::Value = serde_json::from_str(&sample_text).unwrap_or_default();
+        let artifact = sample
+            .pointer("/data/artifactId")
+            .and_then(|a| a.as_str())
+            .map(str::to_string);
+        let hotspots = |dimension: &str| -> String {
+            let mut args = serde_json::json!({
+                "action": "hotspots", "sessionId": session_id,
+                "dimension": dimension, "limit": 8,
+            });
+            if let Some(a) = &artifact {
+                args["artifactId"] = serde_json::Value::String(a.clone());
+            }
+            resident
+                .call_tool("profile", args)
+                .map(|v| extract_tool_text(&v))
+                .unwrap_or_else(|e| format!("(hotspots {dimension} failed: {e})"))
+        };
+        let cpu = hotspots("cpu");
+        let wall = hotspots("wall");
+        let seam = resident
+            .call_tool(
+                "profile",
+                serde_json::json!({
+                    "action": "latency_seam", "sessionId": session_id,
+                    "className": seam_class, "method": seam_method, "durationSeconds": 5,
+                }),
+            )
+            .map(|v| extract_tool_text(&v))
+            .unwrap_or_else(|e| format!("(latency_seam failed: {e})"));
+        let hierarchy = resident
+            .call_tool(
+                "get_call_hierarchy",
+                serde_json::json!({
+                    "direction": "incoming",
+                    "symbol": format!("{seam_class}#hotSpot"),
+                }),
+            )
+            .map(|v| extract_tool_text(&v))
+            .unwrap_or_else(|e| format!("(call hierarchy failed: {e})"));
+        Ok(format!(
+            "== SAMPLE ==\n{}\n\n== HOTSPOTS (cpu) ==\n{}\n\n== HOTSPOTS (wall) ==\n{}\n\n\
+             == LATENCY SEAM ({seam_class}#{seam_method}) ==\n{}\n\n== CALL HIERARCHY (incoming, hotSpot) ==\n{}",
+            clip(&sample_text, 2_000),
+            clip(&cpu, 6_000),
+            clip(&wall, 6_000),
+            clip(&seam, 4_000),
+            clip(&hierarchy, 2_000)
+        ))
+    })();
+    let _ = resident.call_tool(
+        "debug",
+        serde_json::json!({ "action": "detach", "sessionId": session_id }),
+    );
+    result
+}
+
+// ============================================================
 // Advisory seats (Stage 11): the report IS the product
 // ============================================================
 
@@ -3295,6 +3561,339 @@ You are the echo seat. You document what you are told to document.
             assert!(listed.contains("seat architect"));
         });
 
+        let _ = resident.kill();
+        let _ = resident.wait();
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    #[test]
+    fn observation_line_parses_with_and_without_condition() {
+        let obs = parse_observation(
+            "prose...\nOBSERVATION: kind=conditional class=com.example.BillingMain line=13 condition=totalCents == 10000 capture=totalCents > 10_000\nmore",
+        )
+        .unwrap();
+        assert_eq!(obs.kind, "conditional");
+        assert_eq!(obs.class_name, "com.example.BillingMain");
+        assert_eq!(obs.line, 13);
+        assert_eq!(obs.condition.as_deref(), Some("totalCents == 10000"));
+        assert_eq!(obs.capture, "totalCents > 10_000");
+
+        let plain =
+            parse_observation("OBSERVATION: kind=line class=a.B line=7 capture=x").unwrap();
+        assert!(plain.condition.is_none());
+        assert!(parse_observation("no marker").is_err());
+    }
+
+    #[test]
+    fn fixture_sanitizer_keeps_line_numbers_stable() {
+        let src = "line one\n// seeded bug: must be >=\nline three";
+        let out = sanitize_fixture_source(src);
+        assert_eq!(out.lines().count(), 3);
+        assert_eq!(out.lines().nth(1).unwrap(), "// (redacted)");
+        assert_eq!(out.lines().nth(2).unwrap(), "line three");
+    }
+
+    fn spawn_sandbox(dir: &Path, token: &str) -> (std::process::Child, String) {
+        let jar = std::env::var("JAWATA_JAR").unwrap_or_else(|_| {
+            format!(
+                "{}/.cache/jawata-studio/tools/jawata/current/jawata-v2.14.1/jawata.jar",
+                std::env::var("HOME").unwrap()
+            )
+        });
+        assert!(Path::new(&jar).is_file(), "no jawata jar at {jar}");
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let mut resident = Command::new("java")
+            .arg(format!(
+                "-Djawata.experience.shared.dir={}",
+                dir.join("store").display()
+            ))
+            .arg("-jar")
+            .arg(&jar)
+            .arg("-data")
+            .arg(dir.join("ws"))
+            .arg("-port")
+            .arg(port.to_string())
+            .arg("-token")
+            .arg(token)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(fs::File::create(dir.join("resident-err.log")).unwrap())
+            .spawn()
+            .expect("resident spawn");
+        let stdout = resident.stdout.take().unwrap();
+        let out_log = dir.join("resident-out.log");
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let mut log = fs::File::create(&out_log).ok();
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Some(f) = log.as_mut() {
+                    use std::io::Write as _;
+                    let _ = writeln!(f, "{line}");
+                }
+                if line.contains("READY") {
+                    let _ = ready_tx.send(line);
+                }
+            }
+        });
+        let ready = ready_rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("resident READY");
+        let url = format!(
+            "{}/mcp",
+            ready
+                .split_whitespace()
+                .find_map(|t| t.strip_prefix("url="))
+                .unwrap()
+                .trim_end_matches('/')
+        );
+        (resident, url)
+    }
+
+    fn javac_fixture(fixture: &Path) -> PathBuf {
+        let classes = fixture.join("classes");
+        fs::create_dir_all(&classes).unwrap();
+        let files = ShadowJavaGateExecutor::java_files_under(&fixture.join("src"));
+        let mut cmd = Command::new("javac");
+        cmd.arg("-d").arg(&classes);
+        for f in &files {
+            cmd.arg(f);
+        }
+        let out = cmd.output().expect("javac");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        classes
+    }
+
+    /// LIVE Stage-12 gate, profiler half. Run explicitly:
+    ///   cargo test --lib profiler_live -- --ignored --nocapture
+    #[cfg(unix)]
+    #[test]
+    #[ignore]
+    fn profiler_live_run() {
+        let dir = unique_tempdir("prof-live");
+        let fixture = dir.join("fixture");
+        copy_tree(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/profiler-seat"),
+            &fixture,
+        )
+        .unwrap();
+        let classes = javac_fixture(&fixture);
+        let (mut resident, url) = spawn_sandbox(&dir, "prof-live-token");
+        println!("sandbox resident: {url}");
+        let result = std::panic::catch_unwind(|| {
+            let exec = ResidentGateExecutor::new(url.clone(), "prof-live-token".into(), None);
+            exec.call_tool(
+                "load_project",
+                serde_json::json!({ "projectPath": fixture.to_string_lossy() }),
+            )
+            .expect("load_project");
+            let evidence = collect_profile_evidence(
+                &exec,
+                "com.example.ProfMain",
+                &classes.to_string_lossy(),
+                &fixture,
+                "com.example.ProfMain",
+                "seam",
+            )
+            .expect("evidence");
+            println!("--- evidence (excerpt) ---\n{}", clip(&evidence, 1_200));
+            assert!(
+                evidence.contains("hotSpot"),
+                "cpu hotspots must NAME the hot symbol:\n{}",
+                clip(&evidence, 3_000)
+            );
+
+            let seat_text = fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../seats/profiler.md"),
+            )
+            .unwrap();
+            let seat = parse_seat_definition(&seat_text).unwrap();
+            let live_model = std::env::var("JW_MODEL").unwrap_or_else(|_| seat.model.clone());
+            let adapter = ClaudeCodeAdapter {
+                model: Some(live_model),
+                max_turns: 6,
+                ..Default::default()
+            };
+            let store = ResidentStoreRecorder {
+                executor: ResidentGateExecutor::new(url.clone(), "prof-live-token".into(), None),
+            };
+            let request = RunRequest {
+                seat: &seat,
+                scope: vec!["PROFILER-REPORT".into()],
+                workdir: fixture.clone(),
+                runs_dir: dir.join("runs"),
+                journal_path: dir.join("journal.jsonl"),
+                pre_detected: Some(PreDetected {
+                    work: "turn the collected profile evidence into the symbol-named report"
+                        .into(),
+                    facts: clip(&evidence, 60_000).to_string(),
+                }),
+            };
+            let report_run =
+                run_seat(&request, &adapter, &AdvisoryGateExecutor, &store).expect("run");
+            println!("verdict: {:?}, cost {}", report_run.verdict, report_run.cost_usd);
+            assert_eq!(report_run.verdict, Verdict::Proposed, "{:?}", report_run.gates);
+            let report = fs::read_to_string(
+                report_run.proposal_dir.unwrap().join("diff.patch"),
+            )
+            .unwrap();
+            println!("--- report (excerpt) ---\n{}", clip(&report, 1_500));
+            assert!(report.contains("hotSpot"), "report names the hot symbol");
+            assert!(report.contains("seam"), "report names the seam");
+            assert!(
+                report.to_lowercase().contains("p99") || report.contains("percentile"),
+                "latency reported as a distribution"
+            );
+            let rl = report.to_lowercase();
+            assert!(
+                rl.contains("proven") || rl.contains("inferred"),
+                "proven-vs-inferred stated"
+            );
+        });
+        let _ = resident.kill();
+        let _ = resident.wait();
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    /// LIVE Stage-12 gate, debugger half. Run explicitly:
+    ///   cargo test --lib debugger_live -- --ignored --nocapture
+    #[cfg(unix)]
+    #[test]
+    #[ignore]
+    fn debugger_live_run() {
+        let dir = unique_tempdir("dbg-live");
+        let fixture = dir.join("fixture");
+        copy_tree(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/debugger-seat"),
+            &fixture,
+        )
+        .unwrap();
+        let classes = javac_fixture(&fixture);
+        let (mut resident, url) = spawn_sandbox(&dir, "dbg-live-token");
+        println!("sandbox resident: {url}");
+        let result = std::panic::catch_unwind(|| {
+            let exec = ResidentGateExecutor::new(url.clone(), "dbg-live-token".into(), None);
+            exec.call_tool(
+                "load_project",
+                serde_json::json!({ "projectPath": fixture.to_string_lossy() }),
+            )
+            .expect("load_project");
+            // Recall BEFORE the probe — the authoritative absence is part of
+            // the discipline's record.
+            let recall = extract_tool_text(
+                &exec
+                    .call_tool(
+                        "experience",
+                        serde_json::json!({ "kind": "recall", "symbol": "com.example.BillingMain#rebate", "format": "text" }),
+                    )
+                    .unwrap_or_else(|e| { let _ = &e; serde_json::json!({"result": {"content": [{"text": format!("(recall failed: {e})")}]}}) }),
+            );
+            let source = sanitize_fixture_source(
+                &fs::read_to_string(fixture.join("src/main/java/com/example/BillingMain.java"))
+                    .unwrap(),
+            );
+            let bug_report = "BUG REPORT: per spec, a cart of EXACTLY 10000 cents gets the \
+                 500-cent loyalty rebate. Running the program prints GRAND_TOTAL=26500; the \
+                 spec-expected total is 26000 (carts 2000, 10000, 15000).";
+            let seat_text = fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../seats/debugger.md"),
+            )
+            .unwrap();
+            let seat = parse_seat_definition(&seat_text).unwrap();
+            let live_model = std::env::var("JW_MODEL").unwrap_or_else(|_| seat.model.clone());
+            let adapter = ClaudeCodeAdapter {
+                model: Some(live_model),
+                max_turns: 6,
+                ..Default::default()
+            };
+
+            // --- phase A: the seat names its ONE observation ---
+            let phase_a = format!(
+                "{stance}\n\n== PHASE: OBSERVATION ==\n{bug}\n\n== RECALL (experience store) ==\n{recall}\n\n\
+                 == SOURCE (line numbers are 1-based as shown) ==\n{numbered}\n\n\
+                 Answer with the single OBSERVATION line per the phase protocol.",
+                stance = seat.stance,
+                bug = bug_report,
+                recall = clip(&recall, 1_000),
+                numbered = source
+                    .lines()
+                    .enumerate()
+                    .map(|(i, l)| format!("{:>3}: {l}", i + 1))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+            let (answer, cost_a) = ask_adapter(&adapter, &phase_a, &fixture, 240).expect("phase A");
+            let obs = match parse_observation(&answer) {
+                Ok(o) => o,
+                Err(e) => {
+                    // One corrective round: name the format error, demand the line.
+                    let retry_prompt = format!(
+                        "{phase_a}\n\nYOUR PREVIOUS ANSWER WAS REJECTED: {e}.\n\
+                         Emit ONLY the single OBSERVATION line, exactly:\n\
+                         OBSERVATION: kind=<line|hit_count|conditional> class=<fqn> line=<n> [condition=<expr>] capture=<expr>"
+                    );
+                    let (retry, _) =
+                        ask_adapter(&adapter, &retry_prompt, &fixture, 240).expect("phase A retry");
+                    parse_observation(&retry).expect("observation parses after correction")
+                }
+            };
+            println!("observation: {obs:?} (cost {cost_a})");
+            assert_eq!(obs.class_name, "com.example.BillingMain");
+
+            // --- the harness executes the probe on the live target ---
+            let evidence = execute_observation(
+                &exec,
+                &obs,
+                "com.example.BillingMain",
+                &classes.to_string_lossy(),
+                &fixture,
+            )
+            .expect("probe");
+            println!("--- probe evidence ---\n{}", clip(&evidence, 1_200));
+
+            // --- phase B: the verdict through the normal run machinery ---
+            let store = ResidentStoreRecorder {
+                executor: ResidentGateExecutor::new(url.clone(), "dbg-live-token".into(), None),
+            };
+            let request = RunRequest {
+                seat: &seat,
+                scope: vec!["DEBUGGER-VERDICT".into()],
+                workdir: fixture.clone(),
+                runs_dir: dir.join("runs"),
+                journal_path: dir.join("journal.jsonl"),
+                pre_detected: Some(PreDetected {
+                    work: "deliver the verdict for the billing boundary defect".into(),
+                    facts: format!(
+                        "{bug_report}\n\n== RECALL ==\n{}\n\n== SOURCE ==\n{source}\n\n\
+                         == YOUR OBSERVATION, EXECUTED LIVE ==\n{evidence}",
+                        clip(&recall, 1_000)
+                    ),
+                }),
+            };
+            let verdict_run =
+                run_seat(&request, &adapter, &AdvisoryGateExecutor, &store).expect("run");
+            println!("verdict: {:?}, cost {}", verdict_run.verdict, verdict_run.cost_usd);
+            assert_eq!(verdict_run.verdict, Verdict::Proposed, "{:?}", verdict_run.gates);
+            let report = fs::read_to_string(
+                verdict_run.proposal_dir.unwrap().join("diff.patch"),
+            )
+            .unwrap();
+            println!("--- verdict (excerpt) ---\n{}", clip(&report, 1_500));
+            assert!(report.contains("PROVEN"), "verdict marks proven claims");
+            assert!(
+                report.contains(">=") || report.to_lowercase().contains("boundary"),
+                "verdict names the boundary cause"
+            );
+            let journal = fs::read_to_string(dir.join("journal.jsonl")).unwrap();
+            assert!(journal.contains("debugger"));
+        });
         let _ = resident.kill();
         let _ = resident.wait();
         if let Err(e) = result {
