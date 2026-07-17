@@ -1685,6 +1685,16 @@ impl ManagerService {
             };
         }
 
+        // Sprint 25a D1: the sections a deploy of this client touches, seat
+        // artifacts included (Preview/DryRun report them without writing).
+        let mut planned_sections = vec!["mcpConfig".to_string(), "rules".to_string()];
+        if derive_seat_commands_dir(client, &path).is_some() {
+            planned_sections.push("seatCommands".into());
+        }
+        if client == "claude_desktop" {
+            planned_sections.push("seatSkillExport".into());
+        }
+
         if matches!(mode, DeployMode::Preview) {
             return DeployClientResult {
                 client: client.to_string(),
@@ -1692,7 +1702,7 @@ impl ManagerService {
                 status: DeployClientStatus::Success,
                 message: "Preview generated.".into(),
                 backup_path: None,
-                changed_sections: vec!["mcpConfig".into(), "rules".into()],
+                changed_sections: planned_sections,
                 validation_errors: Vec::new(),
                 preview_content,
             };
@@ -1705,7 +1715,7 @@ impl ManagerService {
                 status: DeployClientStatus::Success,
                 message: "Dry run completed. No files were written.".into(),
                 backup_path: None,
-                changed_sections: vec!["mcpConfig".into(), "rules".into()],
+                changed_sections: planned_sections,
                 validation_errors: Vec::new(),
                 preview_content: None,
             };
@@ -1803,6 +1813,23 @@ impl ManagerService {
             {
                 match remove_managed_cursor_hooks(&hooks_path, &hooks_dir, backup_before_write) {
                     Ok(true) => changed_sections.push("cursorHooks".into()),
+                    Ok(false) => {}
+                    Err(error) => errors.push(error),
+                }
+            }
+
+            // Sprint 25a D1: strip the generated seat commands + the skill export.
+            if let Some(commands_dir) = derive_seat_commands_dir(client, &path) {
+                match remove_managed_seat_commands(client, &commands_dir) {
+                    Ok(true) => changed_sections.push("seatCommands".into()),
+                    Ok(false) => {}
+                    Err(error) => errors.push(error),
+                }
+            }
+            if client == "claude_desktop" {
+                let export_dir = self.config_store.paths().config_dir.join("exports");
+                match remove_managed_seat_export(&export_dir) {
+                    Ok(true) => changed_sections.push("seatSkillExport".into()),
                     Ok(false) => {}
                     Err(error) => errors.push(error),
                 }
@@ -1908,6 +1935,49 @@ impl ManagerService {
         }
         if rules_changed {
             changed_sections.push("rules".into());
+        }
+
+        // Sprint 25a D1: the generated seat commands ride the same lifecycle.
+        // Seats are materialized-if-absent into <config>/seats/ (config wins —
+        // a user-edited seat regenerates every channel); parse errors are LOUD
+        // in the deploy result, never silently skipped.
+        let mut seat_export_note = None;
+        {
+            let seats_dir = self.config_store.paths().config_dir.join("seats");
+            match crate::conductor::materialize_seats(&seats_dir) {
+                Err(error) => errors.push(format!("{client}: seat materialization: {error}")),
+                Ok(_) => {
+                    let (seats, seat_errors) = crate::runner::load_seat_definitions(&seats_dir);
+                    for (seat_path, error) in &seat_errors {
+                        errors.push(format!(
+                            "{client}: seat definition {}: {error}",
+                            seat_path.display()
+                        ));
+                    }
+                    let force = matches!(mode, DeployMode::Regenerate);
+                    if let Some(commands_dir) = derive_seat_commands_dir(client, &path) {
+                        match write_managed_seat_commands(client, &commands_dir, &seats, force) {
+                            Ok(written) if !written.is_empty() => {
+                                changed_sections.push("seatCommands".into())
+                            }
+                            Ok(_) => {}
+                            Err(error) => errors.push(error),
+                        }
+                    }
+                    if client == "claude_desktop" {
+                        let export_dir = self.config_store.paths().config_dir.join("exports");
+                        match write_managed_seat_export(&export_dir, &seats, force) {
+                            Ok((zip_path, changed)) => {
+                                if changed {
+                                    changed_sections.push("seatSkillExport".into());
+                                }
+                                seat_export_note = Some(zip_path);
+                            }
+                            Err(error) => errors.push(error),
+                        }
+                    }
+                }
+            }
         }
 
         // Sprint 18 Track 2 / Stage 9: write the PreToolUse enforcement hook
@@ -2053,11 +2123,18 @@ impl ManagerService {
         }
 
         if errors.is_empty() {
+            let message = match &seat_export_note {
+                Some(zip_path) => format!(
+                    "Deploy successful. Seat skill exported to {zip_path} — upload it once \
+                     in claude.ai Settings."
+                ),
+                None => "Deploy successful.".to_string(),
+            };
             DeployClientResult {
                 client: client.to_string(),
                 target_path: path,
                 status: DeployClientStatus::Success,
-                message: "Deploy successful.".into(),
+                message,
                 backup_path,
                 changed_sections,
                 validation_errors: Vec::new(),
@@ -2963,6 +3040,139 @@ fn derive_global_rule_path(client: &str) -> Option<String> {
         "claude" => Some(display_path(&home.join(".claude").join("CLAUDE.md"))),
         _ => None,
     }
+}
+
+/// Sprint 25a D1: where the generated seat-command artifacts live, per
+/// client — derived from the SAME base as the rule file (the config
+/// sibling), so a tempdir client tree in tests behaves like the real one.
+/// claude → `<base>/.claude/skills/<cmd>/SKILL.md` · cursor →
+/// `<base>/commands/<cmd>.md` (the config sibling IS `~/.cursor`) ·
+/// antigravity → `<base>/.agent/workflows/<cmd>.md` (verified format,
+/// C2). claude_desktop ships via the export zip; intellij via the
+/// rule-block phrase table — neither has a commands dir.
+fn derive_seat_commands_dir(client: &str, mcp_target_path: &str) -> Option<PathBuf> {
+    let parent = PathBuf::from(mcp_target_path)
+        .parent()
+        .map(Path::to_path_buf)?;
+    match client {
+        "claude" => Some(parent.join(".claude").join("skills")),
+        "cursor" => Some(parent.join("commands")),
+        "antigravity" => Some(parent.join(".agent").join("workflows")),
+        _ => None,
+    }
+}
+
+/// The five command-artifact paths for a command-bearing client (the
+/// deployed inventory — asserted by test, removed exactly by Delete).
+fn seat_artifact_paths(client: &str, commands_dir: &Path) -> Vec<(String, PathBuf)> {
+    crate::conductor::COMMAND_MAP
+        .iter()
+        .map(|(_, cmd, _)| {
+            let path = match client {
+                "claude" => commands_dir.join(cmd).join("SKILL.md"),
+                _ => commands_dir.join(format!("{cmd}.md")),
+            };
+            ((*cmd).to_string(), path)
+        })
+        .collect()
+}
+
+/// Writes the generated seat commands for one client, change-detected
+/// (the `write_managed_cursor_hooks` template): a byte-identical redeploy
+/// writes NOTHING. Returns the paths actually written.
+fn write_managed_seat_commands(
+    client: &str,
+    commands_dir: &Path,
+    seats: &[crate::runner::SeatDefinition],
+    force_rewrite: bool,
+) -> Result<Vec<String>, String> {
+    let mut written = Vec::new();
+    for seat in seats {
+        let rendered = match client {
+            "claude" => crate::conductor::render_claude_skill(seat),
+            "cursor" => crate::conductor::render_cursor_command(seat),
+            "antigravity" => crate::conductor::render_antigravity_workflow(seat),
+            _ => None,
+        };
+        let Some(body) = rendered else { continue };
+        let (cmd, _) = crate::conductor::command_for(&seat.name)
+            .expect("rendered seats are command-mapped");
+        let path = match client {
+            "claude" => commands_dir.join(cmd).join("SKILL.md"),
+            _ => commands_dir.join(format!("{cmd}.md")),
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("{client}: cannot create {}: {e}", parent.display()))?;
+        }
+        let changed = fs::read_to_string(&path)
+            .map(|existing| existing != body)
+            .unwrap_or(true);
+        if changed || force_rewrite {
+            fs::write(&path, &body)
+                .map_err(|e| format!("{client}: cannot write {}: {e}", path.display()))?;
+            written.push(display_path(&path));
+        }
+    }
+    Ok(written)
+}
+
+/// Delete-side counterpart: removes exactly the five artifacts and prunes
+/// the dirs they created (Delete leaves no trace).
+fn remove_managed_seat_commands(client: &str, commands_dir: &Path) -> Result<bool, String> {
+    let mut removed = false;
+    for (cmd, path) in seat_artifact_paths(client, commands_dir) {
+        if path.exists() {
+            fs::remove_file(&path)
+                .map_err(|e| format!("{client}: cannot remove {}: {e}", path.display()))?;
+            removed = true;
+        }
+        if client == "claude" {
+            let _ = fs::remove_dir(commands_dir.join(&cmd)); // only if empty
+        }
+    }
+    let _ = fs::remove_dir(commands_dir); // only if empty
+    if client == "antigravity" {
+        if let Some(agent_dir) = commands_dir.parent() {
+            let _ = fs::remove_dir(agent_dir); // `.agent`, only if empty
+        }
+    }
+    Ok(removed)
+}
+
+fn seat_export_zip_path(export_dir: &Path) -> PathBuf {
+    export_dir.join("jawata-seats-skill.zip")
+}
+
+/// The claude.ai / Claude Desktop skill archive, written into the studio
+/// export dir (the user uploads it once). Deterministic zip bytes (C2), so
+/// the change-detected write makes redeploy a no-op.
+fn write_managed_seat_export(
+    export_dir: &Path,
+    seats: &[crate::runner::SeatDefinition],
+    force_rewrite: bool,
+) -> Result<(String, bool), String> {
+    let bytes = crate::conductor::render_claudeai_skill_zip(seats)?;
+    fs::create_dir_all(export_dir)
+        .map_err(|e| format!("cannot create export dir {}: {e}", export_dir.display()))?;
+    let path = seat_export_zip_path(export_dir);
+    let changed = fs::read(&path).map(|existing| existing != bytes).unwrap_or(true);
+    if changed || force_rewrite {
+        fs::write(&path, &bytes)
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        return Ok((display_path(&path), true));
+    }
+    Ok((display_path(&path), false))
+}
+
+fn remove_managed_seat_export(export_dir: &Path) -> Result<bool, String> {
+    let path = seat_export_zip_path(export_dir);
+    let existed = path.exists();
+    if existed {
+        fs::remove_file(&path).map_err(|e| format!("cannot remove {}: {e}", path.display()))?;
+    }
+    let _ = fs::remove_dir(export_dir); // only if empty
+    Ok(existed)
 }
 
 fn validate_written_client_config(
@@ -6036,6 +6246,110 @@ mod tests {
         let desktop = build_rule_block("claude_desktop", &servers);
         assert!(desktop.contains("`jawata-seats` skill"), "desktop points at the skill");
         assert!(!desktop.contains("| You say |"));
+    }
+
+    fn loaded_seats(label: &str) -> (PathBuf, Vec<crate::runner::SeatDefinition>) {
+        let seats_dir = unique_tempdir(label).join("seats");
+        crate::conductor::materialize_seats(&seats_dir).expect("materialize");
+        let (seats, errors) = crate::runner::load_seat_definitions(&seats_dir);
+        assert!(errors.is_empty(), "embedded seats must load clean: {errors:?}");
+        (seats_dir, seats)
+    }
+
+    #[test]
+    fn seat_commands_roundtrip_inventory_idempotency_delete_per_client() {
+        let (_, seats) = loaded_seats("seat-rt");
+        for client in ["claude", "cursor", "antigravity"] {
+            let base = unique_tempdir(&format!("tree-{client}"));
+            let cfg = base.join("config.json");
+            fs::write(&cfg, "{}").unwrap();
+            let dir = derive_seat_commands_dir(client, &display_path(&cfg))
+                .expect("command-bearing client");
+            // Deploy: exactly the five artifacts, by name (the inventory).
+            let written = write_managed_seat_commands(client, &dir, &seats, false).unwrap();
+            assert_eq!(written.len(), 5, "{client}: five command artifacts written");
+            for (cmd, path) in seat_artifact_paths(client, &dir) {
+                assert!(path.exists(), "{client}: /{cmd} artifact missing at {path:?}");
+                let body = fs::read_to_string(&path).unwrap();
+                assert!(
+                    body.contains("GENERATED by jawata-studio"),
+                    "{client}/{cmd}: provenance marker"
+                );
+            }
+            // Deploy twice: byte-stable at the DEPLOY layer — nothing written.
+            let written2 = write_managed_seat_commands(client, &dir, &seats, false).unwrap();
+            assert!(written2.is_empty(), "{client}: second deploy must write nothing");
+            // Delete: no trace.
+            assert!(remove_managed_seat_commands(client, &dir).unwrap());
+            for (cmd, path) in seat_artifact_paths(client, &dir) {
+                assert!(!path.exists(), "{client}: /{cmd} must be removed");
+            }
+            assert!(!dir.exists(), "{client}: commands dir pruned");
+        }
+        // Non-command clients have no commands dir at all.
+        assert!(derive_seat_commands_dir("claude_desktop", "/tmp/x.json").is_none());
+        assert!(derive_seat_commands_dir("intellij", "/tmp/x.json").is_none());
+    }
+
+    #[test]
+    fn seat_export_roundtrip_and_idempotency() {
+        let (_, seats) = loaded_seats("seat-export");
+        let export_dir = unique_tempdir("export-rt").join("exports");
+        let (_, changed) = write_managed_seat_export(&export_dir, &seats, false).unwrap();
+        assert!(changed, "first export writes");
+        assert!(seat_export_zip_path(&export_dir).exists());
+        let (_, changed2) = write_managed_seat_export(&export_dir, &seats, false).unwrap();
+        assert!(!changed2, "second export is a no-op (deterministic zip bytes)");
+        assert!(remove_managed_seat_export(&export_dir).unwrap());
+        assert!(!seat_export_zip_path(&export_dir).exists());
+        assert!(!export_dir.exists(), "export dir pruned");
+    }
+
+    #[test]
+    fn edited_seat_propagates_to_every_channel_on_redeploy() {
+        // The spec's Approach sentence, proven: "a seat edit followed by a
+        // redeploy updates every channel."
+        let (seats_dir, seats) = loaded_seats("seat-edit");
+        let mut trees = Vec::new();
+        for client in ["claude", "cursor", "antigravity"] {
+            let base = unique_tempdir(&format!("edit-{client}"));
+            let cfg = base.join("config.json");
+            fs::write(&cfg, "{}").unwrap();
+            let dir = derive_seat_commands_dir(client, &display_path(&cfg)).unwrap();
+            write_managed_seat_commands(client, &dir, &seats, false).unwrap();
+            trees.push((client, dir));
+        }
+        // Edit the materialized seat (the config copy — the runtime source).
+        let seat_path = seats_dir.join("javadoc-writer.md");
+        let edited = fs::read_to_string(&seat_path)
+            .unwrap()
+            .replace("GROUNDED PROSE ONLY", "GROUNDED PROSE ONLY (EDIT-MARKER)");
+        fs::write(&seat_path, &edited).unwrap();
+        let (reloaded, errors) = crate::runner::load_seat_definitions(&seats_dir);
+        assert!(errors.is_empty());
+        for (client, dir) in &trees {
+            let written = write_managed_seat_commands(client, dir, &reloaded, false).unwrap();
+            assert_eq!(written.len(), 1, "{client}: exactly the edited seat rewrites");
+            let (_, javadocs_path) = seat_artifact_paths(client, dir)
+                .into_iter()
+                .find(|(cmd, _)| cmd == "javadocs")
+                .unwrap();
+            assert!(
+                fs::read_to_string(&javadocs_path).unwrap().contains("EDIT-MARKER"),
+                "{client}: the edited stance reached the artifact"
+            );
+        }
+        // The archive channel too.
+        let bytes = crate::conductor::render_claudeai_skill_zip(&reloaded).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        use std::io::Read;
+        let mut reference = String::new();
+        archive
+            .by_name("jawata-seats/references/javadocs.md")
+            .unwrap()
+            .read_to_string(&mut reference)
+            .unwrap();
+        assert!(reference.contains("EDIT-MARKER"), "zip reference updated");
     }
 
     #[test]
