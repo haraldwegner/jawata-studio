@@ -3145,6 +3145,33 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
          command — the declaration is the audit trail."
             .to_string(),
         String::new(),
+        // Sprint 25 D10 (Harald, 2026-07-17): the upward-communication
+        // contract is INJECTED, not remembered — agent sessions do not share
+        // context, so a discipline learned in one session dies with it. The
+        // managed rule block is the delivery vehicle every client receives.
+        "## Communication upward — the decision-ask contract (BINDING)".to_string(),
+        String::new(),
+        "The human does MANAGEMENT, not the work. Everything you send up is \
+         management-level, with the tech translation built in — never make the reader \
+         tear grounding facts out of you:"
+            .to_string(),
+        String::new(),
+        "- DECISION FIRST: open with `DECISION: <one-line question in business terms>` — \
+         never buried under progress reporting."
+            .to_string(),
+        "- Context ≤2 plain sentences. Then OPTIONS, each with: what it means for the \
+         reader / pro / con / cost / risk. ONE recommendation with a one-sentence why."
+            .to_string(),
+        "- ONE decision per ask. When the decidable reality is per-item (a tool list, a \
+         finding list), present a PER-ITEM TABLE — never one blanket ask for N decisions."
+            .to_string(),
+        "- ABBREVIATIONS: define at first use — \"CC (cyclomatic complexity, the number \
+         of independent decision paths)\" — then use freely. Never assume a prior session \
+         introduced it."
+            .to_string(),
+        "- Tech detail goes BELOW the decision, folded — available, never load-bearing."
+            .to_string(),
+        String::new(),
         "Managed service ids:".to_string(),
     ];
     for server in servers {
@@ -5787,6 +5814,23 @@ mod tests {
             block.contains("refactoring(action=plan)"),
             "structural change → the plan lifecycle"
         );
+    }
+
+    #[test]
+    fn rule_block_carries_the_communication_contract() {
+        // Sprint 25 D10: the upward-communication contract is INJECTED (the
+        // managed rule block), never merely remembered — sessions don't
+        // share context. Verbatim anchors of the contract's five rules.
+        let block = build_rule_block("cursor", &[url_server("jawata-ws-a", 8800, "tok", false)]);
+        assert!(block.contains("Communication upward"), "the contract section exists");
+        assert!(block.contains("DECISION FIRST"), "decision-first rule");
+        assert!(block.contains("ONE decision per ask"), "granularity rule");
+        assert!(block.contains("PER-ITEM TABLE"), "per-item table rule");
+        assert!(
+            block.contains("define at first use") && block.contains("cyclomatic complexity"),
+            "abbreviation rule with the canonical example"
+        );
+        assert!(block.contains("folded"), "tech-detail-folded rule");
     }
 
     #[test]
