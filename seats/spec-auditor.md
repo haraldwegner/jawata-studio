@@ -1,7 +1,7 @@
 ---
 name: spec-auditor
 model: claude-sonnet-5
-# tier justification (judgment work — same family as the architect; adversarial reading IS the product)
+# tier justification (POLICY, UNMEASURED: adversarial judgment work assigned the strong tier by rule, not by a measured table — no auditing-fixture probe exists yet)
 effort: high
 tools: []
 gates: []

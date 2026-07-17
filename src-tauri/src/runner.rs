@@ -638,13 +638,18 @@ impl GateExecutor for ResidentGateContext {
                         return outcomes;
                     }
                 }
-                outcomes.push(match self.executor.call_tool(
-                    "run_tests",
-                    serde_json::json!({ "action": "coverage_delta", "diff": "worktree" }),
-                ) {
-                    Ok(_) => GateOutcome::pass(GateClass::Tests, "coverage_delta", "retrieved"),
-                    Err(e) => GateOutcome::fail(GateClass::Tests, "coverage_delta", &e),
-                });
+                // v3.0.1 (audit cure): this gate previously PASSED on any Ok
+                // response — a fake pass. The generic executor has no baseline
+                // to verify a positive delta against, and a gate that cannot
+                // VERIFY has NOT passed. Test-writing seats must run through
+                // TestWriterGates (the full D5 chain: baseline -> pass x3 ->
+                // coverage_improves -> mutation_bite).
+                outcomes.push(GateOutcome::fail(
+                    GateClass::Tests,
+                    "coverage_delta",
+                    "generic executor cannot verify a coverage delta (no baseline) — \
+                     use TestWriterGates for test-writing seats",
+                ));
                 outcomes
             }
             GateClass::Docs => vec![self.executor.doclint(proposal, &self.workdir)],
@@ -2210,14 +2215,25 @@ pub fn collect_profile_evidence(
             )
             .map(|v| extract_tool_text(&v))
             .unwrap_or_else(|e| format!("(call hierarchy failed: {e})"));
+        // v3.0.1 (audit cure): recall-before-report — the profiled symbols'
+        // prior lessons ride the facts; an authoritative absence is an answer.
+        let recall = resident
+            .call_tool(
+                "experience",
+                serde_json::json!({ "kind": "recall", "symbol": format!("{seam_class}#{seam_method}"), "format": "text" }),
+            )
+            .map(|v| extract_tool_text(&v))
+            .unwrap_or_else(|e| format!("(recall failed: {e})"));
         Ok(format!(
             "== SAMPLE ==\n{}\n\n== HOTSPOTS (cpu) ==\n{}\n\n== HOTSPOTS (wall) ==\n{}\n\n\
-             == LATENCY SEAM ({seam_class}#{seam_method}) ==\n{}\n\n== CALL HIERARCHY (incoming, hotSpot) ==\n{}",
+             == LATENCY SEAM ({seam_class}#{seam_method}) ==\n{}\n\n== CALL HIERARCHY (incoming, hotSpot) ==\n{}\n\n\
+             == RECALL (experience store, profiled symbols) ==\n{}",
             clip(&sample_text, 2_000),
             clip(&cpu, 6_000),
             clip(&wall, 6_000),
             clip(&seam, 4_000),
-            clip(&hierarchy, 2_000)
+            clip(&hierarchy, 2_000),
+            clip(&recall, 1_500)
         ))
     })();
     let _ = resident.call_tool(
@@ -3006,12 +3022,7 @@ You are the echo seat. You document what you are told to document.
     #[test]
     #[ignore]
     fn javadoc_writer_live_run() {
-        let jar = std::env::var("JAWATA_JAR").unwrap_or_else(|_| {
-            format!(
-                "{}/.cache/jawata-studio/tools/jawata/current/jawata-v2.14.1/jawata.jar",
-                std::env::var("HOME").unwrap()
-            )
-        });
+        let jar = deployed_jar();
         assert!(Path::new(&jar).is_file(), "no jawata jar at {jar}");
         let dir = unique_tempdir("jw-live");
         let fixture_dir = dir.join("fixture");
@@ -3169,12 +3180,7 @@ You are the echo seat. You document what you are told to document.
     #[test]
     #[ignore]
     fn test_writer_live_run() {
-        let jar = std::env::var("JAWATA_JAR").unwrap_or_else(|_| {
-            format!(
-                "{}/.cache/jawata-studio/tools/jawata/current/jawata-v2.14.1/jawata.jar",
-                std::env::var("HOME").unwrap()
-            )
-        });
+        let jar = deployed_jar();
         assert!(Path::new(&jar).is_file(), "no jawata jar at {jar}");
         let dir = unique_tempdir("tw-live");
         let fixture_dir = dir.join("fixture");
@@ -3360,12 +3366,7 @@ You are the echo seat. You document what you are told to document.
     #[test]
     #[ignore]
     fn architect_live_run() {
-        let jar = std::env::var("JAWATA_JAR").unwrap_or_else(|_| {
-            format!(
-                "{}/.cache/jawata-studio/tools/jawata/current/jawata-v2.14.1/jawata.jar",
-                std::env::var("HOME").unwrap()
-            )
-        });
+        let jar = deployed_jar();
         let dir = unique_tempdir("arch-live");
         let fixture_dir = dir.join("fixture");
         copy_tree(
@@ -3604,13 +3605,30 @@ You are the echo seat. You document what you are told to document.
         assert_eq!(out.lines().nth(2).unwrap(), "line three");
     }
 
-    fn spawn_sandbox(dir: &Path, token: &str) -> (std::process::Child, String) {
-        let jar = std::env::var("JAWATA_JAR").unwrap_or_else(|_| {
-            format!(
-                "{}/.cache/jawata-studio/tools/jawata/current/jawata-v2.14.1/jawata.jar",
+
+    /// The deployed jawata jar (fleet "current"), version-agnostic — the
+    /// fleet flip renames the versioned dir, so tests DISCOVER it.
+    fn deployed_jar() -> String {
+        std::env::var("JAWATA_JAR").unwrap_or_else(|_| {
+            let root = format!(
+                "{}/.cache/jawata-studio/tools/jawata/current",
                 std::env::var("HOME").unwrap()
-            )
-        });
+            );
+            fs::read_dir(&root)
+                .ok()
+                .and_then(|entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .map(|e| e.path().join("jawata.jar"))
+                        .find(|p| p.is_file())
+                })
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| format!("{root}/jawata.jar"))
+        })
+    }
+
+    fn spawn_sandbox(dir: &Path, token: &str) -> (std::process::Child, String) {
+        let jar = deployed_jar();
         assert!(Path::new(&jar).is_file(), "no jawata jar at {jar}");
         let port = {
             let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

@@ -26,6 +26,8 @@ Rules (each one is binding):
 3. PUBLIC API ONLY. You touch public/protected types and members that the
    findings list names. You change NOTHING else — no reformatting, no
    refactoring, no fixing of things you happen to notice.
-4. ONE TYPE AT A TIME. Work in per-type batches; the work item names the
-   batch.
+4. ONE BATCH, GROUPED BY TYPE. The work item names the findings batch; you
+   answer with ONE proposal covering it, changes grouped per type inside
+   the diff. (Per-type batching is the detector's job — it scopes the
+   findings list; you never re-slice it.)
 5. You do not use any tools; everything you need is in the prompt.
