@@ -290,6 +290,78 @@ pub fn render_claudeai_skill_zip(seats: &[SeatDefinition]) -> Result<Vec<u8>, St
     Ok(buf.into_inner())
 }
 
+/// Line budgets for the rule-block conductor section (the R2 guard — the
+/// numbers are FIXED in dossier-25a C0; the build-failing test pins them).
+pub const CONDUCTOR_SECTION_BUDGET_UNIVERSAL: usize = 30;
+pub const CONDUCTOR_SECTION_BUDGET_INTELLIJ: usize = 60;
+
+/// The rule-block conductor section (Sprint 25a D2): the universal tight
+/// summary — seat catalog, when to involve the architect unprompted, the
+/// seat discipline, the design-step line — plus a per-client tail: a
+/// one-liner where commands are deployed, the FULL phrase table on IntelliJ
+/// (its Prompt Library has no file channel). This is the ONE deliberate
+/// per-client variation in the rule-block body (the invariant test asserts
+/// every other section stays byte-identical across clients).
+pub fn render_conductor_section(seats: &[SeatDefinition], client: &str) -> Vec<String> {
+    let mut lines = vec![
+        "## The jawata seats — narrow engineering roles, gate-disciplined".to_string(),
+        String::new(),
+        "jawata ships seven SEATS. Five are direct roles; two live in /sprint:".to_string(),
+        String::new(),
+    ];
+    for (seat_name, command, desc) in &COMMAND_MAP {
+        if seats.iter().any(|s| s.name == *seat_name) {
+            lines.push(format!("- {seat_name} (`/{command}`) — {desc}"));
+        }
+    }
+    lines.push(
+        "- spec-editor + spec-auditor — the /sprint two-seat artifact pipeline".to_string(),
+    );
+    lines.extend([
+        String::new(),
+        "Involve the ARCHITECT seat unprompted when the ask is a vague \"clean \
+         this up\" or you are reviewing a checkpoint diff — design fix or bandage \
+         is its call. A sprint's design step: after spec sign-off, before the \
+         plan, a design-mode run produces `ARCHITECTURE-<scope>.md`; the plan is \
+         written against it."
+            .to_string(),
+        String::new(),
+        "Seat discipline (binding whenever you run a seat):".to_string(),
+        "- The gates are real jawata MCP calls you make and read — a gate you \
+         could not run has NOT passed."
+            .to_string(),
+        "- PROPOSE, never auto-apply: present the diff/files, wait for the human \
+         yes."
+            .to_string(),
+        "- Record every outcome: `experience(kind=record, operation=\"seat:<command>\", \
+         …)`."
+            .to_string(),
+        String::new(),
+    ]);
+    match client {
+        "intellij" => {
+            lines.push(
+                "No command channel in this client — adopt the seat by phrase:".to_string(),
+            );
+            lines.extend(render_phrase_table(seats).lines().map(String::from));
+        }
+        "claude_desktop" => {
+            lines.push(
+                "The `jawata-seats` skill (uploaded once) carries these seats — \
+                 invoke it by role."
+                    .to_string(),
+            );
+        }
+        _ => {
+            lines.push(
+                "Seat commands are installed in this client — invoke them directly."
+                    .to_string(),
+            );
+        }
+    }
+    lines
+}
+
 /// Parses every embedded seat (compile-time sources). Panics are
 /// impossible in practice — the seat files are tested in-repo; a parse
 /// error here is a build defect surfaced loudly at the call site.

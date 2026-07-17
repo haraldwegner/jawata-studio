@@ -3050,9 +3050,10 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
     // one-line policy was too vague to change agent behaviour. Three imperative
     // sections: a Java→jawata routing table, the health-gated fallback (ASK when
     // JAWATA is down on Java work, silent on non-Java), then the TDD-refactor loop.
-    // Keep it tight and scannable; a long rule gets ignored. Identical text for
-    // every client (only the marker name differs) so the idempotent
-    // marker-replace in write_managed_rule_block stays simple.
+    // Keep it tight and scannable; a long rule gets ignored. Since Sprint 25a
+    // the body is identical for every client EXCEPT the conductor section
+    // (its per-client tail: commands-installed one-liner vs the IntelliJ
+    // phrase table); the marker-replace idempotency is unaffected.
     let mut lines = vec![
         format!("<!-- jawata-studio:{client}:start -->"),
         "## JAWATA MCP — use it for Java, before shell text tools".to_string(),
@@ -3172,8 +3173,16 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
         "- Tech detail goes BELOW the decision, folded — available, never load-bearing."
             .to_string(),
         String::new(),
-        "Managed service ids:".to_string(),
     ];
+    // Sprint 25a D2: the conductor section — the ONE deliberately per-client
+    // part of the body (commands-installed one-liner vs IntelliJ phrase
+    // table). A parse failure of the embedded seats is a build defect; it
+    // surfaces as a loud comment in the artifact, never a panic mid-deploy.
+    match crate::conductor::embedded_seat_definitions() {
+        Ok(seats) => lines.extend(crate::conductor::render_conductor_section(&seats, client)),
+        Err(e) => lines.push(format!("<!-- jawata conductor section unavailable: {e} -->")),
+    }
+    lines.extend([String::new(), "Managed service ids:".to_string()]);
     for server in servers {
         lines.push(format!("- {}", server.id));
     }
@@ -5945,18 +5954,110 @@ mod tests {
     }
 
     #[test]
-    fn rule_block_marker_name_is_per_client_but_body_is_identical() {
+    fn rule_block_body_is_identical_across_clients_except_the_conductor_section() {
+        // Amended DELIBERATELY in Sprint 25a (D2): the conductor section is
+        // the ONE per-client part of the body; everything else must stay
+        // byte-identical across clients.
         let servers = vec![url_server("jawata-ws-a", 8800, "tok", false)];
-        let cursor = build_rule_block("cursor", &servers);
-        let claude = build_rule_block("claude", &servers);
-        assert!(cursor.contains("jawata-studio:cursor:start"));
-        assert!(claude.contains("jawata-studio:claude:start"));
-        // Strip the client-specific markers; the guidance body must match.
-        let strip = |s: &str, c: &str| {
-            s.replace(&format!("<!-- jawata-studio:{c}:start -->"), "")
-                .replace(&format!("<!-- jawata-studio:{c}:end -->"), "")
+        let strip = |s: &str, c: &str| -> String {
+            let no_markers = s
+                .replace(&format!("<!-- jawata-studio:{c}:start -->"), "")
+                .replace(&format!("<!-- jawata-studio:{c}:end -->"), "");
+            // Drop the conductor section: from its heading to (exclusive)
+            // the managed-ids trailer.
+            let mut out = Vec::new();
+            let mut in_conductor = false;
+            for line in no_markers.lines() {
+                if line.starts_with("## The jawata seats") {
+                    in_conductor = true;
+                }
+                if line == "Managed service ids:" {
+                    in_conductor = false;
+                }
+                if !in_conductor {
+                    out.push(line);
+                }
+            }
+            out.join("\n")
         };
-        assert_eq!(strip(&cursor, "cursor"), strip(&claude, "claude"));
+        let claude = build_rule_block("claude", &servers);
+        for client in ["cursor", "antigravity", "claude_desktop", "intellij"] {
+            let other = build_rule_block(client, &servers);
+            assert!(other.contains(&format!("jawata-studio:{client}:start")));
+            assert_eq!(
+                strip(&claude, "claude"),
+                strip(&other, client),
+                "non-conductor body must be identical for {client}"
+            );
+        }
+        // The three command clients share even the conductor section.
+        assert_eq!(
+            build_rule_block("cursor", &servers).replace(":cursor:", ":x:"),
+            build_rule_block("antigravity", &servers).replace(":antigravity:", ":x:"),
+        );
+    }
+
+    #[test]
+    fn rule_block_carries_the_conductor_section() {
+        let servers = vec![url_server("jawata-ws-a", 8800, "tok", false)];
+        let block = build_rule_block("claude", &servers);
+        for anchor in [
+            "## The jawata seats",
+            "javadoc-writer (`/javadocs`)",
+            "test-writer (`/cover`)",
+            "architect (`/refactor`)",
+            "debugger (`/debug`)",
+            "profiler (`/profile`)",
+            "spec-editor + spec-auditor",
+            "Involve the ARCHITECT seat unprompted",
+            "checkpoint diff",
+            "`ARCHITECTURE-<scope>.md`",
+            "has NOT passed",
+            "PROPOSE, never auto-apply",
+            "experience(kind=record",
+            "Seat commands are installed",
+        ] {
+            assert!(block.contains(anchor), "conductor anchor missing: {anchor}");
+        }
+    }
+
+    #[test]
+    fn conductor_section_intellij_gets_the_phrase_table_others_do_not() {
+        let servers = vec![url_server("jawata-ws-a", 8800, "tok", false)];
+        let intellij = build_rule_block("intellij", &servers);
+        assert!(intellij.contains("| You say | Adopt the seat |"));
+        assert!(intellij.contains("No command channel in this client"));
+        assert!(!intellij.contains("Seat commands are installed"));
+        for client in ["claude", "cursor", "antigravity"] {
+            let block = build_rule_block(client, &servers);
+            assert!(!block.contains("| You say |"), "{client} must not carry the table");
+            assert!(block.contains("Seat commands are installed"), "{client} one-liner");
+        }
+        let desktop = build_rule_block("claude_desktop", &servers);
+        assert!(desktop.contains("`jawata-seats` skill"), "desktop points at the skill");
+        assert!(!desktop.contains("| You say |"));
+    }
+
+    #[test]
+    fn conductor_section_respects_the_recorded_line_budgets() {
+        // The R2 guard — budgets FIXED in dossier-25a C0 (≤30 universal,
+        // ≤60 IntelliJ incl. the phrase table). Growth past the budget is a
+        // BUILD FAILURE, not a review note.
+        let seats = crate::conductor::embedded_seat_definitions().unwrap();
+        for client in ["claude", "cursor", "antigravity", "claude_desktop"] {
+            let n = crate::conductor::render_conductor_section(&seats, client).len();
+            assert!(
+                n <= crate::conductor::CONDUCTOR_SECTION_BUDGET_UNIVERSAL,
+                "{client} conductor section {n} lines > budget {}",
+                crate::conductor::CONDUCTOR_SECTION_BUDGET_UNIVERSAL
+            );
+        }
+        let n = crate::conductor::render_conductor_section(&seats, "intellij").len();
+        assert!(
+            n <= crate::conductor::CONDUCTOR_SECTION_BUDGET_INTELLIJ,
+            "intellij conductor section {n} lines > budget {}",
+            crate::conductor::CONDUCTOR_SECTION_BUDGET_INTELLIJ
+        );
     }
 
     #[test]
