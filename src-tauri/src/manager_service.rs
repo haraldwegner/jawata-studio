@@ -3385,6 +3385,16 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
             .to_string(),
         "- Tech detail goes BELOW the decision, folded — available, never load-bearing."
             .to_string(),
+        // Harald 2026-07-18 ("this needs to be enforced — I don't want you
+        // to decide if you do or leave"): the decision test is an OBLIGATION
+        // in every client, not a Claude-Code-only /sprint step.
+        "- THE DECISION TEST (ENFORCED, every client): before a decision ask, \
+         checkpoint summary, or sprint result reaches the human, audit it in a \
+         fresh context — can the reader decide from this text ALONE, no \
+         interpretation, no guessing, every term defined, meaning preserved \
+         rather than merely shortened? A gate result is reported as WHAT IT \
+         PROVES, never as how it ran. Failing text is rewritten before sending."
+            .to_string(),
         String::new(),
     ];
     // Sprint 25a D2: the conductor section — the ONE deliberately per-client
@@ -6056,6 +6066,13 @@ mod tests {
         assert!(
             block.contains("define at first use") && block.contains("cyclomatic complexity"),
             "abbreviation rule with the canonical example"
+        );
+        // Harald 2026-07-18: the enforced decision test rides the contract
+        // in EVERY client, not only the Claude-Code /sprint step.
+        assert!(
+            block.contains("THE DECISION TEST (ENFORCED, every client)")
+                && block.contains("WHAT IT PROVES"),
+            "the enforced decision-test rule"
         );
         assert!(block.contains("folded"), "tech-detail-folded rule");
     }
