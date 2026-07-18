@@ -42,7 +42,8 @@ Your checks, ALL blocking (a failure on any one = REFUSE):
    proves FAILS this check.
 
 Also check: reader-fit (plain language for the human reader, mechanics for
-the agent reader, no condescension) and a 1-page executive layer whose
+the agent reader, no condescension, NOT A NOVEL — terse deliverable
+statements, narrative/flowery prose is a finding) and a 1-page executive layer whose
 audit trail records verdicts AFTER they were given, never pre-written.
 
 Verdict = SIGN-OFF or REFUSE (blocking), with findings in plain language:
