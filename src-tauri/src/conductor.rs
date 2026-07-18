@@ -256,6 +256,9 @@ pub fn render_claudeai_skill_zip(seats: &[SeatDefinition]) -> Result<Vec<u8>, St
     for (_, command, desc) in &mapped {
         skill.push_str(&format!("- `references/{command}.md` — {desc}\n"));
     }
+    for (cmd, desc) in UTILITY_MAP {
+        skill.push_str(&format!("- `references/{cmd}.md` — {desc}\n"));
+    }
     skill.push_str(
         "\nThe spec-editor and spec-auditor seats live in the /sprint pipeline,\n\
          not here.\n",
@@ -284,6 +287,12 @@ pub fn render_claudeai_skill_zip(seats: &[SeatDefinition]) -> Result<Vec<u8>, St
             zip.start_file(format!("jawata-seats/references/{command}.md"), opts)
                 .and_then(|_| zip.write_all(body.as_bytes()).map_err(Into::into))
                 .map_err(|e| format!("zip references/{command}.md: {e}"))?;
+        }
+        for (cmd, desc) in UTILITY_MAP {
+            zip.start_file(format!("jawata-seats/references/{cmd}.md"), opts)
+                .and_then(|_| zip.write_all(
+                    render_cursor_utility(cmd, desc).as_bytes()).map_err(Into::into))
+                .map_err(|e| format!("zip references/{cmd}.md: {e}"))?;
         }
         zip.finish().map_err(|e| format!("zip finish: {e}"))?;
     }
@@ -598,7 +607,12 @@ mod tests {
                 "reference for /{command} present: {names:?}"
             );
         }
-        assert_eq!(names.len(), 6, "SKILL.md + exactly five references");
+        for (cmd, _) in UTILITY_MAP {
+            assert!(names.contains(&format!("jawata-seats/references/{cmd}.md")),
+                "utility /{cmd} reference present");
+        }
+        assert_eq!(names.len(), 8,
+            "SKILL.md + five seat references + two utility references");
         // SKILL.md carries the required frontmatter.
         use std::io::Read;
         let mut skill = String::new();
