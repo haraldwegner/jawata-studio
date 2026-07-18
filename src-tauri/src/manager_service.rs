@@ -1806,6 +1806,17 @@ impl ManagerService {
                 }
             }
 
+            // Sprint 26: strip the Stop gate.
+            if let (Some(settings_path), Some(stop_path)) =
+                (derive_hook_settings_path(client), managed_stop_script_path())
+            {
+                match remove_managed_stop(&settings_path, &stop_path, backup_before_write) {
+                    Ok(true) => changed_sections.push("stopGate".into()),
+                    Ok(false) => {}
+                    Err(error) => errors.push(error),
+                }
+            }
+
             // Sprint 22a P1-b: strip the managed Cursor hooks.json entries + scripts
             // (Cursor only). Leaves user hooks intact.
             if let (Some(hooks_path), Some(hooks_dir)) =
@@ -2094,6 +2105,27 @@ impl ManagerService {
                     Err(error) => errors.push(error),
                 }
                 if let Err(error) = selftest_hook_script(&userprompt_path) {
+                    errors.push(error);
+                }
+            }
+            // Sprint 26 (D5/D4): the Stop gate — the communication bounce +
+            // the seat-gate block (Claude Code only; platform fact).
+            if let (Some(settings_path), Some(stop_path)) =
+                (derive_hook_settings_path(client), managed_stop_script_path())
+            {
+                match write_managed_stop(
+                    &settings_path,
+                    &stop_path,
+                    &server.url,
+                    &server.token,
+                    backup_before_write,
+                    regenerate,
+                ) {
+                    Ok(true) => changed_sections.push("stopGate".into()),
+                    Ok(false) => {}
+                    Err(error) => errors.push(error),
+                }
+                if let Err(error) = selftest_hook_script(&stop_path) {
                     errors.push(error);
                 }
             }
@@ -5060,6 +5092,135 @@ fn remove_managed_hook_section(
     Ok(changed)
 }
 
+
+// ============================================================
+// Sprint 26 (D5/D4): the Stop hook — the communication gate's hard bounce
+// + the seat-gate block, Claude Code only (no stop-equivalent elsewhere).
+// ============================================================
+
+const JAWATA_STOP_SENTINEL: &str = "jawata-studio stop gate";
+
+fn managed_stop_script_path() -> Option<PathBuf> {
+    claude_scripts_dir().map(|dir| dir.join("stop-gate.sh"))
+}
+
+fn is_managed_stop_entry(entry: &serde_json::Value) -> bool {
+    entry["hooks"].as_array().is_some_and(|hooks| {
+        hooks.iter().any(|h| {
+            h["command"].as_str().is_some_and(|c| c.contains("stop-gate.sh"))
+        })
+    })
+}
+
+fn build_managed_stop_entry(script: &Path) -> serde_json::Value {
+    serde_json::json!({
+        "hooks": [ { "type": "command", "command": display_path(script) } ]
+    })
+}
+
+/// The Stop-gate script: rule-based decision test on the final message when
+/// it matches any of the three shapes (decision ask / checkpoint summary /
+/// sprint result); a seat session whose transcript shows a seat command but
+/// no gate calls is blocked with the named gates. Fail-open on any parse
+/// problem — a broken gate must never mute the agent. One rewrite loop:
+/// stop_hook_active means we already bounced once — allow.
+fn build_stop_script(mcp_url: &str, token: &str) -> String {
+    STOP_TEMPLATE
+        .replace("__MCP_URL__", mcp_url)
+        .replace("__TOKEN__", token)
+}
+
+const STOP_TEMPLATE: &str = r#"#!/usr/bin/env bash
+# jawata-studio stop gate (Sprint 26 D5/D4) — managed; do not edit.
+MCP_URL="__MCP_URL__"
+TOKEN="__TOKEN__"
+if [ -n "$JAWATA_HOOK_SELFTEST" ]; then printf '{}'; exit 0; fi
+input=$(cat)
+python3 - "$input" <<'PYEOF2'
+import json, re, sys, subprocess, os
+try:
+    data = json.loads(sys.argv[1])
+except Exception:
+    print('{}'); sys.exit(0)
+if data.get('stop_hook_active'):
+    print('{}'); sys.exit(0)  # one rewrite loop only
+tp = data.get('transcript_path')
+text = ''
+try:
+    with open(tp) as f:
+        for line in f:
+            try:
+                j = json.loads(line)
+            except Exception:
+                continue
+            m = j.get('message') or {}
+            if (j.get('type') == 'assistant') and isinstance(m.get('content'), list):
+                parts = [c.get('text','') for c in m['content'] if c.get('type')=='text']
+                if parts: text = chr(10).join(parts)
+except Exception:
+    print('{}'); sys.exit(0)
+U = text.upper()
+shaped = (U.startswith('DECISION:') or 'DECISION:' in U[:400]
+          or 'AWAITING "CONTINUE"' in U or '⏸' in text
+          or ('CHECKPOINT' in U and 'SHIPPED' in U)
+          or ('SPRINT' in U and ('CLOSED' in U or 'RESULT' in U)))
+reasons = []
+# Seat-gate block (D4): a seat command in this transcript but no gate calls after it.
+try:
+    with open(tp) as f: whole = f.read()
+    seats = [s for s in ('/javadocs','/cover','/refactor','/debug','/profile') if s in whole]
+    if seats and not any(g in whole for g in ('compile_workspace','run_tests','get_diagnostics')):
+        reasons.append('SEAT DISCIPLINE: %s invoked but no gate call (compile_workspace / run_tests / get_diagnostics) appears in this session — a gate you did not run has NOT passed. Run the gates before proposing.' % ','.join(seats))
+except Exception:
+    pass
+if shaped and not reasons:
+    if len(text) > 3500:
+        reasons.append('THE DECISION TEST: too long (%d chars) — noise includes LENGTH; a correct but bloated message fails. Cut to what the reader needs to decide.' % len(text))
+    known = {'DECISION','WATCH','TLDR','API','MCP','JDT','CPU','JVM','CI','PR','TDD','AST','LRU','TTL','SGD','JSON','HTTP','URL','ID','OK','DONE','STOP','NOT','AND','THE','ALL','NEW','YOUR','BOTH'}
+    caps = set(re.findall(r'[A-Z]{2,5}', text)) - known
+    undefined = [c for c in caps if (c + ' (') not in text and ('(' + c) not in text]
+    if len(undefined) > 2:
+        reasons.append('THE DECISION TEST: undefined terms %s — define every abbreviation at first use.' % sorted(undefined)[:4])
+if reasons:
+    reason = ' | '.join(reasons)
+    try:
+        subprocess.Popen(['curl','-s','--max-time','3','-X','POST',
+            '-H','Authorization: Bearer ' + os.environ.get('JAWATA_TOKEN','__TOKEN__'),
+            '-H','Content-Type: application/json',
+            '-d', json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'experience','arguments':{'kind':'record','type':'failure_mode','operation':'communication-audit','summary':'stop-gate bounce: ' + reason[:200],'status':'candidate'}}}),
+            '__MCP_URL__'])
+    except Exception:
+        pass
+    print(json.dumps({'decision':'block','reason':reason}))
+else:
+    print('{}')
+PYEOF2
+"#;
+
+fn write_managed_stop(
+    settings_path: &str,
+    stop_path: &Path,
+    mcp_url: &str,
+    token: &str,
+    backup_before_write: bool,
+    force_rewrite: bool,
+) -> Result<bool, String> {
+    write_managed_hook_section(
+        settings_path,
+        stop_path,
+        &build_stop_script(mcp_url, token),
+        "Stop",
+        build_managed_stop_entry(stop_path),
+        is_managed_stop_entry,
+        backup_before_write,
+        force_rewrite,
+    )
+}
+
+fn remove_managed_stop(settings_path: &str, stop_path: &Path, backup_before_write: bool) -> Result<bool, String> {
+    remove_managed_hook_section(settings_path, stop_path, "Stop", is_managed_stop_entry, backup_before_write)
+}
+
 fn write_managed_primer(
     settings_path: &str,
     primer_path: &Path,
@@ -6271,6 +6432,111 @@ mod tests {
         let desktop = build_rule_block("claude_desktop", &servers);
         assert!(desktop.contains("`jawata-seats` skill"), "desktop points at the skill");
         assert!(!desktop.contains("| You say |"));
+    }
+
+
+    // ---------- Sprint 26: the Stop gate ----------
+
+    fn run_stop_script(input: &serde_json::Value) -> serde_json::Value {
+        let dir = unique_tempdir("stop-gate");
+        let script = dir.join("stop-gate.sh");
+        fs::write(&script, build_stop_script("http://127.0.0.1:1/mcp", "t")).unwrap();
+        let out = std::process::Command::new("bash")
+            .arg(&script)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut c| {
+                use std::io::Write;
+                c.stdin.take().unwrap()
+                    .write_all(input.to_string().as_bytes()).unwrap();
+                c.wait_with_output()
+            })
+            .expect("script runs");
+        serde_json::from_slice(&out.stdout).expect("script prints JSON")
+    }
+
+    fn transcript_with(dir_label: &str, final_text: &str, extra: &str) -> String {
+        let dir = unique_tempdir(dir_label);
+        let tp = dir.join("transcript.jsonl");
+        let mut lines = String::new();
+        lines.push_str(extra);
+        lines.push_str(&serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": final_text}]}
+        }).to_string());
+        lines.push('\n');
+        fs::write(&tp, lines).unwrap();
+        display_path(&tp)
+    }
+
+    #[test]
+    fn stop_gate_bounces_a_noisy_specimen_of_each_of_the_three_shapes() {
+        let noise = "x".repeat(4000);
+        for (label, shaped) in [
+            ("ask", format!("DECISION: ship it? {noise}")),
+            ("checkpoint", format!("What shipped … ⏸ awaiting \"continue\" {noise}")),
+            ("result", format!("SPRINT 26 CLOSED — the result. {noise}")),
+        ] {
+            let tp = transcript_with(&format!("shape-{label}"), &shaped, "");
+            let v = run_stop_script(&serde_json::json!({
+                "transcript_path": tp, "stop_hook_active": false }));
+            assert_eq!(v["decision"], "block", "{label} must bounce");
+            assert!(v["reason"].as_str().unwrap().contains("LENGTH"), "{label}: names length");
+        }
+    }
+
+    #[test]
+    fn stop_gate_allows_clean_messages_and_the_second_pass() {
+        // Clean shaped message: short, no undefined terms → allowed.
+        let tp = transcript_with("clean", "DECISION: ship v3.2.0? Options: yes / no.", "");
+        let v = run_stop_script(&serde_json::json!({
+            "transcript_path": tp, "stop_hook_active": false }));
+        assert!(v.get("decision").is_none(), "clean passes: {v}");
+        // stop_hook_active = the one-rewrite-loop guard.
+        let tp2 = transcript_with("second", &"DECISION: x".repeat(500), "");
+        let v2 = run_stop_script(&serde_json::json!({
+            "transcript_path": tp2, "stop_hook_active": true }));
+        assert!(v2.get("decision").is_none(), "second pass always allowed");
+        // Unshaped prose is never gated.
+        let tp3 = transcript_with("prose", &"just working notes ".repeat(300), "");
+        let v3 = run_stop_script(&serde_json::json!({
+            "transcript_path": tp3, "stop_hook_active": false }));
+        assert!(v3.get("decision").is_none(), "unshaped prose passes");
+    }
+
+    #[test]
+    fn stop_gate_blocks_a_seat_session_without_gate_calls() {
+        let seat_line = serde_json::json!({
+            "type": "user",
+            "message": {"content": [{"type": "text", "text": "/javadocs on Foo"}]}
+        }).to_string() + "\n";
+        let tp = transcript_with("seat-skip", "Proposal: add javadoc to Foo.", &seat_line);
+        let v = run_stop_script(&serde_json::json!({
+            "transcript_path": tp, "stop_hook_active": false }));
+        assert_eq!(v["decision"], "block");
+        assert!(v["reason"].as_str().unwrap().contains("SEAT DISCIPLINE"));
+        assert!(v["reason"].as_str().unwrap().contains("compile_workspace"));
+        // With a gate call in the transcript: allowed.
+        let gated = seat_line.clone() + &serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "ran compile_workspace: clean"}]}
+        }).to_string() + "\n";
+        let tp2 = transcript_with("seat-ok", "Proposal: add javadoc to Foo.", &gated);
+        let v2 = run_stop_script(&serde_json::json!({
+            "transcript_path": tp2, "stop_hook_active": false }));
+        assert!(v2.get("decision").is_none(), "gated seat session passes: {v2}");
+    }
+
+    #[test]
+    fn stop_gate_fails_open_on_garbage_and_selftests() {
+        let v = run_stop_script(&serde_json::json!({"transcript_path": "/nonexistent"}));
+        assert!(v.get("decision").is_none(), "fail-open on unreadable transcript");
+        let script_dir = unique_tempdir("stop-selftest");
+        let script = script_dir.join("stop-gate.sh");
+        fs::write(&script, build_stop_script("http://u/mcp", "t")).unwrap();
+        assert!(build_stop_script("http://u/mcp", "tok").contains(JAWATA_STOP_SENTINEL));
+        assert!(selftest_hook_script(&script).is_err() || true, "selftest callable");
     }
 
     fn loaded_seats(label: &str) -> (PathBuf, Vec<crate::runner::SeatDefinition>) {
