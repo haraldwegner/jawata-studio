@@ -1280,10 +1280,31 @@ fn append_journal(path: &Path, entry: &JournalEntry) -> Result<(), String> {
 
 /// Fills the human verdict for a run after the fact: rewrites the journal
 /// line whose `run_id` matches. The consequence IS the label (Sprint 26).
+/// Sprint 26 (D7): the verdict-enriched entry is ALSO re-recorded to the
+/// store — the journal's human label must reach the corpus, not just the
+/// local file. `store` = None keeps the file-only behavior (tests).
+pub fn record_human_verdict_and_sync(
+    journal_path: &Path,
+    run_id: &str,
+    human_verdict: &str,
+    store: Option<&dyn StoreRecorder>,
+) -> Result<(), String> {
+    record_human_verdict_inner(journal_path, run_id, human_verdict, store)
+}
+
 pub fn record_human_verdict(
     journal_path: &Path,
     run_id: &str,
     human_verdict: &str,
+) -> Result<(), String> {
+    record_human_verdict_inner(journal_path, run_id, human_verdict, None)
+}
+
+fn record_human_verdict_inner(
+    journal_path: &Path,
+    run_id: &str,
+    human_verdict: &str,
+    store: Option<&dyn StoreRecorder>,
 ) -> Result<(), String> {
     let content = fs::read_to_string(journal_path)
         .map_err(|e| format!("read journal {}: {e}", journal_path.display()))?;
@@ -1304,7 +1325,21 @@ pub fn record_human_verdict(
     if !found {
         return Err(format!("run_id '{run_id}' not found in journal"));
     }
-    fs::write(journal_path, lines_out.join("\n") + "\n").map_err(|e| e.to_string())
+    fs::write(journal_path, lines_out.join("\n") + "\n").map_err(|e| e.to_string())?;
+    // Sprint 26 (D7): push the labeled entry to the store; a failed push is
+    // loud in the result, never silent.
+    if let Some(recorder) = store {
+        let labeled = lines_out.iter().find(|l| l.contains(run_id)).cloned();
+        if let Some(entry_json) = labeled {
+            if let Ok(entry) = serde_json::from_str::<JournalEntry>(&entry_json) {
+                recorder
+                    .record_outcome(&entry)
+                    .map_err(|e| format!("verdict recorded locally but the STORE sync failed \
+(the corpus is missing this label until retried): {e}"))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 // ============================================================
@@ -2991,6 +3026,46 @@ You are the echo seat. You document what you are told to document.
         // Missing dir = no seats, no errors (a fresh install has none).
         let (none, no_errors) = load_seat_definitions(&dir.join("absent"));
         assert!(none.is_empty() && no_errors.is_empty());
+    }
+
+    #[test]
+
+    #[test]
+    fn human_verdict_is_re_recorded_to_the_store_and_failure_is_loud() {
+        use std::sync::Mutex;
+        struct Capture(Mutex<Vec<String>>, bool);
+        impl StoreRecorder for Capture {
+            fn record_outcome(&self, entry: &JournalEntry) -> Result<(), String> {
+                if self.1 {
+                    return Err("store down".into());
+                }
+                self.0.lock().unwrap().push(
+                    format!("{}:{}", entry.run_id,
+                        entry.human_verdict.clone().unwrap_or_default()));
+                Ok(())
+            }
+        }
+        let dir = unique_tempdir("verdict-sync");
+        let journal = dir.join("journal.jsonl");
+        let entry = JournalEntry {
+            schema: JOURNAL_SCHEMA, ts: 1, run_id: "r1".into(),
+            seat: "javadoc-writer".into(), model: "m".into(), adapter: "a".into(),
+            target: "T".into(), work: "w".into(), evidence: "e".into(),
+            gates: vec![], verdict: Verdict::Proposed, human_verdict: None,
+            outcome: "proposed".into(), cost_usd: 0.0, iterations: 1, wall_secs: 1,
+        };
+        fs::write(&journal, serde_json::to_string(&entry).unwrap() + "\n").unwrap();
+        let ok = Capture(Mutex::new(vec![]), false);
+        record_human_verdict_and_sync(&journal, "r1", "accepted", Some(&ok)).unwrap();
+        assert_eq!(ok.0.lock().unwrap().as_slice(), &["r1:accepted".to_string()],
+            "the labeled entry reached the store");
+        // Store failure: the local write stands, the error is LOUD.
+        let down = Capture(Mutex::new(vec![]), true);
+        let err = record_human_verdict_and_sync(&journal, "r1", "declined", Some(&down))
+            .unwrap_err();
+        assert!(err.contains("STORE sync failed"), "loud, never silent: {err}");
+        let on_disk = fs::read_to_string(&journal).unwrap();
+        assert!(on_disk.contains("declined"), "the local label still landed");
     }
 
     #[test]
