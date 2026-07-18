@@ -3118,7 +3118,10 @@ fn write_managed_seat_commands(
 }
 
 /// Delete-side counterpart: removes exactly the five artifacts and prunes
-/// the dirs they created (Delete leaves no trace).
+/// the dirs they created (Delete leaves no trace in CLIENT trees).
+/// DELIBERATE: `<config>/seats/` is NOT removed — it is studio's own
+/// user-editable configuration, shared across clients, and a user-edited
+/// seat must survive an undeploy exactly as it survives a redeploy.
 fn remove_managed_seat_commands(client: &str, commands_dir: &Path) -> Result<bool, String> {
     let mut removed = false;
     for (cmd, path) in seat_artifact_paths(client, commands_dir) {
@@ -3388,6 +3391,11 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
     // part of the body (commands-installed one-liner vs IntelliJ phrase
     // table). A parse failure of the embedded seats is a build defect; it
     // surfaces as a loud comment in the artifact, never a panic mid-deploy.
+    // DELIBERATE (audit obs 2): this section renders from the EMBEDDED
+    // seats, not the materialized dir — its content is the COMMAND_MAP
+    // catalog (names + descriptions), not stance text; a user-edited seat
+    // changes the COMMANDS (which do read the materialized dir), never the
+    // catalog. Revisit if seats ever become user-addable (Sprint 28+).
     match crate::conductor::embedded_seat_definitions() {
         Ok(seats) => lines.extend(crate::conductor::render_conductor_section(&seats, client)),
         Err(e) => lines.push(format!("<!-- jawata conductor section unavailable: {e} -->")),

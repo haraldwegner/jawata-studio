@@ -52,9 +52,14 @@ machinery.
 
 ## Dependency direction
 
-conductor.rs depends on runner.rs (parser) and std only; manager_service.rs
-depends on conductor.rs; nothing depends on conductor.rs's I/O because it has
-none.
+conductor.rs depends on runner.rs (parser), the `zip` crate (the skill
+archive) and std; manager_service.rs depends on conductor.rs. Two disclosed
+exceptions to "renderers are pure": `materialize_seats` (the one fs-writing
+function in conductor.rs, invoked only from the deploy path) and the zip
+assembly (in-memory bytes, no fs). Everything that touches CLIENT trees
+lives in manager_service.rs. *(Wording aligned 2026-07-18 per the KEEP
+audit's observation 4 — the code was always this; the artifact under-stated
+it.)*
 
 ## The Lane-1 loop contract embedded in every command
 

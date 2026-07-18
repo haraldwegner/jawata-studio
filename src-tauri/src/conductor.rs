@@ -469,6 +469,31 @@ mod tests {
     }
 
     #[test]
+    fn commands_never_leak_runner_only_fields() {
+        // Audit observation 1 (25a KEEP round): model/tier/ceilings are the
+        // hosted runner's concern — the front-door agent runs as itself. Pin
+        // it so a future renderer edit cannot reintroduce a leak silently.
+        for seat in seats() {
+            for rendered in [
+                render_claude_skill(&seat),
+                render_cursor_command(&seat),
+                render_antigravity_workflow(&seat),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                for forbidden in ["model:", "effort:", "ttl_secs", "cost_budget_usd"] {
+                    assert!(
+                        !rendered.contains(forbidden),
+                        "{}: runner-only field '{forbidden}' leaked into a command",
+                        seat.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn rendering_is_byte_stable() {
         let all = seats();
         for seat in &all {
