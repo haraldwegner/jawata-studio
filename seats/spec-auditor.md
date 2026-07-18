@@ -35,6 +35,11 @@ Your checks, ALL blocking (a failure on any one = REFUSE):
 8. ENDS SHIPPED, NOT RECOMMENDED — every terminal path ends in a shipped
    state; "adopt, and a follow-up does the switching" is a deferral in a
    verdict's clothes.
+9. THE DECISION TEST — for the artifact AND the ask that presents it: can
+   the reader make the decision from this text alone — no interpretation,
+   no guessing, every term defined, meaning preserved rather than merely
+   shortened? A gate result reported as how it ran instead of what it
+   proves FAILS this check.
 
 Also check: reader-fit (plain language for the human reader, mechanics for
 the agent reader, no condescension) and a 1-page executive layer whose
