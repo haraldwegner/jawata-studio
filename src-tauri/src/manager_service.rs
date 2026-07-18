@@ -4570,6 +4570,78 @@ flat="$(printf '%s' "$input" | tr '\n' ' ')"
 # Sprint 21a (item J): judge the REQUEST only. tool_response may echo file contents that
 # merely mention '.java' or 'jawata-fallback:' (a cat of a hook script logged a false slip).
 flat="$(printf '%s' "$flat" | sed 's/"tool_response".*$//')"
+
+# Sprint 26 C7: the consequence-labeled edit feed. A hook's HTTP post cannot share the
+# agent's MCP session, so the CORRELATION lives HERE, in the client session: a .java
+# edit's fragments are held in a per-session state file; the session's next gate
+# outcome (or an undo) labels them and posts each as observe_edit(outcome=...) —
+# the resident trains immediately. Fail-open: no python3 / resident down = no feed.
+editfeed_hold() {
+  [ -n "$session_id" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  mkdir -p "$dir/editfeed" 2>/dev/null
+  printf '%s' "$input" | EF="$dir/editfeed/$session_id" python3 -c '
+import json,os,sys
+try:
+    d=json.load(sys.stdin); ti=d.get("tool_input") or {}
+    edits=ti.get("edits") or [ti]
+    before="\n".join(e.get("old_string","") for e in edits)[:4000]
+    after="\n".join(e.get("new_string", e.get("content","")) for e in edits)[:4000]
+    if not (before.strip() or after.strip()): raise SystemExit(0)
+    path=os.environ["EF"]
+    lines=[]
+    if os.path.exists(path):
+        lines=open(path).read().splitlines()
+    lines.append(json.dumps({"before":before,"after":after}))
+    open(path,"w").write("\n".join(lines[-32:])+"\n")
+except Exception: pass
+' 2>/dev/null
+}
+editfeed_resolve() {
+  # $1 = forced outcome ("failed" for an undo) or "" (read the gate result)
+  [ -n "$session_id" ] || return 0
+  sf="$dir/editfeed/$session_id"
+  [ -s "$sf" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  printf '%s' "$input" | EF="$sf" FORCED="$1" MCP_URL="$MCP_URL" TOKEN="$TOKEN" python3 -c '
+import json,os,sys,urllib.request
+path=os.environ["EF"]
+try:
+    pend=[json.loads(l) for l in open(path).read().splitlines() if l.strip()]
+except Exception:
+    pend=[]
+# Pop FIRST: a lost post is a lost label, never a stale re-label.
+try: os.remove(path)
+except Exception: pass
+if not pend: raise SystemExit(0)
+outcome=os.environ.get("FORCED") or ""
+if not outcome:
+    try:
+        d=json.load(sys.stdin); tr=d.get("tool_response")
+        text=""
+        if isinstance(tr,dict):
+            c=tr.get("content") or []
+            if c and isinstance(c[0],dict): text=c[0].get("text","")
+        body=json.loads(text) if text else {}
+        data=body.get("data") or {}
+        errs=data.get("errorCount", data.get("failed", 0)) or 0
+        ok=body.get("success", True)
+        outcome="clean" if (ok and int(errs)==0) else "failed"
+    except Exception:
+        raise SystemExit(0)  # unreadable outcome: no label beats a guessed label
+url=os.environ.get("MCP_URL"); tok=os.environ.get("TOKEN")
+if not url: raise SystemExit(0)
+for p in pend:
+    payload=json.dumps({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+        "name":"experience","arguments":{"kind":"observe_edit","outcome":outcome,
+        "before":p.get("before",""),"after":p.get("after","")}}}).encode()
+    try:
+        req=urllib.request.Request(url,data=payload,headers={
+            "Authorization":"Bearer "+ (tok or ""),"Content-Type":"application/json"})
+        urllib.request.urlopen(req,timeout=3).read()
+    except Exception: pass
+' 2>/dev/null
+}
 # v2.9.1 (D3b): the request JSON carries newlines as literal \n — a grep STARTING a
 # line is preceded by the letter 'n' and failed the word-boundary check below, so
 # the slip was silently never recorded. Gate checks run on the normalized copy;
@@ -4594,15 +4666,29 @@ case "$tool_name" in
         ;;
     esac
     ;;
-  *compile_workspace|*get_diagnostics|*run_tests|*find_tests)
+  *compile_workspace|*get_diagnostics|*run_tests)
     emit "verify" "$tool_name"
+    # C7: the gate outcome labels every edit pending in THIS client session.
+    editfeed_resolve ""
+    ;;
+  *find_tests)
+    emit "verify" "$tool_name"
+    ;;
+  *refactoring)
+    # C7: an undo is the strongest structural-mishandled consequence.
+    printf '%s' "$nflat" | grep -qE '"action"[[:space:]]*:[[:space:]]*"undo' \
+      && editfeed_resolve "failed"
     ;;
   Edit|Write|MultiEdit)
     # v1.5.1: a slip counts only for a .java edit the PRE edit-gate allowed via the marker —
     # a non-.java edit whose CONTENT merely contains 'jawata-fallback:' is not a gated op.
     ef="$(printf '%s' "$flat" | grep -oE '"file_path"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed -E 's/.*"([^"]*)"$/\1/')"
     case "$ef" in
-      *.java) printf '%s' "$flat" | grep -qiE 'jawata-fallback:' && emit_slip ;;
+      *.java)
+        printf '%s' "$flat" | grep -qiE 'jawata-fallback:' && emit_slip
+        # C7: hold the edit's fragments until this session's next gate outcome.
+        editfeed_hold
+        ;;
     esac
     ;;
   Bash|Grep)
@@ -6611,6 +6697,84 @@ mod tests {
         assert!(selftest_hook_script(&script).is_err() || true, "selftest callable");
     }
 
+
+    // ---------- Sprint 26 C7: the observer's consequence-labeled edit feed ----------
+
+    /// Runs the REAL observer script under a controlled HOME and returns the
+    /// per-session editfeed state file path.
+    fn run_observer(home: &std::path::Path, input: &serde_json::Value) {
+        let script = home.join("observer.sh");
+        // A dead URL: posting fails silently (fail-open); state mechanics still run.
+        fs::write(&script, build_observer_script("http://127.0.0.1:1/mcp", "t")).unwrap();
+        let out = std::process::Command::new("bash")
+            .arg(&script)
+            .env("HOME", home)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut c| {
+                use std::io::Write;
+                c.stdin.take().unwrap()
+                    .write_all(input.to_string().as_bytes()).unwrap();
+                c.wait_with_output()
+            })
+            .expect("observer runs");
+        assert!(out.status.success(), "observer must exit 0 (fail-open contract)");
+    }
+
+    #[test]
+    fn observer_edit_feed_holds_java_edits_and_resolves_on_the_gate_outcome() {
+        let home = unique_tempdir("editfeed");
+        let state = home.join(".claude/jawata-studio/editfeed/sess-1");
+        // 1. A .java Edit is HELD with its fragments.
+        run_observer(&home, &serde_json::json!({
+            "session_id": "sess-1", "tool_name": "Edit",
+            "tool_input": {"file_path": "/w/Foo.java",
+                "old_string": "int f() { return 1; }",
+                "new_string": "int f(int a) { return a; }"}
+        }));
+        let held = fs::read_to_string(&state).expect("fragments held per session");
+        assert!(held.contains("int f() { return 1; }"));
+        // A non-.java edit is NOT held.
+        run_observer(&home, &serde_json::json!({
+            "session_id": "sess-1", "tool_name": "Edit",
+            "tool_input": {"file_path": "/w/notes.md", "old_string": "a", "new_string": "b"}
+        }));
+        assert_eq!(1, fs::read_to_string(&state).unwrap().lines().count());
+        // 2. The session's gate outcome POPS the state (label posted; dead URL = lost
+        //    label, never a stale one).
+        let gate_text = serde_json::json!({
+            "success": true, "data": {"errorCount": 0}}).to_string();
+        run_observer(&home, &serde_json::json!({
+            "session_id": "sess-1", "tool_name": "mcp__jawata-x__compile_workspace",
+            "tool_input": {},
+            "tool_response": {"content": [{"type": "text", "text": gate_text}]}
+        }));
+        assert!(!state.exists(), "the gate outcome resolves + clears the pendings");
+        // 3. An undo forces the failed label and clears too.
+        run_observer(&home, &serde_json::json!({
+            "session_id": "sess-1", "tool_name": "Write",
+            "tool_input": {"file_path": "/w/Bar.java", "content": "class Bar {}"}
+        }));
+        assert!(state.exists());
+        run_observer(&home, &serde_json::json!({
+            "session_id": "sess-1", "tool_name": "mcp__jawata-x__refactoring",
+            "tool_input": {"action": "undo", "undoChangeId": "u1"}
+        }));
+        assert!(!state.exists(), "an undo consequence clears the pendings");
+        // 4. Another session's gate never touches this session's holds.
+        run_observer(&home, &serde_json::json!({
+            "session_id": "sess-A", "tool_name": "Edit",
+            "tool_input": {"file_path": "/w/Baz.java", "old_string": "x", "new_string": "y"}
+        }));
+        run_observer(&home, &serde_json::json!({
+            "session_id": "sess-B", "tool_name": "mcp__jawata-x__compile_workspace",
+            "tool_input": {},
+            "tool_response": {"content": [{"type": "text", "text": gate_text}]}
+        }));
+        assert!(home.join(".claude/jawata-studio/editfeed/sess-A").exists(),
+            "edit holds are session-scoped");
+    }
 
     #[test]
     fn utility_commands_roundtrip_inventory_idempotency_delete() {
