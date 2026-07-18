@@ -1831,6 +1831,11 @@ impl ManagerService {
 
             // Sprint 25a D1: strip the generated seat commands + the skill export.
             if let Some(commands_dir) = derive_seat_commands_dir(client, &path) {
+                match remove_managed_utility_commands(client, &commands_dir) {
+                    Ok(true) => changed_sections.push("utilityCommands".into()),
+                    Ok(false) => {}
+                    Err(error) => errors.push(error),
+                }
                 match remove_managed_seat_commands(client, &commands_dir) {
                     Ok(true) => changed_sections.push("seatCommands".into()),
                     Ok(false) => {}
@@ -1970,6 +1975,14 @@ impl ManagerService {
                         match write_managed_seat_commands(client, &commands_dir, &seats, force) {
                             Ok(written) if !written.is_empty() => {
                                 changed_sections.push("seatCommands".into())
+                            }
+                            Ok(_) => {}
+                            Err(error) => errors.push(error),
+                        }
+                        // Sprint 26 (D6): /memorize + /train ride along.
+                        match write_managed_utility_commands(client, &commands_dir, force) {
+                            Ok(written) if !written.is_empty() => {
+                                changed_sections.push("utilityCommands".into())
                             }
                             Ok(_) => {}
                             Err(error) => errors.push(error),
@@ -3172,6 +3185,65 @@ fn remove_managed_seat_commands(client: &str, commands_dir: &Path) -> Result<boo
             let _ = fs::remove_dir(agent_dir); // `.agent`, only if empty
         }
     }
+    Ok(removed)
+}
+
+
+/// Sprint 26 (D6): the utility commands ride the same dirs as the seats.
+fn utility_artifact_paths(client: &str, commands_dir: &Path) -> Vec<(String, PathBuf)> {
+    crate::conductor::UTILITY_MAP.iter().map(|(cmd, _)| {
+        let path = match client {
+            "claude" => commands_dir.join(cmd).join("SKILL.md"),
+            _ => commands_dir.join(format!("{cmd}.md")),
+        };
+        ((*cmd).to_string(), path)
+    }).collect()
+}
+
+fn write_managed_utility_commands(
+    client: &str,
+    commands_dir: &Path,
+    force_rewrite: bool,
+) -> Result<Vec<String>, String> {
+    let mut written = Vec::new();
+    for (cmd, desc) in crate::conductor::UTILITY_MAP {
+        let body = match client {
+            "claude" => crate::conductor::render_claude_utility(cmd, desc),
+            "cursor" => crate::conductor::render_cursor_utility(cmd, desc),
+            "antigravity" => crate::conductor::render_antigravity_utility(cmd, desc),
+            _ => continue,
+        };
+        let path = match client {
+            "claude" => commands_dir.join(cmd).join("SKILL.md"),
+            _ => commands_dir.join(format!("{cmd}.md")),
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("{client}: cannot create {}: {e}", parent.display()))?;
+        }
+        let changed = fs::read_to_string(&path).map(|e| e != body).unwrap_or(true);
+        if changed || force_rewrite {
+            fs::write(&path, &body)
+                .map_err(|e| format!("{client}: cannot write {}: {e}", path.display()))?;
+            written.push(display_path(&path));
+        }
+    }
+    Ok(written)
+}
+
+fn remove_managed_utility_commands(client: &str, commands_dir: &Path) -> Result<bool, String> {
+    let mut removed = false;
+    for (cmd, path) in utility_artifact_paths(client, commands_dir) {
+        if path.exists() {
+            fs::remove_file(&path)
+                .map_err(|e| format!("{client}: cannot remove {}: {e}", path.display()))?;
+            removed = true;
+        }
+        if client == "claude" {
+            let _ = fs::remove_dir(commands_dir.join(&cmd));
+        }
+    }
+    let _ = fs::remove_dir(commands_dir);
     Ok(removed)
 }
 
@@ -6537,6 +6609,32 @@ mod tests {
         fs::write(&script, build_stop_script("http://u/mcp", "t")).unwrap();
         assert!(build_stop_script("http://u/mcp", "tok").contains(JAWATA_STOP_SENTINEL));
         assert!(selftest_hook_script(&script).is_err() || true, "selftest callable");
+    }
+
+
+    #[test]
+    fn utility_commands_roundtrip_inventory_idempotency_delete() {
+        for client in ["claude", "cursor", "antigravity"] {
+            let base = unique_tempdir(&format!("util-{client}"));
+            let cfg = base.join("config.json");
+            fs::write(&cfg, "{}").unwrap();
+            let dir = derive_seat_commands_dir(client, &display_path(&cfg)).unwrap();
+            let written = write_managed_utility_commands(client, &dir, false).unwrap();
+            assert_eq!(written.len(), 2, "{client}: /memorize + /train");
+            for (cmd, path) in utility_artifact_paths(client, &dir) {
+                assert!(path.exists(), "{client}: /{cmd} missing");
+                let body = fs::read_to_string(&path).unwrap();
+                assert!(body.contains("GENERATED by jawata-studio"));
+                if cmd == "memorize" { assert!(body.contains("STORE FIRST")); }
+                if cmd == "train" { assert!(body.contains("kind=train")); }
+            }
+            assert!(write_managed_utility_commands(client, &dir, false).unwrap().is_empty(),
+                "{client}: second deploy writes nothing");
+            assert!(remove_managed_utility_commands(client, &dir).unwrap());
+            for (_, path) in utility_artifact_paths(client, &dir) {
+                assert!(!path.exists());
+            }
+        }
     }
 
     fn loaded_seats(label: &str) -> (PathBuf, Vec<crate::runner::SeatDefinition>) {
