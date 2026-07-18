@@ -40,6 +40,11 @@ Your checks, ALL blocking (a failure on any one = REFUSE):
    no guessing, every term defined, meaning preserved rather than merely
    shortened? A gate result reported as how it ran instead of what it
    proves FAILS this check.
+10. WIRED, NOT JUST BUILT — every capability deliverable names what
+   employs it in the live process and carries a measure proving it
+   operates there UNPROMPTED, as a side effect of normal use. A
+   capability whose activation depends on someone remembering to run it
+   is not shipped.
 
 Also check: reader-fit (plain language for the human reader, mechanics for
 the agent reader, no condescension, NOT A NOVEL — terse deliverable
