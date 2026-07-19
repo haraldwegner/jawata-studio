@@ -2138,7 +2138,7 @@ impl ManagerService {
                     Ok(false) => {}
                     Err(error) => errors.push(error),
                 }
-                if let Err(error) = selftest_hook_script(&stop_path) {
+                if let Err(error) = selftest_stop_hook_script(&stop_path) {
                     errors.push(error);
                 }
             }
@@ -4862,6 +4862,75 @@ fn selftest_hook_script(script: &Path) -> Result<(), String> {
     }
 }
 
+/// Sprint 26 (v3.2.2, finding #7): the Stop hook's post-deploy self-check.
+/// A Stop hook does NOT emit `hookSpecificOutput.additionalContext` — that is the
+/// context-injecting contract (observer / primer / recall). A Stop hook emits the
+/// Stop decision: `{}` to allow the stop, or `{"decision":"block","reason":...}` to
+/// bounce the final message. The generic `selftest_hook_script` wrongly required
+/// `additionalContext` and so rejected a CORRECT Stop hook at deploy time (the
+/// Claude deploy reported the stop-gate as failed). This validates the Stop
+/// contract instead. Fail-OPEN when bash is unavailable; fail-CLOSED on
+/// empty / invalid / wrong-shaped output.
+fn selftest_stop_hook_script(script: &Path) -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    if !script.exists() {
+        return Ok(());
+    }
+    let output = match Command::new("bash")
+        .arg(script)
+        .env("JAWATA_HOOK_SELFTEST", "1")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(output) => output,
+        Err(_) => return Ok(()), // no bash on this platform — cannot judge
+    };
+    if output.stdout.is_empty() {
+        return Err(format!(
+            "stop-gate self-check emitted NOTHING (selftest path missing?): {}",
+            script.display()
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+        format!(
+            "stop-gate self-check emitted INVALID JSON ({error}): {}",
+            script.display()
+        )
+    })?;
+    let obj = value.as_object().ok_or_else(|| {
+        format!(
+            "stop-gate self-check output is not a JSON object (Stop contract): {}",
+            script.display()
+        )
+    })?;
+    // Empty object = allow the stop (the canonical no-block output). A decision,
+    // if present, must be a recognized Stop verdict; a block must name a reason.
+    match obj.get("decision").map(|d| d.as_str()) {
+        None => Ok(()),
+        Some(Some("approve")) => Ok(()),
+        Some(Some("block")) => {
+            let has_reason = obj
+                .get("reason")
+                .and_then(|r| r.as_str())
+                .map(|r| !r.is_empty())
+                .unwrap_or(false);
+            if has_reason {
+                Ok(())
+            } else {
+                Err(format!(
+                    "stop-gate self-check: a block decision must carry a non-empty reason: {}",
+                    script.display()
+                ))
+            }
+        }
+        Some(_) => Err(format!(
+            "stop-gate self-check: unrecognized decision (expected block/approve): {}",
+            script.display()
+        )),
+    }
+}
+
 /// The single `PostToolUse` matcher entry that invokes the observer. Broad matcher:
 /// Read (ungrounded-read capture), the verify MCP tools, and search/edit tools (slip
 /// capture); the script no-ops on anything else.
@@ -6694,7 +6763,22 @@ mod tests {
         let script = script_dir.join("stop-gate.sh");
         fs::write(&script, build_stop_script("http://u/mcp", "t")).unwrap();
         assert!(build_stop_script("http://u/mcp", "tok").contains(JAWATA_STOP_SENTINEL));
-        assert!(selftest_hook_script(&script).is_err() || true, "selftest callable");
+        // finding #7: a Stop hook emits the Stop decision ({} = allow), NEVER
+        // additionalContext — the deployed script MUST pass its own (Stop-contract)
+        // self-check, and the generic additionalContext check MUST reject it (proving
+        // we no longer wire the wrong validator to the stop path).
+        selftest_stop_hook_script(&script).expect("deployed stop-gate passes its Stop self-check");
+        assert!(
+            selftest_hook_script(&script).is_err(),
+            "the additionalContext contract does NOT apply to a Stop hook"
+        );
+        // A stop script whose selftest path is broken (emits nothing) fails closed.
+        let broken = script_dir.join("broken-stop.sh");
+        fs::write(&broken, "#!/usr/bin/env bash\nif [ -n \"$JAWATA_HOOK_SELFTEST\" ]; then exit 0; fi\n").unwrap();
+        assert!(
+            selftest_stop_hook_script(&broken).is_err(),
+            "empty stop selftest output fails closed"
+        );
     }
 
 
