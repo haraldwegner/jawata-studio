@@ -8,6 +8,7 @@
   import RuntimeSettings from "./lib/components/RuntimeSettings.svelte";
   import MemoryView from "./lib/components/MemoryView.svelte";
   import HelpView from "./lib/components/HelpView.svelte";
+  import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
   import { createAppStore } from "./lib/stores/app";
   import {
     type AddProjectInput,
@@ -676,6 +677,8 @@
     </section>
   {/if}
 </main>
+
+<ConfirmDialog />
 
 {#if globalContextMenu}
   <ContextMenu
