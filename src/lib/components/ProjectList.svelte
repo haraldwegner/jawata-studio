@@ -334,9 +334,8 @@
   }
 
   function handleDeleteAll() {
-    if (confirm("Delete all projects and stop all runtimes?")) {
-      onDeleteAll();
-    }
+    // Finding #8: App's onDeleteAll raises the single native confirm.
+    onDeleteAll();
   }
 
   function deploySummary(result: DeployToAgentsResult): string {
@@ -494,14 +493,10 @@
     }
   }
 
-  function handleDeleteWorkspace(name: string, projectCount: number) {
-    const detail =
-      projectCount === 0
-        ? `Delete workspace "${name}"?`
-        : `Delete workspace "${name}" and all ${projectCount} project(s) inside it?\n\nThis stops the workspace's jawata process and removes the JDT data dir on disk. Project paths on your filesystem are not touched.`;
-    if (window.confirm(detail)) {
-      onDeleteWorkspace(name);
-    }
+  function handleDeleteWorkspace(name: string, _projectCount: number) {
+    // Finding #8: App raises the single native confirm (confirmDeleteWorkspace);
+    // window.confirm() does not render in the webview, so this delegates.
+    onDeleteWorkspace(name);
   }
 
   function startWorkspace(workspaceProjects: ProjectRecord[]) {

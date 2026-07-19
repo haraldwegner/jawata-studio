@@ -15,6 +15,7 @@
     type UpdateSettingsInput
   } from "./lib/api/tauri";
   import { formatManagerVersionForUi, getManagerAppVersion } from "./lib/appVersion";
+  import { confirmDestructive } from "./lib/dialog";
 
   const appStore = createAppStore();
   let managerAppVersion = "";
@@ -146,7 +147,7 @@
   // so it was mis-hit when the intent was "remove deploy to agent and
   // redeploy". Every other destructive action already confirms; these did
   // not. Guard each delete behind an explicit, consequence-naming confirm.
-  function confirmDeleteWorkspace(name: string): boolean {
+  function confirmDeleteWorkspace(name: string): Promise<boolean> {
     const count = ($appStore.projects ?? []).filter(
       (p) => p.workspaceName === name,
     ).length;
@@ -154,9 +155,10 @@
       count > 0
         ? `its ${count} project${count === 1 ? "" : "s"} and their analysis data`
         : "its analysis data";
-    return confirm(
+    return confirmDestructive(
       `Delete the ENTIRE workspace "${name}"?\n\n` +
         `This removes its running service, ${scope}, and cannot be undone. ` +
+        `Your project source files on disk are NOT deleted. ` +
         `To only change agent deployment, use the deploy controls instead.`,
     );
   }
@@ -255,33 +257,33 @@
   async function handleQuitPrompt(payload: QuitPromptPayload) {
     const running = payload.runningServices;
     if (running <= 0) {
-      if (confirm("Do you really want to shut down jawata-studio?")) {
+      if (await confirmDestructive("Do you really want to shut down jawata-studio?")) {
         await performQuitAction("quit");
       }
       return;
     }
 
     if (payload.source === "tray") {
-      const stopAndQuit = confirm(
+      const stopAndQuit = await confirmDestructive(
         `Quit will stop ${running} running MCP service(s). Press OK to stop services and quit.`
       );
       if (stopAndQuit) {
         await performQuitAction("stopAndQuit");
         return;
       }
-      if (payload.trayEnabled && confirm("Keep services running and hide window to tray instead?")) {
+      if (payload.trayEnabled && (await confirmDestructive("Keep services running and hide window to tray instead?"))) {
         await performQuitAction("hideToTray");
       }
       return;
     }
 
     if (payload.trayEnabled) {
-      if (confirm("MCP services are still running. Hide to tray and keep them running?")) {
+      if (await confirmDestructive("MCP services are still running. Hide to tray and keep them running?")) {
         await performQuitAction("hideToTray");
         return;
       }
     }
-    if (confirm(`Quit and stop ${running} running MCP service(s)?`)) {
+    if (await confirmDestructive(`Quit and stop ${running} running MCP service(s)?`)) {
       await performQuitAction("stopAndQuit");
     }
   }
@@ -470,8 +472,8 @@
               knownWorkspaces={knownWorkspaces}
               onSelect={activateWorkspace}
               onRename={(oldName, newName) => appStore.renameWorkspaceEntry(oldName, newName)}
-              onDelete={(name) => {
-                if (!confirmDeleteWorkspace(name)) return;
+              onDelete={async (name) => {
+                if (!(await confirmDeleteWorkspace(name))) return;
                 appStore.deleteWorkspaceEntry(name);
                 pinnedEmptyWorkspaces.delete(name);
                 pinnedEmptyWorkspaces = pinnedEmptyWorkspaces;
@@ -526,11 +528,12 @@
                 const n = knownWorkspaces.length;
                 if (
                   n === 0 ||
-                  !confirm(
+                  !(await confirmDestructive(
                     `Delete ALL ${n} workspace${n === 1 ? "" : "s"}?\n\n` +
                       `This removes every running service, every project and all ` +
-                      `analysis data across all workspaces, and cannot be undone.`,
-                  )
+                      `analysis data across all workspaces, and cannot be undone. ` +
+                      `Your project source files on disk are NOT deleted.`,
+                  ))
                 ) {
                   return;
                 }
@@ -545,8 +548,8 @@
               onSetWorkspace={(projectId, workspaceName) => appStore.setProjectWorkspaceEntry(projectId, workspaceName)}
               onRenameProject={(projectId, name) => appStore.renameProjectEntry(projectId, name)}
               onRenameWorkspace={(oldName, newName) => appStore.renameWorkspaceEntry(oldName, newName)}
-              onDeleteWorkspace={(name) => {
-                if (!confirmDeleteWorkspace(name)) return;
+              onDeleteWorkspace={async (name) => {
+                if (!(await confirmDeleteWorkspace(name))) return;
                 appStore.deleteWorkspaceEntry(name);
                 pinnedEmptyWorkspaces.delete(name);
                 pinnedEmptyWorkspaces = pinnedEmptyWorkspaces;

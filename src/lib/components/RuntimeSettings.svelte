@@ -1,5 +1,6 @@
 <script lang="ts">
   import { open } from "@tauri-apps/plugin-dialog";
+  import { confirmDestructive } from "../dialog";
   import { createEventDispatcher, onDestroy, tick } from "svelte";
   import type {
     BootstrapStatus,
@@ -475,11 +476,11 @@
     });
   }
 
-  function confirmAndDispatch(
+  async function confirmAndDispatch(
     message: string,
     eventName: "cleanLogs" | "cleanWorkspaces" | "cleanGeneratedData"
   ) {
-    if (confirm(message)) {
+    if (await confirmDestructive(message)) {
       dispatch(eventName);
     }
   }

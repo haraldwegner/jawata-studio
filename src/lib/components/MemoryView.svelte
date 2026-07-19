@@ -9,6 +9,7 @@
   // checkbox-row/hint classes from app.css, two-column grid, sticky save footer.
   import { createEventDispatcher, onMount } from "svelte";
   import { open, save } from "@tauri-apps/plugin-dialog";
+  import { confirmDestructive } from "../dialog";
   import {
     experienceVerb,
     knowledgeStatus,
@@ -228,7 +229,7 @@
 
   async function runVerb(kind: string, args: Record<string, unknown> = {}, confirmText?: string) {
     if (!selectedRow || selectedRow.targets.length === 0 || busyAction) return;
-    if (confirmText && !window.confirm(confirmText)) return;
+    if (confirmText && !(await confirmDestructive(confirmText))) return;
     busyAction = kind;
     showResult(kind, "…");
     try {
@@ -285,7 +286,7 @@
       "• prune — drop rejected/superseded entries older than 30 days\n" +
       "• dedup + merge — duplicate groups merged (best survives, rest superseded)\n" +
       "• compact — reclaim file space (attached residents reconnect)\n\nContinue?";
-    if (!window.confirm(confirmText)) return;
+    if (!(await confirmDestructive(confirmText))) return;
     busyAction = "clean up";
     outputTitle = "clean up";
     outputSummary = [];

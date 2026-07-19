@@ -156,15 +156,11 @@
     }
   }
 
-  function confirmDelete(name: string, count: number) {
-    if (!onDelete) return;
-    const detail =
-      count === 0
-        ? `Delete workspace "${name}"?`
-        : `Delete workspace "${name}" and all ${count} project(s) inside it?`;
-    if (window.confirm(detail)) {
-      onDelete(name);
-    }
+  function confirmDelete(name: string, _count: number) {
+    // Finding #8: the confirmation is a single native dialog raised in App
+    // (confirmDeleteWorkspace). window.confirm() is a no-op in the webview,
+    // so this delegates and lets App own the one real prompt.
+    onDelete?.(name);
   }
 
   /** Currently-open right-click context menu. Closed = null. */
