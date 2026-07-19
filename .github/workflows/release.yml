@@ -140,3 +140,62 @@ jobs:
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: warn
+
+  # Sprint 26 (v3.2.1, finding #6): the matrix above uploads every
+  # platform's bundle to a DRAFT release (draft: true) so the release is
+  # never live while assets are still missing an arch — that draft guard is
+  # deliberate and stays. This job runs ONCE, after every matrix job has
+  # finished uploading (`needs: release`), and flips the draft to a
+  # published release, sets it as `latest`, and pins the release notes.
+  #
+  # It exists because the previous flow left the make-latest step to a
+  # manual API call that forgot it: the studio `/releases/latest` pointer
+  # stayed on v3.1.0 after v3.2.0 shipped, so install.sh (which resolves
+  # /releases/latest) handed every installer the OLD app. The final verify
+  # step fails the release loudly if the pointer does not advance.
+  publish:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve release notes body
+        id: notes
+        run: |
+          set -euo pipefail
+          NOTES="docs/release-notes/${GITHUB_REF_NAME}.md"
+          {
+            echo 'body<<__JAWATA_NOTES__'
+            if [ -f "$NOTES" ]; then
+              cat "$NOTES"
+            else
+              echo "jawata-studio ${GITHUB_REF_NAME}. See the assets to download and install."
+            fi
+            echo '__JAWATA_NOTES__'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish release as latest
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: 'jawata-studio ${{ github.ref_name }}'
+          body: ${{ steps.notes.outputs.body }}
+          draft: false
+          make_latest: true
+          prerelease: false
+
+      - name: Verify the latest pointer advanced
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          latest=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" -q .tag_name)
+          echo "releases/latest -> ${latest} (expected ${GITHUB_REF_NAME})"
+          if [ "${latest}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::releases/latest still points at ${latest}, not ${GITHUB_REF_NAME} — install.sh would serve the wrong version"
+            exit 1
+          fi
