@@ -297,16 +297,12 @@ fn default_gateway_port() -> u16 {
 ///   2026-06-07 GitHub username rename to haraldwegner). The GitHub
 ///   redirect on `releases/latest` is unreliable for anonymous polls, so
 ///   the manager rewrites stale config to the new URL on startup.
-/// - `haraldwegner/goja-mcp` / `pzalutski-pixel/goja-mcp` — the pre-jawata
-///   (Sprint 22b rebrand) defaults; persisted settings self-heal on read.
-///   These literals are migration code — they rewrite the old names
-///   (grep-contract exception class 3).
+/// (The pre-jawata `*/goja-mcp` defaults were dropped 2026-07-19 — the
+/// Sprint-22b rebrand is months old and no goja-era settings remain.)
 const LEGACY_DEFAULT_RELEASE_REPOS: &[&str] = &[
     "pzalutski-pixel/javalens-mcp",
     "hw1964/javalens-mcp",
     "haraldwegner/javalens-mcp",
-    "haraldwegner/goja-mcp",
-    "pzalutski-pixel/goja-mcp",
 ];
 
 impl ManagerSettings {
@@ -1065,7 +1061,6 @@ fn sanitize_release_repo(input: String) -> Result<String, String> {
 pub fn effective_release_repo(settings: &ManagerSettings) -> String {
     std::env::var("JAWATA_RELEASE_REPO")
         .ok()
-        .or_else(|| std::env::var("GOJA_RELEASE_REPO").ok()) /* legacy goja fallback — remove next release */
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| settings.release_repo.clone())
