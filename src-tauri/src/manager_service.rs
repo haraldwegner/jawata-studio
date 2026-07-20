@@ -6676,6 +6676,13 @@ mod tests {
             "PROPOSE, never auto-apply",
             "experience(kind=record",
             "Seat commands are installed",
+            // Sprint 26a D3a: the coded seat-workflow placement (deployed to every client).
+            "When each seat fires in the dev process",
+            "at EVERY checkpoint",
+            "COVERAGE gate",
+            "DOC gate",
+            "do NOT hand-add logging",
+            "do NOT hand-roll a stopwatch",
         ] {
             assert!(block.contains(anchor), "conductor anchor missing: {anchor}");
         }

@@ -404,6 +404,29 @@ pub fn render_conductor_section(seats: &[SeatDefinition], client: &str) -> Vec<S
          …)`."
             .to_string(),
         String::new(),
+        // Sprint 26a D3a: the seat WORKFLOW PLACEMENT — coded here and deployed to
+        // every client so the seats fire at their dev-process points by RULE, not
+        // because the agent remembers. Deterministic points (no heuristic
+        // event-detection — that is the fuzzy, hollow mechanism 26a rejected).
+        "When each seat fires in the dev process — run it at these points, do not wait to remember:"
+            .to_string(),
+        "- architect (`/refactor`) — at the sprint DESIGN step (produces \
+         `ARCHITECTURE-<scope>.md`), AND at EVERY checkpoint (a watch-diff of the \
+         checkpoint's changes against that architecture: design fix or bandage?)."
+            .to_string(),
+        "- test-writer (`/cover`) — at the COVERAGE gate: before a change is called \
+         done, if it added behaviour, cover it (`run_tests coverage=true` before/after)."
+            .to_string(),
+        "- javadoc-writer (`/javadocs`) — at the DOC gate: undocumented public API a \
+         change touched is documented before the change is done."
+            .to_string(),
+        "- debugger (`/debug`) — at the runtime reflex: a bug / bad value / NPE → \
+         attach and probe; do NOT hand-add logging (the guard surfaces this)."
+            .to_string(),
+        "- profiler (`/profile`) — at the runtime reflex: performance / a hotspot → \
+         sample the JVM; do NOT hand-roll a stopwatch (the guard surfaces this)."
+            .to_string(),
+        String::new(),
     ]);
     match client {
         "intellij" => {
