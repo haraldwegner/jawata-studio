@@ -1,0 +1,17 @@
+{
+          "version": 1,
+          "projects": [
+            {
+              "id": "p1",
+              "name": "Service A",
+              "projectPath": "/projects/a",
+              "assignedPort": 11100
+            },
+            {
+              "id": "p2",
+              "name": "Service B",
+              "projectPath": "/projects/b",
+              "assignedPort": 11102
+            }
+          ]
+        }

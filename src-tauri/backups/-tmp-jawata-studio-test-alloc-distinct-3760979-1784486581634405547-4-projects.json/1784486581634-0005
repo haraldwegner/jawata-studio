@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "projects": [],
+  "workspaces": [
+    {
+      "workspaceName": "alpha",
+      "residentPort": 8802,
+      "residentToken": "c568a22adec9029495e870cb576e28b3a39e0497904662d5b3cf4d752ab9d9d3"
+    }
+  ]
+}

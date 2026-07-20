@@ -1,0 +1,62 @@
+Subject: Repository Contributors UI contains stale co-author absent from all refs and Contributors APIs
+
+Repository: https://github.com/haraldwegner/jawata-studio
+Default branch: main
+Current default-branch head: 51215752505bd427c82aaa88274f506262e1f736
+History rewrite completed: 2026-07-19
+
+Four commits formerly contained the trailer:
+
+    Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+Those commits were rewritten (trailer removed), main was force-updated, and the
+four affected release tags were force-updated to the rewritten commits.
+
+Old -> new commit mapping:
+    e260a0b71ab4b5cde1412c22770c09c51e179903 -> 013b4b69cce2e4648915a2735bbc76a808184caf  (v3.2.1)
+    c4df76266e6c6fb732b5d66bb7af8755f4878ffe -> 3f5481f5c2958fac955d5956d012e12dffa810b0  (v3.2.2)
+    9e0f3b27fe271593f86358611b1fccd0474fa9dc -> 833f9b86ff825b4f3415f1e0ddb38ce32a545ac5  (v3.2.3)
+    4e7f51138c23c8e862d67f5be65ac3112c2df85c -> 51215752505bd427c82aaa88274f506262e1f736  (v3.2.4)
+
+Verification (all current):
+- A fresh-clone scan of every advertised ref (git ls-remote heads + tags)
+  contains no "anthropic.com", no "noreply@anthropic.com", and no Claude
+  co-author trailer in any reachable commit (author, committer, or trailer).
+- No advertised ref points at any of the four old SHAs.
+- The repository has zero forks and zero pull requests, so no refs/pull/* or
+  fork-network reference should retain the old commits.
+- GET /repos/haraldwegner/jawata-studio/contributors returns only my account
+  (haraldwegner).
+- GET /repos/haraldwegner/jawata-studio/contributors?anon=1 returns only my
+  account (no anonymous/email-only entry).
+- GET /repos/haraldwegner/jawata-studio/stats/contributors returns only my
+  account.
+
+Nevertheless, the repository sidebar and Insights -> Contributors still show a
+contributor "claude". This persists in an unauthenticated/incognito session,
+so it is not a browser cache. The same symptom has persisted for months on
+another repository of mine (javalens-manager) after an identical cleanup, so
+it does not expire on its own.
+
+Please escalate this as an inconsistency in GitHub's repository
+contributor-derived data. Specifically:
+
+1. Recompute/invalidate this repository's Contributors graph and sidebar
+   contributor aggregate from the current default-branch history.
+2. Inspect whether any internal reference (refs/pull/*, repository-network,
+   cached commit view) still retains any of the four old SHAs; if any exist
+   and are owner-accessible, name them and I will remove them.
+3. If permitted, dereference stale cached views, run repository garbage
+   collection, and invalidate the contributor cache
+   (the three internal actions named in GitHub's sensitive-data removal
+   procedure).
+
+This is NOT a request to modify reachable Git history — that history is
+already clean. It is a request to correct GitHub UI-derived metadata that
+disagrees with GitHub's own Contributors APIs.
+
+Attachments to include when submitting:
+- Screenshot: repo sidebar showing "claude"
+- Screenshot: Insights -> Contributors showing "claude"
+- Output of: git ls-remote origin
+- API responses: /contributors, /contributors?anon=1, /stats/contributors

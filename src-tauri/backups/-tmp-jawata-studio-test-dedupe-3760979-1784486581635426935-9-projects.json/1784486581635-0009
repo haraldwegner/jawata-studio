@@ -1,0 +1,8 @@
+{
+          "version": 1,
+          "projects": [
+            { "id": "p1", "name": "First",  "projectPath": "/p/a", "workspaceName": "ws" },
+            { "id": "p1", "name": "Dup",    "projectPath": "/p/b", "workspaceName": "ws" },
+            { "id": "p2", "name": "Second", "projectPath": "/p/c", "workspaceName": "ws" }
+          ]
+        }

@@ -4221,7 +4221,19 @@ case "$tool_name" in
     [ "$jawata_up" -eq 1 ] || exit 0
     # Brand-new file (Write to a non-existent path) → nothing to refactor → allow.
     if [ "$tool_name" = "Write" ] && [ ! -e "$edit_path" ]; then exit 0; fi
+    # Sprint 26a D1 (reflex→capability): if the blocked .java edit LOOKS like a
+    # runtime reflex — a hand-rolled timer, or debug-logging to diagnose —
+    # SURFACE the zero-code-change runtime tool by name. This is not a new block
+    # (R5: no false-positive guard on ordinary logging); it is a smarter message
+    # on an edit that is already blocked as a .java hand-edit.
+    reflex_hint=""
+    if printf '%s' "$flat" | grep -qiE 'nanoTime|currentTimeMillis|Stopwatch|StopWatch'; then
+      reflex_hint="TIMING BY HAND? Use profile — it samples the running JVM and names the hotspot as a symbol, ZERO code change. A hand-rolled stopwatch edits production code for nothing."
+    elif printf '%s' "$flat" | grep -qiE 'System\.out\.print|System\.err\.print|printStackTrace|logger?\.(debug|trace)|// *DEBUG|DEBUG:'; then
+      reflex_hint="DEBUG-ARMOR? Use debug — attach and set probe_set kind=logpoint (or field_watch / method_trace) to stream values at runtime, ZERO code change. Hand-adding logging to diagnose edits production code for nothing."
+    fi
     {{
+      [ -n "$reflex_hint" ] && echo "$reflex_hint"
       echo "USE A JAWATA REFACTOR TOOL — hand-editing $edit_path (a .java file) is blocked."
       echo "Rename → rename_symbol (updates ALL references). Move → move / move_in_hierarchy."
       echo "Extract method/variable/constant/superclass → extract. Duplicate a class → generate(kind=copy_class)."
@@ -6541,6 +6553,31 @@ mod tests {
             script.contains("jawata_log_fallback") && script.contains("tools/jawata/current"),
             "the fallback log is versioned by the deployed engine version"
         );
+    }
+
+    #[test]
+    fn guard_surfaces_runtime_tools_on_a_reflex_edit() {
+        // Sprint 26a D1 (reflex→capability): when a blocked .java edit LOOKS like a
+        // runtime reflex, the guard's message names the ZERO-code-change tool —
+        // profile for a hand-rolled timer, debug for debug-armor. Not a new block
+        // (R5): a smarter message on an edit already blocked as a .java hand-edit.
+        let script = build_guard_script("http://127.0.0.1:8890/mcp");
+        // the timing reflex → profile
+        assert!(script.contains("nanoTime|currentTimeMillis|Stopwatch"),
+            "detects a hand-rolled timer in the edit content");
+        assert!(script.contains("Use profile") && script.contains("names the hotspot as a symbol"),
+            "surfaces profile (with how-to) for a timing edit");
+        // the debug-armor reflex → debug
+        assert!(script.contains("printStackTrace|logger?"),
+            "detects debug-armor (added logging to diagnose) in the edit content");
+        assert!(script.contains("Use debug") && script.contains("probe_set kind=logpoint"),
+            "surfaces debug (with how-to) for an armor edit");
+        // both pitch ZERO code change — the reason to prefer the tool
+        assert!(script.matches("ZERO code change").count() >= 2,
+            "both runtime pitches state the zero-code-change advantage");
+        // it is a HINT on the existing block, not a new gate
+        assert!(script.contains("not a new block") || script.contains("already blocked"),
+            "documented as a message enrichment, not a new false-positive guard");
     }
 
     #[test]

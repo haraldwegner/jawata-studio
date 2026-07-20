@@ -1,0 +1,12 @@
+{
+          "version": 1,
+          "projects": [
+            {
+              "id": "legacy-1",
+              "name": "Legacy",
+              "projectPath": "/tmp/project",
+              "javalensJarPath": "/tmp/jawata.jar",
+              "workspaceDir": "/tmp/workspace"
+            }
+          ]
+        }

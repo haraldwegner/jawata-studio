@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "id": "a-1784486581634",
+      "name": "A",
+      "projectPath": "/p/a",
+      "workspaceName": "alpha",
+      "assignedPort": 0
+    },
+    {
+      "id": "b-1784486581634",
+      "name": "B",
+      "projectPath": "/p/b",
+      "workspaceName": "alpha",
+      "assignedPort": 0
+    },
+    {
+      "id": "c-1784486581634",
+      "name": "C",
+      "projectPath": "/p/c",
+      "workspaceName": "beta",
+      "assignedPort": 0
+    }
+  ],
+  "workspaces": []
+}
