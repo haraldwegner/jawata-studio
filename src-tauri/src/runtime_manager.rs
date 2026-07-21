@@ -527,6 +527,27 @@ impl RuntimeManager {
         // captures to flip the phase to Running.
         let mut args: Vec<String> = Vec::new();
 
+        // Sprint 27 D1: the Vector API module, for the embedder's matrix
+        // multiply. Like every JVM option this MUST precede `-jar`.
+        //
+        // GUARDED, and the guard is not caution — it is measured. A JVM given
+        // `--add-modules` for a module it does not have REFUSES TO START
+        // ("Error occurred during initialization of boot layer", exit 1); it
+        // does not warn and continue. Adding this unconditionally would brick
+        // every resident on any JDK without the module — including the JDK
+        // where the Vector API finally graduates out of incubator and
+        // `jdk.incubator.vector` ceases to exist.
+        //
+        // Without the flag the embedder still produces IDENTICAL vectors: the
+        // scalar implementation answers instead, slower. So this is a speed
+        // flag and never a correctness one, and `health_check` reports which
+        // implementation actually won rather than leaving anyone to infer it
+        // from the presence of this argument.
+        if vector_module_available() {
+            args.push("--add-modules".into());
+            args.push("jdk.incubator.vector".into());
+        }
+
         // Sprint 15 B5c: conditional Lombok comprehension agent. JVM options
         // (`-javaagent`) MUST precede `-jar`, so this goes first. Only added
         // when the project uses Lombok AND the product ships lombok.jar.
@@ -748,6 +769,28 @@ impl RuntimeManager {
     }
 }
 
+/// Sprint 27 D1: does the `java` on PATH actually have `jdk.incubator.vector`?
+///
+/// Asked by RUNNING it, once per process, because the only reliable answer is
+/// the JVM's own: a JVM given `--add-modules` for a module it lacks refuses to
+/// start (exit 1, "Error occurred during initialization of boot layer"), so a
+/// wrong guess here does not degrade the resident — it prevents it.
+///
+/// A probe that cannot run at all answers FALSE: launching without the flag
+/// costs speed, launching with a flag the JVM rejects costs the resident.
+fn vector_module_available() -> bool {
+    static PROBE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PROBE.get_or_init(|| {
+        std::process::Command::new("java")
+            .args(["--add-modules", "jdk.incubator.vector", "-version"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+}
+
 fn read_runtime_state(path: &Path) -> Result<HashMap<String, RuntimeStatusRecord>, String> {
     if !path.exists() {
         return Ok(HashMap::new());
@@ -816,11 +859,32 @@ mod tests {
         let spec = manager.command_spec_for(&launch_request);
 
         assert_eq!(spec.command, "java");
+
+        // Sprint 27 D1: the Vector API flag is PROBED, so whether it is present
+        // depends on the JVM this test runs under. Assert the rule rather than
+        // one machine's answer: present exactly when the module is available,
+        // and always as the leading pair (JVM options must precede -jar).
+        let mut args = spec.args.clone();
+        if vector_module_available() {
+            assert_eq!(
+                &args[0..2],
+                &["--add-modules".to_string(), "jdk.incubator.vector".to_string()],
+                "the module is available here, so the flag must lead the args"
+            );
+            args.drain(0..2);
+        } else {
+            assert!(
+                !args.contains(&"jdk.incubator.vector".to_string()),
+                "the module is NOT available here — passing the flag anyway would \
+                 stop the JVM from starting at all"
+            );
+        }
+
         // Sprint 15 Stage 10: -port + -token added so the fork v1.8.5
         // HTTP listener binds where the URL-emitting MCP writer expects.
         // Sprint 21a (item F): knowledge-store system properties precede -jar.
         assert_eq!(
-            spec.args,
+            args,
             vec![
                 "-Djawata.experience.store=shared",
                 "-jar",
