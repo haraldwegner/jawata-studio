@@ -2259,7 +2259,12 @@ pub fn collect_profile_evidence(
         let recall = resident
             .call_tool(
                 "experience",
-                serde_json::json!({ "kind": "recall", "symbol": format!("{seam_class}#{seam_method}"), "format": "text" }),
+                // Sprint 27 D6: name the surface. A seat's recall and a prompt
+                // hook's recall are the same call on the wire, so the resident
+                // cannot tell them apart — and an unnamed seat recall would
+                // leave the "seat" counter permanently zero, which reads as
+                // "seats never recall" rather than "nobody said so".
+                serde_json::json!({ "kind": "recall", "symbol": format!("{seam_class}#{seam_method}"), "format": "text", "surface": "seat" }),
             )
             .map(|v| extract_tool_text(&v))
             .unwrap_or_else(|e| format!("(recall failed: {e})"));
