@@ -150,6 +150,30 @@ its design-mode artifact is refused. (Shipped Sprint 25a D3; the architect's
 watch mode diffs checkpoint changes against the same picture. The mechanized
 end-to-end pipeline remains Sprint 29.)
 
+**And AGAIN at the END of the sprint, over the COMPLETE deliverable set —
+before the release ask** (Harald 2026-07-22, Sprint 27). The checkpoint watch
+mode diffs the checkpoint's CHANGES against the design, and that cannot see a
+connection that was never made: **an unwired capability is a NON-EDIT.** It
+lives in a line no commit in the sprint touched, so it appears in no diff,
+breaks no assertion, and is invisible to every diff-scoped review. Sprint 27's
+own missing connection sat in a line last modified twelve days before the
+sprint began.
+
+So the architect runs once more, AS BUILT, over all deliverables at once — not
+per stage, not per diff. The check is mechanical and uses tools that exist:
+
+> **For each capability the sprint delivers, name the code that CALLS it —
+> file and line, in a main source root.** Resolve the capability to a symbol,
+> run the incoming call hierarchy, and classify every caller. A capability
+> whose callers are all test code is NOT DELIVERED, however green its tests.
+
+Two limits, stated so the run is not mistaken for proof it cannot give. A
+caller can exist and the capability still be dead at runtime — a dependency
+that every production site passes as empty. And the main-vs-test classification
+must come from the project's source roots, not a path convention, because
+jawata's own `compile_workspace(scope=)` gets this wrong on jawata's own
+repository. Those residuals are what the end-to-end gate below is for.
+
 ## Phase B — the actionable plan
 
 The signed-off spec = the baseline; the plan = the clean, in AGENT language, built from
@@ -217,6 +241,45 @@ tests by a context that did not write them," ASSUMING the functionality and the 
 each UNDER-cover the plan until the code proves otherwise. Corollary for dogfood: **work
 the deliverable's FULL claim, enumerated** — "N learners" means read all N liveness rows,
 every dogfood, not the one component you touched.
+**Fifth rule (Harald 2026-07-22, Sprint 27; evidence: v3.4.0 was RELEASED with its
+central deliverable completely INERT — every one of the three production sites built
+the recall engine through the constructor that takes no embedding index, the enabling
+overload had 15 callers and all 15 were tests, and the self-heal that gives an existing
+store its vectors had 4 callers, all tests. The suite was 1591/1591 four ways. Coverage
+ROSE, all three ratchets. The user's first dogfood probe found it in three calls):**
+
+**Nothing that only tests exercise counts as shipped, and the proof runs BEFORE the
+sign-off ask — never after it, and never in CI.**
+
+1. **END-TO-END BEFORE THE WORD.** Before any release sign-off ask, every deliverable is
+   exercised **through the product's own front door, against the BUILT ARTIFACT** — one
+   live assertion each — and **the results go IN the ask**. A deliverable with no
+   front-door assertion is reported as **unproven**, never as done. Two properties do the
+   work, and both are why unit tests cannot: the harness **has only the front door**, so
+   it cannot construct an object and hand it its own wiring; and it runs against **the
+   thing being published**, not a build tree. Placing this gate in the release CI is NOT
+   compliance — CI runs after the user has already said yes, so it protects the artifact
+   while leaving the user to underwrite a claim nobody verified.
+2. **"CALLED ONLY BY TESTS" IS A SMELL, and it is checked.** For every public member the
+   sprint adds or is meant to employ: incoming call hierarchy; **callers > 0 and every
+   caller in a test source root → finding.** (Zero callers is the ordinary unused check;
+   "called, but only by tests" is the one that catches hollowness.) Run it manually via
+   the call-hierarchy tools until the detector ships; the finding blocks the release ask
+   either way. It is necessary, not sufficient — a production site passing an explicit
+   `null` keeps a caller and still leaves the wire dead — which is why rule 1 stands
+   above it.
+3. **A CAPABILITY DECLARES ITS OWN REACH.** Where the product has a health/status
+   surface, wiring reports which surfaces a capability actually reaches, not merely that
+   the component loaded. "Component available: true" was true and misleading for the
+   whole of v3.4.0.
+
+**Why the existing rules did not catch it, so none of them is mistaken for cover:** the
+per-checkpoint audit (rule 4) reviews a stage's CHANGES, and this defect is a non-edit;
+coverage says a line executed, never who executed it — `backfill` was covered by the
+four tests that were its only callers; and the implementation audit (rule 1 above) is
+the one instrument shaped to find it, but the plan schedules it AFTER the release.
+**A sprint must not schedule its only claim-first check after shipping.**
+
 Close-out
 ticks the SPEC's deliverables against tool evidence, flips the spec to ✅ with as-built
 actuals, updates the cascade row, memorizes + syncs the experience store.
@@ -238,6 +301,11 @@ refuse-loop, raw-anchored matrix, user-last) after the rebrand scope-drop; 2026-
 (reader split · risks-in-spec-only · disposition check · two-docs-only with -raw suffix
 and delete-on-sign-off · mechanics to editor notes · bare section names, no condescension
 · plan management summary with critical path · no pre-written verdicts) after Harald's
-process review. Matrix rules from `strategies_orb/docs/SOLID_Refactoring_Method.md` §4;
+process review; 2026-07-22 (end-of-sprint architect run over the COMPLETE deliverable
+set naming the production code that CALLS each capability · end-to-end through the
+product's own front door BEFORE the
+sign-off ask · "called only by tests" as a checked smell · capabilities declare their
+own reach) after Sprint 27 released its central deliverable inert past 1591 green tests
+and a RISING coverage ratchet. Matrix rules from `strategies_orb/docs/SOLID_Refactoring_Method.md` §4;
 memory: `feedback_editor_auditor_protocol` / `feedback_red_team_pass_before_presenting` /
 `feedback_spec_loop_closure_audit`.
