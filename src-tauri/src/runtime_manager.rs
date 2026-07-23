@@ -39,12 +39,18 @@ pub(crate) fn spawn_without_console(command: &mut Command) {
 // ---------------------------------------------------------------------------
 
 /// Does a healthy jawata resident already answer on this port with this token?
-/// A 2xx to a `health_check` tools/call carrying the workspace's own Bearer
-/// token means the resident is ours and live — ADOPT it rather than spawning a
-/// doomed second copy on a port the orphan still holds (issue #1, step 2/3).
+/// Identifies OUR resident so we can adopt it (issue #1). Two guards, so a
+/// foreign service or a wrong token can never be mistaken for ours:
+///   - jawata's HTTP transport returns 401 on a missing/wrong Bearer token, so
+///     a non-2xx status fails closed;
+///   - a 2xx alone is not enough (any service could 200 a POST to /mcp), so the
+///     body must be a JSON-RPC success — a `result`, no `error` — from
+///     `health_check`.
+/// Timeout is short: this is localhost, and a real resident answers in ms; the
+/// probe runs on the dashboard poll, so it must not stall it.
 pub(crate) fn resident_answers(port: u16, token: &str) -> bool {
     let client = match reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(3))
+        .timeout(Duration::from_millis(500))
         .build()
     {
         Ok(client) => client,
@@ -56,13 +62,22 @@ pub(crate) fn resident_answers(port: u16, token: &str) -> bool {
         "method": "tools/call",
         "params": { "name": "health_check", "arguments": {} }
     });
-    client
+    let response = match client
         .post(format!("http://127.0.0.1:{port}/mcp"))
         .header("Authorization", format!("Bearer {token}"))
         .json(&body)
         .send()
-        .map(|response| response.status().is_success())
-        .unwrap_or(false)
+    {
+        Ok(response) => response,
+        Err(_) => return false,
+    };
+    if !response.status().is_success() {
+        return false; // 401 wrong/missing token, or anything non-2xx
+    }
+    match response.json::<serde_json::Value>() {
+        Ok(value) => value.get("result").is_some() && value.get("error").is_none(),
+        Err(_) => false,
+    }
 }
 
 /// Is the process still alive? Unix: `kill -0` (signal 0 tests existence without
@@ -295,14 +310,17 @@ enum Liveness {
 /// PID — so ownership survives a Studio restart.
 enum RuntimeProcess {
     Owned(Child),
-    Adopted { pid: u32 },
+    /// A resident this Studio did not spawn. `port`/`token` are kept so the
+    /// identity can be RE-VERIFIED at kill time (a PID alone can be recycled to
+    /// an unrelated process — killing it would be a `kill -9` on a stranger).
+    Adopted { pid: u32, port: u16, token: String },
 }
 
 impl RuntimeProcess {
     fn id(&self) -> u32 {
         match self {
             RuntimeProcess::Owned(child) => child.id(),
-            RuntimeProcess::Adopted { pid } => *pid,
+            RuntimeProcess::Adopted { pid, .. } => *pid,
         }
     }
 
@@ -317,7 +335,7 @@ impl RuntimeProcess {
                     None => Liveness::Alive,
                 })
                 .map_err(|error| format!("failed to inspect JAWATA process state: {error}")),
-            RuntimeProcess::Adopted { pid } => Ok(if process_alive(*pid) {
+            RuntimeProcess::Adopted { pid, .. } => Ok(if process_alive(*pid) {
                 Liveness::Alive
             } else {
                 Liveness::Dead { code: None }
@@ -326,8 +344,11 @@ impl RuntimeProcess {
     }
 
     /// Kill the process and reap it. Owned: `Child::kill` + `wait`. Adopted:
-    /// kill by PID — and REPORT a failure rather than silently succeeding
-    /// (issue #1, "Stop must act or report honestly").
+    /// re-verify the resident still answers on its port with its token (so a
+    /// recycled PID is never killed), then kill by PID — and REPORT a failure
+    /// rather than silently succeeding (issue #1, "Stop must act or report
+    /// honestly"). If it no longer answers it is already gone, so reporting
+    /// stopped is honest and killing the (possibly reused) PID is refused.
     fn kill_and_reap(&mut self) -> Result<(), String> {
         match self {
             RuntimeProcess::Owned(child) => {
@@ -337,7 +358,13 @@ impl RuntimeProcess {
                 let _ = child.wait();
                 Ok(())
             }
-            RuntimeProcess::Adopted { pid } => kill_pid(*pid),
+            RuntimeProcess::Adopted { pid, port, token } => {
+                if resident_answers(*port, token) {
+                    kill_pid(*pid)
+                } else {
+                    Ok(()) // already gone; do not kill whatever now holds the PID
+                }
+            }
         }
     }
 }
@@ -558,6 +585,13 @@ impl RuntimeManager {
         &self,
         reference: &RuntimeReference,
     ) -> Result<RuntimeStatusRecord, String> {
+        // studio #1 (F1): a stop must ACT even when the handle map is cold — the
+        // tray "Stop all" can fire before any dashboard poll adopted the
+        // orphans. Self-adopt first, so a resident that outlived Studio becomes
+        // a handle this stop then kills, instead of returning Ok having killed
+        // nothing. No-op when already managed or nothing answers.
+        self.try_adopt(reference)?;
+
         let mut handles = self.handles.lock().expect("runtime mutex poisoned");
 
         let mut killed = false;
@@ -833,21 +867,36 @@ impl RuntimeManager {
 
         let mut members = HashSet::new();
         members.insert(reference.project_id.clone());
-        self.handles.lock().expect("runtime mutex poisoned").insert(
-            reference.workspace_name.clone(),
-            ManagedRuntime {
-                process: RuntimeProcess::Adopted { pid },
-                started_at: Instant::now(),
-                log_path: self.default_log_path(&reference.workspace_name),
-                members,
-                workspace_dir: reference.workspace_dir.clone(),
-                runtime_label: reference.runtime_label.clone(),
-                resolved_jar_path: reference.resolved_jar_path.clone(),
-                resident_port: reference.resident_port,
-                // It answered a health_check, so it is READY by definition.
-                ready: Arc::new(AtomicBool::new(true)),
-            },
-        );
+        {
+            let mut handles = self.handles.lock().expect("runtime mutex poisoned");
+            // Re-check under the final lock: a concurrent start may have spawned
+            // and inserted an Owned handle in the probe window. If so, keep it —
+            // do not overwrite an Owned process with an Adopted record and lose
+            // the Child (F5).
+            if handles.contains_key(&reference.workspace_name) {
+                drop(handles);
+                return self.try_join_running_workspace(reference);
+            }
+            handles.insert(
+                reference.workspace_name.clone(),
+                ManagedRuntime {
+                    process: RuntimeProcess::Adopted {
+                        pid,
+                        port: reference.resident_port,
+                        token: reference.resident_token.clone(),
+                    },
+                    started_at: Instant::now(),
+                    log_path: self.default_log_path(&reference.workspace_name),
+                    members,
+                    workspace_dir: reference.workspace_dir.clone(),
+                    runtime_label: reference.runtime_label.clone(),
+                    resolved_jar_path: reference.resolved_jar_path.clone(),
+                    resident_port: reference.resident_port,
+                    // It answered a health_check, so it is READY by definition.
+                    ready: Arc::new(AtomicBool::new(true)),
+                },
+            );
+        }
         let status = self.adopted_status(
             reference,
             Some(pid),
@@ -1316,14 +1365,90 @@ mod tests {
         }
     }
 
+    /// A minimal HTTP/1.1 stand-in for a jawata resident: it answers a bounded
+    /// number of probes with a JSON-RPC `result` (or `error` when `ok=false`),
+    /// on an ephemeral localhost port. Lets the adopt/probe/kill paths run
+    /// against a real socket without a real jawata.
+    fn spawn_stub_resident(ok: bool) -> (u16, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind stub");
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for _ in 0..40 {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut buf = [0u8; 4096];
+                        let _ = stream.read(&mut buf); // drain the request (best-effort)
+                        let body = if ok {
+                            r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#
+                        } else {
+                            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"no"}}"#
+                        };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                             Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.flush();
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        (port, handle)
+    }
+
+    #[test]
+    fn resident_answers_true_on_a_result_false_on_an_error() {
+        // F2: a 2xx is not enough — the body must be a JSON-RPC success.
+        let (ok_port, _a) = spawn_stub_resident(true);
+        assert!(resident_answers(ok_port, "test-token"), "a result means it is ours");
+        let (err_port, _b) = spawn_stub_resident(false);
+        assert!(
+            !resident_answers(err_port, "test-token"),
+            "a JSON-RPC error (e.g. a foreign 200) is NOT adoption"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn try_adopt_records_a_running_adopted_handle() {
+        // studio #1 point 1/3: a resident answering on its port is adopted as a
+        // Running handle (not spawned again, not rendered Failed).
+        let dir = unique_tempdir("try-adopt");
+        let manager = RuntimeManager::new(paths_in(&dir));
+        let (port, _stub) = spawn_stub_resident(true);
+
+        let mut reference = make_reference("p-a", "test", "");
+        reference.resident_port = port;
+        reference.resident_token = "test-token".into();
+
+        let status = manager.try_adopt(&reference).expect("adopt ok");
+        let status = status.expect("a live resident is adopted");
+        assert_eq!(status.phase, RuntimePhase::Running);
+        assert!(
+            status.detail.to_lowercase().contains("adopt")
+                || status.detail.to_lowercase().contains("not managed"),
+            "the render distinguishes adopted/unmanaged, not Failed: {}",
+            status.detail
+        );
+        assert!(
+            manager.workspace_members("test").is_some(),
+            "the adopted resident is now a managed handle a stop can act on"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn stop_workspace_kills_an_adopted_orphan_by_pid() {
-        // studio #1: an orphan that outlived Studio is adopted as a handle with
-        // NO Child. "Stop workspace" must still kill it by its discovered PID —
-        // the old code returned Ok having killed nothing.
+        // studio #1 point 2: an orphan adopted as a handle with NO Child is
+        // still killed by its discovered PID — the old code returned Ok having
+        // killed nothing. kill_and_reap re-verifies via the stub before killing.
         let dir = unique_tempdir("adopt-stop");
         let manager = RuntimeManager::new(paths_in(&dir));
+        let (port, _stub) = spawn_stub_resident(true);
 
         let mut child = Command::new("sleep").arg("30").spawn().expect("spawn sleep");
         let pid = child.id();
@@ -1333,14 +1458,18 @@ mod tests {
         manager.handles.lock().unwrap().insert(
             "test".to_string(),
             ManagedRuntime {
-                process: RuntimeProcess::Adopted { pid },
+                process: RuntimeProcess::Adopted {
+                    pid,
+                    port,
+                    token: "test-token".into(),
+                },
                 started_at: Instant::now(),
                 log_path: String::new(),
                 members,
                 workspace_dir: String::new(),
                 runtime_label: "test-runtime".into(),
                 resolved_jar_path: "/dev/null".into(),
-                resident_port: 8800,
+                resident_port: port,
                 ready: Arc::new(AtomicBool::new(true)),
             },
         );
@@ -1352,6 +1481,52 @@ mod tests {
         let _ = child.wait();
         std::thread::sleep(Duration::from_millis(200));
         assert!(!process_alive(pid), "stop killed the adopted orphan by PID");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_refuses_to_kill_a_pid_whose_resident_no_longer_answers() {
+        // F4: if the adopted resident no longer answers (died; its PID may have
+        // been recycled), a stop must NOT kill whatever now holds that PID.
+        let dir = unique_tempdir("adopt-refuse");
+        let manager = RuntimeManager::new(paths_in(&dir));
+
+        // A live process standing in for a recycled PID — nothing of ours
+        // answers on this port, so it must be left alone.
+        let mut innocent = Command::new("sleep").arg("30").spawn().expect("spawn sleep");
+        let pid = innocent.id();
+
+        let mut members = HashSet::new();
+        members.insert("p-a".to_string());
+        manager.handles.lock().unwrap().insert(
+            "test".to_string(),
+            ManagedRuntime {
+                process: RuntimeProcess::Adopted {
+                    pid,
+                    port: 2, // nothing of ours listens here
+                    token: "test-token".into(),
+                },
+                started_at: Instant::now(),
+                log_path: String::new(),
+                members,
+                workspace_dir: String::new(),
+                runtime_label: "test-runtime".into(),
+                resolved_jar_path: "/dev/null".into(),
+                resident_port: 2,
+                ready: Arc::new(AtomicBool::new(true)),
+            },
+        );
+
+        manager
+            .stop_workspace_runtime("test")
+            .expect("stop reports honestly");
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            process_alive(pid),
+            "a PID whose resident does not answer must NOT be killed (recycle safety)"
+        );
+        let _ = innocent.kill();
+        let _ = innocent.wait();
     }
 
     #[cfg(unix)]
