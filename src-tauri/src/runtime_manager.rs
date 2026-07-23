@@ -893,9 +893,14 @@ impl RuntimeManager {
         // not just the project that happened to adopt it. Otherwise stopping one
         // project of a multi-project workspace would find members={that project},
         // go empty, and kill the shared resident the OTHER projects still use.
-        // Reconstruct membership from the persisted snapshots (every project that
-        // shares this workspace_name), which is the same set start_runtime would
-        // have accumulated warm.
+        // Reconstruct membership from the persisted snapshots of projects that
+        // share this workspace_name — but only the LIVE ones (Running/Starting).
+        // N3: a project stopped via stop_runtime is marked Stopped WITHOUT being
+        // removed from the snapshots, so an all-phases filter would count a
+        // stopped sibling as a member and leave the resident running after the
+        // last live member is stopped. Filtering to live intent matches exactly
+        // the set start_runtime would have accumulated warm (which drops a
+        // project on stop).
         let mut members: HashSet<String> = {
             let snapshots = self
                 .snapshots
@@ -903,7 +908,10 @@ impl RuntimeManager {
                 .expect("runtime snapshot mutex poisoned");
             snapshots
                 .values()
-                .filter(|s| s.workspace_name == reference.workspace_name)
+                .filter(|s| {
+                    s.workspace_name == reference.workspace_name
+                        && matches!(s.phase, RuntimePhase::Running | RuntimePhase::Starting)
+                })
                 .map(|s| s.project_id.clone())
                 .collect()
         };
@@ -1680,6 +1688,45 @@ mod tests {
         assert!(
             wait_gone(&mut resident, Duration::from_secs(2)),
             "stopping the last member kills the resident"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_the_last_live_project_kills_despite_a_stopped_sibling() {
+        // N3: a sibling marked Stopped (but not removed from snapshots) must NOT
+        // count as a live member — otherwise stopping the last LIVE project would
+        // leave the resident running and lie "runtime continues for remaining
+        // members".
+        let dir = unique_tempdir("adopt-stopped-sibling");
+        let manager = RuntimeManager::new(paths_in(&dir));
+        let (port, mut resident) = spawn_http_resident();
+        let pid = resident.id();
+
+        // p-a is the only LIVE member; p-b lingers as a Stopped snapshot.
+        for (project, phase) in [
+            ("p-a", RuntimePhase::Running),
+            ("p-b", RuntimePhase::Stopped),
+        ] {
+            let mut reference = make_reference(project, "test", "");
+            reference.resident_port = port;
+            reference.resident_token = "test-token".into();
+            let mut snap = manager.adopted_status(&reference, Some(pid), "restored");
+            snap.phase = phase;
+            manager
+                .snapshots
+                .lock()
+                .unwrap()
+                .insert(project.to_string(), snap);
+        }
+
+        let mut ref_a = make_reference("p-a", "test", "");
+        ref_a.resident_port = port;
+        ref_a.resident_token = "test-token".into();
+        manager.stop_runtime(&ref_a).expect("stop p-a");
+        assert!(
+            wait_gone(&mut resident, Duration::from_secs(2)),
+            "the last LIVE member's stop kills the resident; a Stopped sibling is not a member"
         );
     }
 
