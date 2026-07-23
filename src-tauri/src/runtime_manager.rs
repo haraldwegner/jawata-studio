@@ -29,6 +29,131 @@ pub(crate) fn spawn_without_console(command: &mut Command) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Sprint 27a Stage 10 (studio #1): adopt/probe/kill primitives. Studio persists
+// intent but not OWNERSHIP, so after any restart in which residents survive the
+// two disagree. These free functions let the manager recover ownership from the
+// listening port + the running process, with no new persistence: a healthy
+// jawata is identified by answering on its port with the expected token, and its
+// PID is discoverable from the port.
+// ---------------------------------------------------------------------------
+
+/// Does a healthy jawata resident already answer on this port with this token?
+/// A 2xx to a `health_check` tools/call carrying the workspace's own Bearer
+/// token means the resident is ours and live — ADOPT it rather than spawning a
+/// doomed second copy on a port the orphan still holds (issue #1, step 2/3).
+pub(crate) fn resident_answers(port: u16, token: &str) -> bool {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": { "name": "health_check", "arguments": {} }
+    });
+    client
+        .post(format!("http://127.0.0.1:{port}/mcp"))
+        .header("Authorization", format!("Bearer {token}"))
+        .json(&body)
+        .send()
+        .map(|response| response.status().is_success())
+        .unwrap_or(false)
+}
+
+/// Is the process still alive? Unix: `kill -0` (signal 0 tests existence without
+/// touching the process). Windows: a `tasklist` filter. A discovered orphan that
+/// has since died must NOT be reported as a live-but-unmanaged runtime.
+pub(crate) fn process_alive(pid: u32) -> bool {
+    #[cfg(not(windows))]
+    {
+        Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(windows)]
+    {
+        Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .map(|out| String::from_utf8_lossy(&out.stdout).contains(&pid.to_string()))
+            .unwrap_or(false)
+    }
+}
+
+/// Forcefully kill a process by PID — used to stop a resident this Studio does
+/// not own a `Child` for (an adopted orphan). Never silently succeeds having
+/// done nothing: a failure is reported (issue #1, step 2 — "Stop must act or
+/// report honestly").
+pub(crate) fn kill_pid(pid: u32) -> Result<(), String> {
+    #[cfg(not(windows))]
+    let result = Command::new("kill").arg("-9").arg(pid.to_string()).status();
+    #[cfg(windows)]
+    let result = Command::new("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .status();
+    match result {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!("kill of pid {pid} exited with {status}")),
+        Err(error) => Err(format!("failed to kill pid {pid}: {error}")),
+    }
+}
+
+/// The PID listening on a local TCP port, discovered from the OS (Linux/macOS
+/// `ss`/`lsof`). Best-effort — `None` when no tool is available or nothing
+/// listens. Stored at adopt time so an adopted resident can later be stopped.
+pub(crate) fn pid_listening_on(port: u16) -> Option<u32> {
+    #[cfg(not(windows))]
+    {
+        // Prefer `ss` (Linux, always present); its `pid=<N>` field is stable.
+        if let Ok(output) = Command::new("ss").args(["-ltnpH"]).output() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            let needle = format!(":{port} ");
+            for line in text.lines() {
+                if line.contains(&needle) {
+                    if let Some(pid) = parse_ss_pid(line) {
+                        return Some(pid);
+                    }
+                }
+            }
+        }
+        // Fall back to `lsof` (macOS default).
+        if let Ok(output) = Command::new("lsof")
+            .args(["-nP", "-sTCP:LISTEN", "-t", &format!("-iTCP:{port}")])
+            .output()
+        {
+            let text = String::from_utf8_lossy(&output.stdout);
+            if let Some(first) = text.split_whitespace().next() {
+                if let Ok(pid) = first.parse::<u32>() {
+                    return Some(pid);
+                }
+            }
+        }
+        None
+    }
+    #[cfg(windows)]
+    {
+        let _ = port;
+        None
+    }
+}
+
+/// Extract `pid=<N>` from an `ss -ltnpH` line
+/// (`... users:(("java",pid=12345,fd=7))`).
+fn parse_ss_pid(line: &str) -> Option<u32> {
+    let start = line.find("pid=")? + "pid=".len();
+    let rest = &line[start..];
+    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    rest[..end].parse::<u32>().ok()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RuntimePhase {
@@ -156,8 +281,69 @@ pub struct CommandSpec {
 
 /// One jawata process owned by the manager. Sprint 10 v0.10.4: shared
 /// across every project whose `workspace_name` matches this entry's key.
+/// Whether a managed runtime is still up, and if not, its exit code (Owned
+/// only — an adopted orphan has no captured exit status, hence `None`).
+enum Liveness {
+    Alive,
+    Dead { code: Option<i32> },
+}
+
+/// The process behind a managed runtime. Sprint 27a Stage 10 (studio #1):
+/// Studio used to hold only a `Child`, so a resident that outlived Studio
+/// could never be recovered. `Adopted` records a resident THIS Studio did not
+/// spawn — reached by the port it answers on and killable by its discovered
+/// PID — so ownership survives a Studio restart.
+enum RuntimeProcess {
+    Owned(Child),
+    Adopted { pid: u32 },
+}
+
+impl RuntimeProcess {
+    fn id(&self) -> u32 {
+        match self {
+            RuntimeProcess::Owned(child) => child.id(),
+            RuntimeProcess::Adopted { pid } => *pid,
+        }
+    }
+
+    /// Is the process still alive? Owned: reap via `try_wait`. Adopted: probe
+    /// the PID (`kill -0`), since we hold no `Child` to wait on.
+    fn liveness(&mut self) -> Result<Liveness, String> {
+        match self {
+            RuntimeProcess::Owned(child) => child
+                .try_wait()
+                .map(|opt| match opt {
+                    Some(status) => Liveness::Dead { code: status.code() },
+                    None => Liveness::Alive,
+                })
+                .map_err(|error| format!("failed to inspect JAWATA process state: {error}")),
+            RuntimeProcess::Adopted { pid } => Ok(if process_alive(*pid) {
+                Liveness::Alive
+            } else {
+                Liveness::Dead { code: None }
+            }),
+        }
+    }
+
+    /// Kill the process and reap it. Owned: `Child::kill` + `wait`. Adopted:
+    /// kill by PID — and REPORT a failure rather than silently succeeding
+    /// (issue #1, "Stop must act or report honestly").
+    fn kill_and_reap(&mut self) -> Result<(), String> {
+        match self {
+            RuntimeProcess::Owned(child) => {
+                child
+                    .kill()
+                    .map_err(|error| format!("failed to stop JAWATA process: {error}"))?;
+                let _ = child.wait();
+                Ok(())
+            }
+            RuntimeProcess::Adopted { pid } => kill_pid(*pid),
+        }
+    }
+}
+
 struct ManagedRuntime {
-    child: Child,
+    process: RuntimeProcess,
     started_at: Instant,
     log_path: String,
     /// Project IDs whose `workspace_name` made them members of this
@@ -224,6 +410,14 @@ impl RuntimeManager {
         // Fast path: workspace already running. Add membership, return
         // workspace's PID as this project's status.
         if let Some(status) = self.try_join_running_workspace(reference)? {
+            return Ok(status);
+        }
+
+        // studio #1: before spawning, ADOPT a resident that outlived this
+        // Studio. Spawning a second copy on a port an orphan still holds makes
+        // the new resident exit 0 (jawata-mcp#2) → phase Failed → an autostart
+        // retry loop. Probing the port first breaks that loop at its root.
+        if let Some(status) = self.try_adopt(reference)? {
             return Ok(status);
         }
 
@@ -320,7 +514,7 @@ impl RuntimeManager {
         self.handles.lock().expect("runtime mutex poisoned").insert(
             reference.workspace_name.clone(),
             ManagedRuntime {
-                child,
+                process: RuntimeProcess::Owned(child),
                 started_at: Instant::now(),
                 log_path,
                 members,
@@ -352,7 +546,7 @@ impl RuntimeManager {
     #[cfg(test)]
     pub(crate) fn workspace_pid(&self, workspace_name: &str) -> Option<u32> {
         let handles = self.handles.lock().expect("runtime mutex poisoned");
-        handles.get(workspace_name).map(|h| h.child.id())
+        handles.get(workspace_name).map(|h| h.process.id())
     }
 
     /// Project leaves the workspace. If the workspace's process has no
@@ -371,11 +565,7 @@ impl RuntimeManager {
             handle.members.remove(&reference.project_id);
             if handle.members.is_empty() {
                 if let Some(mut handle) = handles.remove(&reference.workspace_name) {
-                    handle
-                        .child
-                        .kill()
-                        .map_err(|error| format!("failed to stop JAWATA process: {error}"))?;
-                    let _ = handle.child.wait();
+                    handle.process.kill_and_reap()?;
                     killed = true;
                 }
             }
@@ -416,11 +606,11 @@ impl RuntimeManager {
         };
         if let Some(mut handle) = removed {
             let members = handle.members.clone();
-            handle
-                .child
-                .kill()
-                .map_err(|error| format!("failed to stop JAWATA process: {error}"))?;
-            let _ = handle.child.wait();
+            // kill_and_reap kills an Owned child OR an Adopted orphan by PID —
+            // and REPORTS a failure. An orphan is in this map because adopt-on-
+            // start / adopt-on-status put it here, so "Stop workspace" acts on
+            // it instead of silently returning Ok having killed nothing.
+            handle.process.kill_and_reap()?;
 
             // Mark every member's snapshot as Stopped.
             for project_id in members {
@@ -448,6 +638,27 @@ impl RuntimeManager {
     ) -> Result<RuntimeStatusRecord, String> {
         if let Some(status) = self.try_join_running_workspace_readonly(reference)? {
             return Ok(status);
+        }
+
+        // studio #1: with no live handle, a stale snapshot may claim Running
+        // (an orphan that outlived Studio) or Failed (the doomed-respawn loop).
+        // When intent says this workspace should be up, probe the port and
+        // adopt a resident that is genuinely serving — the dashboard then reads
+        // "Running (adopted)" instead of a false Running 0 / Failed. Guarded by
+        // the snapshot phase so a genuinely-stopped workspace is not probed on
+        // every poll (each probe is a bounded HTTP call).
+        let expected_up = matches!(
+            self.snapshots
+                .lock()
+                .expect("runtime snapshot mutex poisoned")
+                .get(&reference.project_id)
+                .map(|s| s.phase.clone()),
+            Some(RuntimePhase::Running | RuntimePhase::Starting | RuntimePhase::Failed)
+        );
+        if expected_up {
+            if let Some(status) = self.try_adopt(reference)? {
+                return Ok(status);
+            }
         }
 
         Ok(self
@@ -496,8 +707,7 @@ impl RuntimeManager {
                 handle.members.remove(project_id);
                 if handle.members.is_empty() {
                     if let Some(mut handle) = handles.remove(&ws) {
-                        let _ = handle.child.kill();
-                        let _ = handle.child.wait();
+                        let _ = handle.process.kill_and_reap();
                     }
                 }
             }
@@ -585,6 +795,90 @@ impl RuntimeManager {
     /// project as a member and return the workspace's PID as this
     /// project's status. Returns None if no process exists for the
     /// workspace yet (caller should spawn).
+    /// studio #1: recover ownership of a resident that outlived this Studio.
+    /// When we hold no handle for the workspace but a healthy jawata answers on
+    /// its port with the workspace's own token, ADOPT it — record it as a
+    /// running (adopted) handle so we neither spawn a doomed second copy nor
+    /// render `Running 0`/`Failed` while it serves invisibly, and a later stop
+    /// can act on it. Returns the Running status on adoption, else `None`.
+    fn try_adopt(
+        &self,
+        reference: &RuntimeReference,
+    ) -> Result<Option<RuntimeStatusRecord>, String> {
+        if self
+            .handles
+            .lock()
+            .expect("runtime mutex poisoned")
+            .contains_key(&reference.workspace_name)
+        {
+            return Ok(None); // already managed — nothing to adopt
+        }
+        if !resident_answers(reference.resident_port, &reference.resident_token) {
+            return Ok(None); // nothing (of ours) is listening
+        }
+
+        // It answers. Discover its PID so we can later stop it.
+        let Some(pid) = pid_listening_on(reference.resident_port) else {
+            // Answers but the PID is not discoverable (no ss/lsof): state the
+            // truth without a handle — a stop honestly cannot act on what it
+            // cannot find, and the render is "not managed", never "Failed".
+            let status = self.adopted_status(
+                reference,
+                None,
+                "Running, not managed by this Studio instance (PID not discoverable).",
+            );
+            self.persist_snapshot(status.clone())?;
+            return Ok(Some(status));
+        };
+
+        let mut members = HashSet::new();
+        members.insert(reference.project_id.clone());
+        self.handles.lock().expect("runtime mutex poisoned").insert(
+            reference.workspace_name.clone(),
+            ManagedRuntime {
+                process: RuntimeProcess::Adopted { pid },
+                started_at: Instant::now(),
+                log_path: self.default_log_path(&reference.workspace_name),
+                members,
+                workspace_dir: reference.workspace_dir.clone(),
+                runtime_label: reference.runtime_label.clone(),
+                resolved_jar_path: reference.resolved_jar_path.clone(),
+                resident_port: reference.resident_port,
+                // It answered a health_check, so it is READY by definition.
+                ready: Arc::new(AtomicBool::new(true)),
+            },
+        );
+        let status = self.adopted_status(
+            reference,
+            Some(pid),
+            "Running (adopted — recovered after a Studio restart).",
+        );
+        self.persist_snapshot(status.clone())?;
+        Ok(Some(status))
+    }
+
+    fn adopted_status(
+        &self,
+        reference: &RuntimeReference,
+        pid: Option<u32>,
+        detail: &str,
+    ) -> RuntimeStatusRecord {
+        RuntimeStatusRecord {
+            project_id: reference.project_id.clone(),
+            phase: RuntimePhase::Running,
+            workspace_name: reference.workspace_name.clone(),
+            transport: "http".into(),
+            pid,
+            workspace_dir: reference.workspace_dir.clone(),
+            log_path: self.default_log_path(&reference.workspace_name),
+            runtime_label: reference.runtime_label.clone(),
+            resolved_jar_path: reference.resolved_jar_path.clone(),
+            service_mode: "manager-process".into(),
+            detail: detail.into(),
+            exit_code: None,
+        }
+    }
+
     fn try_join_running_workspace(
         &self,
         reference: &RuntimeReference,
@@ -595,28 +889,24 @@ impl RuntimeManager {
         };
 
         // Check if the process is still alive.
-        if let Some(exit_status) = handle
-            .child
-            .try_wait()
-            .map_err(|error| format!("failed to inspect JAWATA process state: {error}"))?
-        {
+        if let Liveness::Dead { code } = handle.process.liveness()? {
             // Sprint 14 (v0.14.0, bugs.md #2): the process died without the
             // manager initiating the stop. All stop paths (stop_runtime /
             // stop_workspace_runtime / remove_project_runtime) hold the
-            // handles mutex while they `handles.remove()` + `child.kill()`
-            // + `child.wait()`, so by the time anyone re-locks the map a
-            // manager-initiated stop is visible as handle-not-present.
-            // Reaching this branch with the handle still in the map
-            // therefore IS the external-death case (kill -9, crash, OOM)
-            // — persist Failed with the captured exit code. Pre-v0.14.0
-            // wrote Stopped here; the tray glyph stayed gray on external
-            // kill instead of going red ✗.
-            let exit_code = exit_status.code();
-            let detail = if exit_status.success() {
+            // handles mutex while they `handles.remove()` + kill + reap,
+            // so by the time anyone re-locks the map a manager-initiated
+            // stop is visible as handle-not-present. Reaching this branch
+            // with the handle still in the map therefore IS the external-
+            // death case (kill -9, crash, OOM) — persist Failed with the
+            // captured exit code. Pre-v0.14.0 wrote Stopped here; the tray
+            // glyph stayed gray on external kill instead of going red ✗.
+            let exit_code = code;
+            let detail = if code == Some(0) {
                 "Previous workspace runtime exited unexpectedly (status 0); respawning.".into()
             } else {
                 format!(
-                    "Previous workspace runtime exited unexpectedly with status {exit_status}; respawning."
+                    "Previous workspace runtime exited unexpectedly with status {}; respawning.",
+                    code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".into())
                 )
             };
             handles.remove(&reference.workspace_name);
@@ -658,7 +948,7 @@ impl RuntimeManager {
             phase,
             workspace_name: reference.workspace_name.clone(),
             transport: "http".into(),
-            pid: Some(handle.child.id()),
+            pid: Some(handle.process.id()),
             workspace_dir: handle.workspace_dir.clone(),
             log_path: handle.log_path.clone(),
             runtime_label: handle.runtime_label.clone(),
@@ -685,22 +975,21 @@ impl RuntimeManager {
             return Ok(None);
         };
 
-        if let Some(exit_status) = handle
-            .child
-            .try_wait()
-            .map_err(|error| format!("failed to inspect JAWATA process state: {error}"))?
-        {
+        if let Liveness::Dead { code } = handle.process.liveness()? {
             // Sprint 14 (v0.14.0, bugs.md #2): same external-death case as
             // `try_join_running_workspace`. The readonly variant previously
             // just removed the handle and returned None, leaving a stale
             // Running snapshot visible to the next get_runtime_status. Now
             // persist a Failed snapshot here too so the dashboard / tray
             // reflect the death without waiting for an explicit start.
-            let exit_code = exit_status.code();
-            let detail = if exit_status.success() {
+            let exit_code = code;
+            let detail = if code == Some(0) {
                 "Workspace runtime exited unexpectedly (status 0).".into()
             } else {
-                format!("Workspace runtime exited unexpectedly with status {exit_status}.")
+                format!(
+                    "Workspace runtime exited unexpectedly with status {}.",
+                    code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".into())
+                )
             };
             let failed = RuntimeStatusRecord {
                 project_id: reference.project_id.clone(),
@@ -737,7 +1026,7 @@ impl RuntimeManager {
             phase,
             workspace_name: reference.workspace_name.clone(),
             transport: "http".into(),
-            pid: Some(handle.child.id()),
+            pid: Some(handle.process.id()),
             workspace_dir: handle.workspace_dir.clone(),
             log_path: handle.log_path.clone(),
             runtime_label: handle.runtime_label.clone(),
@@ -821,6 +1110,43 @@ mod tests {
     use super::*;
     use crate::config::AppPaths;
     use std::path::PathBuf;
+
+    // ---- Sprint 27a Stage 10 (studio #1): adopt/kill primitives ----
+
+    #[test]
+    fn parse_ss_pid_extracts_the_pid_field() {
+        let line = "LISTEN 0 4096 127.0.0.1:8890 0.0.0.0:* \
+                    users:((\"java\",pid=12345,fd=7))";
+        assert_eq!(parse_ss_pid(line), Some(12345));
+        assert_eq!(parse_ss_pid("LISTEN 0 4096 127.0.0.1:8890 0.0.0.0:*"), None);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn process_alive_then_kill_pid_reaps_it() {
+        // A real short-lived child so the liveness+kill path is exercised end
+        // to end (the mechanism honest-stop uses on an adopted orphan).
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let pid = child.id();
+        assert!(process_alive(pid), "the just-spawned process is alive");
+
+        kill_pid(pid).expect("kill_pid succeeds on a live process");
+        let _ = child.wait();
+        // Give the OS a moment to reap, then confirm it is gone.
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!process_alive(pid), "after kill_pid the process is gone");
+    }
+
+    #[test]
+    fn resident_answers_is_false_when_nothing_listens() {
+        // Port 1 needs privilege to bind and nothing of ours listens there, so
+        // the probe must fail closed (never adopt a phantom). Bounded by the
+        // 3s client timeout.
+        assert!(!resident_answers(1, "any-token"));
+    }
 
     fn fake_paths() -> AppPaths {
         AppPaths {
@@ -988,6 +1314,44 @@ mod tests {
             resident_port: 8800,
             resident_token: "test-token".into(),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_workspace_kills_an_adopted_orphan_by_pid() {
+        // studio #1: an orphan that outlived Studio is adopted as a handle with
+        // NO Child. "Stop workspace" must still kill it by its discovered PID —
+        // the old code returned Ok having killed nothing.
+        let dir = unique_tempdir("adopt-stop");
+        let manager = RuntimeManager::new(paths_in(&dir));
+
+        let mut child = Command::new("sleep").arg("30").spawn().expect("spawn sleep");
+        let pid = child.id();
+
+        let mut members = HashSet::new();
+        members.insert("p-a".to_string());
+        manager.handles.lock().unwrap().insert(
+            "test".to_string(),
+            ManagedRuntime {
+                process: RuntimeProcess::Adopted { pid },
+                started_at: Instant::now(),
+                log_path: String::new(),
+                members,
+                workspace_dir: String::new(),
+                runtime_label: "test-runtime".into(),
+                resolved_jar_path: "/dev/null".into(),
+                resident_port: 8800,
+                ready: Arc::new(AtomicBool::new(true)),
+            },
+        );
+
+        assert!(process_alive(pid), "the adopted orphan is alive before stop");
+        manager
+            .stop_workspace_runtime("test")
+            .expect("stop must act on an adopted orphan, not lie");
+        let _ = child.wait();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!process_alive(pid), "stop killed the adopted orphan by PID");
     }
 
     #[cfg(unix)]
