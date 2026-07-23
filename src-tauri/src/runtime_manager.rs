@@ -359,10 +359,16 @@ impl RuntimeProcess {
                 Ok(())
             }
             RuntimeProcess::Adopted { pid, port, token } => {
-                if resident_answers(*port, token) {
+                // Kill only if OUR pid is still the process listening on the port
+                // AND it answers our token. This refuses two dangers: a recycled
+                // pid (stored pid no longer the listener), and a resident that
+                // relaunched on the same port with a NEW pid (the listener's pid
+                // would differ from ours). If either holds, the thing we adopted
+                // is gone — report stopped, never kill a stranger (F4).
+                if pid_listening_on(*port) == Some(*pid) && resident_answers(*port, token) {
                     kill_pid(*pid)
                 } else {
-                    Ok(()) // already gone; do not kill whatever now holds the PID
+                    Ok(())
                 }
             }
         }
@@ -592,19 +598,28 @@ impl RuntimeManager {
         // nothing. No-op when already managed or nothing answers.
         self.try_adopt(reference)?;
 
-        let mut handles = self.handles.lock().expect("runtime mutex poisoned");
-
-        let mut killed = false;
-        if let Some(handle) = handles.get_mut(&reference.workspace_name) {
-            handle.members.remove(&reference.project_id);
-            if handle.members.is_empty() {
-                if let Some(mut handle) = handles.remove(&reference.workspace_name) {
-                    handle.process.kill_and_reap()?;
-                    killed = true;
+        // N2: take the handle to kill out UNDER the lock, then release the lock
+        // BEFORE kill_and_reap — its adopted re-verify is a ≤500ms network probe,
+        // and holding the handles mutex across it would freeze every other
+        // status/start/stop for that long.
+        let to_kill = {
+            let mut handles = self.handles.lock().expect("runtime mutex poisoned");
+            if let Some(handle) = handles.get_mut(&reference.workspace_name) {
+                handle.members.remove(&reference.project_id);
+                if handle.members.is_empty() {
+                    handles.remove(&reference.workspace_name)
+                } else {
+                    None
                 }
+            } else {
+                None
             }
+        };
+        let mut killed = false;
+        if let Some(mut handle) = to_kill {
+            handle.process.kill_and_reap()?;
+            killed = true;
         }
-        drop(handles);
 
         let detail = if killed {
             "Workspace runtime stopped (last project left).".into()
@@ -736,14 +751,23 @@ impl RuntimeManager {
         };
 
         if let Some(ws) = host_workspace {
-            let mut handles = self.handles.lock().expect("runtime mutex poisoned");
-            if let Some(handle) = handles.get_mut(&ws) {
-                handle.members.remove(project_id);
-                if handle.members.is_empty() {
-                    if let Some(mut handle) = handles.remove(&ws) {
-                        let _ = handle.process.kill_and_reap();
+            // N2: take the handle out under the lock, kill outside it (the
+            // adopted re-verify is a network probe).
+            let to_kill = {
+                let mut handles = self.handles.lock().expect("runtime mutex poisoned");
+                if let Some(handle) = handles.get_mut(&ws) {
+                    handle.members.remove(project_id);
+                    if handle.members.is_empty() {
+                        handles.remove(&ws)
+                    } else {
+                        None
                     }
+                } else {
+                    None
                 }
+            };
+            if let Some(mut handle) = to_kill {
+                let _ = handle.process.kill_and_reap();
             }
         }
 
@@ -865,7 +889,24 @@ impl RuntimeManager {
             return Ok(Some(status));
         };
 
-        let mut members = HashSet::new();
+        // N1: an adopted handle must carry the FULL member set of the workspace,
+        // not just the project that happened to adopt it. Otherwise stopping one
+        // project of a multi-project workspace would find members={that project},
+        // go empty, and kill the shared resident the OTHER projects still use.
+        // Reconstruct membership from the persisted snapshots (every project that
+        // shares this workspace_name), which is the same set start_runtime would
+        // have accumulated warm.
+        let mut members: HashSet<String> = {
+            let snapshots = self
+                .snapshots
+                .lock()
+                .expect("runtime snapshot mutex poisoned");
+            snapshots
+                .values()
+                .filter(|s| s.workspace_name == reference.workspace_name)
+                .map(|s| s.project_id.clone())
+                .collect()
+        };
         members.insert(reference.project_id.clone());
         {
             let mut handles = self.handles.lock().expect("runtime mutex poisoned");
@@ -1193,7 +1234,7 @@ mod tests {
     fn resident_answers_is_false_when_nothing_listens() {
         // Port 1 needs privilege to bind and nothing of ours listens there, so
         // the probe must fail closed (never adopt a phantom). Bounded by the
-        // 3s client timeout.
+        // 500ms client timeout.
         assert!(!resident_answers(1, "any-token"));
     }
 
@@ -1412,6 +1453,62 @@ mod tests {
         );
     }
 
+    /// A jawata resident stand-in as a REAL subprocess that binds an ephemeral
+    /// port and answers `POST /mcp` with a JSON-RPC `result`. Unlike the thread
+    /// stub, it has its own PID that `pid_listening_on(port)` resolves — so the
+    /// adopt (PID discovery) and kill (identity re-verify) paths run faithfully.
+    /// Returns (port, child); the caller owns the child.
+    #[cfg(unix)]
+    fn spawn_http_resident() -> (u16, Child) {
+        let script = "import http.server, sys\n\
+            class H(http.server.BaseHTTPRequestHandler):\n\
+            \x20   def do_POST(self):\n\
+            \x20       n=int(self.headers.get('Content-Length', 0) or 0)\n\
+            \x20       self.rfile.read(n)\n\
+            \x20       b=b'{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}'\n\
+            \x20       self.send_response(200)\n\
+            \x20       self.send_header('Content-Type','application/json')\n\
+            \x20       self.send_header('Content-Length',str(len(b)))\n\
+            \x20       self.end_headers()\n\
+            \x20       self.wfile.write(b)\n\
+            \x20   def log_message(self,*a):\n\
+            \x20       pass\n\
+            srv=http.server.HTTPServer(('127.0.0.1',0),H)\n\
+            print(srv.server_address[1]); sys.stdout.flush()\n\
+            srv.serve_forever()\n";
+        let mut child = Command::new("python3")
+            .arg("-c")
+            .arg(script)
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn python http resident");
+        let stdout = child.stdout.take().expect("stdout");
+        let mut line = String::new();
+        BufReader::new(stdout)
+            .read_line(&mut line)
+            .expect("read port line");
+        let port: u16 = line.trim().parse().expect("parse port");
+        (port, child)
+    }
+
+    /// Reap a killed child and report whether it exited within the timeout.
+    /// The test is the resident's PARENT, so a SIGKILLed child lingers as a
+    /// zombie (still "alive" to `kill -0`) until we `wait` it — unlike a real
+    /// adopted resident, whose parent is init. Poll `try_wait` to reap.
+    #[cfg(unix)]
+    fn wait_gone(child: &mut Child, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return true,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                _ => return false,
+            }
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn try_adopt_records_a_running_adopted_handle() {
@@ -1419,14 +1516,16 @@ mod tests {
         // Running handle (not spawned again, not rendered Failed).
         let dir = unique_tempdir("try-adopt");
         let manager = RuntimeManager::new(paths_in(&dir));
-        let (port, _stub) = spawn_stub_resident(true);
+        let (port, mut resident) = spawn_http_resident();
 
         let mut reference = make_reference("p-a", "test", "");
         reference.resident_port = port;
         reference.resident_token = "test-token".into();
 
-        let status = manager.try_adopt(&reference).expect("adopt ok");
-        let status = status.expect("a live resident is adopted");
+        let status = manager
+            .try_adopt(&reference)
+            .expect("adopt ok")
+            .expect("a live resident is adopted");
         assert_eq!(status.phase, RuntimePhase::Running);
         assert!(
             status.detail.to_lowercase().contains("adopt")
@@ -1438,20 +1537,20 @@ mod tests {
             manager.workspace_members("test").is_some(),
             "the adopted resident is now a managed handle a stop can act on"
         );
+        let _ = resident.kill();
+        let _ = resident.wait();
     }
 
     #[cfg(unix)]
     #[test]
     fn stop_workspace_kills_an_adopted_orphan_by_pid() {
         // studio #1 point 2: an orphan adopted as a handle with NO Child is
-        // still killed by its discovered PID — the old code returned Ok having
-        // killed nothing. kill_and_reap re-verifies via the stub before killing.
+        // still killed by its discovered PID. The resident is a real listening
+        // process, so the identity re-verify (pid == port's listener) holds.
         let dir = unique_tempdir("adopt-stop");
         let manager = RuntimeManager::new(paths_in(&dir));
-        let (port, _stub) = spawn_stub_resident(true);
-
-        let mut child = Command::new("sleep").arg("30").spawn().expect("spawn sleep");
-        let pid = child.id();
+        let (port, mut resident) = spawn_http_resident();
+        let pid = resident.id();
 
         let mut members = HashSet::new();
         members.insert("p-a".to_string());
@@ -1474,13 +1573,114 @@ mod tests {
             },
         );
 
-        assert!(process_alive(pid), "the adopted orphan is alive before stop");
+        // The identity gate needs ss to resolve OUR pid as the port's listener.
+        assert_eq!(
+            pid_listening_on(port),
+            Some(pid),
+            "ss must resolve the resident's pid as the port's listener"
+        );
         manager
             .stop_workspace_runtime("test")
             .expect("stop must act on an adopted orphan, not lie");
-        let _ = child.wait();
+        assert!(
+            wait_gone(&mut resident, Duration::from_secs(2)),
+            "stop killed the adopted resident by PID"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_refuses_when_a_different_pid_holds_the_port() {
+        // F4 identity: the resident answers on the port, but our STORED pid is
+        // not the one listening (it died / relaunched on a new pid). We must NOT
+        // kill the stored pid — it may have been recycled to an innocent.
+        let dir = unique_tempdir("adopt-identity");
+        let manager = RuntimeManager::new(paths_in(&dir));
+        let (port, mut resident) = spawn_http_resident(); // pid P listens here
+
+        let mut innocent = Command::new("sleep").arg("30").spawn().expect("spawn sleep");
+        let stored_pid = innocent.id(); // NOT the listener
+
+        let mut members = HashSet::new();
+        members.insert("p-a".to_string());
+        manager.handles.lock().unwrap().insert(
+            "test".to_string(),
+            ManagedRuntime {
+                process: RuntimeProcess::Adopted {
+                    pid: stored_pid,
+                    port,
+                    token: "test-token".into(),
+                },
+                started_at: Instant::now(),
+                log_path: String::new(),
+                members,
+                workspace_dir: String::new(),
+                runtime_label: "test-runtime".into(),
+                resolved_jar_path: "/dev/null".into(),
+                resident_port: port,
+                ready: Arc::new(AtomicBool::new(true)),
+            },
+        );
+
+        manager.stop_workspace_runtime("test").expect("stop reports honestly");
         std::thread::sleep(Duration::from_millis(200));
-        assert!(!process_alive(pid), "stop killed the adopted orphan by PID");
+        assert!(
+            process_alive(stored_pid),
+            "a stored pid that is NOT the port's listener must not be killed"
+        );
+        let _ = innocent.kill();
+        let _ = innocent.wait();
+        let _ = resident.kill();
+        let _ = resident.wait();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_one_of_two_projects_keeps_the_shared_resident_alive() {
+        // N1: a multi-project workspace adopted after a restart must NOT be killed
+        // by stopping ONE of its projects. try_adopt seeds membership from the
+        // snapshots (both projects), so the shared resident survives until the
+        // last member leaves.
+        let dir = unique_tempdir("adopt-multi");
+        let manager = RuntimeManager::new(paths_in(&dir));
+        let (port, mut resident) = spawn_http_resident();
+        let pid = resident.id();
+
+        // Two projects share workspace "test" (their persisted snapshots).
+        for project in ["p-a", "p-b"] {
+            let mut reference = make_reference(project, "test", "");
+            reference.resident_port = port;
+            reference.resident_token = "test-token".into();
+            let mut snap = manager.adopted_status(&reference, Some(pid), "restored");
+            snap.phase = RuntimePhase::Running;
+            manager
+                .snapshots
+                .lock()
+                .unwrap()
+                .insert(project.to_string(), snap);
+        }
+
+        let mut ref_a = make_reference("p-a", "test", "");
+        ref_a.resident_port = port;
+        ref_a.resident_token = "test-token".into();
+        // Cold handle map: stopping p-a self-adopts (members from snapshots =
+        // {p-a, p-b}), removes p-a, leaves p-b → the resident LIVES.
+        manager.stop_runtime(&ref_a).expect("stop p-a");
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            process_alive(pid),
+            "stopping one project of a shared workspace must NOT kill the resident"
+        );
+
+        // Stopping the last project kills it.
+        let mut ref_b = make_reference("p-b", "test", "");
+        ref_b.resident_port = port;
+        ref_b.resident_token = "test-token".into();
+        manager.stop_runtime(&ref_b).expect("stop p-b");
+        assert!(
+            wait_gone(&mut resident, Duration::from_secs(2)),
+            "stopping the last member kills the resident"
+        );
     }
 
     #[cfg(unix)]
