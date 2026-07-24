@@ -1365,6 +1365,13 @@ impl ManagerService {
         project: &ProjectRecord,
     ) -> Result<RuntimeLaunchRequest, String> {
         let reference = self.resolve_runtime_reference(project)?;
+        // v3.5.1 (Finding B): refuse to launch a runtime whose jar does not exist.
+        // A stale/missing path — e.g. a pre-rebrand goja-mcp/target/products path
+        // left in a runtime config — otherwise spawns a java process that fails
+        // "Unable to access jarfile" and is retried by the restore loop, spamming
+        // the log. Surfacing it as an error here stops the doomed spawn at the
+        // source, before any process is started.
+        ensure_runtime_jar_exists(&reference.resolved_jar_path)?;
         Ok(RuntimeLaunchRequest {
             project_path: project.project_path.clone(),
             reference,
@@ -2589,6 +2596,21 @@ fn ensure_success_response(response: &serde_json::Value) -> Result<(), String> {
         return Err("MCP response did not include a result payload".into());
     }
     Ok(())
+}
+
+/// v3.5.1 (Finding B): a runtime whose resolved jar does not exist must not be
+/// launched — a stale/missing path spawns a java process that fails "Unable to
+/// access jarfile" and is retried by the restore loop. Refusing here stops the
+/// doomed spawn before any process starts.
+fn ensure_runtime_jar_exists(jar_path: &str) -> Result<(), String> {
+    if std::path::Path::new(jar_path).exists() {
+        Ok(())
+    } else {
+        Err(format!(
+            "JAWATA runtime jar not found: {jar_path} — the configured runtime path \
+             is stale or the runtime is not installed. Reinstall/select a runtime in Studio."
+        ))
+    }
 }
 
 fn extract_tool_entries(response: &serde_json::Value) -> Result<Vec<ProbeServiceEntry>, String> {
@@ -6148,6 +6170,20 @@ mod tests {
             aggregate_workspace_phase(&phases),
             RuntimePhase::Starting
         ));
+    }
+
+    #[test]
+    fn ensure_runtime_jar_exists_refuses_a_missing_jar() {
+        // v3.5.1 (Finding B): a real jar passes; a stale/missing path (e.g. the
+        // pre-rebrand goja-mcp/target/products path) is refused with the path in
+        // the message, so the launch never spawns a doomed java process.
+        let present = std::env::current_exe().expect("test binary exists");
+        assert!(ensure_runtime_jar_exists(&present.to_string_lossy()).is_ok());
+
+        let missing = "/home/harald/CursorProjects/goja-mcp/org.jawata.product/target/products/does-not-exist/jawata.jar";
+        let err = ensure_runtime_jar_exists(missing).expect_err("a missing jar must be refused");
+        assert!(err.contains(missing), "the message names the offending path: {err}");
+        assert!(err.contains("not found"), "the message says the jar was not found: {err}");
     }
 
     #[test]
