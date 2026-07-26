@@ -46,7 +46,7 @@ const TRAY_ICON_ID: &str = "jawata-tray";
 /// `set_menu` to AppIndicator), well under 1 % CPU.
 const TRAY_REFRESH_INTERVAL_SECS: u64 = 1;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum TrayIconVariant {
     /// The jawata arch mark (Sprint 22b brand) on the batik-indigo circle.
     ArchCircle,
@@ -73,6 +73,9 @@ fn selected_tray_icon_variant() -> TrayIconVariant {
     }
 }
 
+/// The branded tray icon: the glyph on the batik-indigo disc. Used on Linux
+/// and Windows, whose trays render full-colour icons.
+#[allow(dead_code)]
 fn build_tray_icon(variant: TrayIconVariant) -> Image<'static> {
     let mut rgba = vec![0u8; (TRAY_ICON_SIZE * TRAY_ICON_SIZE * 4) as usize];
     draw_base_circle(&mut rgba);
@@ -81,6 +84,40 @@ fn build_tray_icon(variant: TrayIconVariant) -> Image<'static> {
         TrayIconVariant::CoffeeCircle => draw_coffee_glyph(&mut rgba),
     }
     Image::new_owned(rgba, TRAY_ICON_SIZE, TRAY_ICON_SIZE)
+}
+
+/// The macOS menu-bar variant: the GLYPH ONLY, on a transparent background.
+///
+/// Sprint 28 (v3.6.0), macOS dogfood 2026-07-26 ("no system tray icon").
+/// macOS renders menu-bar icons as TEMPLATE images — it reads the ALPHA
+/// channel alone and tints the result for the current bar (light or dark, and
+/// inverted while the menu is open). The shared icon is a fully-opaque disc
+/// filled `#1d2f4e`, so on macOS it has two ways to disappear: untemplated it
+/// is dark navy on a dark menu bar, and templated it is a solid uniform blob
+/// because every pixel of the disc is equally opaque, which swallows the
+/// glyph. Both are fixed by drawing the glyph on transparency and letting the
+/// system do the tinting — the shape carries the icon, not the fill.
+#[allow(dead_code)]
+fn build_tray_icon_template(variant: TrayIconVariant) -> Image<'static> {
+    let mut rgba = vec![0u8; (TRAY_ICON_SIZE * TRAY_ICON_SIZE * 4) as usize];
+    match variant {
+        TrayIconVariant::ArchCircle => draw_arch_glyph(&mut rgba),
+        TrayIconVariant::CoffeeCircle => draw_coffee_glyph(&mut rgba),
+    }
+    Image::new_owned(rgba, TRAY_ICON_SIZE, TRAY_ICON_SIZE)
+}
+
+/// The tray image for THIS platform, plus whether macOS must treat it as a
+/// template image. See `build_tray_icon_template`.
+fn tray_icon_image(variant: TrayIconVariant) -> (Image<'static>, bool) {
+    #[cfg(target_os = "macos")]
+    {
+        (build_tray_icon_template(variant), true)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        (build_tray_icon(variant), false)
+    }
 }
 
 fn set_px(rgba: &mut [u8], x: i32, y: i32, color: [u8; 4]) {
@@ -282,8 +319,10 @@ pub fn run() {
             // configuration window.
             let initial_menu = rebuild_tray_menu(app.handle())?;
 
+            let (tray_image, tray_is_template) = tray_icon_image(selected_tray_icon_variant());
             let _tray = TrayIconBuilder::with_id(TRAY_ICON_ID)
-                .icon(build_tray_icon(selected_tray_icon_variant()))
+                .icon(tray_image)
+                .icon_as_template(tray_is_template)
                 .menu(&initial_menu)
                 .on_menu_event(|tray, event| {
                     let app_handle = tray.app_handle();
@@ -654,3 +693,60 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) {
     *LAST.lock().unwrap() = Some(snapshot);
 }
 
+
+#[cfg(test)]
+mod tray_icon_tests {
+    use super::*;
+
+    /// Sprint 28 (v3.6.0): the macOS menu-bar icon must be a TEMPLATE image —
+    /// background fully TRANSPARENT, glyph fully OPAQUE — because macOS
+    /// renders it from the alpha channel alone. The branded icon fails both
+    /// ways on a dark menu bar: its opaque `#1d2f4e` disc is invisible
+    /// untemplated, and templated it is one uniform blob that swallows the
+    /// glyph. This pins the difference so a future edit to the drawing code
+    /// cannot silently reintroduce a filled background on macOS.
+    #[test]
+    fn macos_template_icon_is_a_transparent_background_with_an_opaque_glyph() {
+        for variant in [TrayIconVariant::ArchCircle, TrayIconVariant::CoffeeCircle] {
+            let template = build_tray_icon_template(variant);
+            let alphas: Vec<u8> = template.rgba().iter().skip(3).step_by(4).copied().collect();
+            assert_eq!(
+                alphas.len(),
+                (TRAY_ICON_SIZE * TRAY_ICON_SIZE) as usize,
+                "one alpha byte per pixel"
+            );
+            assert!(
+                alphas.iter().any(|a| *a == 0),
+                "{variant:?}: a template icon needs transparent background pixels"
+            );
+            assert!(
+                alphas.iter().any(|a| *a == 255),
+                "{variant:?}: a template icon needs opaque glyph pixels"
+            );
+            // The corners are always background — the glyph never reaches them.
+            let corner = |x: u32, y: u32| alphas[(y * TRAY_ICON_SIZE + x) as usize];
+            for (x, y) in [
+                (0, 0),
+                (TRAY_ICON_SIZE - 1, 0),
+                (0, TRAY_ICON_SIZE - 1),
+                (TRAY_ICON_SIZE - 1, TRAY_ICON_SIZE - 1),
+            ] {
+                assert_eq!(
+                    corner(x, y),
+                    0,
+                    "{variant:?}: corner ({x},{y}) must be transparent in the template icon"
+                );
+            }
+        }
+    }
+
+    /// The branded (Linux/Windows) icon keeps its filled disc — the template
+    /// change must not have flattened the brand mark everywhere.
+    #[test]
+    fn branded_icon_keeps_its_opaque_disc() {
+        let branded = build_tray_icon(TrayIconVariant::ArchCircle);
+        let alphas: Vec<u8> = branded.rgba().iter().skip(3).step_by(4).copied().collect();
+        let center = ((TRAY_ICON_SIZE / 2) * TRAY_ICON_SIZE + TRAY_ICON_SIZE / 2) as usize;
+        assert_eq!(alphas[center], 255, "the branded disc stays opaque");
+    }
+}
