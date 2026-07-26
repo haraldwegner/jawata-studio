@@ -467,15 +467,6 @@
     });
   }
 
-  function setDeployTargetEnabled(client: keyof DeployTargetFlags, enabled: boolean) {
-    updateSetting(() => {
-      deployTargets = {
-        ...deployTargets,
-        [client]: enabled
-      };
-    });
-  }
-
   async function confirmAndDispatch(
     message: string,
     eventName: "cleanLogs" | "cleanWorkspaces" | "cleanGeneratedData"
@@ -851,10 +842,9 @@
               <div class="mcp-client-title-controls">
                 <label class="checkbox-row compact mcp-deploy-checkbox" title="Include in deploy default">
                   <input
-                    checked={deployTargets[key]}
+                    bind:checked={deployTargets[key as keyof DeployTargetFlags]}
                     disabled={interactionDisabled}
-                    on:change={(event) =>
-                      setDeployTargetEnabled(key as keyof DeployTargetFlags, (event.currentTarget as HTMLInputElement).checked)}
+                    on:change={handleBoundEdit}
                     type="checkbox"
                   />
                   <span>Deploy</span>

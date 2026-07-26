@@ -620,19 +620,7 @@ impl ManagerService {
         };
 
         let clients = self.deploy_targets_for_settings(&settings);
-        let requested_targets: Option<HashSet<String>> =
-            input.target_clients.as_ref().map(|targets| {
-                targets
-                    .iter()
-                    .map(|target| target.trim().to_ascii_lowercase())
-                    .filter(|target| {
-                        matches!(
-                            target.as_str(),
-                            "cursor" | "claude" | "claude_desktop" | "antigravity" | "intellij"
-                        )
-                    })
-                    .collect()
-            });
+        let requested_targets = normalize_requested_deploy_targets(input.target_clients.as_ref())?;
 
         let mut results = Vec::new();
         for target in clients {
@@ -2998,6 +2986,56 @@ fn normalize_optional_path(value: String) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+/// The client ids the deploy backend understands. These are the SNAKE_CASE
+/// ids; the settings API speaks camelCase `DeployTargetFlags` keys, and the
+/// two spellings differ for exactly one client (`claude_desktop` vs
+/// `claudeDesktop`). Callers must send the ids in this list.
+pub(crate) const KNOWN_DEPLOY_CLIENT_IDS: [&str; 5] = [
+    "cursor",
+    "claude",
+    "claude_desktop",
+    "antigravity",
+    "intellij",
+];
+
+/// Normalise the caller's requested client ids, REFUSING any id we do not
+/// know instead of quietly dropping it.
+///
+/// Sprint 28 (v3.6.0), macOS dogfood 2026-07-26. This used to be a `.filter()`
+/// that silently discarded unrecognised ids; the run then reported
+/// "Skipped: not selected in this deploy run" — telling the user they had not
+/// ticked a box they had ticked. That is this project's recorded deepest bug
+/// class (a failed lookup handed back as an ordinary empty result), and it
+/// concealed the real defect for the whole life of the feature: the UI sent
+/// the camelCase settings key `claudeDesktop`, which lowercases to
+/// `claudedesktop` and never equals `claude_desktop`, so Claude Desktop was
+/// the one client that could never be deployed. The four single-word clients
+/// hid it because both spellings coincide for them.
+fn normalize_requested_deploy_targets(
+    targets: Option<&Vec<String>>,
+) -> Result<Option<HashSet<String>>, String> {
+    let Some(targets) = targets else {
+        return Ok(None);
+    };
+    let normalized: Vec<String> = targets
+        .iter()
+        .map(|target| target.trim().to_ascii_lowercase())
+        .collect();
+    let unknown: Vec<&str> = normalized
+        .iter()
+        .map(String::as_str)
+        .filter(|target| !KNOWN_DEPLOY_CLIENT_IDS.contains(target))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "deploy requested unknown client id(s): {}. Known ids: {}.",
+            unknown.join(", "),
+            KNOWN_DEPLOY_CLIENT_IDS.join(", ")
+        ));
+    }
+    Ok(Some(normalized.into_iter().collect()))
 }
 
 fn deploy_targets_for_paths(
@@ -8477,6 +8515,60 @@ mod tests {
         let entry = &json["mcpServers"]["jawata-ws"];
         assert_eq!(entry["disabled"], serde_json::Value::Bool(true));
         assert_eq!(entry["serverUrl"], "http://127.0.0.1:8805/mcp");
+    }
+
+    #[test]
+    fn deploy_target_ids_accept_every_known_client_including_claude_desktop() {
+        // The regression: "claude_desktop" must survive normalization. It is
+        // the ONLY multi-word client id, so it is the only one the
+        // camelCase/snake_case confusion can drop.
+        let requested: Vec<String> = KNOWN_DEPLOY_CLIENT_IDS
+            .iter()
+            .map(|id| (*id).to_string())
+            .collect();
+        let resolved = normalize_requested_deploy_targets(Some(&requested))
+            .expect("every known client id must be accepted")
+            .expect("an explicit selection must produce a set");
+        for id in KNOWN_DEPLOY_CLIENT_IDS {
+            assert!(resolved.contains(id), "{id} must survive normalization");
+        }
+    }
+
+    #[test]
+    fn deploy_target_ids_refuse_the_camelcase_settings_key_loudly() {
+        // v3.5.1 and earlier SILENTLY dropped this and then reported
+        // "Skipped: not selected in this deploy run" — the lie that hid the
+        // bug. It must now fail loudly and name the offending id.
+        let requested = vec!["cursor".to_string(), "claudeDesktop".to_string()];
+        let error = normalize_requested_deploy_targets(Some(&requested))
+            .expect_err("an unknown client id must refuse the deploy, not vanish");
+        assert!(
+            error.contains("claudedesktop"),
+            "the refusal must name the offending id, got: {error}"
+        );
+        assert!(
+            error.contains("claude_desktop"),
+            "the refusal must teach the correct id, got: {error}"
+        );
+    }
+
+    #[test]
+    fn deploy_target_ids_are_case_and_whitespace_tolerant() {
+        let requested = vec!["  Claude_Desktop  ".to_string()];
+        let resolved = normalize_requested_deploy_targets(Some(&requested))
+            .expect("trimmed/cased known ids stay accepted")
+            .expect("an explicit selection must produce a set");
+        assert!(resolved.contains("claude_desktop"));
+    }
+
+    #[test]
+    fn deploy_without_an_explicit_selection_falls_back_to_settings_flags() {
+        assert!(
+            normalize_requested_deploy_targets(None)
+                .expect("no selection is not an error")
+                .is_none(),
+            "None must stay None so the settings flags decide"
+        );
     }
 
     #[test]

@@ -55,12 +55,21 @@
   export let deployError: string | undefined;
   export let lastDeployResult: DeployToAgentsResult | undefined;
 
-  const deployTargetOptions: Array<{ key: keyof DeployTargetFlags; label: string }> = [
-    { key: "cursor", label: "Cursor" },
-    { key: "claude", label: "Claude Code" },
-    { key: "claudeDesktop", label: "Claude Desktop" },
-    { key: "antigravity", label: "Antigravity" },
-    { key: "intellij", label: "IntelliJ" }
+  /** Sprint 28 (v3.6.0): each option carries BOTH names on purpose. `key`
+   * indexes the camelCase `DeployTargetFlags` the settings API speaks; `id`
+   * is the snake_case client id the deploy backend matches on. They differ
+   * for exactly one client — `claudeDesktop` vs `claude_desktop` — and
+   * sending the wrong one made Claude Desktop the only client that could
+   * never be deployed: the backend lowercases and then drops any id it does
+   * not recognise, so the run reported "Skipped: not selected in this deploy
+   * run" for a box the user had ticked. Single-word clients hid the bug
+   * because both spellings coincide. */
+  const deployTargetOptions: Array<{ key: keyof DeployTargetFlags; id: string; label: string }> = [
+    { key: "cursor", id: "cursor", label: "Cursor" },
+    { key: "claude", id: "claude", label: "Claude Code" },
+    { key: "claudeDesktop", id: "claude_desktop", label: "Claude Desktop" },
+    { key: "antigravity", id: "antigravity", label: "Antigravity" },
+    { key: "intellij", id: "intellij", label: "IntelliJ" }
   ];
 
   let rowRefs: Record<string, HTMLElement> = {};
@@ -372,17 +381,10 @@
     showDeployTargetPicker = false;
   }
 
-  function toggleDeployTarget(client: keyof DeployTargetFlags) {
-    deployTargetsDraft = {
-      ...deployTargetsDraft,
-      [client]: !deployTargetsDraft[client]
-    };
-  }
-
   function runDeployWithTargets() {
     const selectedTargets = deployTargetOptions
       .filter((option) => deployTargetsDraft[option.key])
-      .map((option) => option.key);
+      .map((option) => option.id);
     onDeploy(pendingDeployMode, selectedTargets);
     closeDeployTargetPicker();
   }
@@ -706,9 +708,8 @@
         {#each deployTargetOptions as option}
           <label class="checkbox-row compact">
             <input
-              checked={deployTargetsDraft[option.key]}
+              bind:checked={deployTargetsDraft[option.key]}
               disabled={disabled || deployBusy}
-              on:change={() => toggleDeployTarget(option.key)}
               type="checkbox"
             />
             <span>{option.label}</span>

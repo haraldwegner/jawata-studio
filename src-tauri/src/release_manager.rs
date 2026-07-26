@@ -7,13 +7,28 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::Cursor,
     path::{Path, PathBuf},
     time::Duration,
 };
 use tar::Archive;
 use walkdir::WalkDir;
 use zip::ZipArchive;
+
+/// Render an error together with its FULL source chain.
+///
+/// Sprint 28 (v3.6.0): reqwest's `Display` prints only the outermost kind, so
+/// a response body aborted by a timeout reads as the bare, undiagnosable
+/// "error decoding response body" while the cause that actually names the
+/// problem sits one level down. The macOS dogfood lost a day to that message.
+fn describe_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts = vec![error.to_string()];
+    let mut source = error.source();
+    while let Some(inner) = source {
+        parts.push(inner.to_string());
+        source = inner.source();
+    }
+    parts.join(": ")
+}
 
 /// Compose the GitHub releases-API URL for the configured release repo.
 /// Source of truth: JAWATA_RELEASE_REPO env var, then settings.release_repo.
@@ -117,11 +132,34 @@ enum ArchiveKind {
 
 /// Manages downloading, caching, and updating the JAWATA runtime.
 pub struct ReleaseManager {
+    /// Short-budget client for the small JSON metadata calls (releases API).
     client: Client,
+    /// Long-budget client for the release ARCHIVE. Kept separate on purpose —
+    /// see `new()`.
+    download_client: Client,
 }
 
 impl ReleaseManager {
-    /// Creates a new release manager with a configured HTTP client.
+    /// Creates a new release manager with its two HTTP clients.
+    ///
+    /// Sprint 28 (v3.6.0), macOS dogfood 2026-07-26: the managed-runtime
+    /// update was UNINSTALLABLE on every platform. Both the metadata call and
+    /// the archive download shared one client carrying
+    /// `.timeout(10s)` — and reqwest's `timeout()` is the TOTAL request
+    /// budget, running from connect until the response body has finished. The
+    /// release archives are ~107 MB, so finishing inside 10 s demanded a
+    /// sustained ~10.7 MB/s end-to-end; anything slower had its body stream
+    /// aborted mid-download, surfacing as the bare, undiagnosable
+    /// "error decoding response body".
+    ///
+    /// The metadata budget is correct and stays. The download gets its own
+    /// client whose budget is sized to the ARCHIVE rather than to a JSON call:
+    /// 30 minutes, i.e. a floor of roughly 60 KB/s for a 107 MB asset. It is
+    /// deliberately still bounded — an unbounded download would turn a dead
+    /// connection into a hang instead of an error — but nothing that is
+    /// genuinely making progress can now be cut off mid-body.
+    /// (reqwest's blocking builder has no `read_timeout` at 0.12.24, so a
+    /// generous total budget is the honest instrument available.)
     pub fn new() -> Result<Self, String> {
         let client = Client::builder()
             .user_agent("jawata-studio/0.1.0")
@@ -130,7 +168,19 @@ impl ReleaseManager {
             .build()
             .map_err(|error| format!("failed to create release manager HTTP client: {error}"))?;
 
-        Ok(Self { client })
+        let download_client = Client::builder()
+            .user_agent("jawata-studio/0.1.0")
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(1800))
+            .build()
+            .map_err(|error| {
+                format!("failed to create release manager download HTTP client: {error}")
+            })?;
+
+        Ok(Self {
+            client,
+            download_client,
+        })
     }
 
     /// Checks for updates and installs the latest release if permitted by settings.
@@ -338,16 +388,6 @@ impl ReleaseManager {
             return Ok(runtime);
         }
 
-        let bytes = self
-            .client
-            .get(&release.download_url)
-            .send()
-            .map_err(|error| format!("failed to download JAWATA release archive: {error}"))?
-            .error_for_status()
-            .map_err(|error| format!("JAWATA archive download failed: {error}"))?
-            .bytes()
-            .map_err(|error| format!("failed to read JAWATA archive bytes: {error}"))?;
-
         let tmp_dir = tools_dir.join(format!(
             ".tmp-{}-{}",
             release.version,
@@ -361,16 +401,68 @@ impl ReleaseManager {
             )
         })?;
 
+        // Sprint 28 (v3.6.0): stream the ~107 MB archive STRAIGHT TO DISK on
+        // the long-budget client. The old path bought the whole archive into
+        // RAM with `.bytes()` and then decoded a second copy out of a
+        // `Cursor`, on a client whose 10 s total timeout the download could
+        // never meet. Errors report their full source chain, because reqwest's
+        // own Display for a timed-out body read is the useless
+        // "error decoding response body" with the cause hidden underneath.
+        let archive_path = tmp_dir.join("archive.bin");
+        let mut response = self
+            .download_client
+            .get(&release.download_url)
+            .send()
+            .map_err(|error| {
+                format!(
+                    "failed to download JAWATA release archive from {}: {}",
+                    release.download_url,
+                    describe_error_chain(&error)
+                )
+            })?
+            .error_for_status()
+            .map_err(|error| format!("JAWATA archive download failed: {error}"))?;
+
+        let mut archive_file = fs::File::create(&archive_path).map_err(|error| {
+            format!(
+                "failed to create archive staging file {}: {error}",
+                archive_path.display()
+            )
+        })?;
+        let copied = response.copy_to(&mut archive_file).map_err(|error| {
+            format!(
+                "failed to download JAWATA archive body ({} MB expected): {}",
+                release.asset_name,
+                describe_error_chain(&error)
+            )
+        })?;
+        drop(archive_file);
+        if copied == 0 {
+            return Err(format!(
+                "JAWATA archive download returned an empty body for {}",
+                release.asset_name
+            ));
+        }
+
+        let open_archive = || {
+            fs::File::open(&archive_path).map_err(|error| {
+                format!(
+                    "failed to reopen staged archive {}: {error}",
+                    archive_path.display()
+                )
+            })
+        };
+
         match release.archive_kind {
             ArchiveKind::TarGz => {
-                let decoder = GzDecoder::new(Cursor::new(bytes));
+                let decoder = GzDecoder::new(open_archive()?);
                 let mut archive = Archive::new(decoder);
                 archive.unpack(&extract_root).map_err(|error| {
                     format!("failed to unpack JAWATA tar.gz archive: {error}")
                 })?;
             }
             ArchiveKind::Zip => {
-                let mut archive = ZipArchive::new(Cursor::new(bytes))
+                let mut archive = ZipArchive::new(open_archive()?)
                     .map_err(|error| format!("failed to read JAWATA zip archive: {error}"))?;
                 for index in 0..archive.len() {
                     let mut file = archive.by_index(index).map_err(|error| {
