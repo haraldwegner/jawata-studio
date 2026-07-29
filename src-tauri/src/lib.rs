@@ -558,6 +558,36 @@ pub fn run() {
                 });
             }
 
+            // Sprint 28 (v3.6.2): check for a runtime update OFF the main thread.
+            //
+            // This work used to happen inside load_dashboard, which every dashboard read
+            // and nine mutating operations call, and which runs on the main thread. With
+            // the update policy set to install, launching the app and pressing "stop the
+            // services" each blocked the UI for a 112 MB download, and overlapping calls
+            // ran several at once. The window painted white and the OS offered to force
+            // quit it.
+            //
+            // Deferred a few seconds so the tray, window and listeners register first —
+            // the same reason the auto-restore below waits.
+            {
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    let state = app_handle.state::<AppState>();
+                    match state.manager_service.sync_releases_now() {
+                        // Only nudge the UI when something actually changed; a routine
+                        // "already current" must not churn the dashboard.
+                        Ok(true) => {
+                            let _ = app_handle.emit("jawata://settings-changed", ());
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            eprintln!("[jawata-studio] runtime update check failed: {error}")
+                        }
+                    }
+                });
+            }
+
             // Sprint 28 (v3.6.1): seat the macOS activation policy on the
             // window's ACTUAL initial visibility rather than assuming it. Today
             // the main window is configured visible, so this resolves to

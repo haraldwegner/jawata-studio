@@ -289,6 +289,12 @@ pub struct ManagerService {
     /// Sprint 16b/B: shared routing table the single-service gateway reads.
     /// Empty until the first deploy populates it.
     routing_table: Arc<RwLock<gateway::RoutingTable>>,
+    /// Sprint 28 (v3.6.2): true while a release check/install is in flight.
+    ///
+    /// The download is 112 MB. Without this, every operation that refreshed release
+    /// status could start its own — three overlapping `archive.bin` temp directories
+    /// inside 105 seconds, observed live. One at a time, and never on the UI thread.
+    release_sync_running: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ManagerService {
@@ -318,12 +324,65 @@ impl ManagerService {
             release_manager,
             runtime_manager,
             routing_table,
+            release_sync_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
-    /// Loads the current manager dashboard state.
+    /// Check for a new runtime, and install it when the policy says so.
+    ///
+    /// **Blocking, and must never be called from the main thread** — it performs a
+    /// network fetch and, under `UpdatePolicy::Always`, a 112 MB download and unpack.
+    /// Call it from a spawned thread; `lib.rs` does this once at start-up.
+    ///
+    /// Sprint 28 (v3.6.2). This work used to sit inside `load_dashboard`, which nine
+    /// operations call and which runs on the main thread as a sync Tauri command:
+    /// launching the app and stopping the services each froze for the length of a
+    /// transfer, and overlapping calls stacked downloads — three concurrent
+    /// `archive.bin` temp directories inside 105 seconds, observed live.
+    ///
+    /// Returns `Ok(true)` when the newest known version changed, so the caller can tell
+    /// the UI to reload. Returns `Ok(false)` immediately when a sync is already running:
+    /// one 112 MB download at a time, never two.
+    pub fn sync_releases_now(&self) -> Result<bool, String> {
+        use std::sync::atomic::Ordering;
+        if self
+            .release_sync_running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Ok(false);
+        }
+
+        let outcome = (|| {
+            let mut settings = self.config_store.get_settings();
+            let before = settings.last_seen_latest_version.clone();
+            let (_installed, status) = self.release_manager.sync_with_settings(&mut settings)?;
+            let changed = before != settings.last_seen_latest_version;
+            self.config_store.write_settings(settings)?;
+            eprintln!("[jawata-studio] release sync: {}", status.detail);
+            Ok(changed)
+        })();
+
+        self.release_sync_running.store(false, Ordering::SeqCst);
+        outcome
+    }
+
+    /// Loads the current manager dashboard state — from CACHE, never the network.
+    ///
+    /// Sprint 28 (v3.6.2): this used to refresh release status, which fetches over the
+    /// network and, under `UpdatePolicy::Always`, DOWNLOADS AND INSTALLS the runtime —
+    /// 112 MB — before returning. Sync Tauri commands run on the MAIN thread, so a read
+    /// of the dashboard froze the whole UI for the length of a download. Nine operations
+    /// end by calling this (start all, stop all, reload, add/delete project, settings,
+    /// deploy), so pressing Stop fetched a runtime, and overlapping calls stacked
+    /// downloads: three concurrent `archive.bin` temp dirs inside 105 seconds, observed
+    /// live 2026-07-29.
+    ///
+    /// A read is now a read. Checking and installing happen on
+    /// [`Self::spawn_release_sync`], off the main thread, and the UI is told when the
+    /// result changes.
     pub fn load_dashboard(&self) -> Result<ManagerDashboard, String> {
-        self.build_dashboard(true)
+        self.build_dashboard(false)
     }
 
     /// Sprint 10 v0.10.4: suggest a default workspace name for the next
@@ -609,14 +668,20 @@ impl ManagerService {
     }
 
     /// Updates manager settings.
-    /// If the `release_repo` value changed, triggers a fresh release-status
-    /// re-poll so the dashboard immediately reflects the new repo's latest
-    /// release rather than showing the cached status from the previous repo.
-    pub fn update_settings(&self, input: UpdateSettingsInput) -> Result<ManagerDashboard, String> {
+    ///
+    /// Sprint 28 (v3.6.2): saving settings used to re-poll release status inline when the
+    /// release repo changed. That is the same main-thread hazard as `load_dashboard` —
+    /// under an installing update policy, pressing Save downloaded 112 MB before the
+    /// dialog returned. It returns the cached view immediately; the caller kicks off a
+    /// background sync when `release_repo_changed` is true.
+    pub fn update_settings(
+        &self,
+        input: UpdateSettingsInput,
+    ) -> Result<(ManagerDashboard, bool), String> {
         let previous_repo = self.config_store.get_settings().release_repo.clone();
         let updated = self.config_store.update_settings(input)?;
         let release_repo_changed = updated.release_repo != previous_repo;
-        self.build_dashboard(release_repo_changed)
+        Ok((self.build_dashboard(false)?, release_repo_changed))
     }
 
     /// Redetects MCP client paths based on the current system.

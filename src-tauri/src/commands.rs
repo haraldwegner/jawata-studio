@@ -185,10 +185,27 @@ pub fn import_workspace_projects(
 
 #[tauri::command]
 pub fn update_settings(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     input: UpdateSettingsInput,
 ) -> Result<ManagerDashboard, String> {
-    state.manager_service.update_settings(input)
+    let (dashboard, release_repo_changed) = state.manager_service.update_settings(input)?;
+    // Sprint 28 (v3.6.2): a changed release repo still warrants a fresh check — but off
+    // the main thread. Doing it inline meant Save could block on a 112 MB download.
+    if release_repo_changed {
+        let app_handle = app.clone();
+        std::thread::spawn(move || {
+            let state = app_handle.state::<AppState>();
+            match state.manager_service.sync_releases_now() {
+                Ok(true) => {
+                    let _ = tauri::Emitter::emit(&app_handle, "jawata://settings-changed", ());
+                }
+                Ok(false) => {}
+                Err(error) => eprintln!("[jawata-studio] release re-poll failed: {error}"),
+            }
+        });
+    }
+    Ok(dashboard)
 }
 
 #[tauri::command]
