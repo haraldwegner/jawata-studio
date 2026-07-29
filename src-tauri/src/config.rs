@@ -36,8 +36,21 @@ pub enum UpdatePolicy {
 }
 
 impl Default for UpdatePolicy {
+    /// Sprint 28 (v3.6.1): `Always`, changed from `Ask`.
+    ///
+    /// With `Ask`, `ReleaseManager::sync_with_settings` records the newest
+    /// upstream version in `last_seen_latest_version` and then installs
+    /// nothing — the runtime stays pinned until someone presses the button.
+    /// The macOS dogfood found exactly that state: Studio knew about 3.6.2 and
+    /// was still running the older runtime, and the update had to be done by
+    /// hand. Checking without installing buys nothing here; flipping the fleet
+    /// onto a downloaded runtime is already a separate, deliberate step.
+    ///
+    /// An existing settings file keeps whatever it stored — this changes the
+    /// default for a fresh install and for settings written before the field
+    /// existed. Settings → update policy still switches it back to `Ask`.
     fn default() -> Self {
-        Self::Ask
+        Self::Always
     }
 }
 
@@ -309,7 +322,10 @@ impl ManagerSettings {
     pub(crate) fn default_for_paths(paths: &AppPaths) -> Self {
         Self {
             version: 1,
-            update_policy: UpdatePolicy::Ask,
+            // Sprint 28 (v3.6.1): see UpdatePolicy::default — a fresh install
+            // keeps its runtime current instead of recording the new version
+            // and waiting to be asked.
+            update_policy: UpdatePolicy::Always,
             auto_check_for_updates: true,
             manual_fallback_jar_path: None,
             data_root: display_path(&paths.default_data_root),
@@ -1526,7 +1542,11 @@ mod tests {
         };
 
         let settings = ManagerSettings::default_for_paths(&paths);
-        assert_eq!(settings.update_policy, UpdatePolicy::Ask);
+        // Sprint 28 (v3.6.1): was Ask. A fresh install now installs the newest
+        // runtime rather than recording its version and standing still — the
+        // macOS dogfood found Studio holding "latest = 3.6.2" beside an older
+        // running runtime.
+        assert_eq!(settings.update_policy, UpdatePolicy::Always);
         assert!(settings.auto_check_for_updates);
         assert_eq!(settings.data_root, "/tmp/cache/jawata-studio");
     }

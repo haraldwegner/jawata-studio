@@ -176,6 +176,44 @@ pub enum DeployClientStatus {
     Failed,
 }
 
+/// Render one deploy run as log lines: a summary line, then one line per client.
+///
+/// Sprint 28 (v3.6.1). Split from the file write so the CONTENT is unit-tested
+/// — the reason this log exists is that a run's per-client outcome was
+/// unrecoverable after the fact, so a log that omits the outcome would be no
+/// better than none. Every field that distinguishes "wrote entries" from "wrote
+/// nothing" is on the line: status, target path, message, changed sections,
+/// backup path, validation errors.
+pub(crate) fn format_deploy_log(stamp: &str, result: &DeployToAgentsResult) -> String {
+    let mut entry = format!(
+        "{stamp} deploy mode={:?} ok={} duration_ms={} clients={}\n",
+        result.mode,
+        result.ok,
+        result.duration_ms,
+        result.clients.len()
+    );
+    for client in &result.clients {
+        entry.push_str(&format!(
+            "{stamp}   {} status={:?} path={} message={}",
+            client.client, client.status, client.target_path, client.message
+        ));
+        if !client.changed_sections.is_empty() {
+            entry.push_str(&format!(" changed={}", client.changed_sections.join(",")));
+        }
+        if let Some(backup) = &client.backup_path {
+            entry.push_str(&format!(" backup={backup}"));
+        }
+        if !client.validation_errors.is_empty() {
+            entry.push_str(&format!(
+                " validation_errors={}",
+                client.validation_errors.join("; ")
+            ));
+        }
+        entry.push('\n');
+    }
+    entry
+}
+
 /// Result of deploying MCP configuration to a specific client.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -700,13 +738,45 @@ impl ManagerService {
             "Agent deploy completed with failures.".to_string()
         };
 
-        Ok(DeployToAgentsResult {
+        let result = DeployToAgentsResult {
             mode: input.mode,
             ok,
             detail,
             duration_ms: started_at.elapsed().as_millis(),
             clients: results,
-        })
+        };
+        self.append_deploy_log(&result);
+        Ok(result)
+    }
+
+    /// Append one deploy run to `logs/deploy.log`.
+    ///
+    /// Sprint 28 (v3.6.1), macOS dogfood finding: a deploy's per-client outcome
+    /// lived only in the UI response, so once the window was closed there was no
+    /// way to tell what a run had actually done. That mattered concretely — the
+    /// Claude Desktop config ended up with an empty `mcpServers`, and the
+    /// artifacts on disk could not distinguish "the deploy wrote nothing" from
+    /// "the deploy wrote entries and the app overwrote them minutes later". One
+    /// line per client would have settled it.
+    ///
+    /// Best-effort and never fatal: a deploy that worked must not be reported
+    /// as failed because a log file could not be written.
+    fn append_deploy_log(&self, result: &DeployToAgentsResult) {
+        let log_dir = self.config_store.paths().log_dir;
+        if let Err(error) = std::fs::create_dir_all(&log_dir) {
+            eprintln!("[jawata-studio] deploy log: cannot create {log_dir:?}: {error}");
+            return;
+        }
+        let entry = format_deploy_log(&crate::config::current_timestamp_string(), result);
+        let path = log_dir.join("deploy.log");
+        if let Err(error) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut file| std::io::Write::write_all(&mut file, entry.as_bytes()))
+        {
+            eprintln!("[jawata-studio] deploy log: cannot append to {path:?}: {error}");
+        }
     }
 
     // ===== Sprint 21a (item F): Knowledge view backend =====
@@ -8584,6 +8654,85 @@ mod tests {
         assert!(
             validate_client_config_shape("claude_desktop", &json, &servers).is_ok(),
             "validator must accept the claude_desktop http shape"
+        );
+    }
+
+    /// Sprint 28 (v3.6.1): the deploy log must carry what the macOS dogfood
+    /// could not recover. There, Claude Desktop's config ended up with an empty
+    /// `mcpServers` and the on-disk artifacts could not distinguish "the deploy
+    /// wrote nothing" from "the deploy wrote entries and the app clobbered them
+    /// later". Each of these assertions is one half of that question.
+    #[test]
+    fn deploy_log_records_per_client_outcome() {
+        let result = DeployToAgentsResult {
+            mode: DeployMode::Deploy,
+            ok: false,
+            detail: "Agent deploy completed with failures.".into(),
+            duration_ms: 42,
+            clients: vec![
+                DeployClientResult {
+                    client: "claude_desktop".into(),
+                    target_path: "/Users/h/Library/.../claude_desktop_config.json".into(),
+                    status: DeployClientStatus::Success,
+                    message: "Configuration written.".into(),
+                    backup_path: Some("/backups/1785180489557-0013".into()),
+                    changed_sections: vec!["mcpServers".into(), "seats".into()],
+                    validation_errors: vec![],
+                    preview_content: None,
+                },
+                DeployClientResult {
+                    client: "cursor".into(),
+                    target_path: "/Users/h/.cursor/mcp.json".into(),
+                    status: DeployClientStatus::Failed,
+                    message: "Validation failed.".into(),
+                    backup_path: None,
+                    changed_sections: vec![],
+                    validation_errors: vec!["missing url".into()],
+                    preview_content: None,
+                },
+            ],
+        };
+
+        let log = format_deploy_log("2026-07-29T10:00:00Z", &result);
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 3, "summary line plus one line per client");
+        assert!(lines[0].contains("ok=false"), "summary carries the verdict");
+        assert!(lines[0].contains("clients=2"), "summary carries the count");
+
+        // The client that was WRITTEN: which sections changed, and where the
+        // backup went — enough to answer "did this run put entries in the file".
+        assert!(lines[1].contains("claude_desktop"));
+        assert!(lines[1].contains("status=Success"));
+        assert!(lines[1].contains("changed=mcpServers,seats"));
+        assert!(lines[1].contains("backup=/backups/1785180489557-0013"));
+        assert!(lines[1].contains("claude_desktop_config.json"), "the target path");
+
+        // The client that FAILED: the reason survives, not just the status.
+        assert!(lines[2].contains("status=Failed"));
+        assert!(lines[2].contains("validation_errors=missing url"));
+    }
+
+    /// A skipped client must still appear — a run that silently omits a target
+    /// is exactly the shape that made "Skipped: not selected in this deploy
+    /// run" impossible to diagnose.
+    #[test]
+    fn deploy_log_records_skipped_clients_too() {
+        let result = DeployToAgentsResult {
+            mode: DeployMode::Deploy,
+            ok: true,
+            detail: "Agent deploy completed.".into(),
+            duration_ms: 7,
+            clients: vec![skipped_client_result(
+                "claude_desktop",
+                Some("/path/claude_desktop_config.json".to_string()),
+                "Skipped: not selected in this deploy run.",
+            )],
+        };
+
+        let log = format_deploy_log("2026-07-29T10:00:00Z", &result);
+        assert!(
+            log.contains("claude_desktop") && log.contains("Skipped"),
+            "a skipped target must be on the record, not absent from it: {log}"
         );
     }
 
