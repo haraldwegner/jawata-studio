@@ -50,6 +50,27 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Sprint 28: Developer ID signing + notarization (studio#2). Without
+          # these the .dmg is unsigned and macOS refuses to open it normally —
+          # the installer has to be right-clicked and confirmed past a warning.
+          #
+          # Each is empty on non-macOS runners on purpose: the Linux and Windows
+          # jobs share this step, and an APPLE_CERTIFICATE present there would
+          # send tauri-action down its keychain-import path on a machine with no
+          # keychain.
+          #
+          # The first two import the certificate into a temporary keychain; the
+          # third selects which identity to sign with. The last three are the
+          # notarization credentials — Apple checks the signed app and issues a
+          # ticket, which is what actually removes the warning. APPLE_PASSWORD is
+          # an app-specific password, not the account password; Apple rejects the
+          # latter.
+          APPLE_CERTIFICATE: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_TEAM_ID || '' }}
 
       - name: Bake WEBKIT_DISABLE_DMABUF_RENDERER into AppImage AppRun + .deb wrapper (ubuntu only)
         if: startsWith(matrix.platform, 'ubuntu-')

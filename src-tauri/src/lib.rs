@@ -73,9 +73,19 @@ fn selected_tray_icon_variant() -> TrayIconVariant {
     }
 }
 
-/// The branded tray icon: the glyph on the batik-indigo disc. Used on Linux
-/// and Windows, whose trays render full-colour icons.
-#[allow(dead_code)]
+/// The branded tray icon: the glyph on the batik-indigo disc. Used on EVERY
+/// platform, macOS included.
+///
+/// Sprint 28 (v3.6.3): macOS gets this one, not a template image. v3.6.0
+/// introduced a macOS-only template variant on the reasoning that an opaque
+/// dark disc would be invisible against a dark menu bar. **That reasoning was
+/// false, and the counterexample was in this product's own predecessor:**
+/// javalens-manager drew the same full-bleed opaque disc (`#1c3a74`, white
+/// glyph), passed it with no template flag, and had zero macOS-specific code
+/// in its tray path — and its icon was visible on the same Mac. macOS renders
+/// a non-template status-item image in full colour; template mode uses the
+/// alpha channel alone, and that is what made the icon disappear. v3.6.1 then
+/// changed the template's SHAPE, which was fixing the wrong thing twice.
 fn build_tray_icon(variant: TrayIconVariant) -> Image<'static> {
     let mut rgba = vec![0u8; (TRAY_ICON_SIZE * TRAY_ICON_SIZE * 4) as usize];
     draw_base_circle(&mut rgba);
@@ -84,88 +94,6 @@ fn build_tray_icon(variant: TrayIconVariant) -> Image<'static> {
         TrayIconVariant::CoffeeCircle => draw_coffee_glyph(&mut rgba),
     }
     Image::new_owned(rgba, TRAY_ICON_SIZE, TRAY_ICON_SIZE)
-}
-
-/// The macOS menu-bar variant: an opaque disc with the glyph KNOCKED OUT.
-///
-/// macOS renders menu-bar icons as TEMPLATE images — it reads the ALPHA channel
-/// alone and tints the result for the current bar (light or dark, and inverted
-/// while the menu is open). So on macOS only the *silhouette* survives; colour
-/// is discarded.
-///
-/// Sprint 28 history, because both wrong answers are instructive. The branded
-/// icon is a fully-opaque `#1d2f4e` disc: untemplated it is dark navy on a dark
-/// bar (invisible), and templated it is one uniform blob that swallows the
-/// glyph. v3.6.0 answered that by dropping the disc and shipping the glyph
-/// alone on transparency — which measured at 129 of 1024 pixels of ink in
-/// 1–2 pixel strokes, i.e. a hairline, and Harald still saw nothing on the bar.
-///
-/// The right shape for a template is a bold silhouette with the mark cut OUT of
-/// it: the disc carries the visibility, the knockout carries the brand, and
-/// both survive being scaled into a 22-point slot and tinted. The glyph is
-/// rendered into a scratch buffer and used as a stencil, so this shares the
-/// exact brand path with the Linux/Windows icon rather than re-tracing it.
-#[allow(dead_code)]
-fn build_tray_icon_template(variant: TrayIconVariant) -> Image<'static> {
-    let px = (TRAY_ICON_SIZE * TRAY_ICON_SIZE) as usize;
-    let mut rgba = vec![0u8; px * 4];
-
-    // The silhouette. Inset by one pixel from the full-bleed branded disc so
-    // the mark reads as a disc rather than as a filled square with soft
-    // corners once macOS scales it down.
-    let center = (TRAY_ICON_SIZE as i32) / 2;
-    draw_disc(&mut rgba, center, center, center - 1, [255, 255, 255, 255]);
-
-    // The stencil: the same brand glyph, drawn into a scratch buffer, then
-    // punched out of the disc. Dilated by one pixel because the raw stroke is
-    // 1–2 px wide at this size and a cut that thin closes up when the system
-    // scales the image for the menu bar.
-    let mut stencil = vec![0u8; px * 4];
-    match variant {
-        TrayIconVariant::ArchCircle => draw_arch_glyph(&mut stencil),
-        TrayIconVariant::CoffeeCircle => draw_coffee_glyph(&mut stencil),
-    }
-    let size = TRAY_ICON_SIZE as i32;
-    for y in 0..size {
-        for x in 0..size {
-            if !stencil_hit_within_one_px(&stencil, x, y) {
-                continue;
-            }
-            rgba[((y * size + x) * 4 + 3) as usize] = 0;
-        }
-    }
-    Image::new_owned(rgba, TRAY_ICON_SIZE, TRAY_ICON_SIZE)
-}
-
-/// True when the stencil has ink at `(x, y)` or in the eight pixels around it —
-/// the one-pixel dilation that keeps the knockout open after downscaling.
-fn stencil_hit_within_one_px(stencil: &[u8], x: i32, y: i32) -> bool {
-    let size = TRAY_ICON_SIZE as i32;
-    for dy in -1..=1 {
-        for dx in -1..=1 {
-            let (nx, ny) = (x + dx, y + dy);
-            if nx < 0 || ny < 0 || nx >= size || ny >= size {
-                continue;
-            }
-            if stencil[((ny * size + nx) * 4 + 3) as usize] > 0 {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// The tray image for THIS platform, plus whether macOS must treat it as a
-/// template image. See `build_tray_icon_template`.
-fn tray_icon_image(variant: TrayIconVariant) -> (Image<'static>, bool) {
-    #[cfg(target_os = "macos")]
-    {
-        (build_tray_icon_template(variant), true)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        (build_tray_icon(variant), false)
-    }
 }
 
 /// Raise the main window, and on macOS make Studio a foreground app first.
@@ -406,10 +334,11 @@ pub fn run() {
             // configuration window.
             let initial_menu = rebuild_tray_menu(app.handle())?;
 
-            let (tray_image, tray_is_template) = tray_icon_image(selected_tray_icon_variant());
+            // Sprint 28 (v3.6.3): NO icon_as_template — see build_tray_icon. The
+            // predecessor shipped exactly this call shape and its icon was visible
+            // on macOS; the template flag added in v3.6.0 is what removed it.
             let _tray = TrayIconBuilder::with_id(TRAY_ICON_ID)
-                .icon(tray_image)
-                .icon_as_template(tray_is_template)
+                .icon(build_tray_icon(selected_tray_icon_variant()))
                 .menu(&initial_menu)
                 .on_menu_event(|tray, event| {
                     let app_handle = tray.app_handle();
@@ -853,75 +782,47 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) {
 mod tray_icon_tests {
     use super::*;
 
-    /// Sprint 28 (v3.6.1): the macOS template icon must be a BOLD SILHOUETTE,
-    /// not a hairline. macOS reads the alpha channel alone and tints it, so
-    /// whatever the alpha covers is the whole icon.
+    /// Sprint 28 (v3.6.3): the tray icon is the BRANDED, FULL-COLOUR mark on every
+    /// platform — macOS included — and is handed to the tray with no template flag.
     ///
-    /// v3.6.0 shipped the glyph alone on transparency and measured **129 of
-    /// 1024 pixels (12.6%) in 1–2 pixel strokes** — Harald reported seeing
-    /// nothing on the menu bar. The lower bound below is what makes that
-    /// specific regression impossible to reintroduce: a stroke-only icon
-    /// cannot reach it.
+    /// This replaces two tests that pinned a macOS-only template image. The premise
+    /// behind that image was wrong: v3.6.0 assumed an opaque dark disc would be
+    /// invisible on a dark menu bar, and the predecessor product disproved it —
+    /// javalens-manager drew the same full-bleed opaque disc, passed it with no
+    /// template flag, carried zero macOS-specific tray code, and its icon was visible
+    /// on the same machine. Template mode uses the alpha channel alone, which is what
+    /// made the icon disappear; v3.6.1 then changed the template's shape, fixing the
+    /// wrong thing a second time.
+    ///
+    /// So what needs pinning is the opposite of what was pinned before: the icon must
+    /// stay OPAQUE and COLOURED, because an alpha-only or transparent-background icon
+    /// is the failure.
     #[test]
-    fn macos_template_icon_is_a_bold_silhouette_with_the_glyph_knocked_out() {
+    fn tray_icon_is_opaque_and_coloured_on_every_platform() {
         for variant in [TrayIconVariant::ArchCircle, TrayIconVariant::CoffeeCircle] {
-            let template = build_tray_icon_template(variant);
-            let alphas: Vec<u8> = template.rgba().iter().skip(3).step_by(4).copied().collect();
+            let icon = build_tray_icon(variant);
+            let rgba = icon.rgba();
+            let total = (TRAY_ICON_SIZE * TRAY_ICON_SIZE) as usize;
+
+            // The disc is opaque across the middle — not a silhouette, not a stroke.
+            let centre = ((TRAY_ICON_SIZE / 2) * TRAY_ICON_SIZE + TRAY_ICON_SIZE / 2) as usize;
             assert_eq!(
-                alphas.len(),
-                (TRAY_ICON_SIZE * TRAY_ICON_SIZE) as usize,
-                "one alpha byte per pixel"
+                rgba[centre * 4 + 3],
+                255,
+                "{variant:?}: the disc must be opaque at its centre"
             );
 
-            let ink = alphas.iter().filter(|a| **a > 0).count();
-            let total = alphas.len();
-            // Measured: v3.6.0's stroke-only icon covered 12.6%; this
-            // silhouette covers ~46% (a disc of ~69%, less the knockout). The
-            // bar is a third of the canvas — clear of the silhouette by a wide
-            // margin, and unreachable by any stroke-only drawing.
+            // And it carries COLOUR. A template image would be alpha-only, so its
+            // colour channels convey nothing; that is the state this test forbids.
+            let coloured = (0..total).any(|i| {
+                let (r, g, b, a) = (rgba[i * 4], rgba[i * 4 + 1], rgba[i * 4 + 2], rgba[i * 4 + 3]);
+                a == 255 && !(r == g && g == b)
+            });
             assert!(
-                ink * 3 > total,
-                "{variant:?}: template covers only {ink}/{total} pixels — that is a \
-                 hairline, not a silhouette, and macOS renders it near-invisibly"
+                coloured,
+                "{variant:?}: the tray icon must carry brand colour — an alpha-only \
+                 image is what vanished from the macOS menu bar in v3.6.0/v3.6.1"
             );
-            assert!(
-                alphas.iter().any(|a| *a == 0),
-                "{variant:?}: a template icon needs transparent background pixels"
-            );
-            assert!(
-                alphas.iter().any(|a| *a == 255),
-                "{variant:?}: a template icon needs opaque silhouette pixels"
-            );
-
-            // The glyph must be CUT OUT of the disc: at least one pixel that
-            // the branded icon draws as glyph is transparent here.
-            let mut glyph_only = vec![0u8; total * 4];
-            match variant {
-                TrayIconVariant::ArchCircle => draw_arch_glyph(&mut glyph_only),
-                TrayIconVariant::CoffeeCircle => draw_coffee_glyph(&mut glyph_only),
-            }
-            let knocked_out = (0..total)
-                .filter(|i| glyph_only[i * 4 + 3] > 0 && alphas[*i] == 0)
-                .count();
-            assert!(
-                knocked_out > 0,
-                "{variant:?}: the glyph is not knocked out of the disc — the icon \
-                 would render as a featureless dot"
-            );
-            // The corners are always background — the glyph never reaches them.
-            let corner = |x: u32, y: u32| alphas[(y * TRAY_ICON_SIZE + x) as usize];
-            for (x, y) in [
-                (0, 0),
-                (TRAY_ICON_SIZE - 1, 0),
-                (0, TRAY_ICON_SIZE - 1),
-                (TRAY_ICON_SIZE - 1, TRAY_ICON_SIZE - 1),
-            ] {
-                assert_eq!(
-                    corner(x, y),
-                    0,
-                    "{variant:?}: corner ({x},{y}) must be transparent in the template icon"
-                );
-            }
         }
     }
 
