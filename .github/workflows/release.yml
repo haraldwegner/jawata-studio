@@ -72,6 +72,38 @@ jobs:
           APPLE_PASSWORD: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_TEAM_ID || '' }}
 
+      # Sprint 28 (v3.6.4, D-RECALL-DEAD round): tauri-action notarizes the .app,
+      # then builds the .dmg FROM it, signs the .dmg, and stops — it never
+      # notarizes or staples the installer. `spctl -a -t install` inspects the
+      # INSTALLER, so v3.6.3 shipped with the app notarized (Accepted, id
+      # 6d38d9da) and the DMG reporting `rejected / source=Unnotarized Developer
+      # ID` on a real machine. This step closes that gap with the same three
+      # secrets tauri-action already uses — no new credential.
+      #
+      # `stapler staple` IS the gate: it fails if Apple has no valid ticket for
+      # the file, so a failed or Invalid notarization cannot pass silently. The
+      # spctl line is informational — a CI runner's assessment is not the user's
+      # machine, so it is echoed, never trusted as the proof.
+      - name: Notarize + staple the DMG (macos only)
+        if: startsWith(matrix.platform, 'macos')
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          DMG=$(ls src-tauri/target/release/bundle/dmg/*.dmg | head -1)
+          echo "Notarizing installer: $DMG"
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+          echo "--- spctl (informational; the runner is not the user's machine) ---"
+          spctl -a -vvv -t install "$DMG" || true
+
       - name: Bake WEBKIT_DISABLE_DMABUF_RENDERER into AppImage AppRun + .deb wrapper (ubuntu only)
         if: startsWith(matrix.platform, 'ubuntu-')
         run: |
