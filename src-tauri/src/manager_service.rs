@@ -5741,22 +5741,34 @@ fn build_userprompt_script(mcp_url: &str, token: &str) -> String {
 
 const USERPROMPT_TEMPLATE: &str = r#"#!/usr/bin/env bash
 # <jawata-studio managed UserPromptSubmit recall — do not edit; overwritten on deploy>
-# Sprint 21c (item D): prompt -> keywords -> recall -> injected FACT. Extracts content-
-# bearing cues from the user's prompt (longest n-grams first, rarity-marked tokens
-# preferred within a tier, >=2 content tokens), asks the store terminally, and injects
-# the ONE fitting atomic fact — or nothing. Never a pile, never a guess, never blocks.
+# Sprint 21c (item D): prompt -> keywords -> recall -> injected NOMINEES. Extracts
+# content-bearing cues from the user's prompt (longest n-grams first, rarity-marked
+# tokens preferred within a tier, >=2 content tokens), asks the store, and injects what
+# it offers — labelled as candidates to judge — or nothing when the store has nothing.
+#
+# Sprint 28 (studio#3): this script previously skipped whenever the store returned MORE
+# THAN ONE answer, encoding 21c's retired "one fitting fact or silence" contract. Sprint
+# 27a's C2 ruling — distance nominates, the agent judges — made multi-answer the NORMAL
+# case (up to 11 labelled nominees, always), because no statistic over a score profile
+# separates a real cue from a nonsense one. The two contracts were incompatible, so this
+# hook injected NOTHING for two weeks, silently, for every cue. The skip is gone; the
+# label now says what these actually are.
 set -u
 MCP_URL="__MCP_URL__"
 TOKEN="__TOKEN__"
 # THE emit path — selftest and the live path share this one printf format (Sprint 21a item J).
 emit_ctx() {
-  printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"JAWATA recalled a prior fact for this topic:\\n%s"}}' "$1"
+  printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"JAWATA recalled candidate prior knowledge for this topic — these are NOMINEES, not vouched answers; judge whether each fits before relying on it:\\n%s"}}' "$1"
 }
-if [ "${JAWATA_HOOK_SELFTEST:-}" = "1" ]; then emit_ctx '[lesson] selftest canned line (accepted)'; exit 0; fi
+# Sprint 28 (studio#3): the canned value is deliberately MULTI-LINE. The previous
+# single-line canned string could not exercise the shape that actually occurs, so the
+# deploy-time check passed throughout the two weeks this hook emitted nothing. A check
+# that cannot fail the way the thing fails is not a check of the thing.
+if [ "${JAWATA_HOOK_SELFTEST:-}" = "1" ]; then emit_ctx '[lesson] selftest canned line (accepted)\n[lesson] selftest second line — multi-answer is the normal case'; exit 0; fi
 command -v curl >/dev/null 2>&1 || exit 0
 # THE recall attempt (Sprint 22a dual-cue): $1 = arg key (symbol|symptom), $2 = cue.
-# On a single fitting fact it injects and exits 0; otherwise returns so the next-
-# ranked cue is tried. Single-fact-or-silence: any \n in data = 2+ facts = skip.
+# On any non-empty answer it injects and exits 0; otherwise returns so the next-ranked
+# cue is tried. Absence is still absence — "No known knowledge" falls through.
 try_recall() {
   [ -n "$2" ] || return 1
   req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"recall","format":"text","'"$1"'":"'"$2"'"}}}'
@@ -5771,8 +5783,12 @@ try_recall() {
   data="$(printf '%s' "$inner" | sed -n 's/.*"data"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
   [ -n "$data" ] || return 1
   case "$data" in No\ known\ knowledge*|No\ domain*) return 1 ;; esac
-  # Terminal-or-absence: any \n in data = 2+ fitting facts = ambiguous -> next cue.
-  case "$data" in *"\n"*) return 1 ;; esac
+  # Sprint 28 (studio#3): NO multi-answer skip. A newline-sniffing case-branch lived here
+  # and discarded every answer the store gave, because 27a made multi the norm. The store
+  # already caps what it offers (MAX_NOMINEES = 11, each an eight-word summary line —
+  # Harald priced that cost in 27a), so there is nothing left to trim here.
+  # (The removed branch is quoted in this file's tests, not reproduced here: a comment
+  # containing it would satisfy the very `contains` check that guards its absence.)
   emit_ctx "$data"
   exit 0
 }
@@ -8315,8 +8331,9 @@ mod tests {
     }
 
     #[test]
-    fn userprompt_script_extracts_cues_and_injects_single_fact_only() {
-        // Sprint 21c (item D): prompt -> keywords -> recall -> the ONE fitting fact.
+    fn userprompt_script_extracts_cues_and_injects_nominees() {
+        // Sprint 21c (item D): prompt -> keywords -> recall -> injected context.
+        // Sprint 28 (studio#3): the injected thing is NOMINEES, not "the ONE fitting fact".
         let s = build_userprompt_script("http://127.0.0.1:8890/mcp", "sekret");
         assert!(s.contains(r#"MCP_URL="http://127.0.0.1:8890/mcp""#), "bakes the mcp url");
         assert!(s.contains(r#"TOKEN="sekret""#), "bakes the bearer token");
@@ -8339,14 +8356,90 @@ mod tests {
             s.contains("UserPromptSubmit") && s.contains("additionalContext"),
             "injects prompt-boundary context"
         );
-        // Terminal-or-absence at the injection boundary: entry lines are \n-joined, so
-        // any \n in the peeled data = 2+ fitting facts = ambiguous -> next cue, never a pile.
+        // Sprint 28 (studio#3) — THIS ASSERTION IS THE INVERSE OF WHAT IT USED TO BE.
+        // It previously required `*"\n"*) return 1`, i.e. it ASSERTED the defect: the
+        // suite actively defended the retired 21c "one fact or silence" contract, so a
+        // correct fix would have failed the test and been reverted. 27a made multi-answer
+        // the norm; discarding it is the bug, not the safeguard.
         assert!(
-            s.contains(r#"*"\n"*) return 1"#),
-            "multi-fact answers are ambiguous — try the next-ranked cue"
+            !s.contains(r#"*"\n"*) return 1"#),
+            "must NOT skip multi-answer recalls — 27a returns up to 11 nominees, always"
+        );
+        assert!(
+            s.contains("NOMINEES, not vouched answers"),
+            "labels what it injects as candidates to judge, per the 27a rendering contract"
         );
         assert!(s.contains("No\\ known\\ knowledge"), "silent on absence");
         assert!(s.contains("--max-time 2"), "short per-attempt timeout");
+    }
+
+    /// Sprint 28 (studio#3): the BEHAVIOURAL gate — runs the real deployed script against
+    /// a stubbed `curl` that returns a realistic MULTI-nominee store response, and asserts
+    /// context actually comes out.
+    ///
+    /// Why this exists and the string assertions above are not enough: for two weeks every
+    /// string assertion passed, the suite was green, and this hook emitted nothing on every
+    /// prompt. The defect's only symptom is an ABSENCE, and no assertion anywhere asserted
+    /// on absence. This test fails on the pre-fix script.
+    #[test]
+    fn userprompt_script_actually_emits_on_a_multi_nominee_answer() {
+        let dir = unique_tempdir("userprompt-behaviour");
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+
+        // A store answer in the CURRENT (27a) shape: several \n-joined nominees. The \n
+        // are JSON escapes inside the data string, exactly as the real layer emits them.
+        let stub = bin.join("curl");
+        std::fs::write(
+            &stub,
+            "#!/usr/bin/env bash\ncat <<'JSON'\n{\"result\":{\"content\":[{\"type\":\"text\",\
+             \"text\":\"{\\\"success\\\":true,\\\"data\\\":\\\"In a similar situation: first \
+             nominee  [meaning-near]\\\\nIn a similar situation: second nominee  \
+             [meaning-near]\\\\nIn a similar situation: third nominee  [meaning-near]\\\"}\"}]}}\nJSON\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let script = dir.join("userpromptsubmit-recall.sh");
+        std::fs::write(&script, build_userprompt_script("http://127.0.0.1:8890/mcp", "tok")).unwrap();
+
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+        let out = std::process::Command::new("bash")
+            .arg(&script)
+            .env("PATH", path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut c| {
+                use std::io::Write;
+                c.stdin
+                    .as_mut()
+                    .unwrap()
+                    .write_all(br#"{"prompt":"what do we know about the supervision surface recall contract"}"#)?;
+                c.wait_with_output()
+            })
+            .expect("hook script runs");
+
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !stdout.trim().is_empty(),
+            "the hook emitted NOTHING on a real multi-nominee answer — this is studio#3"
+        );
+        assert!(
+            stdout.contains("additionalContext"),
+            "emits prompt-boundary context, got: {stdout}"
+        );
+        assert!(
+            stdout.contains("first nominee") && stdout.contains("third nominee"),
+            "passes through ALL nominees, not a trimmed single fact, got: {stdout}"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(stdout.trim()).expect("emits parseable JSON");
+        assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
     }
 
     #[test]
