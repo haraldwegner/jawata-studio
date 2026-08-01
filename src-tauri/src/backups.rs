@@ -41,13 +41,40 @@ pub fn set_backups_root(data_root: &str) {
     }
 }
 
+/// The managed backup area — **always an absolute path**.
+///
+/// Sprint 28: it was not. `default_data_root()` is the serde default for the settings
+/// field and returns an EMPTY string, so a root that was never set (or set to blank —
+/// [`set_backups_root`] ignores empty input) produced the bare relative path
+/// `backups`, which resolves against the process working directory. Under `cargo test`
+/// that is `src-tauri/`, so running the suite wrote real backup directories INTO THE
+/// SOURCE TREE — `src-tauri/backups/-tmp-jawata-studio-test-.../` showed up as
+/// untracked files after every run.
+///
+/// Production sets `data_root` to an absolute cache path at four call sites, so it
+/// does not hit this — but a relative backup area is wrong wherever it happens, and a
+/// module whose whole purpose is "backups land in ONE managed area" must not have an
+/// escape hatch that puts them somewhere else silently. An unusable root now falls
+/// back to an absolute temp location and says so, rather than writing next to whatever
+/// directory the process happens to be in.
 fn backups_dir() -> PathBuf {
     let root = BACKUPS_ROOT
         .read()
         .expect("backups root lock poisoned")
         .clone()
         .unwrap_or_else(crate::config::default_data_root);
-    PathBuf::from(root).join("backups")
+    let base = PathBuf::from(&root);
+    if base.is_absolute() {
+        return base.join("backups");
+    }
+    let fallback = std::env::temp_dir().join("jawata-studio-backups");
+    if !root.trim().is_empty() {
+        eprintln!(
+            "[jawata-studio] backups root {root:?} is not absolute — using {} instead",
+            fallback.display()
+        );
+    }
+    fallback
 }
 
 /// The managed-area key for an original path: the absolute path with separators (and
@@ -233,6 +260,38 @@ pub(crate) fn test_lock() -> &'static std::sync::Mutex<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sprint 28: the backup area must be ABSOLUTE, whatever the root is.
+    ///
+    /// Before this, an unset or blank root produced the bare relative path `backups`,
+    /// resolved against the process working directory. Under `cargo test` that is
+    /// `src-tauri/`, so the suite wrote real backup directories into the source tree and
+    /// left them behind as untracked files. This asserts the property rather than the
+    /// symptom: no root value can produce a path that lands somewhere relative.
+    #[test]
+    fn backups_dir_is_always_absolute() {
+        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
+
+        for root in ["", "   ", "relative/path", "./also-relative"] {
+            *BACKUPS_ROOT.write().expect("lock") = Some(root.to_string());
+            let dir = backups_dir();
+            assert!(
+                dir.is_absolute(),
+                "root {root:?} produced the relative path {} — a relative backup area \
+                 writes wherever the process happens to be running, which is how the test \
+                 suite came to litter src-tauri/backups/",
+                dir.display()
+            );
+        }
+
+        // An absolute root is used as given — the fallback must not hijack a valid root.
+        let real = std::env::temp_dir().join("jawata-backups-absolute-root");
+        *BACKUPS_ROOT.write().expect("lock") = Some(real.to_string_lossy().to_string());
+        assert_eq!(backups_dir(), real.join("backups"));
+
+        *BACKUPS_ROOT.write().expect("lock") = None;
+        assert!(backups_dir().is_absolute(), "the unset default is absolute too");
+    }
 
     fn tempdir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
