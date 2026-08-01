@@ -167,11 +167,6 @@
     ? $appStore.runtimeStatuses?.[selectedProject.id]
     : undefined;
   $: runtimeSource = $appStore.settings?.globalRuntimeSource;
-  // Sprint 28: the "Ask" update prompt. Dismissal is remembered per VERSION, so
-  // saying "Not now" to 3.6.4 does not silence 3.6.5 — a permanent dismissal
-  // would recreate the silence this fixes.
-  $: updatePolicy = $appStore.settings?.updatePolicy;
-  let dismissedUpdateVersion: string | null = null;
   $: runtimeSubtitle = (() => {
     const ver =
       managerAppVersion.length > 0
@@ -454,50 +449,6 @@
         </button>
       </nav>
     </div>
-    <!--
-      Sprint 28: "Ask" has to ASK.
-
-      With updatePolicy="ask" the runtime never self-installs, which is correct —
-      but until now the only signs were a "(update: x.y.z)" suffix on the header
-      subtitle and a Download button inside Settings → Runtime. Neither is a
-      question. The macOS dogfood hit exactly that: Studio knew about the newer
-      runtime, said nothing the user noticed, and the update had to be done by
-      hand.
-
-      A stored "ask" is a preference we must not overwrite — migrating it to
-      "always" would silently override a deliberate choice. So the fix makes the
-      preference mean what its name says instead of changing it.
-
-      Dismissal is per version: dismissing 3.6.4 does not suppress 3.6.5.
-    -->
-    {#if $appStore.releaseStatus?.updateAvailable && updatePolicy === "ask" && dismissedUpdateVersion !== $appStore.releaseStatus?.latestVersion}
-      <div class="update-prompt panel" role="status">
-        <div class="update-prompt-text">
-          <strong>JAWATA {$appStore.releaseStatus.latestVersion} is available.</strong>
-          <span class="muted">
-            You are running {$appStore.installedRuntime?.version ?? "no managed runtime"}. Your update
-            policy is “ask”, so nothing is installed until you say so.
-          </span>
-        </div>
-        <div class="update-prompt-actions">
-          <button
-            disabled={$appStore.isBusy}
-            on:click={() => appStore.downloadLatestRuntime()}
-            type="button"
-          >
-            Download v{$appStore.releaseStatus.latestVersion}
-          </button>
-          <button
-            class="ghost"
-            on:click={() => (dismissedUpdateVersion = $appStore.releaseStatus?.latestVersion ?? null)}
-            title="Hide this notice until the next release"
-            type="button"
-          >
-            Not now
-          </button>
-        </div>
-      </div>
-    {/if}
   </header>
 
   {#if $appStore.error}
