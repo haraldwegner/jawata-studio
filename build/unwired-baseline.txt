@@ -1,0 +1,76 @@
+src/conductor.rs|constant `CONDUCTOR_SECTION_BUDGET_INTELLIJ` is never used
+src/conductor.rs|constant `CONDUCTOR_SECTION_BUDGET_UNIVERSAL` is never used
+src/gateway.rs|field `workspace_name` is never read
+src/manager_service.rs|constant `JAWATA_STOP_SENTINEL` is never used
+src/runner.rs|associated function `from_config_dir` is never used
+src/runner.rs|associated function `java_files_under` is never used
+src/runner.rs|associated functions `pass` and `fail` are never used
+src/runner.rs|associated items `new`, `call_tool`, `compile_verify`, and `doclint` are never used
+src/runner.rs|associated items `parse` and `matches` are never used
+src/runner.rs|constant `FILE_BLOCK_END` is never used
+src/runner.rs|constant `FILE_BLOCK_PREFIX` is never used
+src/runner.rs|constant `FILE_BLOCK_SUFFIX` is never used
+src/runner.rs|constant `JOURNAL_SCHEMA` is never used
+src/runner.rs|constant `NOTHING_TO_DO` is never used
+src/runner.rs|constant `PROPOSAL_BEGIN` is never used
+src/runner.rs|constant `PROPOSAL_END` is never used
+src/runner.rs|constant `WORK_PREFIX` is never used
+src/runner.rs|enum `CeilingKind` is never used
+src/runner.rs|enum `CronField` is never used
+src/runner.rs|enum `Verdict` is never used
+src/runner.rs|function `append_journal` is never used
+src/runner.rs|function `ask_adapter` is never used
+src/runner.rs|function `clip` is never used
+src/runner.rs|function `collect_profile_evidence` is never used
+src/runner.rs|function `compute_files_diff` is never used
+src/runner.rs|function `copy_tree` is never used
+src/runner.rs|function `due_seats` is never used
+src/runner.rs|function `execute_observation` is never used
+src/runner.rs|function `extract_tool_text` is never used
+src/runner.rs|function `journal_nothing_to_do` is never used
+src/runner.rs|function `new_run_id` is never used
+src/runner.rs|function `parse_file_blocks` is never used
+src/runner.rs|function `parse_observation` is never used
+src/runner.rs|function `parse_proposal` is never used
+src/runner.rs|function `proposed_test_classes` is never used
+src/runner.rs|function `purity_check` is never used
+src/runner.rs|function `reap_process_tree` is never used
+src/runner.rs|function `record_human_verdict_and_sync` is never used
+src/runner.rs|function `record_human_verdict_inner` is never used
+src/runner.rs|function `record_human_verdict` is never used
+src/runner.rs|function `run_javadoc_writer` is never used
+src/runner.rs|function `run_phase` is never used
+src/runner.rs|function `run_seat` is never used
+src/runner.rs|function `run_test_writer` is never used
+src/runner.rs|function `sanitize_fixture_source` is never used
+src/runner.rs|function `scheduler_tick` is never used
+src/runner.rs|function `shadow_apply` is never used
+src/runner.rs|function `shadow_dir_name` is never used
+src/runner.rs|function `shadow_stage_files` is never used
+src/runner.rs|function `touched_files_of` is never used
+src/runner.rs|function `write_proposal_record` is never used
+src/runner.rs|method `as_str` is never used
+src/runner.rs|methods `run_suite_once`, `missed_counts`, and `mutation_counts` are never used
+src/runner.rs|static `RUN_COUNTER` is never used
+src/runner.rs|struct `AdvisoryGateExecutor` is never constructed
+src/runner.rs|struct `ChosenObservation` is never constructed
+src/runner.rs|struct `ClaudeCodeAdapter` is never constructed
+src/runner.rs|struct `GateOutcome` is never constructed
+src/runner.rs|struct `JournalEntry` is never constructed
+src/runner.rs|struct `PhaseOutput` is never constructed
+src/runner.rs|struct `PreDetected` is never constructed
+src/runner.rs|struct `ProposalFile` is never constructed
+src/runner.rs|struct `Proposal` is never constructed
+src/runner.rs|struct `ResidentGateExecutor` is never constructed
+src/runner.rs|struct `ResidentStoreRecorder` is never constructed
+src/runner.rs|struct `RunReport` is never constructed
+src/runner.rs|struct `RunRequest` is never constructed
+src/runner.rs|struct `RunnerPaths` is never constructed
+src/runner.rs|struct `Schedule` is never constructed
+src/runner.rs|struct `ScriptAdapter` is never constructed
+src/runner.rs|struct `ShadowJavaGateExecutor` is never constructed
+src/runner.rs|struct `TestWriterBaseline` is never constructed
+src/runner.rs|struct `TestWriterGates` is never constructed
+src/runner.rs|trait `CliAdapter` is never used
+src/runner.rs|trait `GateExecutor` is never used
+src/runner.rs|trait `StoreRecorder` is never used

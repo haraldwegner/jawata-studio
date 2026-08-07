@@ -7,7 +7,22 @@ mod conductor;
 mod manager_service;
 mod release_manager;
 mod resident;
-#[allow(dead_code)] // Sprint 25 Stage 8: consumed by the seat stages (9-14) + UI wiring
+// MEASURED, Sprint 28 Stage 4 (D-UNWIRED) — the previous note here claimed
+// this module was "consumed by the seat stages (9-14) + UI wiring". It is not.
+// Production reaches exactly the seat-DEFINITION half — load_seat_definitions,
+// parse_seat_definition, SeatDefinition, GateClass — from manager_service and
+// conductor. The seat EXECUTION engine (run_seat, run_phase, the CLI adapters,
+// the gate executors, proposals, journal, scheduler, shadow-apply) has no
+// production caller: 72 items reachable only from this module's own tests,
+// because the seats now run by stance handoff in the client rather than
+// through a hosted runner.
+//
+// The attribute stays so the build is not buried in 74 warnings, but it no
+// longer hides anything: build/unwired-gate.sh audits with --force-warn
+// dead_code, which sees through it, and every one of those items is in the
+// committed baseline. Whether the hosted runner ships or goes is a product
+// decision, not a lint.
+#[allow(dead_code)]
 mod runner;
 mod runtime_manager;
 

@@ -6026,8 +6026,8 @@ printf '%s\n' '{}'
 /// entries while leaving the user's hooks untouched.
 const CURSOR_HOOK_SENTINEL: &str = "hooks/jawata-";
 
-/// The four managed (event, entry) pairs — the SINGLE source for both the standalone
-/// `build_cursor_hooks_json` and the merge-into-the-user's-file path, so they never drift.
+/// The four managed (event, entry) pairs — the SINGLE source used by the
+/// merge-into-the-user's-file deploy path, which is the ONLY writer.
 fn managed_cursor_hook_entries() -> Vec<(&'static str, serde_json::Value)> {
     vec![
         ("sessionStart", serde_json::json!({ "command": "./hooks/jawata-session-primer.sh", "timeout": 15 })),
@@ -6037,16 +6037,11 @@ fn managed_cursor_hook_entries() -> Vec<(&'static str, serde_json::Value)> {
     ]
 }
 
-/// The managed Cursor `hooks.json` (version 1) registering the four managed scripts, with
-/// command paths relative to `~/.cursor/` per the spec. The guard is `failClosed` so a
-/// crash/timeout blocks the Java-grep rather than leaking it.
-fn build_cursor_hooks_json() -> String {
-    let mut hooks = serde_json::Map::new();
-    for (event, entry) in managed_cursor_hook_entries() {
-        hooks.insert(event.to_string(), serde_json::Value::Array(vec![entry]));
-    }
-    serde_json::json!({ "version": 1, "hooks": hooks }).to_string()
-}
+// Sprint 28 Stage 4 (D-UNWIRED): build_cursor_hooks_json() lived here — a
+// whole-file `hooks.json` builder that overwrote the user's own hooks and was
+// therefore never used by any deploy. Its ONLY caller was the test asserting
+// its shape. Deleted; the contract it carried (version 1, the four events, the
+// failClosed guard) is now asserted against the merge path's written file.
 
 /// True iff a Cursor hook entry is one jawata-studio wrote (its `command` references a
 /// managed `./hooks/jawata-*.sh` script).
@@ -8470,13 +8465,29 @@ mod tests {
 
     #[test]
     fn cursor_hooks_json_registers_managed_events_failclosed_guard() {
-        let v: serde_json::Value = serde_json::from_str(&build_cursor_hooks_json()).unwrap();
+        // Sprint 28 Stage 4 (D-UNWIRED): this test used to assert
+        // build_cursor_hooks_json() — a whole-file builder production never
+        // called, since deploys go through the merge path that preserves the
+        // user's own hooks. The clauses below were true of a JSON we never
+        // wrote, so the shipped file could have lost failClosed with the test
+        // still green. It now reads the file the deploy actually writes.
+        let dir = unique_tempdir("cursor-hooks-contract");
+        let cursor = dir.join(".cursor");
+        let hooks_json = cursor.join("hooks.json");
+        let hooks_path = hooks_json.to_string_lossy().to_string();
+        let hooks_dir = cursor.join("hooks");
+        write_managed_cursor_hooks(&hooks_path, &hooks_dir, "http://u/mcp", "t", false, false).unwrap();
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&hooks_json).unwrap()).unwrap();
         assert_eq!(v["version"], 1);
         for ev in ["sessionStart", "beforeShellExecution", "beforeSubmitPrompt", "afterMCPExecution"] {
             assert!(v["hooks"][ev].is_array(), "event {ev} registered");
         }
         assert_eq!(v["hooks"]["beforeShellExecution"][0]["failClosed"], true, "guard fails closed");
         assert_eq!(v["hooks"]["sessionStart"][0]["command"], "./hooks/jawata-session-primer.sh");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
