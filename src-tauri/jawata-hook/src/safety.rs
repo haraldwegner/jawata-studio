@@ -48,6 +48,13 @@ pub const STDIN_DEADLINE: Duration = Duration::from_millis(1_500);
 /// Here the variant, its stable log tag, and its test specimen are ONE row.
 /// There is a single place to forget, and forgetting does not compile.
 macro_rules! silence_reasons {
+    // A variant declared WITH a payload type yields that payload; one declared
+    // without yields the empty string. This is what removes the `_ => ""`
+    // catch-all: there is no default arm to fall through to.
+    (@payload $s:expr, $variant:ident, $ty:ty) => {
+        match $s { SilenceReason::$variant(v) => v.as_str(), _ => "" }
+    };
+    (@payload $s:expr, $variant:ident) => { "" };
     ($( $(#[$doc:meta])* $variant:ident $(($ty:ty))? => $tag:literal, $specimen:expr );* $(;)?) => {
         /// Why the hook stayed quiet.
         #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,11 +62,38 @@ macro_rules! silence_reasons {
             $( $(#[$doc])* $variant $(($ty))? ),*
         }
 
-        /// The stable log tag — never a `Debug` rendering, which would tie the
-        /// on-disk format to a Rust identifier and break every grep on rename.
-        pub fn tag_of(reason: &SilenceReason) -> &'static str {
-            match reason { $( SilenceReason::$variant { .. } => $tag ),* }
+        impl SilenceReason {
+            /// The stable log tag — never a `Debug` rendering, which would tie
+            /// the on-disk format to a Rust identifier and break every grep on
+            /// rename.
+            pub fn tag(&self) -> &'static str {
+                match self { $( SilenceReason::$variant { .. } => $tag ),* }
+            }
+
+            /// The payload this reason carries, if any — GENERATED, so a new
+            /// payload-carrying variant cannot silently log an empty column.
+            ///
+            /// The hand-written version of this lived in another module behind
+            /// a `_ => ""` catch-all, and that catch-all fired for real: a
+            /// seeded payload variant logged nothing with 108 tests green. The
+            /// macro was introduced to end exactly that shape and left its last
+            /// instance standing one file away.
+            ///
+            /// Newlines and tabs become spaces so one record is always one
+            /// line: a panic message is multi-line, and an unescaped one turns
+            /// a single record into several malformed ones.
+            pub fn detail(&self) -> String {
+                let raw: &str = match self {
+                    $( SilenceReason::$variant { .. } => silence_reasons!(@payload self, $variant $(, $ty)?) ),*
+                };
+                raw.chars()
+                    .map(|c| if c == '\n' || c == '\r' || c == '\t' { ' ' } else { c })
+                    .collect()
+            }
         }
+
+        /// Free-function form, kept for call sites that hold a reference.
+        pub fn tag_of(reason: &SilenceReason) -> &'static str { reason.tag() }
 
         /// One specimen of EVERY variant, generated from the same row list.
         /// A new variant appears here automatically; it cannot be forgotten.

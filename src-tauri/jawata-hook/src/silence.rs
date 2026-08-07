@@ -52,34 +52,8 @@ pub const MAX_BYTES: u64 = 256 * 1024;
 pub const HARD_CEILING_BYTES: u64 = 8 * MAX_BYTES;
 
 
-/// The stable tag for a reason — the thing a human greps for, and the thing a
-/// test asserts on. Deliberately NOT `Debug`: a Debug rendering is a
-/// refactoring hazard (renaming a variant silently changes the log format and
-/// every grep that reads it), and it interleaves the payload with the tag.
-///
-/// The payload travels in its own column, so `PayloadUnreadable` and
-/// `QueryFailed` keep their detail without the tag absorbing it.
-pub fn tag(reason: &SilenceReason) -> &'static str {
-    crate::safety::tag_of(reason)
-}
 
 
-/// The detail a reason carries, if any. Newlines and tabs are replaced so one
-/// record is always exactly one line — a panic message is multi-line, and an
-/// unescaped one would turn a single record into several malformed ones.
-fn detail(reason: &SilenceReason) -> String {
-    let raw = match reason {
-        SilenceReason::UnknownRole(s) => s.as_str(),
-        SilenceReason::PayloadUnreadable(s) => s.as_str(),
-        SilenceReason::NoCues(s) => s.as_str(),
-        SilenceReason::QueryFailed(s) => s.as_str(),
-        SilenceReason::Panicked(s) => s.as_str(),
-        _ => "",
-    };
-    raw.chars()
-        .map(|c| if c == '\n' || c == '\r' || c == '\t' { ' ' } else { c })
-        .collect()
-}
 
 /// One record: `<unix-millis>\t<role>\t<tag>\t<detail>`.
 ///
@@ -97,7 +71,7 @@ pub fn record_line(role: &str, outcome: &Outcome) -> String {
     // fire path.
     let _ = match outcome {
         Outcome::Emitted(_) => write!(line, "{millis}\t{role}\temitted\t"),
-        Outcome::Silent(r) => write!(line, "{millis}\t{role}\t{}\t{}", tag(r), detail(r)),
+        Outcome::Silent(r) => write!(line, "{millis}\t{role}\t{}\t{}", r.tag(), r.detail()),
     };
     line.push('\n');
     line
@@ -191,7 +165,7 @@ mod tests {
     /// a test to hold it up.
     #[test]
     fn the_reason_list_has_no_duplicate_or_empty_tags() {
-        let listed: Vec<&str> = every_reason().iter().map(tag).collect();
+        let listed: Vec<&str> = every_reason().iter().map(|r: &SilenceReason| r.tag()).collect();
         assert!(listed.len() >= 14, "expected the full taxonomy, got {}", listed.len());
         let mut sorted = listed.clone();
         sorted.sort_unstable();
@@ -205,7 +179,7 @@ mod tests {
     #[test]
     fn every_reason_writes_a_distinct_tag() {
         let reasons = every_reason();
-        let mut tags: Vec<&str> = reasons.iter().map(tag).collect();
+        let mut tags: Vec<&str> = reasons.iter().map(|r: &SilenceReason| r.tag()).collect();
         let before = tags.len();
         tags.sort_unstable();
         tags.dedup();
