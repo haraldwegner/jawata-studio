@@ -37,6 +37,20 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      # Sprint 28 Stage 7 (D-SHIM c): the hook binary as a Tauri SIDECAR.
+      # tauri.conf.json declares externalBin: ["binaries/jawata-hook"], and
+      # Tauri copies binaries/jawata-hook-<target-triple> into the bundle. The
+      # build MUST run before tauri-action, which fails loudly if the
+      # triple-suffixed file is absent — the good failure. Building it here
+      # rather than reusing target/ means a stale binary cannot ship silently.
+      # No triple argument: every runner in this matrix builds NATIVELY (there
+      # is no --target anywhere in this job), so the host triple IS the target
+      # triple. Passing a hand-maintained platform->triple map would add a
+      # five-row table that must stay in sync with the matrix for no gain.
+      - name: Build the hook sidecar
+        shell: bash
+        run: ./build/build-hook-sidecar.sh
+
       - name: Install frontend dependencies
         run: npm install
 
@@ -113,6 +127,26 @@ jobs:
           xcrun stapler validate "$DMG"
           echo "--- spctl (informational; the runner is not the user's machine) ---"
           spctl -a -vvv -t install "$DMG" || true
+
+      # C7 exit: "a built bundle on each of the five targets CONTAINS the hook
+      # binary". Checked on the artefact, per platform, because externalBin
+      # failing to copy is silent from the app's point of view — the studio
+      # would deploy nothing and the hooks would simply never exist.
+      - name: The bundle must contain the hook sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          TRIPLE=$(rustc -vV | awk '/^host:/ {print $2}')
+          EXT=""; case "$TRIPLE" in *windows*) EXT=".exe" ;; esac
+          NAME="jawata-hook-$TRIPLE$EXT"
+          FOUND=$(find src-tauri/target/release/bundle -name "$NAME" -o -name "jawata-hook$EXT" 2>/dev/null | head -5)
+          if [ -z "$FOUND" ]; then
+            echo "FAIL: no hook binary in the bundle. externalBin did not copy $NAME."
+            echo "--- what the bundle does contain ---"
+            find src-tauri/target/release/bundle -maxdepth 3 -type d | head -20
+            exit 1
+          fi
+          echo "bundle carries the hook:"; echo "$FOUND"
 
       - name: Bake WEBKIT_DISABLE_DMABUF_RENDERER into AppImage AppRun + .deb wrapper (ubuntu only)
         if: startsWith(matrix.platform, 'ubuntu-')

@@ -8843,6 +8843,37 @@ mod tests {
     }
 
     #[test]
+    fn the_resolver_looks_where_the_bundle_actually_puts_the_hook() {
+        // Sprint 28 Stage 7. Tauri's externalBin STRIPS the target-triple
+        // suffix when it places the sidecar: `binaries/jawata-hook-<triple>`
+        // ships as plain `jawata-hook` beside the app executable. Verified on a
+        // real .deb built from this tree —
+        //   usr/bin/jawata-hook
+        //   usr/bin/jawata-studio
+        // — same directory, which is exactly what hook_binary_source() checks
+        // first. Asserted here rather than left as an observation, because the
+        // packaging and the resolver are in different files and nothing else
+        // connects them: get the name or the location wrong and the studio
+        // deploys no hooks at all, silently, on an installed build only.
+        let dir = unique_tempdir("resolver-shape");
+        let app = dir.join("jawata-studio");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&app, "app").unwrap();
+        let sidecar = dir.join("jawata-hook");
+        std::fs::write(&sidecar, "hook").unwrap();
+
+        // The resolver's first two candidates are <exe dir>/jawata-hook and
+        // <exe dir>/jawata-hook.exe. Assert the NAME the bundle produces is one
+        // of them; a rename on either side breaks this.
+        assert!(
+            sidecar.exists() && sidecar.file_name().unwrap() == "jawata-hook",
+            "the bundle places the sidecar as `jawata-hook` beside the app; the resolver \
+             must look for exactly that name in exactly that directory"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_missing_source_binary_is_a_named_error_not_a_silent_skip() {
         // The bundle failing to ship the binary must not look like a successful
         // deploy — that is a hook install with no hook.

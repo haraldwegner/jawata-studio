@@ -43,6 +43,9 @@
           "librsvg2-2"
         ]
       }
-    }
+    },
+    "externalBin": [
+      "binaries/jawata-hook"
+    ]
   }
 }
