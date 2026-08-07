@@ -4328,7 +4328,12 @@ const SCRIPT_GENERATION: &[(&str, &str)] = &[
     // and the unit test passed it only by fabricating a command that cannot
     // exist. Exactly the failure this table's own comment warns about: a wrong
     // guess here does not fail loudly (C6 audit, F1).
-    ("jawata-hook-stop", "stop-gate.sh"),
+    // "jawata-studio/stop-gate.sh", not the bare filename. The other five rows
+    // carry the jawata-studio/ segment; a bare "stop-gate.sh" would also claim
+    // a user's own /home/u/bin/stop-gate.sh and DELETE it on undeploy. The one
+    // row that could over-claim was also the one with no specimen in the
+    // never-claim test (C6 audit round 2, N2).
+    ("jawata-hook-stop", "jawata-studio/stop-gate.sh"),
 ];
 
 /// Whether an entry's command names ANY generation of a managed hook.
@@ -9152,6 +9157,52 @@ mod tests {
     }
 
     #[test]
+    fn the_production_path_functions_write_what_the_predicates_look_for() {
+        // C6 audit round 2, N1 — THE LAST LINK, and the one closest to
+        // production. managed_*_script_path() decides the filename that appears
+        // in the command the deploy actually writes, and every test hardcoded
+        // its own string instead. The auditor measured the consequence: rename
+        // sessionstart-primer.sh in the path function and the WHOLE SUITE stays
+        // green while a real deploy appends one SessionStart entry per run,
+        // unbounded, with undeploy leaving all of them — because
+        // write_managed_hook_section is retain(!is_managed) then push, so a
+        // predicate that cannot see its own entry never removes it.
+        //
+        // The chain was HOOK_ROLES <-> hook-events.json <-> SCRIPT_GENERATION
+        // <-> sentinel constants <-> builders, and stopped one link short of
+        // the paths. This closes it.
+        let paths: Vec<(&str, Option<PathBuf>)> = vec![
+            ("jawata-hook-guard", managed_guard_script_path()),
+            ("jawata-hook-observer", managed_observer_script_path()),
+            ("jawata-hook-primer", managed_primer_script_path()),
+            ("jawata-hook-recall", managed_recall_script_path()),
+            ("jawata-hook-userprompt", managed_userprompt_script_path()),
+            ("jawata-hook-stop", managed_stop_script_path()),
+        ];
+        assert_eq!(HOOK_ROLES.len(), paths.len(), "one production path per deployed role");
+
+        for (binary, path) in paths {
+            let Some(path) = path else {
+                // No home directory in this environment: the check cannot be
+                // made, and saying so is better than passing.
+                panic!("{binary}: no production path resolved — this assertion did not run");
+            };
+            let sentinel = SCRIPT_GENERATION
+                .iter()
+                .find(|(b, _)| *b == binary)
+                .unwrap_or_else(|| panic!("{binary} has no generation-2 row"))
+                .1;
+            let shown = display_path(&path);
+            assert!(
+                shown.contains(sentinel),
+                "{binary}: the deploy writes {shown}, which does NOT contain the sentinel \
+                 {sentinel} its own predicate matches on. Every deploy would append another \
+                 entry and undeploy would leave them all."
+            );
+        }
+    }
+
+    #[test]
     fn the_deployed_role_list_matches_the_shared_hook_contract() {
         // C6 audit F2. HOOK_ROLES — the list the deploy actually writes — was
         // asserted against NOTHING: not against the hook's role table, not
@@ -9193,6 +9244,11 @@ mod tests {
         // resembles ours without being ours.
         for command in [
             "/home/u/.claude/hooks/my-own-guard.sh",
+            // The stop row was the ONE that could over-claim (it briefly used a
+            // bare "stop-gate.sh") and the one with no specimen here — C6 audit
+            // round 2, N2. A user who names their own hook stop-gate.sh must
+            // keep it.
+            "/home/u/bin/stop-gate.sh",
             "/home/u/.claude/hooks/jawata-notes/my-hook.sh",
             "/usr/local/bin/jawata-hook-guard-wrapper-of-mine",
             "echo 'jawata-studio/pretooluse-guard.sh is what I replaced'",
