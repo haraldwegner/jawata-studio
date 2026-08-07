@@ -4594,7 +4594,7 @@ fn build_managed_hook_entry(guard_path: &Path) -> serde_json::Value {
     serde_json::json!({
         "matcher": "Bash|Grep|Edit|Write|MultiEdit|mcp__jawata.*",
         "hooks": [
-            { "type": "command", "command": command }
+            { "type": "command", "timeout": HOOK_TIMEOUT_SECS, "command": command }
         ]
     })
 }
@@ -5204,7 +5204,7 @@ fn build_managed_posthook_entry(observer_path: &Path) -> serde_json::Value {
     serde_json::json!({
         "matcher": "Bash|Grep|Edit|Write|MultiEdit|Read|mcp__jawata.*",
         "hooks": [
-            { "type": "command", "command": command }
+            { "type": "command", "timeout": HOOK_TIMEOUT_SECS, "command": command }
         ]
     })
 }
@@ -5435,16 +5435,32 @@ fn is_managed_recall_entry(entry: &serde_json::Value) -> bool {
 }
 
 /// SessionStart entry: no matcher (fires on every session start).
+/// Sprint 28 (C6 clause 6): every entry we write carries an EXPLICIT timeout.
+///
+/// The client default is unpublished — Cursor documents it only as "platform
+/// default" — so an entry without one is a hook whose bound nobody knows,
+/// including us. Cursor's four entries already carried timeouts; Claude's six
+/// did not, which is the gap this closes.
+///
+/// The values sit ABOVE the hook's own budget and below anything a user would
+/// notice: the binary's total deadline is 4s, so 5s leaves headroom for process
+/// start without the client's timeout ever being the thing that ends a run.
+/// The primer gets 15s because it fires once per session and may wait on a
+/// cold store.
+const HOOK_TIMEOUT_SECS: u64 = 5;
+const PRIMER_TIMEOUT_SECS: u64 = 15;
+
 fn build_managed_primer_entry(primer_path: &Path) -> serde_json::Value {
     serde_json::json!({
-        "hooks": [ { "type": "command", "command": display_path(primer_path) } ]
+        "hooks": [ { "type": "command", "command": display_path(primer_path),
+                     "timeout": PRIMER_TIMEOUT_SECS } ]
     })
 }
 /// PreToolUse entry for recall: fires on jawata tool calls (the script gates to refactor verbs).
 fn build_managed_recall_entry(recall_path: &Path) -> serde_json::Value {
     serde_json::json!({
         "matcher": "mcp__jawata.*",
-        "hooks": [ { "type": "command", "command": display_path(recall_path) } ]
+        "hooks": [ { "type": "command", "timeout": HOOK_TIMEOUT_SECS, "command": display_path(recall_path) } ]
     })
 }
 fn is_managed_userprompt_entry(entry: &serde_json::Value) -> bool {
@@ -5453,7 +5469,7 @@ fn is_managed_userprompt_entry(entry: &serde_json::Value) -> bool {
 /// UserPromptSubmit entry: no matcher (fires on every user prompt; the script gates itself).
 fn build_managed_userprompt_entry(script_path: &Path) -> serde_json::Value {
     serde_json::json!({
-        "hooks": [ { "type": "command", "command": display_path(script_path) } ]
+        "hooks": [ { "type": "command", "timeout": HOOK_TIMEOUT_SECS, "command": display_path(script_path) } ]
     })
 }
 
@@ -5614,7 +5630,7 @@ fn is_managed_stop_entry(entry: &serde_json::Value) -> bool {
 
 fn build_managed_stop_entry(script: &Path) -> serde_json::Value {
     serde_json::json!({
-        "hooks": [ { "type": "command", "command": display_path(script) } ]
+        "hooks": [ { "type": "command", "timeout": HOOK_TIMEOUT_SECS, "command": display_path(script) } ]
     })
 }
 
@@ -8527,6 +8543,62 @@ mod tests {
             s.contains(r#"basename "$fp" .java"#),
             "derives the type-name cue from the edited .java file"
         );
+    }
+
+    #[test]
+    fn every_entry_we_write_carries_an_explicit_timeout() {
+        // C6 exit clause 6: "Every written entry carries an explicit timeout —
+        // the client default is unpublished." Cursor documents its own only as
+        // "platform default", so an entry without one is a hook whose bound
+        // nobody knows, including us. Cursor's four already had them; Claude's
+        // six did not.
+        //
+        // Asserted against the DEPLOYED FILE rather than the builders, so a
+        // merge path that drops the field on the way through is caught too.
+        let dir = unique_tempdir("timeouts");
+        let settings = dir.join("settings.json");
+        let settings_path = settings.to_string_lossy().to_string();
+        let managed = dir.join("jawata-studio");
+        std::fs::create_dir_all(&managed).unwrap();
+
+        write_managed_hook(&settings_path, &managed.join("pretooluse-guard.sh"),
+            "http://u/health", false, false).unwrap();
+        write_managed_posthook(&settings_path, &managed.join("posttooluse-observer.sh"),
+            "http://u/mcp", "t", false, false).unwrap();
+        write_managed_stop(&settings_path, &managed.join("stop-gate.sh"),
+            "http://u/mcp", "t", false, false).unwrap();
+        write_managed_primer(&settings_path, &managed.join("sessionstart-primer.sh"),
+            "http://u/mcp", "t", false, false).unwrap();
+        write_managed_recall(&settings_path, &managed.join("pretooluse-recall.sh"),
+            "http://u/mcp", "t", false, false).unwrap();
+        write_managed_userprompt(&settings_path, &managed.join("userpromptsubmit-recall.sh"),
+            "http://u/mcp", "t", false, false).unwrap();
+
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        let mut checked = 0;
+        for (event, entries) in written["hooks"].as_object().expect("hooks") {
+            for entry in entries.as_array().expect("entries") {
+                for hook in entry["hooks"].as_array().expect("hook list") {
+                    let t = hook["timeout"].as_u64().unwrap_or_else(|| {
+                        panic!("{event}: an entry we wrote carries no explicit timeout — the                                 client default is unpublished, so its bound is unknown: {hook}")
+                    });
+                    assert!(t >= 5, "{event}: timeout {t}s is under the hook's own 4s budget");
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(6, checked, "all six Claude entries checked, got {checked}");
+
+        // Cursor's four, from the source both its deploy and the hook read.
+        for (event, entry) in managed_cursor_hook_entries() {
+            assert!(
+                entry["timeout"].as_u64().is_some(),
+                "cursor {event} carries no explicit timeout: {entry}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

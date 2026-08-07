@@ -313,6 +313,49 @@ mod tests {
     }
 
     #[test]
+    fn every_deployed_role_name_resolves_its_own_role() {
+        // C6 exit clause 3: "argv[0] dispatch is asserted — a table-driven test
+        // over all six role-named entry points, each resolving its role from
+        // the name it was invoked as. This is the design's decisive decision;
+        // ungated, an argument scheme could ship instead."
+        //
+        // Six DISTINCT names, six DISTINCT roles, checked both ways: every name
+        // resolves, and no two names resolve to the same role. A table where
+        // two entries collided would dispatch one role's work on another's
+        // event, silently.
+        let deployed: Vec<&str> = ROLES
+            .iter()
+            .filter(|r| r.client == Client::ClaudeCode)
+            .map(|r| r.binary_name)
+            .collect();
+        assert_eq!(6, deployed.len(), "six role-named entry points: {deployed:?}");
+
+        let mut seen = std::collections::HashSet::new();
+        for name in &deployed {
+            let role = role_for_binary(name)
+                .unwrap_or_else(|| panic!("{name} is deployed but resolves no role"));
+            assert!(
+                seen.insert(format!("{role:?}")),
+                "{name} resolves to {role:?}, which another deployed name already claims — \
+                 one role's work would run on another's event"
+            );
+            // And through the shapes a client actually invokes it with.
+            for shape in [
+                format!("/home/u/.claude/hooks/{name}"),
+                format!("./hooks/{name}"),
+                format!(r"C:\Users\h\.claude\hooks\{name}.exe"),
+            ] {
+                assert_eq!(
+                    Some(role),
+                    role_for_binary(&shape),
+                    "{shape} did not resolve to {role:?}"
+                );
+            }
+        }
+        assert_eq!(6, seen.len(), "six distinct roles: {seen:?}");
+    }
+
+    #[test]
     fn argv0_resolves_the_role_across_platform_shapes() {
         assert_eq!(Some(Role::UserPrompt), role_for_binary("jawata-hook-userprompt"));
         assert_eq!(Some(Role::Guard), role_for_binary("/usr/local/bin/jawata-hook-guard"));
