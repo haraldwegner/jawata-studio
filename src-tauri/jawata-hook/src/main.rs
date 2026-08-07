@@ -24,6 +24,7 @@
 //! place that guarantees it.
 
 mod cue;
+mod emit;
 mod query;
 mod roles;
 
