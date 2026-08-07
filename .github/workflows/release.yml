@@ -140,7 +140,6 @@ jobs:
         run: |
           set -euo pipefail
           TRIPLE=$(rustc -vV | awk '/^host:/ {print $2}')
-          EXT=""; case "$TRIPLE" in *windows*) EXT=".exe" ;; esac
           BUNDLE=src-tauri/target/release/bundle
 
           # PER-PLATFORM, because the payload is a different KIND of thing on
@@ -181,7 +180,16 @@ jobs:
                 # binaries (jawata-hook-primer, jawata-hook/src/cue.rs, ...).
                 # Byte-matching would make this assertion a tautology that can
                 # never fail.
-                MATCH=$(printf '%s' "$(7z l "$INSTALLER" 2>/dev/null)" | grep -Ei 'jawata[-_]hook' | head -1)
+                # `|| true` is LOAD-BEARING, and `head -1` is deliberately
+                # absent. Moving the grep out of an `if` condition armed
+                # `set -e` on it: on a genuine no-match grep exits 1, pipefail
+                # propagates, and the step died at THIS line — so the FAIL
+                # diagnostic below became unreachable and a real containment
+                # failure printed a bare "exit code 1". And `| head -1` was a
+                # new pipe carrying the very SIGPIPE-under-pipefail hazard the
+                # comment above says was designed out; it bought nothing,
+                # since MATCH is only tested for emptiness and printed.
+                MATCH=$(printf '%s' "$(7z l "$INSTALLER" 2>/dev/null)" | grep -Ei 'jawata[-_]hook') || true
                 if [ -n "$MATCH" ]; then
                   # Print the MATCHED ENTRY, not merely the path: a pass that
                   # shows only what was searched cannot be told apart from a
