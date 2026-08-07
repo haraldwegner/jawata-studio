@@ -2191,6 +2191,32 @@ impl ManagerService {
         // fail safe (jawata down / empty / absence → inject nothing).
         if let Some(server) = servers.first() {
             let regenerate = matches!(mode, DeployMode::Regenerate);
+
+            // Sprint 28 (D-SHIM): hook_config.json beside the managed hooks —
+            // endpoint, token and client on disk, so one binary can serve every
+            // role instead of ten scripts each carrying a baked-in URL. Written
+            // temp-file-plus-rename because hook invocations genuinely overlap
+            // (three sessions produced three overlapping pairs, measured), and a
+            // reader must never see a truncated file.
+            //
+            // Written NOW, before the binaries that read it ship, so an install
+            // upgraded mid-sprint already carries it. A config with no reader is
+            // inert; a reader with no config is a silent hook.
+            if let Some(primer_path) = managed_primer_script_path() {
+                if let Some(hooks_dir) = primer_path.parent() {
+                    let client_key = if client.eq_ignore_ascii_case("cursor") {
+                        "cursor"
+                    } else {
+                        "claude-code"
+                    };
+                    match write_hook_config(hooks_dir, &server.url, &server.token, client_key) {
+                        Ok(true) => changed_sections.push("hook_config".into()),
+                        Ok(false) => {}
+                        Err(error) => errors.push(error),
+                    }
+                }
+            }
+
             if let (Some(settings_path), Some(primer_path)) =
                 (derive_hook_settings_path(client), managed_primer_script_path())
             {
@@ -5435,6 +5461,50 @@ fn is_managed_recall_entry(entry: &serde_json::Value) -> bool {
 }
 
 /// SessionStart entry: no matcher (fires on every session start).
+/// Sprint 28 (D-SHIM, C6 clause 5): write `hook_config.json` beside the hook
+/// binaries — temp file, then rename.
+///
+/// Concurrency here is MEASURED, not assumed: three sessions with a holding
+/// hook produced three overlapping pairs, so invocations genuinely run in
+/// parallel. A plain `write` truncates first, and a hook reading during that
+/// window sees an empty or half-written file. `rename` within a directory is
+/// atomic on every platform we ship, so a reader sees either the whole old file
+/// or the whole new one and never a torn one.
+///
+/// The hook's read side already treats a zero-length file as a TORN DEPLOY
+/// rather than as "not configured" — this function makes that state
+/// unreachable, and the reader stays loud if it ever happens anyway.
+fn write_hook_config(
+    hooks_dir: &Path,
+    mcp_url: &str,
+    token: &str,
+    client: &str,
+) -> Result<bool, String> {
+    fs::create_dir_all(hooks_dir)
+        .map_err(|e| format!("failed to create hooks dir {}: {e}", hooks_dir.display()))?;
+    let body = serde_json::json!({
+        "url": mcp_url,
+        "token": token,
+        "client": client,
+    })
+    .to_string();
+
+    let target = hooks_dir.join("hook_config.json");
+    if fs::read_to_string(&target).map(|existing| existing == body).unwrap_or(false) {
+        return Ok(false);   // byte-stable no-op
+    }
+    // A per-process temp name: two deploys racing must not collide on the temp
+    // file itself, or one truncates the other's staging.
+    let tmp = hooks_dir.join(format!("hook_config.json.{}.tmp", std::process::id()));
+    fs::write(&tmp, &body)
+        .map_err(|e| format!("failed staging {}: {e}", tmp.display()))?;
+    fs::rename(&tmp, &target).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        format!("failed publishing {}: {e}", target.display())
+    })?;
+    Ok(true)
+}
+
 /// Sprint 28 (C6 clause 6): every entry we write carries an EXPLICIT timeout.
 ///
 /// The client default is unpublished — Cursor documents it only as "platform
@@ -8543,6 +8613,66 @@ mod tests {
             s.contains(r#"basename "$fp" .java"#),
             "derives the type-name cue from the edited .java file"
         );
+    }
+
+    #[test]
+    fn hook_config_is_never_seen_torn_by_a_concurrent_reader() {
+        // C6 exit clause 5, second half. Concurrency here is MEASURED: three
+        // sessions with a holding hook produced three overlapping pairs, so a
+        // deploy genuinely can land while a hook is reading. A plain write
+        // truncates first, and a reader in that window sees an empty or
+        // half-written file — which the hook's read side reports as a TORN
+        // DEPLOY. This makes that state unreachable.
+        let dir = unique_tempdir("hookcfg-race");
+        let hooks = dir.join("hooks");
+        write_hook_config(&hooks, "http://u/mcp", "t0", "claude-code").unwrap();
+        let target = hooks.join("hook_config.json");
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader_stop = stop.clone();
+        let reader_path = target.clone();
+        let reader = std::thread::spawn(move || {
+            let mut reads = 0u32;
+            let mut torn = Vec::new();
+            while !reader_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                match std::fs::read_to_string(&reader_path) {
+                    Ok(text) => {
+                        reads += 1;
+                        // Either the whole old file or the whole new one —
+                        // never something in between.
+                        if serde_json::from_str::<serde_json::Value>(&text).is_err() {
+                            torn.push(text);
+                        }
+                    }
+                    // A missing file would mean rename left a gap; record it.
+                    Err(e) => torn.push(format!("<unreadable: {e}>")),
+                }
+            }
+            (reads, torn)
+        });
+
+        for i in 0..300 {
+            write_hook_config(&hooks, "http://u/mcp", &format!("token-{i}"), "claude-code")
+                .unwrap();
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let (reads, torn) = reader.join().expect("reader thread");
+
+        assert!(reads > 50, "the reader barely ran ({reads} reads) — this proves little");
+        assert!(torn.is_empty(), "{} torn read(s), first: {:?}", torn.len(), torn.first());
+
+        // And no staging file is left behind.
+        let leftovers: Vec<_> = std::fs::read_dir(&hooks).unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
+
+        // Byte-stable: rewriting the same content changes nothing.
+        assert!(!write_hook_config(&hooks, "http://u/mcp", "token-299", "claude-code").unwrap(),
+            "an unchanged rewrite must be a no-op");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
