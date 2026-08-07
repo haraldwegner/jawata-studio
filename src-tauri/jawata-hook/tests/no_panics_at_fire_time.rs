@@ -43,16 +43,28 @@ const FORBIDDEN: &[&str] = &[
 ///
 /// Blanking literal contents also removes a false-positive class the old
 /// version had: a string that happens to contain `.unwrap()` is not code.
-fn lex(line: &str, in_block_comment: &mut bool) -> (String, i32) {
+fn lex(line: &str, block_depth: &mut i32) -> (String, i32) {
     let chars: Vec<char> = line.chars().collect();
     let mut code = String::with_capacity(chars.len());
     let mut delta = 0i32;
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
-        if *in_block_comment {
+        if *block_depth > 0 {
+            // NESTING counted, not a bool (round 4, H2). Rust allows
+            // /* a /* b */ c */; clearing on the FIRST */ let a pair of
+            // comments whose tails carried { and } skip production between
+            // them and still return to depth 0, which the balance check cannot
+            // see.
+            if c == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+                *block_depth += 1;
+                code.push(' ');
+                code.push(' ');
+                i += 2;
+                continue;
+            }
             if c == '*' && i + 1 < chars.len() && chars[i + 1] == '/' {
-                *in_block_comment = false;
+                *block_depth -= 1;
                 code.push(' ');
                 code.push(' ');
                 i += 2;
@@ -67,7 +79,7 @@ fn lex(line: &str, in_block_comment: &mut bool) -> (String, i32) {
             break;                       // rest of the line is a comment
         }
         if c == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
-            *in_block_comment = true;
+            *block_depth += 1;
             code.push(' ');
             code.push(' ');
             i += 2;
@@ -150,11 +162,58 @@ fn lex(line: &str, in_block_comment: &mut bool) -> (String, i32) {
     (code, delta)
 }
 
-/// True for `#[cfg(test)]` AND `#[cfg(all(test, …))]` — the second used to be
-/// scanned as production, a false-positive footgun the audit flagged.
+/// True for `#[cfg(test)]` and `#[cfg(all(test, …))]`, and deliberately FALSE
+/// for `#[cfg(not(test))]`.
+///
+/// C5 audit round 4, H1 — the hole that mattered. The check was
+/// `contains("test")`, which `#[cfg(not(test))]` also satisfies, so the item was
+/// skipped. But `not(test)` marks code that exists ONLY in non-test builds —
+/// exactly and exclusively the fire-time path. The control was exempting the one
+/// attribute whose entire meaning is "this is what ships", silently: the item
+/// skipped cleanly and the balance self-check passed.
+///
+/// Quoted features are NOT a problem, which was the looseness I expected and
+/// guessed wrong about: `lex` blanks string contents before this sees the line,
+/// so `#[cfg(feature = "testing")]` has already lost the word. Only an unquoted
+/// `test` token survives, which is why stripping `not( … )` groups is the whole
+/// fix.
 fn is_test_attribute(code: &str) -> bool {
     let t = code.trim_start();
-    t.starts_with("#[cfg(") && t.contains("test")
+    if !t.starts_with("#[cfg(") {
+        return false;
+    }
+    without_not_groups(t).contains("test")
+}
+
+/// Remove every `not( … )` group, balanced, so a `test` token inside one does
+/// not count.
+fn without_not_groups(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(chars.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i..].starts_with(&['n', 'o', 't', '(']) {
+            let mut depth = 0;
+            let mut j = i + 3;
+            while j < chars.len() {
+                if chars[j] == '(' {
+                    depth += 1;
+                } else if chars[j] == ')' {
+                    depth -= 1;
+                    if depth == 0 {
+                        j += 1;
+                        break;
+                    }
+                }
+                j += 1;
+            }
+            i = j;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
 }
 
 /// The production lines, plus the end state so the caller can prove the skipper
@@ -163,10 +222,10 @@ fn production_lines(text: &str) -> (Vec<(usize, String)>, i32, bool) {
     let mut out = Vec::new();
     let mut skip_depth: i32 = 0;
     let mut arming = false;
-    let mut in_block_comment = false;
+    let mut block_depth = 0i32;
 
     for (n, raw) in text.lines().enumerate() {
-        let (code, delta) = lex(raw, &mut in_block_comment);
+        let (code, delta) = lex(raw, &mut block_depth);
 
         // A brace ON THIS LINE distinguishes "the item is still to come" from
         // "the item opened and closed here" — `#[cfg(test)] fn helper() {}` has
@@ -316,6 +375,53 @@ fn the_scan_survives_the_shapes_that_defeated_its_first_version() {
         !lines.iter().any(|(_, code)| FORBIDDEN.iter().any(|bad| code.contains(bad))),
         "#[cfg(all(test, …))] must be recognised as test code, not reported as production"
     );
+
+    // ---- round 4's two holes ----
+    // H1: not(test) marks code that exists ONLY in non-test builds — exactly
+    // the fire-time path. Exempting it inverted the control's purpose, and it
+    // was SILENT: the item skipped cleanly and the balance check passed.
+    for (name, sample) in [
+        ("#[cfg(not(test))] on a function",
+         "#[cfg(not(test))]\nfn f(o: Option<u8>) { let _ = o.unwrap(); }\n"),
+        ("#[cfg(all(not(test), unix))]",
+         "#[cfg(all(not(test), unix))]\nfn f(o: Option<u8>) { let _ = o.unwrap(); }\n"),
+        ("#[cfg(any(unix, not(test)))]",
+         "#[cfg(any(unix, not(test)))]\nfn f(o: Option<u8>) { let _ = o.unwrap(); }\n"),
+        ("#[cfg(not(test))] over a whole module",
+         "#[cfg(not(test))]\nmod prod {\n    pub fn f(o: Option<u8>) { let _ = o.unwrap(); }\n}\n"),
+    ] {
+        let (lines, depth, arming) = production_lines(sample);
+        assert!(depth == 0 && !arming, "ended mid-skip on: {name}");
+        assert!(
+            lines.iter().any(|(_, code)| FORBIDDEN.iter().any(|bad| code.contains(bad))),
+            "the scan exempts {name} — but not(test) IS the shipping path"
+        );
+    }
+
+    // H2: compensating NESTED block comments. Rust allows /* a /* b */ c */;
+    // clearing on the first */ let one comment's tail carry a { and a later
+    // one's carry a }, skipping the production between them and returning to
+    // depth 0 where the balance check cannot see it.
+    let nested = "/* x /* y */ { */\nfn f(o: Option<u8>) { let _ = o.unwrap(); }\n/* p /* q */ } */\n";
+    let (lines, depth, arming) = production_lines(nested);
+    assert!(depth == 0 && !arming, "ended mid-skip on compensating nested comments");
+    assert!(
+        lines.iter().any(|(_, code)| FORBIDDEN.iter().any(|bad| code.contains(bad))),
+        "compensating nested block comments hid production code"
+    );
+
+    // Quoted feature names are NOT the looseness — lex blanks string contents
+    // before the attribute check sees the line, so the word is already gone.
+    for sample in [
+        "#[cfg(feature = \"testing\")]\nfn f(o: Option<u8>) { let _ = o.unwrap(); }\n",
+        "#[cfg(feature = \"test-utils\")]\nfn f(o: Option<u8>) { let _ = o.unwrap(); }\n",
+    ] {
+        let (lines, _, _) = production_lines(sample);
+        assert!(
+            lines.iter().any(|(_, code)| FORBIDDEN.iter().any(|bad| code.contains(bad))),
+            "a quoted feature name must not read as a test attribute"
+        );
+    }
 
     // A string that merely CONTAINS a forbidden token is not code.
     let (lines, _, _) = production_lines("fn f() { let _ = \"call .unwrap() here\"; }\n");
