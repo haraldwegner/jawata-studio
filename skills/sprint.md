@@ -280,6 +280,44 @@ four tests that were its only callers; and the implementation audit (rule 1 abov
 the one instrument shaped to find it, but the plan schedules it AFTER the release.
 **A sprint must not schedule its only claim-first check after shipping.**
 
+**Sixth rule (Harald 2026-08-07, Sprint 28 C1; evidence: THREE consecutive checkpoint
+audits were briefed against a ONE-LINE condensation of the exit criterion, written by
+the implementer whose work was being audited. It dropped four of the criterion's
+clauses. All four turned out to be satisfied — but they were satisfied WITHOUT BEING
+EXAMINED, which is not the same thing, and nobody could have known which it was):**
+
+**THE AUDITOR'S BRIEF IS ITSELF AN AUDITED ARTIFACT.**
+
+1. **QUOTE, NEVER SUMMARISE.** The brief carries the governing text VERBATIM — the
+   deliverable body from the spec and the stage's full exit criterion from the plan.
+   Not a restatement, not a distillation, however faithful it feels while writing it.
+   Condensation is lossy by construction, and the condenser has a structural conflict
+   of interest: authoring the acceptance criterion for the audit of their own work.
+   Where the plan lives outside the repository the reader can open, it is REPRODUCED
+   in the brief, not linked.
+2. **THE VERDICT MAPS EVERY CLAUSE TO ITS EVIDENCE.** Not a narrative and not a list of
+   findings: one row per clause of the exit criterion, each naming the test, commit or
+   retained output that satisfies it. A clause with no named evidence is NOT DONE,
+   however green everything else is. "No auditor objected" is not evidence about a
+   clause nobody read.
+3. **CLOSE A DEFECT CLASS, NOT ITS INSTANCES.** When a checkpoint finds a defect that
+   is a repeated CODE PATTERN, record the query that enumerates the population
+   (`find_references`, a structural search) and show `fixed == population`. Fixing the
+   instances an auditor happened to open is how the same class was found in round 1,
+   round 2 and round 3 of the same checkpoint, each time in a file the previous round
+   had not read.
+4. **EVERY FIX CARRIES A CONTROL.** Revert the fix; a test must go red. A fix whose
+   removal changes no test result has not been shown to do anything — this is the
+   discriminators-not-green-counts rule applied per fix rather than per suite, and it
+   is how a checkpoint's widest-blast-radius fix reached its third audit round with no
+   test that could detect its removal.
+5. **STOPPING RULE.** A checkpoint closes on: every clause mapped to evidence · every
+   found defect class enumerated to zero · every fix controlled · the whole thing
+   reproduced from a FRESH CLONE of the commit, not the working tree · and ONE
+   full-criterion audit briefed per rule 1. Repeat rounds of whole-stage audit are for
+   NEW CLASSES of defect only. The loop is a detector, not a converger; more rounds of
+   it do not converge it.
+
 Close-out
 ticks the SPEC's deliverables against tool evidence, flips the spec to ✅ with as-built
 actuals, updates the cascade row, memorizes + syncs the experience store.
