@@ -319,7 +319,8 @@ fn read_tail(path: &str, max: u64) -> std::io::Result<String> {
         // the only newline. Returning it would let read_turn parse zero records
         // and report "this turn launched nothing" — the manufactured absence
         // again, on the branch the first fix did not cover.
-        return if rest.contains('\n') || rest.ends_with('\n') {
+        // `contains` subsumes `ends_with`; the latter was dead.
+        return if rest.contains('\n') {
             Ok(rest.to_string())
         } else {
             Err(std::io::Error::new(
@@ -732,5 +733,82 @@ mod tests {
         );
     }
 
+
+    /// F2: the probe-is-newline branch was correct but UNFORCED — mutating its
+    /// guard to `if true` left all 141 tests green. The existing manufactured-
+    /// absence test uses a window with no newline at all, so it takes the other
+    /// branch.
+    #[test]
+    fn a_window_whose_only_newline_is_the_probe_byte_is_an_error() {
+        let d = std::env::temp_dir().join(format!("jawata-probe-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        let p = d.join("probe.jsonl");
+        // 60 bytes: a newline exactly at the probe position, then no other.
+        let mut body = "A".repeat(9);
+        body.push('\n');
+        body.push_str(&"B".repeat(50));
+        std::fs::write(&p, &body).unwrap();
+        assert!(
+            read_tail(p.to_str().unwrap(), 50).is_err(),
+            "a window holding no COMPLETE record must not become an empty turn"
+        );
+    }
+
+    #[test]
+    fn a_probe_newline_followed_by_a_complete_record_is_read() {
+        let d = std::env::temp_dir().join(format!("jawata-probe-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        let p = d.join("probe-ok.jsonl");
+        let body = format!("{}\n{}\n", "A".repeat(9), "B".repeat(40));
+        std::fs::write(&p, &body).unwrap();
+        let got = read_tail(p.to_str().unwrap(), 50).expect("reads");
+        assert!(got.starts_with('B'), "the whole record must survive: {got:?}");
+    }
+
+    /// F3: the autonomy -> reason branch was unforced — reverting it to always
+    /// log `autonomy-unknown` left all 141 tests green, so the moment Studio
+    /// supplies real autonomy every judged stop would file a false reason.
+    #[test]
+    fn a_judged_allow_is_not_logged_as_autonomy_unknown() {
+        let d = std::env::temp_dir().join(format!("jawata-judged-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        let p = d.join("t.jsonl");
+        std::fs::write(
+            &p,
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}}\n",
+        )
+        .unwrap();
+        let payload = format!("{{\"transcript_path\":\"{}\",\"stop_hook_active\":false}}", p.display());
+
+        assert_eq!(
+            Outcome::Silent(SilenceReason::StopAllowed),
+            stop_gate(Client::ClaudeCode, &payload, crate::stop::Autonomy::NotGranted),
+            "a KNOWN autonomy that allows must not claim it was unknown"
+        );
+        assert_eq!(
+            Outcome::Silent(SilenceReason::AutonomyUnknown),
+            stop_gate(Client::ClaudeCode, &payload, crate::stop::Autonomy::Unknown),
+            "and unknown must still say unknown"
+        );
+    }
+
+    /// F4: the Observer table and the code must not drift apart again. Both
+    /// rows previously declared a store query the pipeline never made, and the
+    /// "test that pinned the contradiction" I claimed did not exist.
+    #[test]
+    fn the_observer_table_matches_what_the_pipeline_does() {
+        for client in [Client::ClaudeCode, Client::Cursor] {
+            if let Some(spec) = crate::roles::spec(Role::Observer, client) {
+                assert!(
+                    !spec.concerns.query,
+                    "the Observer row claims a store query the pipeline does not make"
+                );
+            }
+        }
+        assert_eq!(
+            Outcome::Silent(SilenceReason::CannotInject),
+            run(Role::Observer, &config("claude-code"), "{}", &Stub(Ok(Answer::Nothing)))
+        );
+    }
 
 }

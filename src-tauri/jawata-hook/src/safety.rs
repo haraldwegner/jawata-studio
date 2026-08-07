@@ -347,38 +347,23 @@ mod tests {
         );
     }
 
+    /// Every reason renders a usable tag — driven by the GENERATED specimen
+    /// list, not a hand-written array.
+    ///
+    /// The array this replaces held 10 of 14 variants, missing every reason
+    /// added after it was written. It sat directly beside the macro built to
+    /// kill that exact anti-pattern.
     #[test]
     fn every_silence_reason_can_say_something_useful() {
-        // A reason that renders to nothing is the empty string again.
-        let reasons = [
-            SilenceReason::UnknownRole("jawata-hook-nope".into()),
-            SilenceReason::RoleAbsentOnClient,
-            SilenceReason::NotConfigured,
-            SilenceReason::StdinTimedOut,
-            SilenceReason::PayloadUnreadable("bad".into()),
-            SilenceReason::NoCues("SlashCommand".into()),
-            SilenceReason::StoreHadNothing,
-            SilenceReason::QueryFailed("ShapeChanged".into()),
-            SilenceReason::CannotInject,
-            SilenceReason::Panicked("boom".into()),
-        ];
-        // A length check on a derived Debug is true by construction and says
-        // nothing (C5 audit F7). What matters is that the reasons are
-        // DISTINCT — a log in which two causes render alike is a log that
-        // cannot tell them apart — and that the ones carrying a payload
-        // actually show it.
-        let rendered: Vec<String> = reasons.iter().map(|r| format!("{r:?}")).collect();
-        let unique: std::collections::HashSet<&String> = rendered.iter().collect();
-        assert_eq!(
-            rendered.len(),
-            unique.len(),
-            "two silence reasons render identically, so the log cannot tell them apart: {rendered:?}"
-        );
-        assert!(rendered.iter().any(|r| r.contains("jawata-hook-nope")),
-            "UnknownRole must show WHICH name was not ours");
-        assert!(rendered.iter().any(|r| r.contains("ShapeChanged")),
-            "QueryFailed must carry the underlying reason, not just its own name");
-        assert!(rendered.iter().any(|r| r.contains("boom")),
-            "Panicked must carry the panic's message");
+        let all = all_specimens();
+        assert!(all.len() >= 14, "the generated list is short: {}", all.len());
+        for r in &all {
+            let t = tag_of(r);
+            assert!(!t.is_empty() && !t.contains(char::is_whitespace), "bad tag {t:?} for {r:?}");
+        }
+        let mut tags: Vec<&str> = all.iter().map(tag_of).collect();
+        tags.sort_unstable();
+        tags.dedup();
+        assert_eq!(all.len(), tags.len(), "two reasons share a tag");
     }
 }

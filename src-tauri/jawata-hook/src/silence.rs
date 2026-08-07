@@ -147,6 +147,27 @@ fn trim_if_oversized(path: &Path) {
     // file, which is harmless. It never blocks, so the fire path keeps its
     // no-blocking contract — the reason a lock was refused in the first place.
     let token = path.with_extension("rotating");
+    // A token can be ORPHANED: the watchdog thread calls `record` and then
+    // `process::exit(0)` while main may be between `create_new` and
+    // `remove_file`. Without recovery that is PERMANENT — measured: with the
+    // token planted, 2000 appends grew the log past the cap to 334,200 bytes
+    // and `.log.1` was never created. The cap would be silently disabled for
+    // the life of the install, falsifying the one property this module says it
+    // would be worthless without.
+    //
+    // A token older than the whole hook deadline cannot belong to a live
+    // rotator, so it is stale and removed. Still no blocking.
+    if let Ok(m) = std::fs::metadata(&token) {
+        let stale = m
+            .modified()
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|e| e > std::time::Duration::from_secs(30))
+            .unwrap_or(true);
+        if stale {
+            let _ = std::fs::remove_file(&token);
+        }
+    }
     let Ok(_) = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -260,10 +281,29 @@ mod tests {
             "stop-allowed", "panicked",
         ];
         assert_eq!(expected.len(), lines.len(), "one record per reason");
-        for (want, line) in expected.iter().zip(&lines) {
+        for ((want, line), r) in expected.iter().zip(&lines).zip(every_reason()) {
             let cols: Vec<&str> = line.split('\t').collect();
             assert_eq!(4, cols.len(), "record is 4 columns: {line:?}");
             assert_eq!(*want, cols[2], "wrong tag in {line:?}");
+            // FORCE THE DETAIL COLUMN. `detail()` is a separate hand-written
+            // match with a `_ => ""` catch-all, so a new payload-carrying
+            // variant silently logged an EMPTY detail — proven by seeding one:
+            // 108 tests green while the payload vanished. A reason that reaches
+            // the log carrying nothing is the manufactured absence this stage
+            // exists to end, one level down.
+            let carries_payload = matches!(
+                r,
+                SilenceReason::UnknownRole(_)
+                    | SilenceReason::PayloadUnreadable(_)
+                    | SilenceReason::NoCues(_)
+                    | SilenceReason::QueryFailed(_)
+                    | SilenceReason::Panicked(_)
+            );
+            assert_eq!(
+                carries_payload,
+                !cols[3].is_empty(),
+                "detail column disagrees with the variant's payload: {line:?}"
+            );
         }
     }
 
@@ -410,6 +450,42 @@ mod tests {
         for l in live.lines().chain(rotated.lines()) {
             assert_eq!(4, l.split('\t').count(), "torn record: {l:?}");
         }
+    }
+
+    /// F1: an orphaned rotation token must not disable the cap forever.
+    #[test]
+    fn a_stale_rotation_token_does_not_disable_the_cap() {
+        let p = tmp("stale-token");
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(p.with_extension("log.1"));
+        let filler = "0\tprimer\tstore-had-nothing\t".to_string() + &"x".repeat(200) + "\n";
+        let mut body = String::new();
+        while (body.len() as u64) <= MAX_BYTES {
+            body.push_str(&filler);
+        }
+        std::fs::write(&p, &body).unwrap();
+
+        // Plant a token and age it past the staleness horizon.
+        let token = p.with_extension("rotating");
+        std::fs::write(&token, "").unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+        let _ = filetime_set(&token, old);
+
+        append_to(&p, "primer", &Outcome::Silent(SilenceReason::CannotInject));
+        let live = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            (live.len() as u64) < MAX_BYTES,
+            "a stale token must not block rotation; log is {} bytes",
+            live.len()
+        );
+    }
+
+    /// Set an mtime without pulling in a crate: reopen and rewrite is enough on
+    /// Linux only if we can backdate, so use the libc-free trick of touching
+    /// via `std::fs::File::set_times` where available.
+    fn filetime_set(p: &Path, when: std::time::SystemTime) -> std::io::Result<()> {
+        let f = std::fs::OpenOptions::new().write(true).open(p)?;
+        f.set_times(std::fs::FileTimes::new().set_modified(when))
     }
 
 }
