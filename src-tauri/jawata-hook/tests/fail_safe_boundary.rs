@@ -129,10 +129,18 @@ fn an_unowned_role_exits_zero_and_writes_nothing() {
 
 #[test]
 fn an_absent_config_exits_zero_and_writes_nothing() {
-    // No hook_config.json sits beside the test binary, which IS the
-    // not-yet-deployed case.
-    let (code, out, _) = run(&[("HOME", "/nonexistent-jawata-test-home")], false);
-    assert_eq!(Some(0), code);
+    // C5 audit round 2, R2: this test used to invoke the binary under its BUILD
+    // name and set HOME. Both were inert — the build name resolves no role, so
+    // the run returned at UnknownRole BEFORE config was ever read (104 ms wall,
+    // against 1635 ms for a run that reaches the stdin read), and config is
+    // resolved beside current_exe, not from HOME. It was a relabelled duplicate
+    // of the unowned-role test, and deploy()'s `None` branch was dead code.
+    //
+    // Deployed under a REAL role name with NO config beside it, which is the
+    // installed-but-not-yet-configured case the clause names.
+    let (_dir, exe) = deploy("absent-config", "jawata-hook-primer", None);
+    let (code, out, _) = run_at(&exe, false);
+    assert_eq!(Some(0), code, "a missing config must not fail the client");
     assert!(out.is_empty(), "got: {out:?}");
 }
 

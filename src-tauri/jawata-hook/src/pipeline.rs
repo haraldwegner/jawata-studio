@@ -373,9 +373,22 @@ mod tests {
                                 assert!(!text.contains('\n'), "an emission must be one line");
                             }
                             Outcome::Silent(reason) => {
-                                let r = format!("{reason:?}");
-                                assert!(!r.is_empty() && r.chars().any(|c| c.is_uppercase()),
-                                    "a silence reason must name a cause: {r}");
+                                // C5 audit round 2, R5: "non-empty and contains
+                                // an uppercase char" is true of every derived
+                                // Debug on a PascalCase enum — it could not
+                                // fail. The real obligation is that the reason
+                                // FITS: a run that never reached the store must
+                                // not claim the store had nothing, which is the
+                                // specific lie this crate exists to stop.
+                                if matches!(reason, SilenceReason::StoreHadNothing) {
+                                    assert!(
+                                        matches!(stub, Ok(Answer::Nothing)),
+                                        "reported StoreHadNothing for {role:?}/{client} with \
+                                         payload {payload:?} while the store answered \
+                                         {stub:?} — that is a claim about the store this run \
+                                         never earned"
+                                    );
+                                }
                             }
                         }
                     }

@@ -8464,6 +8464,74 @@ mod tests {
     }
 
     #[test]
+    fn claude_deploy_events_match_the_shared_hook_contract() {
+        // C5 audit round 2, R1 — the other four-sixths of the linkage.
+        // hook-events.json bound the CURSOR deploy to the hook's role table, so
+        // for Cursor it is a genuine three-way agreement: deploy ↔ contract ↔
+        // table. Claude's six events were written as separate string literals
+        // through six different section writers and asserted against nothing
+        // that ships, leaving contract ↔ table only — two places that must agree
+        // with each other and with nothing real. Rename "PreToolUse" in one
+        // writer and every suite stays green while the recall role is
+        // registered under an event Claude never fires.
+        //
+        // This DEPLOYS all six into one settings file and reads back the event
+        // keys the deploy actually wrote, which is the end of the triangle that
+        // was missing.
+        let contract: serde_json::Value =
+            serde_json::from_str(include_str!("../hook-events.json"))
+                .expect("hook-events.json must parse — it is a committed contract");
+        let claude = contract["claude-code"].as_object().expect("the claude-code section");
+
+        let dir = unique_tempdir("claude-contract");
+        let settings = dir.join("settings.json");
+        let settings_path = settings.to_string_lossy().to_string();
+        let hooks_dir = dir.join("hooks");
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+        let p = |name: &str| hooks_dir.join(name);
+
+        write_managed_hook(&settings_path, &p("guard.sh"), "http://u/health", false, false).unwrap();
+        write_managed_posthook(&settings_path, &p("observer.sh"), "http://u/mcp", "t", false, false)
+            .unwrap();
+        write_managed_stop(&settings_path, &p("stop.sh"), "http://u/mcp", "t", false, false)
+            .unwrap();
+        write_managed_primer(&settings_path, &p("primer.sh"), "http://u/mcp", "t", false, false)
+            .unwrap();
+        write_managed_recall(&settings_path, &p("recall.sh"), "http://u/mcp", "t", false, false)
+            .unwrap();
+        write_managed_userprompt(&settings_path, &p("userprompt.sh"), "http://u/mcp", "t", false, false)
+            .unwrap();
+
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        let mut deployed: Vec<String> = written["hooks"]
+            .as_object()
+            .expect("the deploy wrote a hooks object")
+            .keys()
+            .cloned()
+            .collect();
+        deployed.sort();
+
+        // The contract lists six roles across four distinct events (guard and
+        // recall share PreToolUse), so compare the SETS.
+        let mut expected: Vec<String> = claude
+            .values()
+            .map(|v| v.as_str().expect("an event name").to_string())
+            .collect();
+        expected.sort();
+        expected.dedup();
+
+        assert_eq!(
+            expected, deployed,
+            "the Claude events this deploy writes have drifted from hook-events.json — \
+             the hook's role table is asserted against that file, so a rename in a section \
+             writer without a rename there registers a role under an event Claude never fires"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn cursor_deploy_events_match_the_shared_hook_contract() {
         // Sprint 28, C5 audit finding F5 — the OTHER end of the contract.
         // jawata-hook's role table asserts itself against hook-events.json;

@@ -62,7 +62,12 @@ deadcode() {   # deadcode <outfile> <package> [extra cargo args...]
     # against in its own header. An empty warning set cannot be the signal: a
     # clean crate legitimately produces none (the hook crate does). What proves
     # the arm ran is cargo saying it compiled or finished.
-    if ! grep -qE "Compiling $pkg |Finished|Fresh $pkg " "$WORK/raw.txt"; then
+    # NOT a bare `Finished` alternative (C5 audit round 2, R4): cargo prints
+    # "Finished `dev` profile" even for a fully cached unit that emitted no
+    # lints, so the guard would pass on an arm that measured nothing. The touch
+    # above guarantees a real compile, and this requires the line that proves
+    # it — naming the package, so one arm cannot satisfy it for the other.
+    if ! grep -qE "Compiling $pkg " "$WORK/raw.txt"; then
         echo "gate: RESULT=arm-did-not-run — cargo reported neither Compiling nor Finished"
         echo "gate: for $pkg. This arm measured nothing, and the merged totals would hide it."
         head -5 "$WORK/raw.txt"
