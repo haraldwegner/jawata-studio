@@ -50,7 +50,7 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
         Role::Guard => guard(client, payload),
         Role::Primer => primer(client, store),
         Role::UserPrompt | Role::ToolRecall => recall(role, client, payload, store),
-        Role::Stop => stop_gate(client, payload),
+        Role::Stop => stop_gate(client, payload, crate::stop::Autonomy::Unknown),
         Role::Observer => Outcome::Silent(SilenceReason::CannotInject),
     }
 }
@@ -227,8 +227,8 @@ fn extract_prompt(payload: &str) -> Result<String, SilenceReason> {
 /// Fails OPEN on every unreadable condition (no payload, no path, no file),
 /// but RECORDS which one: the previous generation of this hook failed open
 /// silently, and a silent fail-open is indistinguishable from a pass.
-fn stop_gate(client: Client, payload: &str) -> Outcome {
-    use crate::stop::{self, Autonomy, StopFacts, StopVerdict};
+fn stop_gate(client: Client, payload: &str, autonomy: crate::stop::Autonomy) -> Outcome {
+    use crate::stop::{self, StopFacts, StopVerdict};
 
     let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) else {
         return Outcome::Silent(SilenceReason::PayloadUnreadable(
@@ -260,12 +260,13 @@ fn stop_gate(client: Client, payload: &str) -> Outcome {
         Err(reason) => return Outcome::Silent(reason),
     };
 
-    // RULE B's honest position. Nothing readable here says whether the human
-    // granted autonomy, so the gate does not pretend to know. `Unknown` makes
-    // judge() allow — and the reason is written to the silence log, which is
-    // what makes "not enforced on this run" a fact you can grep for rather
-    // than an assumption.
-    let autonomy = Autonomy::Unknown;
+    // RULE B's honest position: production passes `Unknown` from `run`,
+    // because nothing readable here says whether the human granted autonomy.
+    // It is a PARAMETER rather than a constant so the blocking paths — and the
+    // anti-loop wire that guards them — are reachable from a test. Hard-coding
+    // it made `stop_hook_active` hollow: seeding that read to either constant
+    // left the whole suite green, so the anti-wedge valve could be deleted and
+    // nothing would notice.
 
     match stop::judge(&StopFacts { already_bounced, turn, autonomy }) {
         StopVerdict::Block { reason } => {
@@ -678,5 +679,38 @@ mod tests {
         std::fs::write(&p, "a\nb\nc\n").unwrap();
         assert_eq!("a\nb\nc\n", read_tail(p.to_str().unwrap(), 4096).expect("reads"));
     }
+
+    /// F5: the anti-loop wire. `stop_hook_active` is read from the payload and
+    /// feeds `judge`'s short-circuit, but seeding that read to either constant
+    /// used to leave all 140 tests green — the valve that stops the gate
+    /// wedging a session could be deleted unnoticed. These two drive the same
+    /// transcript through `stop_gate` under Granted, differing ONLY in the JSON
+    /// key, and must disagree.
+    #[test]
+    fn the_anti_loop_flag_is_read_from_the_payload() {
+        let d = std::env::temp_dir().join(format!("jawata-antiloop-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        let p = d.join("t.jsonl");
+        std::fs::write(
+            &p,
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n",
+        )
+        .unwrap();
+
+        let first = format!("{{\"transcript_path\":\"{}\",\"stop_hook_active\":false}}", p.display());
+        let again = format!("{{\"transcript_path\":\"{}\",\"stop_hook_active\":true}}", p.display());
+
+        let blocked = stop_gate(Client::ClaudeCode, &first, crate::stop::Autonomy::Granted);
+        assert!(
+            matches!(blocked, Outcome::Emitted(_)),
+            "first pass under autonomy must block: {blocked:?}"
+        );
+        let allowed = stop_gate(Client::ClaudeCode, &again, crate::stop::Autonomy::Granted);
+        assert!(
+            !matches!(allowed, Outcome::Emitted(_)),
+            "a second pass must NOT block again — that wedges the session: {allowed:?}"
+        );
+    }
+
 
 }
