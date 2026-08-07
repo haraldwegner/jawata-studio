@@ -248,10 +248,27 @@ by a background job's completion. Therefore, when the user has granted
 autocontinue: a checkpoint summary is MID-TURN text, never a turn's end; the
 STOP-at-checkpoint rule above is REPLACED by summarize-and-continue; and a turn
 may end only (a) genuinely blocked on the user's decision or (b) with a
-background job RUNNING whose completion re-invokes the agent. Before ending any
-turn, verify which of the two holds — if neither and stages remain, keep
-working. Writing "work continues" while nothing is armed to wake the session is
-describing machinery that does not exist.
+background job RUNNING whose completion re-invokes the agent. Writing "work
+continues" while nothing is armed to wake the session is describing machinery
+that does not exist.
+
+**The mechanic, because "verify before ending" failed twice in the session that
+wrote this rule:** ARM FIRST, THEN SPEAK. Under granted autocontinue, launch the
+next unit of work as a background job — the next stage's suite run, the
+checkpoint's fresh-context audit, the next long build — *before* composing any
+message, and let its completion carry the session forward. A turn that ends with
+no job armed is a stopped sprint whatever the message says. "Check which of the
+two holds" asks the agent to remember at the exact moment it is least likely to;
+"never speak without a job running" is one glance.
+
+**And a skill edit does NOT reach the session that is already running.** The
+rule above was committed and deployed at 09:56 on 2026-08-07 and the same
+session halted twice more afterwards, because its copy of this skill was loaded
+hours earlier. A fix landed here binds every FUTURE session; for the current one
+the only layers that reach are the agent's own attention and a hook. So when a
+process fix is made mid-sprint, say plainly which sessions it binds — claiming
+it is fixed "in general" while the session that needed it carries the old copy
+is the same over-claim in a new place.
 **Every release in a plan is followed by a PLANNED dogfood-in-anger + re-release
 stage** (Harald 2026-07-13, Sprint 24 GATE 2: "I cannot imagine that we don't have
 fixes here" — the record agrees: v2.7.1/v2.8.1/v2.9.1–.2 were all dogfood patches):
