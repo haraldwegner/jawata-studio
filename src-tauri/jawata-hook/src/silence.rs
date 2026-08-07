@@ -159,10 +159,14 @@ mod tests {
         d.join("hook_silence.log")
     }
 
-    /// The gate says "each reason forced by a test". Enumerating the variants
-    /// HERE rather than in a list of hand-written strings is what makes that
-    /// true as the enum grows: adding a variant without adding its tag stops
-    /// compiling.
+    /// The gate says "each reason forced by a test".
+    ///
+    /// This list is HAND-WRITTEN, and the earlier claim here — that adding a
+    /// variant without adding its tag "stops compiling" — was false and was
+    /// falsified by this very file: `NoTranscript` and `AutonomyUnknown` were
+    /// added and neither list noticed. Only `tag()`'s own match is exhaustive.
+    /// The compile-time guarantee is asserted below instead, by matching a
+    /// witness exhaustively.
     fn every_reason() -> Vec<SilenceReason> {
         vec![
             SilenceReason::UnknownRole("jawata-hook-typo".into()),
@@ -174,6 +178,8 @@ mod tests {
             SilenceReason::StoreHadNothing,
             SilenceReason::QueryFailed("ConnectionRefused".into()),
             SilenceReason::CannotInject,
+            SilenceReason::NoTranscript,
+            SilenceReason::AutonomyUnknown,
             SilenceReason::Panicked("attempt to divide by zero".into()),
         ]
     }
@@ -207,10 +213,21 @@ mod tests {
             lines.len(),
             "one record per invocation; got {body}"
         );
-        for (r, line) in every_reason().iter().zip(&lines) {
+        // A HARD-CODED table, never `tag(r)`. The previous version asserted
+        // `tag(r) == cols[2]` while cols[2] was produced BY `tag(r)` — it
+        // compared the function with itself and could never fail. Ten of the
+        // twelve tags were unforced because of it.
+        let expected = [
+            "unknown-role", "role-absent-on-client", "not-configured",
+            "stdin-timed-out", "payload-unreadable", "no-cues",
+            "store-had-nothing", "query-failed", "cannot-inject",
+            "no-transcript", "autonomy-unknown", "panicked",
+        ];
+        assert_eq!(expected.len(), lines.len(), "one record per reason");
+        for (want, line) in expected.iter().zip(&lines) {
             let cols: Vec<&str> = line.split('\t').collect();
             assert_eq!(4, cols.len(), "record is 4 columns: {line:?}");
-            assert_eq!(tag(r), cols[2], "wrong tag for {r:?}");
+            assert_eq!(*want, cols[2], "wrong tag in {line:?}");
         }
     }
 

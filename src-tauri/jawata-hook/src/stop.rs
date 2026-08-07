@@ -4,18 +4,32 @@
 //! honestly enforced, and saying which is which IS the deliverable:
 //!
 //! * **Rule A — do not send an upward message the communicator has not
-//!   judged.** ENFORCEABLE. Every fact it needs is written by the harness into
-//!   the session transcript, so the agent cannot forge or skip its way past it.
+//!   judged.** Enforceable IN PRINCIPLE; **not enforced today**. Two limits,
+//!   both established by audit rather than assumed:
+//!   - The transcript is NOT agent-proof. It is mode 600 owned by the uid the
+//!     agent runs as, and [`read_turn`] accepts any JSONL line anywhere in the
+//!     file — so one appended line satisfies [`Turn::communicator_ran`]. The
+//!     earlier claim here, that the agent "cannot forge or skip its way past
+//!     it", was false.
+//!   - Even unforged, it proves only that the communicator was CALLED. It
+//!     cannot read the verdict, so running it and ignoring the answer passes.
 //! * **Rule B — do not stop when autonomy is granted and nothing is armed.**
-//!   OBSERVABLE ONLY, today. Its trigger — whether the human granted autonomous
+//!   OBSERVABLE ONLY. Its trigger — whether the human granted autonomous
 //!   continuation — is underivable from anything this hook can read. It is
 //!   RECORDED (see [`SilenceReason::AutonomyUnknown`]) rather than enforced,
 //!   because a gate that reads as enforcement and enforces nothing is the exact
 //!   defect this sprint exists to end.
 //!
-//! Why the transcript and not a marker file: a marker the agent writes is not
-//! enforcement — skipping the write IS passing the gate. The transcript is
-//! written by the harness. That asymmetry is the whole design.
+//! NEITHER RULE CAN FIRE IN PRODUCTION TODAY: [`crate::pipeline`] always
+//! supplies [`Autonomy::Unknown`], and both rules are gated on `Granted`,
+//! which is constructed only in tests. Both are RECORDED, not enforced.
+//! Marking one of them "enforceable" in the present tense — as this comment
+//! previously did — is the specific claim this sprint exists to stop.
+//!
+//! The transcript is still preferred over a marker file the agent writes,
+//! because a marker can be skipped silently while a missing transcript entry
+//! requires a deliberate forgery. That is a difference in cost, not the
+//! absolute asymmetry originally claimed here.
 //!
 //! The second asymmetry, in [`judge`]: "the turn launched nothing" PROVES
 //! nothing is armed, while "the turn launched something" proves only that

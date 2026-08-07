@@ -242,7 +242,17 @@ fn stop_gate(client: Client, payload: &str) -> Outcome {
     let Some(path) = v.get("transcript_path").and_then(|p| p.as_str()) else {
         return Outcome::Silent(SilenceReason::NoTranscript);
     };
-    let Ok(text) = std::fs::read_to_string(path) else {
+    // BOUNDED, and from the END. Reading the whole file was measured at 4,983
+    // ms of parsing on a 330 MB session transcript — past the 4,000 ms
+    // watchdog, which exits the process from its own thread BEFORE the silence
+    // log is written. The gate then stayed silent and recorded nothing: the
+    // exact two-week-outage signature this stage exists to end, reproduced by
+    // the stage's own code.
+    //
+    // Only the window since the last human message is needed, so the tail is
+    // sufficient — and the read is now O(1) in session length rather than
+    // O(history).
+    let Ok(text) = read_tail(path, TRANSCRIPT_TAIL_BYTES) else {
         return Outcome::Silent(SilenceReason::NoTranscript);
     };
     let turn = match stop::read_turn(&text) {
@@ -266,6 +276,29 @@ fn stop_gate(client: Client, payload: &str) -> Outcome {
         }
         StopVerdict::Allow => Outcome::Silent(SilenceReason::AutonomyUnknown),
     }
+}
+
+/// How much of a transcript's tail the stop gate reads. Generous enough to
+/// hold many turns, small enough that parsing cannot approach the watchdog.
+pub const TRANSCRIPT_TAIL_BYTES: u64 = 1_048_576;
+
+/// Read at most `max` bytes from the END of a file, starting at a line
+/// boundary so the first record is never half a line.
+fn read_tail(path: &str, max: u64) -> std::io::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path)?;
+    let len = f.metadata()?.len();
+    if len > max {
+        f.seek(SeekFrom::Start(len - max))?;
+    }
+    let mut buf = Vec::with_capacity(max.min(len) as usize);
+    f.take(max).read_to_end(&mut buf)?;
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    // Drop a leading partial line: seeking to a byte offset lands mid-record.
+    Ok(match text.find('\n') {
+        Some(i) if len > max => text[i + 1..].to_string(),
+        _ => text,
+    })
 }
 
 #[cfg(test)]
