@@ -298,9 +298,23 @@ mod tests {
             SilenceReason::CannotInject,
             SilenceReason::Panicked("boom".into()),
         ];
-        for r in reasons {
-            let rendered = format!("{r:?}");
-            assert!(rendered.len() > 3, "a silence reason must be readable: {rendered}");
-        }
+        // A length check on a derived Debug is true by construction and says
+        // nothing (C5 audit F7). What matters is that the reasons are
+        // DISTINCT — a log in which two causes render alike is a log that
+        // cannot tell them apart — and that the ones carrying a payload
+        // actually show it.
+        let rendered: Vec<String> = reasons.iter().map(|r| format!("{r:?}")).collect();
+        let unique: std::collections::HashSet<&String> = rendered.iter().collect();
+        assert_eq!(
+            rendered.len(),
+            unique.len(),
+            "two silence reasons render identically, so the log cannot tell them apart: {rendered:?}"
+        );
+        assert!(rendered.iter().any(|r| r.contains("jawata-hook-nope")),
+            "UnknownRole must show WHICH name was not ours");
+        assert!(rendered.iter().any(|r| r.contains("ShapeChanged")),
+            "QueryFailed must carry the underlying reason, not just its own name");
+        assert!(rendered.iter().any(|r| r.contains("boom")),
+            "Panicked must carry the panic's message");
     }
 }

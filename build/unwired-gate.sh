@@ -56,6 +56,18 @@ deadcode() {   # deadcode <outfile> <package> [extra cargo args...]
         grep -E '^error' "$WORK/raw.txt" | head -5
         return 2
     fi
+    # PER-ARM PROOF THAT THIS ARM RAN (C5 audit F8). The aggregate guards below
+    # work on the MERGED set, so an arm that silently stopped compiling would be
+    # invisible behind the other crate's warnings — the shape this script argues
+    # against in its own header. An empty warning set cannot be the signal: a
+    # clean crate legitimately produces none (the hook crate does). What proves
+    # the arm ran is cargo saying it compiled or finished.
+    if ! grep -qE "Compiling $pkg |Finished|Fresh $pkg " "$WORK/raw.txt"; then
+        echo "gate: RESULT=arm-did-not-run — cargo reported neither Compiling nor Finished"
+        echo "gate: for $pkg. This arm measured nothing, and the merged totals would hide it."
+        head -5 "$WORK/raw.txt"
+        return 2
+    fi
     return 0
 }
 

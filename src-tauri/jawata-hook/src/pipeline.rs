@@ -359,10 +359,24 @@ mod tests {
                 for client in ["claude-code", "cursor", "windsurf"] {
                     for role in [Role::Primer, Role::UserPrompt, Role::Guard, Role::Stop] {
                         let out = run(role, &config(client), payload, &Stub(stub.clone()));
-                        // Whatever happens, an outcome exists and a silent one
-                        // carries a reason. That is the invariant.
-                        if let Outcome::Silent(reason) = out {
-                            assert!(format!("{reason:?}").len() > 3);
+                        // C5 audit F7: `len() > 3` made this a panic smoke
+                        // test wearing an assertion, and the Emitted arm was
+                        // never checked at all. Both arms now carry a real
+                        // obligation — anything we emit must be JSON the
+                        // client can read, and anything silent must name a
+                        // cause a log could print.
+                        match out {
+                            Outcome::Emitted(text) => {
+                                serde_json::from_str::<serde_json::Value>(&text).unwrap_or_else(
+                                    |e| panic!("emitted non-JSON for {role:?}/{client}: {e}\n{text}"),
+                                );
+                                assert!(!text.contains('\n'), "an emission must be one line");
+                            }
+                            Outcome::Silent(reason) => {
+                                let r = format!("{reason:?}");
+                                assert!(!r.is_empty() && r.chars().any(|c| c.is_uppercase()),
+                                    "a silence reason must name a cause: {r}");
+                            }
                         }
                     }
                 }

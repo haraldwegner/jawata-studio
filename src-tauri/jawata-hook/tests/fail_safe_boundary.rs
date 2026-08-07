@@ -39,7 +39,22 @@ fn deploy(tag: &str, role_binary: &str, config: Option<&str>) -> (std::path::Pat
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");
     let target = dir.join(role_binary);
-    std::fs::copy(HOOK, &target).expect("copy the binary under its role name");
+    // Retry on ETXTBSY. Copying FROM the freshly-built binary while cargo or
+    // another parallel test still holds it executing makes Linux refuse with
+    // "Text file busy" — observed once here, and the same hazard the design
+    // names for re-deploy. A test that fails this way teaches people to re-run
+    // rather than to read, which is worse than the flake.
+    let mut attempt = 0;
+    loop {
+        match std::fs::copy(HOOK, &target) {
+            Ok(_) => break,
+            Err(e) if e.raw_os_error() == Some(26) && attempt < 20 => {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => panic!("copy the binary under its role name: {e}"),
+        }
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -199,5 +214,50 @@ fn the_release_profile_really_unwinds() {
         cfg.lines().any(|l| l == r#"panic="unwind""#),
         "the RELEASE profile does not unwind — catch_unwind is disarmed and the fail-safe \
          boundary is a lie. Effective cfg:\n{cfg}"
+    );
+}
+
+#[test]
+fn the_watchdog_ends_a_run_parked_far_past_its_deadline() {
+    // C5 audit B3: the watchdog had no discriminator — `arm_watchdog` could
+    // have spawned an empty closure and every test stayed green. It is the
+    // layer catch_unwind cannot be (stack overflow, OOM, panic-in-Drop, a
+    // transport wedged below its own timeout), so it needs a real one.
+    //
+    // The route: a listener that ACCEPTS and never answers, with the config's
+    // own timeout set to 60s. The main thread then parks inside the transport,
+    // far past TOTAL_DEADLINE, and nothing but the watchdog can end the
+    // process. Remove the exit(0) from arm_watchdog and this hangs for a
+    // minute instead of passing.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        // Accept and hold. Never reply, never close.
+        if let Ok((stream, _)) = listener.accept() {
+            std::mem::forget(stream);
+        }
+        std::thread::sleep(Duration::from_secs(120));
+    });
+
+    let (_dir, exe) = deploy(
+        "watchdog",
+        "jawata-hook-primer",
+        Some(&format!(
+            r#"{{"url":"http://{addr}/mcp","token":"t","client":"claude-code","timeout_ms":60000}}"#
+        )),
+    );
+    let (code, out, elapsed) = run_at(&exe, false);
+
+    assert_eq!(Some(0), code, "the watchdog must end the process with success");
+    assert!(out.is_empty(), "got: {out:?}");
+    assert!(
+        elapsed >= Duration::from_secs(3),
+        "finished in {elapsed:?} — too fast to have been parked in the transport at all, \
+         so this proves nothing about the watchdog"
+    );
+    assert!(
+        elapsed < Duration::from_secs(20),
+        "took {elapsed:?} — the watchdog did not fire; the run was ended by the 60s \
+         transport timeout, or not at all"
     );
 }

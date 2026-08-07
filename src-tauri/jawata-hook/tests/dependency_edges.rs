@@ -96,9 +96,15 @@ fn the_hook_links_neither_tauri_nor_the_studio_library() {
     // And the closure must be small enough to have been read. If this number
     // grows sharply, someone added a dependency tree to a process whose whole
     // budget is milliseconds.
+    // MEASURED at 155. The old bound of 200 left 45 packages of headroom in a
+    // check whose comment claimed the closure was "small enough to have been
+    // read" (C5 audit F7) — a ratchet with that much slack is not one. 165
+    // absorbs ordinary transitive churn and still fails a new dependency tree.
     assert!(
-        closure.len() < 200,
-        "the hook's closure is {} packages — a hook that pulls a world starts like one",
+        closure.len() <= 165,
+        "the hook's closure is {} packages (was 155 when this bound was set) — a hook that \
+         pulls a world starts like one. If the growth is deliberate, move the bound WITH the \
+         change that justifies it.",
         closure.len()
     );
 }

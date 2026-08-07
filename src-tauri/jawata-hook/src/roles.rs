@@ -270,9 +270,13 @@ mod tests {
     fn an_absence_carries_its_reason() {
         for r in ROLES {
             if let Availability::Absent { because } = r.availability {
+                // A length check would accept twenty spaces (C5 audit F7). The
+                // obligation is that the reason names the CLIENT's limitation,
+                // so a reader can tell "they have no such event" from "we have
+                // not built it yet".
                 assert!(
-                    because.len() > 20,
-                    "{:?}/{:?} is absent without saying why",
+                    because.contains("Cursor") || because.contains("no "),
+                    "{:?}/{:?} must say what the client lacks, got: {because:?}",
                     r.role,
                     r.client
                 );
