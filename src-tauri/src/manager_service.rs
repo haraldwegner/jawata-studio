@@ -2214,6 +2214,27 @@ impl ManagerService {
                         Ok(false) => {}
                         Err(error) => errors.push(error),
                     }
+
+                    // Sprint 28 (D-SHIM): the role-named binaries, UNLINKED
+                    // before writing so a redeploy landing on top of an
+                    // executing hook does not fail with ETXTBSY — a hazard the
+                    // `.sh` generation never had, and one that hooks firing on
+                    // every prompt will meet routinely.
+                    //
+                    // Absent before Stage 7 packages the sidecar, which is a
+                    // NORMAL state today (the scripts still deploy) and
+                    // deliberately distinct from a deploy that FAILED: a
+                    // present-but-unwritable binary is an error, a missing one
+                    // is not yet shipped.
+                    if let Some(source) = hook_binary_source() {
+                        match deploy_hook_binaries(&source, hooks_dir, HOOK_ROLES) {
+                            Ok(written) if !written.is_empty() => {
+                                changed_sections.push("hook_binaries".into())
+                            }
+                            Ok(_) => {}
+                            Err(error) => errors.push(error),
+                        }
+                    }
                 }
             }
 
@@ -5461,6 +5482,97 @@ fn is_managed_recall_entry(entry: &serde_json::Value) -> bool {
 }
 
 /// SessionStart entry: no matcher (fires on every session start).
+/// Where the shipped hook binary lives, or `None` before Stage 7 packages it.
+///
+/// Checked in order: beside the running app (a Tauri `externalBin` sidecar
+/// lands next to the executable), then the dev build tree. `None` is a NORMAL
+/// answer today — the scripts still deploy — and deliberately distinct from a
+/// deploy that failed: a present-but-unwritable binary is an error, a missing
+/// one is simply not shipped yet.
+fn hook_binary_source() -> Option<PathBuf> {
+    let beside_app = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from));
+    let candidates = [
+        beside_app.as_ref().map(|d| d.join("jawata-hook")),
+        beside_app.as_ref().map(|d| d.join("jawata-hook.exe")),
+        Some(PathBuf::from("src-tauri/target/release/jawata-hook")),
+        Some(PathBuf::from("src-tauri/target/debug/jawata-hook")),
+    ];
+    candidates.into_iter().flatten().find(|p| p.exists())
+}
+
+/// The six role names the deploy writes, dispatched by `argv[0]`.
+///
+/// Kept beside the deploy rather than imported from the hook crate: the studio
+/// must NOT depend on jawata-hook (deploy writes the binary, it never runs it),
+/// and that edge is asserted by a test. `hook-events.json` is what keeps the
+/// two lists honest with each other.
+const HOOK_ROLES: &[&str] = &[
+    "jawata-hook-primer",
+    "jawata-hook-userprompt",
+    "jawata-hook-recall",
+    "jawata-hook-guard",
+    "jawata-hook-observer",
+    "jawata-hook-stop",
+];
+
+/// Sprint 28 (D-SHIM, C6 clause 5 first half): deploy the role-named hook
+/// binaries — UNLINK, then write.
+///
+/// The rename to `argv[0]` dispatch introduces a hazard the `.sh` generation
+/// did not have: Linux refuses to open an executing binary for writing
+/// (`ETXTBSY`), and hooks fire on every prompt, so a redeploy lands on top of
+/// running processes routinely. Overwriting a shell script has no such problem
+/// — the kernel does not hold text pages for `bash`'s argument.
+///
+/// Unlinking first sidesteps it entirely: the running process keeps its inode
+/// (it is unlinked, not destroyed, and dies with the process), while the new
+/// file takes the name. This is the ordinary Unix replace-a-running-binary
+/// move, and it is why `fs::write` over the top is NOT good enough here.
+///
+/// On Windows the same shape is required for a different reason — a running
+/// image cannot be replaced — and the same unlink-first order handles it.
+fn deploy_hook_binaries(
+    source: &Path,
+    hooks_dir: &Path,
+    roles: &[&str],
+) -> Result<Vec<String>, String> {
+    if !source.exists() {
+        return Err(format!(
+            "the hook binary is not at {} — nothing to deploy; the bundle did not ship it",
+            source.display()
+        ));
+    }
+    fs::create_dir_all(hooks_dir)
+        .map_err(|e| format!("failed to create hooks dir {}: {e}", hooks_dir.display()))?;
+
+    let fresh = fs::read(source)
+        .map_err(|e| format!("failed reading {}: {e}", source.display()))?;
+    let mut written = Vec::new();
+    for role in roles {
+        let target = hooks_dir.join(role);
+        if fs::read(&target).map(|existing| existing == fresh).unwrap_or(false) {
+            continue;   // byte-stable no-op
+        }
+        // UNLINK FIRST. Ignore a missing file; anything else is real.
+        match fs::remove_file(&target) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("failed unlinking {}: {e}", target.display())),
+        }
+        fs::write(&target, &fresh)
+            .map_err(|e| format!("failed writing {}: {e}", target.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).map_err(|e| {
+                format!("failed making {} executable: {e}", target.display())
+            })?;
+        }
+        written.push((*role).to_string());
+    }
+    Ok(written)
+}
+
 /// Sprint 28 (D-SHIM, C6 clause 5): write `hook_config.json` beside the hook
 /// binaries — temp file, then rename.
 ///
@@ -8613,6 +8725,100 @@ mod tests {
             s.contains(r#"basename "$fp" .java"#),
             "derives the type-name cue from the edited .java file"
         );
+    }
+
+    #[test]
+    fn a_redeploy_succeeds_while_a_hook_is_executing() {
+        // C6 exit clause 5, FIRST half — and the hazard this whole change
+        // introduces. Linux refuses to open an EXECUTING binary for writing
+        // (ETXTBSY). Hooks fire on every prompt, so a redeploy lands on top of
+        // running processes routinely, and overwriting a shell script never had
+        // this problem — the kernel holds no text pages for bash's argument.
+        //
+        // The test runs a real long-lived process from the deployed path and
+        // redeploys underneath it. Replace the unlink with a plain write and
+        // this fails with "Text file busy", which is the point.
+        let dir = unique_tempdir("etxtbsy");
+        let hooks = dir.join("hooks");
+        let source = dir.join("source-binary");
+
+        // A REAL ELF binary, not a shell script. The first version of this
+        // test used a script and PASSED WITHOUT THE UNLINK — vacuous, because
+        // ETXTBSY protects the interpreter's image, not the script text the
+        // interpreter reads. Only an executing ELF makes the kernel refuse the
+        // write, which is the condition the deployed hook binaries will be in.
+        std::fs::create_dir_all(&dir).unwrap();
+        let real_binary = ["/bin/sleep", "/usr/bin/sleep"]
+            .iter()
+            .map(std::path::Path::new)
+            .find(|p| p.exists())
+            .expect("a real ELF binary is required — this test is meaningless with a script");
+        std::fs::copy(real_binary, &source).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let roles = ["jawata-hook-primer"];
+        let written = deploy_hook_binaries(&source, &hooks, &roles).unwrap();
+        assert_eq!(vec!["jawata-hook-primer".to_string()], written);
+
+        // Start it, and hold it running across the redeploy.
+        let deployed = hooks.join("jawata-hook-primer");
+        let mut child = std::process::Command::new(&deployed)
+            .arg("30")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("the deployed binary must be executable");
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        // A CHANGED binary, so the byte-stable short-circuit cannot hide the
+        // hazard by simply not writing. Appending a byte keeps it a valid ELF
+        // for the kernel's purposes while making the content differ.
+        let mut bytes = std::fs::read(&source).unwrap();
+        bytes.push(0);
+        std::fs::write(&source, &bytes).unwrap();
+        let result = deploy_hook_binaries(&source, &hooks, &roles);
+
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let written = result.unwrap_or_else(|e| {
+            panic!("redeploy over an EXECUTING hook failed: {e}\n                    This is ETXTBSY — unlink before writing.")
+        });
+        assert_eq!(vec!["jawata-hook-primer".to_string()], written,
+            "the redeploy reported nothing written even though the source changed");
+    }
+
+    #[test]
+    fn deploying_the_same_binary_twice_writes_nothing_the_second_time() {
+        let dir = unique_tempdir("bin-stable");
+        let hooks = dir.join("hooks");
+        let source = dir.join("source-binary");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&source, "#!/bin/sh\nexit 0\n").unwrap();
+
+        let roles = ["jawata-hook-primer", "jawata-hook-guard"];
+        assert_eq!(2, deploy_hook_binaries(&source, &hooks, &roles).unwrap().len());
+        assert!(deploy_hook_binaries(&source, &hooks, &roles).unwrap().is_empty(),
+            "an unchanged redeploy must write nothing — otherwise every deploy churns \
+             the files a hook may be executing");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_source_binary_is_a_named_error_not_a_silent_skip() {
+        // The bundle failing to ship the binary must not look like a successful
+        // deploy — that is a hook install with no hook.
+        let dir = unique_tempdir("bin-missing");
+        let err = deploy_hook_binaries(&dir.join("nope"), &dir.join("hooks"), &["jawata-hook-primer"])
+            .unwrap_err();
+        assert!(err.contains("did not ship"), "the error must name the cause: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
