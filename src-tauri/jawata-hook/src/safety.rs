@@ -58,6 +58,9 @@ pub enum SilenceReason {
     QueryFailed(String),
     /// This role cannot inject on this client (Cursor's prompt hook).
     CannotInject,
+    /// The body ran past the total deadline and the watchdog ended the
+    /// process. Recorded BY the watchdog itself — see `arm_watchdog_recording`.
+    WatchdogFired,
     /// The stop gate had no transcript to read. Fail-open, but RECORDED —
     /// the previous generation failed open silently.
     NoTranscript,
@@ -122,10 +125,32 @@ fn describe_panic(payload: &(dyn std::any::Any + Send)) -> String {
 /// them unwind into our handler, and all of them would otherwise leave the
 /// client waiting on a process that never returns.
 pub fn arm_watchdog(deadline: Duration) {
+    arm_watchdog_recording(deadline, String::new());
+}
+
+/// Arm the watchdog so that firing RECORDS ITSELF before exiting.
+///
+/// The C8 audit found the one silence the log could not explain: on a 331 MB
+/// transcript the body took 4,983 ms, the watchdog fired at 4,000 ms and called
+/// `exit(0)` from this thread — while `silence::record` runs in `main` AFTER
+/// the body returns, which it never did. The hook exited 0, emitted nothing,
+/// and wrote no reason. That is exactly the two-week outage this crate exists
+/// to end, and it was reachable for EVERY role, not just the slow one.
+///
+/// So the deadline path now writes its own record first. It is the last thing
+/// that happens before the process ends, and it is bounded: one `write_all` of
+/// one line, the same append the ordinary path uses.
+pub fn arm_watchdog_recording(deadline: Duration, role: String) {
     std::thread::spawn(move || {
         std::thread::sleep(deadline);
-        // Nothing to flush: an emission is written and flushed before this can
-        // matter, and a partial write is worse than none.
+        // Record BEFORE exiting. A timeout that reports nothing is
+        // indistinguishable from a hook that had nothing to say — the exact
+        // ambiguity this crate was built to remove.
+        if !role.is_empty() {
+            crate::silence::record(&role, &Outcome::Silent(SilenceReason::WatchdogFired));
+        }
+        // Nothing else to flush: an emission is written and flushed before this
+        // can matter, and a partial write is worse than none.
         std::process::exit(0);
     });
 }

@@ -54,6 +54,7 @@ pub fn tag(reason: &SilenceReason) -> &'static str {
         SilenceReason::StoreHadNothing => "store-had-nothing",
         SilenceReason::QueryFailed(_) => "query-failed",
         SilenceReason::CannotInject => "cannot-inject",
+        SilenceReason::WatchdogFired => "watchdog-fired",
         SilenceReason::NoTranscript => "no-transcript",
         SilenceReason::AutonomyUnknown => "autonomy-unknown",
         SilenceReason::Panicked(_) => "panicked",
@@ -178,6 +179,7 @@ mod tests {
             SilenceReason::StoreHadNothing,
             SilenceReason::QueryFailed("ConnectionRefused".into()),
             SilenceReason::CannotInject,
+            SilenceReason::WatchdogFired,
             SilenceReason::NoTranscript,
             SilenceReason::AutonomyUnknown,
             SilenceReason::Panicked("attempt to divide by zero".into()),
@@ -221,7 +223,7 @@ mod tests {
             "unknown-role", "role-absent-on-client", "not-configured",
             "stdin-timed-out", "payload-unreadable", "no-cues",
             "store-had-nothing", "query-failed", "cannot-inject",
-            "no-transcript", "autonomy-unknown", "panicked",
+            "watchdog-fired", "no-transcript", "autonomy-unknown", "panicked",
         ];
         assert_eq!(expected.len(), lines.len(), "one record per reason");
         for (want, line) in expected.iter().zip(&lines) {

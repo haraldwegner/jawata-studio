@@ -15,7 +15,29 @@
 //! and reads what it wrote.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
+
+/// Spawn a freshly-copied executable, retrying ETXTBSY.
+///
+/// Linux refuses to exec a file any process still holds open for writing, and
+/// `fs::copy` in a sibling test thread can hold that handle for a moment after
+/// this thread's copy has returned. Caught at ~1 run in 6 as
+/// `Os { code: 26, kind: ExecutableFileBusy }`.
+///
+/// The production deploy path already solved exactly this (`manager_service.rs`
+/// unlinks-then-writes and retries the spawn); the test helper never got the
+/// same treatment, so the suite carried a flake the product does not have.
+fn run_staged(cmd: &mut Command) -> Output {
+    for _ in 0..40 {
+        match cmd.output() {
+            Err(e) if e.raw_os_error() == Some(26) => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            other => return other.expect("run the staged hook"),
+        }
+    }
+    panic!("still ETXTBSY after 40 attempts");
+}
 
 /// The binary under test, copied to a role name in a scratch directory.
 ///
@@ -70,11 +92,7 @@ fn explain_reports_the_reason_the_real_path_produced() {
     let dir = scratch("no-config");
     let hook = staged_hook(&dir, if cfg!(windows) { "jawata-hook-primer.exe" } else { "jawata-hook-primer" });
 
-    let out = Command::new(&hook)
-        .arg("--explain")
-        .current_dir(&dir)
-        .output()
-        .expect("run the staged hook");
+    let out = run_staged(Command::new(&hook).arg("--explain").current_dir(&dir));
 
     let stderr = String::from_utf8_lossy(&out.stderr);
 
@@ -101,7 +119,7 @@ fn without_explain_the_hook_is_quiet() {
     let dir = scratch("quiet");
     let hook = staged_hook(&dir, if cfg!(windows) { "jawata-hook-primer.exe" } else { "jawata-hook-primer" });
 
-    let out = Command::new(&hook).current_dir(&dir).output().expect("run");
+    let out = run_staged(Command::new(&hook).current_dir(&dir));
     assert_eq!(Some(0), out.status.code());
     assert!(
         String::from_utf8_lossy(&out.stderr).trim().is_empty(),
@@ -120,7 +138,7 @@ fn the_binary_writes_its_reason_to_the_log_beside_it() {
     let log = jawata_hook::silence::log_path_for(&hook).expect("a log path");
     let _ = std::fs::remove_file(&log);
 
-    let out = Command::new(&hook).current_dir(&dir).output().expect("run");
+    let out = run_staged(Command::new(&hook).current_dir(&dir));
     assert_eq!(Some(0), out.status.code());
 
     let body = std::fs::read_to_string(&log).unwrap_or_else(|e| {
@@ -144,7 +162,7 @@ fn a_second_invocation_appends() {
     let _ = std::fs::remove_file(&log);
 
     for _ in 0..3 {
-        Command::new(&hook).current_dir(&dir).output().expect("run");
+        run_staged(Command::new(&hook).current_dir(&dir));
     }
     let body = std::fs::read_to_string(&log).expect("the log");
     assert_eq!(3, body.lines().count(), "three runs, three records: {body:?}");
@@ -160,7 +178,7 @@ fn an_unknown_role_is_recorded_under_its_own_tag() {
     let log = jawata_hook::silence::log_path_for(&hook).expect("a log path");
     let _ = std::fs::remove_file(&log);
 
-    let out = Command::new(&hook).arg("--explain").current_dir(&dir).output().expect("run");
+    let out = run_staged(Command::new(&hook).arg("--explain").current_dir(&dir));
     assert_eq!(Some(0), out.status.code());
 
     let body = std::fs::read_to_string(&log).expect("the log");

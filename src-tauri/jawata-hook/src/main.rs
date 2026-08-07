@@ -14,16 +14,22 @@
 use jawata_hook::safety::Outcome;
 
 fn main() {
-    // FIRST, before anything that could block: whatever the main thread is
-    // doing when the deadline passes, the process ends with status 0.
-    jawata_hook::safety::arm_watchdog(jawata_hook::safety::TOTAL_DEADLINE);
-
     let argv0 = std::env::args().next().unwrap_or_default();
     let explain = std::env::args().any(|a| a == "--explain");
 
     let role_name = jawata_hook::roles::role_for_binary(&argv0)
         .map(|r| r.name().to_string())
         .unwrap_or_else(|| "unknown".to_string());
+
+    // FIRST, before anything that could block: whatever the main thread is
+    // doing when the deadline passes, the process ends with status 0 — and now
+    // the deadline path WRITES ITS OWN REASON before it does. A timeout used to
+    // be the one silence this log could not explain, because `record` below
+    // runs only after the body returns, which on a timeout it never does.
+    jawata_hook::safety::arm_watchdog_recording(
+        jawata_hook::safety::TOTAL_DEADLINE,
+        role_name.clone(),
+    );
 
     let argv0_owned = argv0.clone();
     let outcome =
