@@ -124,21 +124,33 @@ pub fn append_to(path: &Path, role: &str, outcome: &Outcome) -> bool {
     f.write_all(line.as_bytes()).is_ok()
 }
 
-/// Truncate to the most recent half when the cap is exceeded, on a record
-/// boundary. Failure to trim is not failure to log: the append still runs.
+/// ROTATE when the cap is exceeded — never truncate, never rewrite in place.
+///
+/// Two earlier shapes both DESTROYED records, and each reported success while
+/// doing it:
+///
+/// * `read_to_string` + `fs::write` (O_TRUNC): every concurrent `O_APPEND`
+///   writer landing between the truncate and the write was overwritten.
+///   Measured at the cap: 60 writers, 60 reported written, as few as ONE
+///   present.
+/// * write-a-tail-and-`rename`: atomic for the reader, but a concurrent
+///   appender still holds the OLD inode open, so its record lands in an
+///   orphaned file nobody will ever read. Fewer losses, same class.
+///
+/// Rotation has neither failure. `rename` moves the whole file, so an appender
+/// holding the old inode writes into `hook_silence.log.1` — a file that still
+/// exists and is still readable. No record is destroyed; at worst it is one
+/// file older than expected. And no lock is taken, so the fire path still
+/// cannot block, which was the original reason to avoid one.
 fn trim_if_oversized(path: &Path) {
     let Ok(meta) = std::fs::metadata(path) else { return };
     if meta.len() <= MAX_BYTES {
         return;
     }
-    let Ok(body) = std::fs::read_to_string(path) else { return };
-    let keep_from = body.len() / 2;
-    // Advance to the next record boundary so the first surviving line is whole.
-    let cut = body[keep_from..]
-        .find('\n')
-        .map(|i| keep_from + i + 1)
-        .unwrap_or(body.len());
-    let _ = std::fs::write(path, &body[cut..]);
+    // One generation back is enough: the cap exists to bound disk, and two
+    // capped files is still bounded.
+    let previous = path.with_extension("log.1");
+    let _ = std::fs::rename(path, &previous);
 }
 
 /// The fire-path entry: resolve the log beside this executable and append.
@@ -166,8 +178,10 @@ mod tests {
     /// variant without adding its tag "stops compiling" — was false and was
     /// falsified by this very file: `NoTranscript` and `AutonomyUnknown` were
     /// added and neither list noticed. Only `tag()`'s own match is exhaustive.
-    /// The compile-time guarantee is asserted below instead, by matching a
-    /// witness exhaustively.
+    /// The compile-time guarantee is `exhaustive_witness` below: it matches a
+    /// reason exhaustively, so a new variant fails to compile until it is
+    /// named there AND added here. The earlier version of this comment claimed
+    /// that guarantee existed when no such match had been written.
     fn every_reason() -> Vec<SilenceReason> {
         vec![
             SilenceReason::UnknownRole("jawata-hook-typo".into()),
@@ -184,6 +198,37 @@ mod tests {
             SilenceReason::AutonomyUnknown,
             SilenceReason::Panicked("attempt to divide by zero".into()),
         ]
+    }
+
+    /// The compile-time guard the doc above promises. Adding a variant to
+    /// `SilenceReason` breaks THIS match, which is the only mechanism that can
+    /// force the hand-written lists below to keep up.
+    fn exhaustive_witness(r: &SilenceReason) -> u8 {
+        match r {
+            SilenceReason::UnknownRole(_) => 0,
+            SilenceReason::RoleAbsentOnClient => 1,
+            SilenceReason::NotConfigured => 2,
+            SilenceReason::StdinTimedOut => 3,
+            SilenceReason::PayloadUnreadable(_) => 4,
+            SilenceReason::NoCues(_) => 5,
+            SilenceReason::StoreHadNothing => 6,
+            SilenceReason::QueryFailed(_) => 7,
+            SilenceReason::CannotInject => 8,
+            SilenceReason::WatchdogFired => 9,
+            SilenceReason::NoTranscript => 10,
+            SilenceReason::AutonomyUnknown => 11,
+            SilenceReason::Panicked(_) => 12,
+        }
+    }
+
+    /// Every variant the witness knows must appear in `every_reason()`. This is
+    /// what actually couples the two: the witness fails to compile on a new
+    /// variant, and this assertion fails if the list was not updated with it.
+    #[test]
+    fn the_reason_list_covers_every_variant() {
+        let mut seen: Vec<u8> = every_reason().iter().map(exhaustive_witness).collect();
+        seen.sort_unstable();
+        assert_eq!((0..=12).collect::<Vec<u8>>(), seen, "every_reason() is missing a variant");
     }
 
     #[test]
@@ -300,10 +345,13 @@ mod tests {
         let after = std::fs::read_to_string(&p).unwrap();
         assert!(
             (after.len() as u64) < MAX_BYTES,
-            "must be trimmed, got {} bytes",
+            "the live log must be small again, got {} bytes",
             after.len()
         );
         assert!(after.contains("cannot-inject"), "the new record must survive");
+        // ROTATED, not destroyed: the old records are still readable.
+        let previous = p.with_extension("log.1");
+        assert!(previous.exists(), "the capped log must be kept, not deleted");
         // Every surviving line is whole — the trim cut on a record boundary.
         for l in after.lines() {
             assert_eq!(4, l.split('\t').count(), "trim split a record: {l:?}");
@@ -329,4 +377,41 @@ mod tests {
         assert_eq!(cfg.parent(), log.parent(), "log must sit beside the config");
         assert_eq!(Some("hook_silence.log".as_ref()), log.file_name());
     }
+    /// THE GATE CLAUSE, at the cap. `concurrent_writers_both_land_whole` starts
+    /// from a FRESH log and so never enters the trim path — which is where the
+    /// loss was. The audit measured 60 concurrent writers at the cap: 60
+    /// reported written, as few as ONE present. `append_to` returned true for
+    /// every destroyed record.
+    #[test]
+    fn concurrent_writers_survive_a_trim() {
+        let p = tmp("concurrent-at-cap");
+        let _ = std::fs::remove_file(&p);
+        // Start AT the cap so the very first append triggers a trim.
+        let filler = "0\tprimer\tstore-had-nothing\t".to_string() + &"x".repeat(200) + "\n";
+        let mut body = String::new();
+        while (body.len() as u64) <= MAX_BYTES {
+            body.push_str(&filler);
+        }
+        std::fs::write(&p, &body).unwrap();
+
+        const N: usize = 60;
+        std::thread::scope(|s| {
+            for _ in 0..N {
+                let p = p.clone();
+                s.spawn(move || {
+                    append_to(&p, "primer", &Outcome::Silent(SilenceReason::CannotInject));
+                });
+            }
+        });
+        let after = std::fs::read_to_string(&p).unwrap();
+        let landed = after.lines().filter(|l| l.contains("cannot-inject")).count();
+        assert_eq!(
+            N, landed,
+            "every writer reported success; only {landed} of {N} records survived the trim"
+        );
+        for l in after.lines() {
+            assert_eq!(4, l.split('\t').count(), "torn record: {l:?}");
+        }
+    }
+
 }

@@ -288,17 +288,40 @@ fn read_tail(path: &str, max: u64) -> std::io::Result<String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path)?;
     let len = f.metadata()?.len();
-    if len > max {
-        f.seek(SeekFrom::Start(len - max))?;
+    let truncated = len > max;
+    if truncated {
+        // Seek ONE BYTE EARLIER than the window so we can tell whether the
+        // boundary already fell on a record edge. Dropping the first line
+        // unconditionally destroyed a COMPLETE record whenever it did —
+        // measured: a 100-byte file of ten records, window 50, lost the whole
+        // record at the boundary and returned four lines where five were
+        // readable.
+        f.seek(SeekFrom::Start(len - max - 1))?;
     }
-    let mut buf = Vec::with_capacity(max.min(len) as usize);
-    f.take(max).read_to_end(&mut buf)?;
+    let mut buf = Vec::with_capacity((max + 1).min(len) as usize);
+    f.take(max + 1).read_to_end(&mut buf)?;
     let text = String::from_utf8_lossy(&buf).into_owned();
-    // Drop a leading partial line: seeking to a byte offset lands mid-record.
-    Ok(match text.find('\n') {
-        Some(i) if len > max => text[i + 1..].to_string(),
-        _ => text,
-    })
+    if !truncated {
+        return Ok(text);
+    }
+    // The probe byte decides. If it is a newline the window already began at a
+    // record edge and everything after it is whole.
+    let Some(rest) = text.strip_prefix('\n') else {
+        // Otherwise the first line is a fragment and must go.
+        return match text.find('\n') {
+            Some(i) => Ok(text[i + 1..].to_string()),
+            // No newline anywhere in the window means we could not read a
+            // single whole record. Returning the fragment would let the caller
+            // parse zero records and report "this turn launched nothing" — a
+            // manufactured absence, which is the failure this crate exists to
+            // end. Say we could not look.
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "transcript tail holds no complete record",
+            )),
+        };
+    };
+    Ok(rest.to_string())
 }
 
 #[cfg(test)]
@@ -615,6 +638,45 @@ mod tests {
             Outcome::Silent(SilenceReason::CannotInject),
             run(Role::Observer, &config("claude-code"), "{}", &Stub(Ok(Answer::Nothing)))
         );
+    }
+
+    /// N1: the window boundary landing EXACTLY on a record edge used to destroy
+    /// the whole record that began there — the unconditional first-line drop.
+    #[test]
+    fn a_window_boundary_on_a_record_edge_keeps_every_record() {
+        let d = std::env::temp_dir().join(format!("jawata-tail-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        let p = d.join("edge.jsonl");
+        // Ten 10-byte records; a 50-byte window falls exactly on an edge.
+        let body: String = (0..10).map(|i| format!("L{i:08}\n")).collect();
+        std::fs::write(&p, &body).unwrap();
+        let got = read_tail(p.to_str().unwrap(), 50).expect("reads");
+        assert_eq!(5, got.lines().count(), "five whole records fit the window: {got:?}");
+        assert!(got.starts_with("L00000005"), "the edge record must survive: {got:?}");
+    }
+
+    /// N2: a window holding no complete record used to come back as an empty
+    /// turn — a MANUFACTURED absence, read downstream as "this turn launched
+    /// nothing". It must say it could not look.
+    #[test]
+    fn a_window_with_no_complete_record_is_an_error_not_an_empty_turn() {
+        let d = std::env::temp_dir().join(format!("jawata-tail-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        let p = d.join("no-newline.jsonl");
+        std::fs::write(&p, "x".repeat(500)).unwrap();
+        assert!(
+            read_tail(p.to_str().unwrap(), 50).is_err(),
+            "an unreadable window must not become a positive 'nothing happened'"
+        );
+    }
+
+    #[test]
+    fn a_file_smaller_than_the_window_is_returned_whole() {
+        let d = std::env::temp_dir().join(format!("jawata-tail-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        let p = d.join("small.jsonl");
+        std::fs::write(&p, "a\nb\nc\n").unwrap();
+        assert_eq!("a\nb\nc\n", read_tail(p.to_str().unwrap(), 4096).expect("reads"));
     }
 
 }

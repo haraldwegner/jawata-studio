@@ -138,8 +138,11 @@ pub fn arm_watchdog(deadline: Duration) {
 /// to end, and it was reachable for EVERY role, not just the slow one.
 ///
 /// So the deadline path now writes its own record first. It is the last thing
-/// that happens before the process ends, and it is bounded: one `write_all` of
-/// one line, the same append the ordinary path uses.
+/// that happens before the process ends. NOT free: `record` may first trim an
+/// oversized log, which reads and rewrites up to `silence::MAX_BYTES`. Measured
+/// overshoot past the deadline is ~3 ms, which is why this is acceptable rather
+/// than because it does no work — an earlier version of this comment claimed
+/// "one write_all of one line", which was simply false.
 pub fn arm_watchdog_recording(deadline: Duration, role: String) {
     std::thread::spawn(move || {
         std::thread::sleep(deadline);
