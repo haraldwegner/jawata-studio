@@ -529,4 +529,59 @@ mod tests {
         assert!(!c.arms_work(), "else the two rules cancel each other out");
     }
 
+    /// HOLLOW-WIRE FIX. A sweep that seeded every arm of `run` found the guard
+    /// arm load-bearing for NOTHING: `guard::judge` is well unit-tested, but no
+    /// test drove it through the pipeline, so the arm could be deleted and all
+    /// 132 tests stayed green. Production reaches it; a regression would not
+    /// have been caught.
+    #[test]
+    fn the_guard_reaches_its_verdict_through_run() {
+        let out = run(
+            Role::Guard,
+            &config("claude-code"),
+            r#"{"tool_input":{"command":"grep -rn 'foo' src/main/java/Thing.java"}}"#,
+            &Stub(Ok(Answer::Nothing)),
+        );
+        match out {
+            Outcome::Emitted(s) => {
+                let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+                assert_eq!("deny", v["hookSpecificOutput"]["permissionDecision"], "got {s}");
+            }
+            other => panic!("the guard must decide through run: {other:?}"),
+        }
+    }
+
+    /// Same sweep, same hole: every existing test passed `Role::UserPrompt`,
+    /// which shares an arm with `ToolRecall`, so the recall role was never
+    /// itself exercised. Asserting the EVENT NAME pins the role rather than
+    /// merely the shared code path.
+    #[test]
+    fn tool_recall_reaches_the_store_through_run() {
+        let store = Stub(Ok(Answer::Text("[lesson] a line".into())));
+        let out = run(
+            Role::ToolRecall,
+            &config("claude-code"),
+            r#"{"tool_input":{"file_path":"src/main/java/com/example/Importer.java"}}"#,
+            &store,
+        );
+        match out {
+            Outcome::Emitted(s) => {
+                let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+                assert_eq!("PreToolUse", v["hookSpecificOutput"]["hookEventName"], "got {s}");
+            }
+            other => panic!("expected a PreToolUse recall: {other:?}"),
+        }
+    }
+
+    /// The observer emits nothing BY DESIGN — but until now nothing said so,
+    /// and an arm whose body is the same as the default is indistinguishable
+    /// from an arm nobody wrote.
+    #[test]
+    fn the_observer_stays_silent_through_run_and_says_why() {
+        assert_eq!(
+            Outcome::Silent(SilenceReason::CannotInject),
+            run(Role::Observer, &config("claude-code"), "{}", &Stub(Ok(Answer::Nothing)))
+        );
+    }
+
 }
