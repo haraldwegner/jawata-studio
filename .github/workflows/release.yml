@@ -51,6 +51,17 @@ jobs:
         shell: bash
         run: ./build/build-hook-sidecar.sh
 
+      # The hook crate's tests GATE NOTHING without this. The C8 audit found
+      # that CI only ever ran `cargo build` for it, so 148 tests — including
+      # every fail-safe, every silence reason, and the concurrency proofs —
+      # could all go red and a release would ship regardless. They also run on
+      # all five targets here, which is the only place the Windows and macOS
+      # behaviour of the hook is exercised at all.
+      - name: Test the hook crate
+        shell: bash
+        working-directory: src-tauri
+        run: cargo test -p jawata-hook --release
+
       - name: Install frontend dependencies
         run: npm install
 

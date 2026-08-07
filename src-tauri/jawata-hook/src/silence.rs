@@ -36,6 +36,10 @@ use crate::safety::{Outcome, SilenceReason};
 /// busy day of hooks is retained and a year of them is not.
 pub const MAX_BYTES: u64 = 256 * 1024;
 
+/// A rotation token older than this cannot belong to a live rotator: the whole
+/// hook deadline is 4 s.
+pub const STALE_TOKEN_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The stable tag for a reason — the thing a human greps for, and the thing a
 /// test asserts on. Deliberately NOT `Debug`: a Debug rendering is a
 /// refactoring hazard (renaming a variant silently changes the log format and
@@ -147,25 +151,36 @@ fn trim_if_oversized(path: &Path) {
     // file, which is harmless. It never blocks, so the fire path keeps its
     // no-blocking contract — the reason a lock was refused in the first place.
     let token = path.with_extension("rotating");
-    // A token can be ORPHANED: the watchdog thread calls `record` and then
-    // `process::exit(0)` while main may be between `create_new` and
-    // `remove_file`. Without recovery that is PERMANENT — measured: with the
-    // token planted, 2000 appends grew the log past the cap to 334,200 bytes
-    // and `.log.1` was never created. The cap would be silently disabled for
-    // the life of the install, falsifying the one property this module says it
-    // would be worthless without.
+    // A token can be ORPHANED: the watchdog thread calls `record` then
+    // `process::exit(0)` while main may sit between claiming and releasing it.
+    // Without recovery that is PERMANENT — measured, the cap silently disabled
+    // for the life of the install.
     //
-    // A token older than the whole hook deadline cannot belong to a live
-    // rotator, so it is stale and removed. Still no blocking.
+    // Two things the first version of this recovery got wrong, both caught by
+    // seeding rather than by reading:
+    //
+    //  * it mapped an UNREADABLE timestamp to STALE. `elapsed()` errs whenever
+    //    the mtime is in the FUTURE, which happens on an NFS/SMB home whose
+    //    server clock leads, or after any NTP step. Every LIVE token would then
+    //    be judged stale on sight and the mutex destroyed install-wide — the
+    //    exact class the token exists to prevent. Unreadable now means NOT
+    //    stale: a skipped rotation is harmless, a broken mutex destroys records.
+    //  * it reaped with `remove_file`, which is itself TOCTOU — it removes
+    //    whatever token is there NOW, not the inode whose age was read, so a
+    //    second thread could delete the first thread's LIVE token and both
+    //    rotate. Measured at 313 rotators over 300 rounds. Reaping by `rename`
+    //    fixes it: a rename of a given inode succeeds for exactly one caller,
+    //    so only that caller may proceed.
     if let Ok(m) = std::fs::metadata(&token) {
         let stale = m
             .modified()
             .ok()
             .and_then(|t| t.elapsed().ok())
-            .map(|e| e > std::time::Duration::from_secs(30))
-            .unwrap_or(true);
-        if stale {
-            let _ = std::fs::remove_file(&token);
+            .map(|e| e > STALE_TOKEN_AFTER)
+            .unwrap_or(false);
+        if stale && std::fs::rename(&token, token.with_extension("rotating.reaped")).is_err() {
+            // Someone else reaped it; they own the rotation, not us.
+            return;
         }
     }
     let Ok(_) = std::fs::OpenOptions::new()
@@ -291,19 +306,28 @@ mod tests {
             // 108 tests green while the payload vanished. A reason that reaches
             // the log carrying nothing is the manufactured absence this stage
             // exists to end, one level down.
-            let carries_payload = matches!(
-                r,
-                SilenceReason::UnknownRole(_)
-                    | SilenceReason::PayloadUnreadable(_)
-                    | SilenceReason::NoCues(_)
-                    | SilenceReason::QueryFailed(_)
-                    | SilenceReason::Panicked(_)
-            );
-            assert_eq!(
-                carries_payload,
-                !cols[3].is_empty(),
-                "detail column disagrees with the variant's payload: {line:?}"
-            );
+            // FORCE THE DETAIL CONTENT, derived from the specimen itself —
+            // not from a hand-written list of payload-carrying variants, which
+            // was the same anti-pattern the macro replaced, one list further
+            // out: a seeded payload row passed with its payload dropped,
+            // because `_ => ""` in detail() and the omission from the list
+            // cancelled to false == false.
+            //
+            // A specimen's Debug rendering quotes its String payload, so the
+            // expectation is generated: whatever the row put in the specimen
+            // must appear in column 4.
+            let dbg = format!("{r:?}");
+            if let (Some(a), Some(b)) = (dbg.find('"'), dbg.rfind('"')) {
+                if b > a {
+                    let payload = &dbg[a + 1..b];
+                    assert!(
+                        cols[3].contains(payload),
+                        "detail column lost the payload {payload:?}: {line:?}"
+                    );
+                }
+            } else {
+                assert!(cols[3].is_empty(), "a payload-free reason logged a detail: {line:?}");
+            }
         }
     }
 
@@ -486,6 +510,64 @@ mod tests {
     fn filetime_set(p: &Path, when: std::time::SystemTime) -> std::io::Result<()> {
         let f = std::fs::OpenOptions::new().write(true).open(p)?;
         f.set_times(std::fs::FileTimes::new().set_modified(when))
+    }
+
+    /// R5-F1: the staleness PREDICATE was unforced. Only removal was tested, so
+    /// mutating the horizon to zero — which makes every token instantly stale
+    /// and turns the mutex into a no-op, restoring the race — left all 146
+    /// tests green. This pins the other direction.
+    #[test]
+    fn a_fresh_rotation_token_still_protects_a_live_rotator() {
+        let p = tmp("fresh-token");
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(p.with_extension("log.1"));
+        let filler = "0\tprimer\tstore-had-nothing\t".to_string() + &"x".repeat(200) + "\n";
+        let mut body = String::new();
+        while (body.len() as u64) <= MAX_BYTES {
+            body.push_str(&filler);
+        }
+        std::fs::write(&p, &body).unwrap();
+        let token = p.with_extension("rotating");
+        std::fs::write(&token, "").unwrap(); // fresh: mtime is now
+
+        append_to(&p, "primer", &Outcome::Silent(SilenceReason::CannotInject));
+
+        assert!(
+            !p.with_extension("log.1").exists(),
+            "a LIVE token must suppress rotation — otherwise the mutex is a no-op"
+        );
+        assert!(
+            (std::fs::read_to_string(&p).unwrap().len() as u64) > MAX_BYTES,
+            "the log must still be over cap, since rotation was correctly skipped"
+        );
+        let _ = std::fs::remove_file(&token);
+    }
+
+    /// R5-F2: a token whose mtime is in the FUTURE — an NFS home whose server
+    /// clock leads, or an NTP step — must NOT be judged stale. Treating an
+    /// unreadable age as stale destroyed the mutex install-wide.
+    #[test]
+    fn a_token_with_a_future_mtime_is_not_treated_as_stale() {
+        let p = tmp("future-token");
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(p.with_extension("log.1"));
+        let filler = "0\tprimer\tstore-had-nothing\t".to_string() + &"x".repeat(200) + "\n";
+        let mut body = String::new();
+        while (body.len() as u64) <= MAX_BYTES {
+            body.push_str(&filler);
+        }
+        std::fs::write(&p, &body).unwrap();
+        let token = p.with_extension("rotating");
+        std::fs::write(&token, "").unwrap();
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(300);
+        let _ = filetime_set(&token, future);
+
+        append_to(&p, "primer", &Outcome::Silent(SilenceReason::CannotInject));
+        assert!(
+            !p.with_extension("log.1").exists(),
+            "a future mtime must not be read as stale — that breaks the mutex"
+        );
+        let _ = std::fs::remove_file(&token);
     }
 
 }
