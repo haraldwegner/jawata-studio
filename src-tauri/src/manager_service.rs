@@ -4229,6 +4229,64 @@ fn legacy_sentinel(sentinel: &str) -> String {
     sentinel.replace("jawata", "goja")
 }
 
+/// EVERY prior generation of a managed sentinel, newest-legacy first.
+///
+/// Sprint 28 (D-SHIM) — the third generation, and why one was not enough.
+/// `legacy_sentinel` covers exactly one: `jawata-*` → `goja-*`. Stage 6 renames
+/// the managed scripts to role-named BINARIES (`jawata-hook-guard`, no `.sh`),
+/// which makes the current `.sh` names a second legacy generation. An install
+/// carrying them would then match no sentinel at all, be classified as **the
+/// user's own hook**, and be preserved forever — the retired script and the new
+/// binary both firing on every event. That is the hook-outage shape, shipped by
+/// the fix for the hook outage.
+///
+/// So a sentinel's history is data. Given the CURRENT sentinel, this returns
+/// what earlier deploys wrote for the same role, and every managed-entry
+/// predicate checks the whole list.
+fn legacy_sentinels(current: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    // Generation 2 — the `.sh` script this binary replaces, and its goja twin.
+    if let Some(script) = SCRIPT_GENERATION.iter().find(|(binary, _)| *binary == current) {
+        out.push(script.1.to_string());
+        out.push(legacy_sentinel(script.1));
+    }
+    // Generation 1 — the pre-rebrand twin of the current name itself.
+    let goja = legacy_sentinel(current);
+    if goja != current {
+        out.push(goja);
+    }
+    out.dedup();
+    out
+}
+
+/// The generation-2 script path each role-named binary replaces.
+///
+/// A table rather than a transform: the rename is not mechanical
+/// (`pretooluse-guard.sh` → `jawata-hook-guard`), and a wrong guess here does
+/// not fail loudly — it silently classifies our own retired script as the
+/// user's and leaves it firing.
+const SCRIPT_GENERATION: &[(&str, &str)] = &[
+    ("jawata-hook-guard", "jawata-studio/pretooluse-guard.sh"),
+    ("jawata-hook-observer", "jawata-studio/posttooluse-observer.sh"),
+    ("jawata-hook-primer", "jawata-studio/sessionstart-primer.sh"),
+    ("jawata-hook-recall", "jawata-studio/pretooluse-recall.sh"),
+    ("jawata-hook-userprompt", "jawata-studio/userpromptsubmit-recall.sh"),
+    ("jawata-hook-stop", "jawata-studio stop gate"),
+];
+
+/// Whether an entry's command names ANY generation of a managed hook.
+///
+/// The predicate every managed-entry check should use. Matching only the
+/// current generation is what preserves a retired script as the user's own.
+fn entry_is_managed_any_generation(entry: &serde_json::Value, current: &str) -> bool {
+    if entry_command_contains(entry, current) {
+        return true;
+    }
+    legacy_sentinels(current)
+        .iter()
+        .any(|old| entry_command_contains(entry, old))
+}
+
 /// Sprint 22b: a pre-rebrand deploy left a `goja-studio…`-named rule FILE beside
 /// the renamed one (e.g. `.cursor/rules/goja-studio.mdc`, `goja-studio-rules.md`);
 /// both would steer the agent. Remove the legacy sibling after the new file is
@@ -5361,11 +5419,19 @@ fn entry_command_contains(entry: &serde_json::Value, needle: &str) -> bool {
         .unwrap_or(false)
 }
 
+// Sprint 28 (D-SHIM): keyed on the BINARY name, not on today's script path.
+// entry_is_managed_any_generation resolves that name to every generation we
+// have ever written — the role-named binary this sprint deploys, the `.sh`
+// script it replaces, and that script's pre-rebrand goja twin. Keying on the
+// binary therefore recognises an install from BEFORE this sprint as well as
+// one from after it, which is the whole point: an entry we do not recognise is
+// classified as the user's own and preserved, so the retired script would keep
+// firing beside the new binary forever.
 fn is_managed_primer_entry(entry: &serde_json::Value) -> bool {
-    entry_command_contains(entry, JAWATA_PRIMER_SENTINEL)
+    entry_is_managed_any_generation(entry, "jawata-hook-primer")
 }
 fn is_managed_recall_entry(entry: &serde_json::Value) -> bool {
-    entry_command_contains(entry, JAWATA_RECALL_SENTINEL)
+    entry_is_managed_any_generation(entry, "jawata-hook-recall")
 }
 
 /// SessionStart entry: no matcher (fires on every session start).
@@ -5382,7 +5448,7 @@ fn build_managed_recall_entry(recall_path: &Path) -> serde_json::Value {
     })
 }
 fn is_managed_userprompt_entry(entry: &serde_json::Value) -> bool {
-    entry_command_contains(entry, JAWATA_USERPROMPT_SENTINEL)
+    entry_is_managed_any_generation(entry, "jawata-hook-userprompt")
 }
 /// UserPromptSubmit entry: no matcher (fires on every user prompt; the script gates itself).
 fn build_managed_userprompt_entry(script_path: &Path) -> serde_json::Value {
@@ -8461,6 +8527,74 @@ mod tests {
             s.contains(r#"basename "$fp" .java"#),
             "derives the type-name cue from the edited .java file"
         );
+    }
+
+    #[test]
+    fn every_generation_of_a_managed_hook_is_recognised_as_ours() {
+        // Sprint 28 C6 exit clause 1, at the unit the migration turns on.
+        // legacy_sentinel covered ONE prior generation. Stage 6 renames the
+        // managed scripts to role-named binaries, making the current .sh names
+        // a SECOND legacy generation — and an install carrying those would
+        // match no sentinel, be classified as the USER's own hook, and be kept
+        // forever, with the retired script and the new binary both firing on
+        // every event. That is the hook-outage shape, shipped by the fix for
+        // the hook outage.
+        for (binary, script) in SCRIPT_GENERATION {
+            let generations = [
+                // gen 3 — what this sprint deploys
+                format!("/home/u/.claude/hooks/{binary}"),
+                // gen 2 — the script it replaces
+                format!("/home/u/.claude/{script}"),
+                // gen 1 — that script's pre-rebrand twin
+                format!("/home/u/.claude/{}", legacy_sentinel(script)),
+            ];
+            for command in generations {
+                let entry = serde_json::json!({
+                    "hooks": [ { "type": "command", "command": command } ]
+                });
+                assert!(
+                    entry_is_managed_any_generation(&entry, binary),
+                    "{command} is one of OUR generations and was not recognised — it would be \
+                     preserved as the user's own hook and keep firing beside the new binary"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_users_own_hook_is_never_claimed_by_the_migration() {
+        // The other direction, and the one that costs the user if it is wrong:
+        // widening the match until it swallows their entries. Each of these
+        // resembles ours without being ours.
+        for command in [
+            "/home/u/.claude/hooks/my-own-guard.sh",
+            "/home/u/.claude/hooks/jawata-notes/my-hook.sh",
+            "/usr/local/bin/jawata-hook-guard-wrapper-of-mine",
+            "echo 'jawata-studio/pretooluse-guard.sh is what I replaced'",
+        ] {
+            let entry = serde_json::json!({
+                "hooks": [ { "type": "command", "command": command } ]
+            });
+            let claimed = SCRIPT_GENERATION
+                .iter()
+                .any(|(binary, _)| entry_is_managed_any_generation(&entry, binary));
+            // Both directions asserted, including the two we KNOWINGLY claim.
+            // Recording a limitation as an expectation is the difference
+            // between a known behaviour and a surprise: matching is by
+            // substring, so a command that embeds one of our sentinel paths is
+            // treated as ours. Deliberate — the sentinel is a full path
+            // fragment (`jawata-studio/pretooluse-guard.sh`), which a user is
+            // unlikely to embed by accident, and the alternative (exact match)
+            // breaks the moment a wrapper or an absolute prefix appears, which
+            // is the normal case for OUR OWN entries.
+            let we_knowingly_claim = command.contains("jawata-hook-guard")
+                || command.contains("jawata-studio/pretooluse-guard.sh");
+            assert_eq!(
+                we_knowingly_claim, claimed,
+                "migration claim on {command:?} is not what this test records — if the \
+                 matching rule changed, change this expectation deliberately"
+            );
+        }
     }
 
     #[test]
