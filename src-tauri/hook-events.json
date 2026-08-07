@@ -65,5 +65,60 @@
       "bounding": "the STUDIO rotates; the hook only appends and drops past the ceiling",
       "violation": "a hook that trims, truncates or renames this file \u2014 six audit rounds proved in-path bounding destroys records"
     }
+  },
+  "stop_rules": {
+    "_why": [
+      "Sprint 28, C8 architect finding F3. TWO stop gates exist: the deployed bash",
+      "script (live today) and the Rust stop::judge (built, inert). Their rule sets",
+      "have DIVERGED \u2014 the audit-fix-loop trigger and the unjudged-ask check were",
+      "added to the bash generation, which the architecture schedules for deletion.",
+      "At cutover the binary would ship WITHOUT rules the script had: the hook-outage",
+      "shape inverted, at the one moment nobody is reading the old file.",
+      "",
+      "Every rule is declared here with its status on each side. A rule may be",
+      "ported or deliberately dropped \u2014 but not silently lost."
+    ],
+    "rules": {
+      "anti_loop": {
+        "bash": "present",
+        "rust": "present",
+        "what": "a second pass never blocks; the anti-wedge valve"
+      },
+      "audit_fix_loop": {
+        "bash": "present",
+        "rust": "todo",
+        "what": "3+ refusals with no checkpoint reached -> run the architect"
+      },
+      "unjudged_ask": {
+        "bash": "present",
+        "rust": "todo",
+        "what": "an upward ask with no communicator run since the human's turn"
+      },
+      "communicator_rule_a": {
+        "bash": "absent",
+        "rust": "present-but-inert",
+        "what": "Rule A; gated on autonomy, which production cannot observe"
+      },
+      "nothing_armed_rule_b": {
+        "bash": "absent",
+        "rust": "present-but-inert",
+        "what": "Rule B; same gate, same reason"
+      },
+      "seat_discipline": {
+        "bash": "present",
+        "rust": "todo",
+        "what": "a seat invoked with no gate call after it"
+      },
+      "decision_test_length": {
+        "bash": "present",
+        "rust": "todo",
+        "what": "a shaped message over the length budget"
+      },
+      "undefined_abbreviations": {
+        "bash": "present",
+        "rust": "todo",
+        "what": "undefined terms in a shaped message"
+      }
+    }
   }
 }
