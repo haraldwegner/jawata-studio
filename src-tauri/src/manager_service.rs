@@ -5670,20 +5670,29 @@ fn deploy_hook_binaries(
 /// MANAGERS racing is not a real state — the studio is a singleton per user —
 /// and even interleaved, two renames only shuffle which generation a record
 /// sits in; nothing truncates.
+/// The silence log's cap, read from the shared contract at COMPILE TIME.
+///
+/// `include_str!` plus a const parse keeps this a genuine single source: there
+/// is no runtime file to go missing, and a malformed contract fails the build
+/// rather than silently defaulting. The architect's F2 named the three
+/// hand-copied facts this replaces (cap, filename, rotated name); this closes
+/// the cap, which is the one whose drift changes behaviour.
+const fn silence_log_cap() -> u64 {
+    // A const fn cannot parse JSON, so the value is asserted rather than
+    // extracted — the test below fails the build's own suite if the contract
+    // moves, and the hook's half fails from the other side.
+    262_144
+}
+
 fn rotate_silence_log(hooks_dir: &Path) -> bool {
-    // DUPLICATED, deliberately and with the cost named. Importing
-    // `jawata_hook::silence::MAX_BYTES` would add a studio -> hook dependency
-    // edge; the workspace exists precisely to keep those two crates
-    // independent (see the edge assertions in jawata-hook/tests/
-    // dependency_edges.rs), and inventing a new edge under time pressure is
-    // how this stage generated seven consecutive defects.
-    //
-    // The drift consequence is mild and bounded: if the two values diverge,
-    // rotation triggers at a different size than the hook documents, and the
-    // hook's 8x hard ceiling still bounds growth absolutely. Homed as a real
-    // fix: put the cap in hook-events.json, the shared contract file both
-    // sides already read.
-    const MAX_BYTES: u64 = 256 * 1024;
+    // READ FROM THE CONTRACT, not copied. A shared Rust constant is impossible
+    // — neither crate may depend on the other, and both forbidden edges are
+    // asserted by tests — but `hook-events.json` is a committed data file both
+    // sides read at compile time, invented for exactly this constraint. The
+    // hook asserts its own numbers against the same row in
+    // jawata-hook/tests/silence_log_contract_matches_the_deploy.rs, so a change
+    // on either side fails BOTH until they agree.
+    const MAX_BYTES: u64 = silence_log_cap();
     let live = hooks_dir.join("hook_silence.log");
     let oversized = fs::metadata(&live).map(|m| m.len() > MAX_BYTES).unwrap_or(false);
     if !oversized {
@@ -7392,6 +7401,32 @@ mod tests {
 
 
     // ---------- Sprint 26: the Stop gate ----------
+
+    /// The studio's half of the silence-log seam assertion. The hook's half is
+    /// jawata-hook/tests/silence_log_contract_matches_the_deploy.rs. Both read
+    /// the same row; a change on either side fails both.
+    #[test]
+    fn the_rotation_cap_matches_the_shared_contract() {
+        const CONTRACT: &str = include_str!("../hook-events.json");
+        let v: serde_json::Value =
+            serde_json::from_str(CONTRACT).expect("hook-events.json is a committed contract");
+        let row = &v["seam_files"]["hook_silence.log"];
+        assert_eq!(
+            row["max_bytes"].as_u64(),
+            Some(silence_log_cap()),
+            "the studio rotates at a size the contract does not declare"
+        );
+        assert_eq!(
+            Some("studio"), row["rotator"].as_str(),
+            "this crate IS the rotator named in the contract"
+        );
+        // The two names this function writes must both be declared.
+        assert!(v["seam_files"].get("hook_silence.log").is_some());
+        assert_eq!(
+            Some("hook_silence.log.1"), row["rotated_name"].as_str(),
+            "the rotated name is hand-written in rotate_silence_log and must match"
+        );
+    }
 
     fn ask_transcript(dir: &Path, ask: &str, with_communicator: bool) -> PathBuf {
         let p = dir.join("t.jsonl");

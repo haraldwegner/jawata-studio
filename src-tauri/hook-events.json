@@ -12,10 +12,18 @@
     "(a hook process must never link a GUI toolkit) and the studio must not depend",
     "on the hook (deploy writes the binary, it never runs it). Both forbidden edges",
     "are asserted by tests. A committed data file is the one thing both sides can",
-    "read without an edge between them — each includes it at compile time and",
+    "read without an edge between them \u2014 each includes it at compile time and",
     "asserts its own table against it.",
     "",
-    "Change an event here and BOTH sides fail until they agree."
+    "Change an event here and BOTH sides fail until they agree.",
+    "",
+    "Sprint 28, C8 architect finding F2. The same argument now covers the FILES",
+    "that cross the boundary, not only the event names. The hook appends to",
+    "hook_silence.log and the studio renames it away \u2014 two processes, two crates,",
+    "one file \u2014 and that seam was declared NOWHERE. It had already produced three",
+    "hand-copied facts (the cap, the filename, the rotated name) with nothing",
+    "asserting they agree, plus an ordering contract living only in a private doc",
+    "comment. Same fix, same file: declare it once, assert from both sides."
   ],
   "claude-code": {
     "primer": "SessionStart",
@@ -34,5 +42,28 @@
   "_absent": {
     "cursor.recall": "Cursor fires no before-a-tool-call event; afterMCPExecution is the only tool-shaped hook and it runs too late to recall INTO the call",
     "cursor.stop": "Cursor has no agent-stop event, so the stop gate cannot exist there; the discipline it enforces is carried by the rule block instead"
+  },
+  "seam_files": {
+    "_why": "Every file that crosses the hook/studio boundary. One row each: who writes, who reads, who bounds it, and what a violation looks like.",
+    "hook_config.json": {
+      "writer": "studio",
+      "reader": "hook",
+      "lifetime": "install",
+      "atomicity": "temp file then rename",
+      "violation": "a hook reads a zero-length file and reports a torn deploy"
+    },
+    "hook_silence.log": {
+      "writer": "hook",
+      "reader": "human",
+      "rotator": "studio",
+      "lifetime": "install",
+      "atomicity": "one write_all under O_APPEND",
+      "max_bytes": 262144,
+      "hard_ceiling_multiple": 8,
+      "rotated_name": "hook_silence.log.1",
+      "retention_generations": 1,
+      "bounding": "the STUDIO rotates; the hook only appends and drops past the ceiling",
+      "violation": "a hook that trims, truncates or renames this file \u2014 six audit rounds proved in-path bounding destroys records"
+    }
   }
 }
