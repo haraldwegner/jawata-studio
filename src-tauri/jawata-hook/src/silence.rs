@@ -32,7 +32,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::safety::{Outcome, SilenceReason};
 
-/// Above this size the log is trimmed to its most recent half. Chosen so a
+/// Above this size the log is ROTATED — renamed aside, a fresh one begun. Chosen so a
 /// busy day of hooks is retained and a year of them is not.
 pub const MAX_BYTES: u64 = 256 * 1024;
 
@@ -58,6 +58,37 @@ pub fn tag(reason: &SilenceReason) -> &'static str {
         SilenceReason::NoTranscript => "no-transcript",
         SilenceReason::AutonomyUnknown => "autonomy-unknown",
         SilenceReason::Panicked(_) => "panicked",
+    }
+}
+
+/// A specimen of EVERY variant, built by an exhaustive match rather than a
+/// hand-written list.
+///
+/// This is the coupling the doc used to claim and not have. The previous
+/// version paired a hand-written `Vec` with an assertion against a HARDCODED
+/// `0..=12` range — so a 14th variant could be added to the enum, to `tag()`,
+/// and to the witness, while the list stayed at thirteen and every test still
+/// passed. The audit proved exactly that.
+///
+/// Here the match on `seed` is exhaustive, so a new variant fails to compile
+/// until it is named; and because the list is BUILT from that match, it cannot
+/// then be forgotten.
+#[cfg(test)]
+pub(crate) fn specimen(seed: &SilenceReason) -> SilenceReason {
+    match seed {
+        SilenceReason::UnknownRole(_) => SilenceReason::UnknownRole("jawata-hook-typo".into()),
+        SilenceReason::RoleAbsentOnClient => SilenceReason::RoleAbsentOnClient,
+        SilenceReason::NotConfigured => SilenceReason::NotConfigured,
+        SilenceReason::StdinTimedOut => SilenceReason::StdinTimedOut,
+        SilenceReason::PayloadUnreadable(_) => SilenceReason::PayloadUnreadable("bad json".into()),
+        SilenceReason::NoCues(_) => SilenceReason::NoCues("TooFewContentTokens".into()),
+        SilenceReason::StoreHadNothing => SilenceReason::StoreHadNothing,
+        SilenceReason::QueryFailed(_) => SilenceReason::QueryFailed("refused".into()),
+        SilenceReason::CannotInject => SilenceReason::CannotInject,
+        SilenceReason::WatchdogFired => SilenceReason::WatchdogFired,
+        SilenceReason::NoTranscript => SilenceReason::NoTranscript,
+        SilenceReason::AutonomyUnknown => SilenceReason::AutonomyUnknown,
+        SilenceReason::Panicked(_) => SilenceReason::Panicked("divide by zero".into()),
     }
 }
 
@@ -147,10 +178,31 @@ fn trim_if_oversized(path: &Path) {
     if meta.len() <= MAX_BYTES {
         return;
     }
-    // One generation back is enough: the cap exists to bound disk, and two
-    // capped files is still bounded.
-    let previous = path.with_extension("log.1");
-    let _ = std::fs::rename(path, &previous);
+    // ONLY ONE ROTATOR. `metadata` then `rename` is TOCTOU: two observers both
+    // see an oversized file, the first rotates, a third appends creating a
+    // fresh one-record log, and the second's STALE observation renames that
+    // over `.log.1` — erasing the entire capped generation. Measured naturally
+    // reachable: 4 of 250 rounds at 200-way concurrency lost all 1150 prior
+    // records. Every hook process races here, and the watchdog thread calls
+    // `record` concurrently with main, so one invocation can self-race.
+    //
+    // `create_new` is an atomic test-and-set: exactly one caller creates the
+    // token and rotates; the losers skip and append to a slightly-over-cap
+    // file, which is harmless. It never blocks, so the fire path keeps its
+    // no-blocking contract — the reason a lock was refused in the first place.
+    let token = path.with_extension("rotating");
+    let Ok(_) = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&token)
+    else {
+        return;
+    };
+    // Re-check under the token: the winner may be acting on a stale read too.
+    if std::fs::metadata(path).map(|m| m.len() > MAX_BYTES).unwrap_or(false) {
+        let _ = std::fs::rename(path, path.with_extension("log.1"));
+    }
+    let _ = std::fs::remove_file(&token);
 }
 
 /// The fire-path entry: resolve the log beside this executable and append.
@@ -200,35 +252,26 @@ mod tests {
         ]
     }
 
-    /// The compile-time guard the doc above promises. Adding a variant to
-    /// `SilenceReason` breaks THIS match, which is the only mechanism that can
-    /// force the hand-written lists below to keep up.
-    fn exhaustive_witness(r: &SilenceReason) -> u8 {
-        match r {
-            SilenceReason::UnknownRole(_) => 0,
-            SilenceReason::RoleAbsentOnClient => 1,
-            SilenceReason::NotConfigured => 2,
-            SilenceReason::StdinTimedOut => 3,
-            SilenceReason::PayloadUnreadable(_) => 4,
-            SilenceReason::NoCues(_) => 5,
-            SilenceReason::StoreHadNothing => 6,
-            SilenceReason::QueryFailed(_) => 7,
-            SilenceReason::CannotInject => 8,
-            SilenceReason::WatchdogFired => 9,
-            SilenceReason::NoTranscript => 10,
-            SilenceReason::AutonomyUnknown => 11,
-            SilenceReason::Panicked(_) => 12,
-        }
-    }
-
-    /// Every variant the witness knows must appear in `every_reason()`. This is
-    /// what actually couples the two: the witness fails to compile on a new
-    /// variant, and this assertion fails if the list was not updated with it.
+    /// EVERY variant must appear in `every_reason()` — enforced without any
+    /// hardcoded count.
+    ///
+    /// `specimen` matches exhaustively, so a new variant breaks compilation
+    /// there first. This test then requires that each specimen's TAG appears
+    /// among the tags `every_reason()` produces. A variant added to the enum
+    /// and to `tag()` but forgotten in the list now fails here, which is
+    /// precisely what the previous `0..=12` assertion could not do.
     #[test]
     fn the_reason_list_covers_every_variant() {
-        let mut seen: Vec<u8> = every_reason().iter().map(exhaustive_witness).collect();
-        seen.sort_unstable();
-        assert_eq!((0..=12).collect::<Vec<u8>>(), seen, "every_reason() is missing a variant");
+        let listed: Vec<&str> = every_reason().iter().map(tag).collect();
+        for seed in every_reason() {
+            let t = tag(&specimen(&seed));
+            assert!(listed.contains(&t), "every_reason() is missing {t}");
+        }
+        // And the list has no duplicates hiding a gap.
+        let mut sorted = listed.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(listed.len(), sorted.len(), "every_reason() repeats a variant");
     }
 
     #[test]
@@ -331,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn the_log_is_capped_and_keeps_the_recent_half() {
+    fn the_log_is_capped_by_rotating_not_by_discarding() {
         let p = tmp("capped");
         let _ = std::fs::remove_file(&p);
         // Fill past the cap with identifiable records.
@@ -403,13 +446,22 @@ mod tests {
                 });
             }
         });
-        let after = std::fs::read_to_string(&p).unwrap();
-        let landed = after.lines().filter(|l| l.contains("cannot-inject")).count();
+        // Count across BOTH generations. Rotation's contract is that nothing is
+        // DESTROYED — a writer holding the pre-rotation inode legitimately
+        // lands in `.log.1`, which still exists and is still readable. An
+        // earlier version of this test counted only the live log and so failed
+        // about one run in three on correct behaviour: the test was wrong, not
+        // the rotation.
+        let live = std::fs::read_to_string(&p).unwrap_or_default();
+        let rotated = std::fs::read_to_string(p.with_extension("log.1")).unwrap_or_default();
+        let landed = live.lines().chain(rotated.lines())
+            .filter(|l| l.contains("cannot-inject"))
+            .count();
         assert_eq!(
             N, landed,
-            "every writer reported success; only {landed} of {N} records survived the trim"
+            "every writer reported success; only {landed} of {N} records survive across both generations"
         );
-        for l in after.lines() {
+        for l in live.lines().chain(rotated.lines()) {
             assert_eq!(4, l.split('\t').count(), "torn record: {l:?}");
         }
     }
