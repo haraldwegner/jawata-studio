@@ -29,77 +29,189 @@ const FORBIDDEN: &[&str] = &[
     ".unwrap_err(",
 ];
 
-/// Strip test code by BRACE COUNTING from each `#[cfg(test)]` item, not by
-/// truncating at the first occurrence.
+/// One line, lexed: comments removed, string and char literal CONTENTS blanked,
+/// and the brace delta counted over code only.
 ///
-/// C5 audit round 2, R3 defeated the truncating version with three shapes: a
-/// `#[cfg(test)] use …` on line 2 blanked the whole file; a production `fn`
-/// placed after `mod tests` was never seen; and `//` inside a string literal
-/// (this crate is full of `http://` URLs) truncated the line before the code.
-fn production_lines(text: &str) -> Vec<(usize, String)> {
+/// C5 audit round 3 defeated the previous ad-hoc counting four ways, and one of
+/// them was live in the tree: `config.rs:171` writes the literal `"{not json"`,
+/// whose `{` was counted as a brace, leaving that file's scan permanently one
+/// level deep. Nothing was lost only because `mod tests` happened to be its last
+/// item. The others: a `'"'` char literal desynchronised the string tracking so
+/// a following `http://` was read as a comment; a `{` inside a comment in a
+/// skipped region inflated the depth; and an inline `#[cfg(test)] fn f() {}`
+/// swallowed a production line.
+///
+/// Blanking literal contents also removes a false-positive class the old
+/// version had: a string that happens to contain `.unwrap()` is not code.
+fn lex(line: &str, in_block_comment: &mut bool) -> (String, i32) {
+    let chars: Vec<char> = line.chars().collect();
+    let mut code = String::with_capacity(chars.len());
+    let mut delta = 0i32;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if *in_block_comment {
+            if c == '*' && i + 1 < chars.len() && chars[i + 1] == '/' {
+                *in_block_comment = false;
+                code.push(' ');
+                code.push(' ');
+                i += 2;
+                continue;
+            }
+            code.push(' ');
+            i += 1;
+            continue;
+        }
+        // Comments.
+        if c == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
+            break;                       // rest of the line is a comment
+        }
+        if c == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+            *in_block_comment = true;
+            code.push(' ');
+            code.push(' ');
+            i += 2;
+            continue;
+        }
+        // Raw string: r"…" or r#"…"# with any number of hashes.
+        if c == 'r' && i + 1 < chars.len() && (chars[i + 1] == '"' || chars[i + 1] == '#') {
+            let mut j = i + 1;
+            let mut hashes = 0;
+            while j < chars.len() && chars[j] == '#' {
+                hashes += 1;
+                j += 1;
+            }
+            if j < chars.len() && chars[j] == '"' {
+                code.push(' ');
+                j += 1;
+                // Scan to the closing quote followed by `hashes` hashes.
+                while j < chars.len() {
+                    if chars[j] == '"' {
+                        let closes = (1..=hashes).all(|k| chars.get(j + k) == Some(&'#'));
+                        if closes {
+                            j += hashes + 1;
+                            break;
+                        }
+                    }
+                    j += 1;
+                }
+                for _ in i..j.min(chars.len()) {
+                    code.push(' ');
+                }
+                i = j;
+                continue;
+            }
+        }
+        // Ordinary string literal.
+        if c == '"' {
+            code.push(' ');
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == '\\' {
+                    code.push(' ');
+                    code.push(' ');
+                    i += 2;
+                    continue;
+                }
+                if chars[i] == '"' {
+                    code.push(' ');
+                    i += 1;
+                    break;
+                }
+                code.push(' ');
+                i += 1;
+            }
+            continue;
+        }
+        // Char literal — including '"' and '{', which are exactly what
+        // desynchronised the old tracker. A lifetime ('a) has no closing quote,
+        // so only treat it as a literal when one follows within three chars.
+        if c == '\'' {
+            let closes_at = (1..=4).find(|k| {
+                chars.get(i + k) == Some(&'\'') && !(chars.get(i + k - 1) == Some(&'\\') && *k == 1)
+            });
+            if let Some(k) = closes_at {
+                for _ in 0..=k {
+                    code.push(' ');
+                }
+                i += k + 1;
+                continue;
+            }
+        }
+        if c == '{' {
+            delta += 1;
+        }
+        if c == '}' {
+            delta -= 1;
+        }
+        code.push(c);
+        i += 1;
+    }
+    (code, delta)
+}
+
+/// True for `#[cfg(test)]` AND `#[cfg(all(test, …))]` — the second used to be
+/// scanned as production, a false-positive footgun the audit flagged.
+fn is_test_attribute(code: &str) -> bool {
+    let t = code.trim_start();
+    t.starts_with("#[cfg(") && t.contains("test")
+}
+
+/// The production lines, plus the end state so the caller can prove the skipper
+/// stayed balanced. An unbalanced file means the scan silently stopped looking.
+fn production_lines(text: &str) -> (Vec<(usize, String)>, i32, bool) {
     let mut out = Vec::new();
     let mut skip_depth: i32 = 0;
     let mut arming = false;
+    let mut in_block_comment = false;
+
     for (n, raw) in text.lines().enumerate() {
-        let line = raw.trim_start();
-        if skip_depth == 0 && line.starts_with("#[cfg(test)]") {
-            // The next item is test code; find its extent by braces.
-            arming = true;
+        let (code, delta) = lex(raw, &mut in_block_comment);
+
+        // A brace ON THIS LINE distinguishes "the item is still to come" from
+        // "the item opened and closed here" — `#[cfg(test)] fn helper() {}` has
+        // a delta of ZERO and is complete, which armed the skipper onto the
+        // NEXT line and swallowed a production line (round 3, S2).
+        let opened_here = code.contains('{');
+
+        if skip_depth == 0 && !arming && is_test_attribute(&code) {
+            // The attribute may carry its item on the SAME line.
+            if delta > 0 {
+                skip_depth = delta;
+            } else if !opened_here {
+                arming = true;
+            }
             continue;
         }
         if arming {
-            let opens = raw.matches('{').count() as i32;
-            let closes = raw.matches('}').count() as i32;
-            if opens > 0 {
+            if delta > 0 {
                 arming = false;
-                skip_depth = opens - closes;
-                if skip_depth <= 0 {
-                    skip_depth = 0;   // a one-line item
-                }
+                skip_depth = delta;
                 continue;
             }
-            if line.ends_with(';') {
-                arming = false;      // a `use` or a const: one line, skipped
+            if opened_here {
+                arming = false;      // opened and closed on this line
                 continue;
             }
-            continue;                // still on the item's signature
+            if code.trim_end().ends_with(';') {
+                arming = false;          // a `use` or a const: one line, skipped
+            }
+            continue;
         }
         if skip_depth > 0 {
-            skip_depth += raw.matches('{').count() as i32;
-            skip_depth -= raw.matches('}').count() as i32;
-            continue;
-        }
-        out.push((n + 1, strip_comment(raw)));
-    }
-    out
-}
-
-/// Drop a trailing `//` comment — but only when the `//` is OUTSIDE a string
-/// literal. `let u = "http://x";` must keep its code.
-fn strip_comment(line: &str) -> String {
-    let bytes: Vec<char> = line.chars().collect();
-    let mut in_string = false;
-    let mut escaped = false;
-    for i in 0..bytes.len() {
-        let c = bytes[i];
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match c {
-            '\\' if in_string => escaped = true,
-            '"' => in_string = !in_string,
-            '/' if !in_string && i + 1 < bytes.len() && bytes[i + 1] == '/' => {
-                return bytes[..i].iter().collect();
+            skip_depth += delta;
+            if skip_depth < 0 {
+                skip_depth = 0;
             }
-            _ => {}
+            continue;
         }
+        out.push((n + 1, code));
     }
-    line.to_string()
+    (out, skip_depth, arming)
 }
 
 /// Every `.rs` under `src`, RECURSIVELY — a submodule directory would
-/// otherwise never be scanned (R3's fourth shape).
+/// otherwise never be scanned.
 fn rust_sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
@@ -122,7 +234,19 @@ fn no_panicking_construct_is_reachable_when_the_hook_fires() {
     let mut offences = Vec::new();
     for path in files {
         let text = std::fs::read_to_string(&path).expect("readable source");
-        for (n, code) in production_lines(&text) {
+        let (lines, depth, arming) = production_lines(&text);
+        // THE SELF-CHECK the audit asked for. A file that ends mid-skip means
+        // the scanner lost its place and quietly stopped looking at everything
+        // after it — a silent hole in a control, which is the failure class
+        // this stage exists to remove. It failed on config.rs before the lexer
+        // landed, which is exactly why it is here.
+        assert!(
+            depth == 0 && !arming,
+            "{}: the scan ended mid-skip (depth {depth}, arming {arming}) — every production \
+             line after that point went unexamined, silently",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        );
+        for (n, code) in lines {
             for bad in FORBIDDEN {
                 if code.contains(bad) {
                     offences.push(format!(
@@ -161,17 +285,49 @@ fn the_scan_survives_the_shapes_that_defeated_its_first_version() {
         ("a // inside a string literal", url_in_string),
         ("production code after mod tests", after_mod_tests),
     ] {
-        let found = production_lines(sample)
-            .iter()
-            .any(|(_, code)| FORBIDDEN.iter().any(|bad| code.contains(bad)));
+        let (lines, _, _) = production_lines(sample);
+        let found = lines.iter().any(|(_, code)| FORBIDDEN.iter().any(|bad| code.contains(bad)));
         assert!(found, "the scan is blind to: {name}");
     }
 
+    // ---- round 3's four shapes, one of which was LIVE in config.rs ----
+    let brace_in_string = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() { let _ = \"{not json\"; }\n}\nfn f(o: Option<u8>) { let _ = o.unwrap(); }\n";
+    let inline_cfg_item = "#[cfg(test)] fn helper() {}\nfn f(o: Option<u8>) { let _ = o.unwrap(); }\n";
+    let char_literal_quote = "fn f(o: Option<u8>) { let _q = '\"'; let _u = \"http://x\"; let _ = o.unwrap(); }\n";
+    let brace_in_comment = "#[cfg(test)]\nmod tests {\n    // a stray { in a comment\n}\nfn f(o: Option<u8>) { let _ = o.unwrap(); }\n";
+    let cfg_all_test = "#[cfg(all(test, unix))]\nmod tests {\n    #[test]\n    fn t() { panic!(\"fine\"); }\n}\nfn g() {}\n";
+
+    for (name, sample) in [
+        ("an unbalanced { inside a test string (was LIVE at config.rs:171)", brace_in_string),
+        ("an inline #[cfg(test)] item", inline_cfg_item),
+        ("a '\"' char literal ahead of a URL", char_literal_quote),
+        ("a { inside a comment in a skipped region", brace_in_comment),
+    ] {
+        let (lines, depth, arming) = production_lines(sample);
+        assert!(depth == 0 && !arming, "the scan ended mid-skip on: {name}");
+        let found = lines.iter().any(|(_, code)| FORBIDDEN.iter().any(|bad| code.contains(bad)));
+        assert!(found, "the scan is blind to: {name}");
+    }
+
+    // #[cfg(all(test, …))] used to be scanned AS PRODUCTION — the opposite
+    // error, a false failure on a legitimate test module.
+    let (lines, _, _) = production_lines(cfg_all_test);
+    assert!(
+        !lines.iter().any(|(_, code)| FORBIDDEN.iter().any(|bad| code.contains(bad))),
+        "#[cfg(all(test, …))] must be recognised as test code, not reported as production"
+    );
+
+    // A string that merely CONTAINS a forbidden token is not code.
+    let (lines, _, _) = production_lines("fn f() { let _ = \"call .unwrap() here\"; }\n");
+    assert!(
+        !lines.iter().any(|(_, code)| FORBIDDEN.iter().any(|bad| code.contains(bad))),
+        "a forbidden token inside a string literal is not a panicking construct"
+    );
+
     // And test code is still exempt — otherwise every assertion trips it.
     let real_test_module = "fn f() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() { panic!(\"fine\"); }\n}\n";
-    let leaked = production_lines(real_test_module)
-        .iter()
-        .any(|(_, code)| FORBIDDEN.iter().any(|bad| code.contains(bad)));
+    let (lines, _, _) = production_lines(real_test_module);
+    let leaked = lines.iter().any(|(_, code)| FORBIDDEN.iter().any(|bad| code.contains(bad)));
     assert!(!leaked, "test code must stay exempt, or the rule becomes noise");
 }
 

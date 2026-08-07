@@ -15,7 +15,29 @@
 
 use std::io::Read;
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+/// Serialises the deploy-and-run tests.
+///
+/// C5 audit round 3, N1 — a regression THIS suite introduced. The ETXTBSY
+/// retry guarded `fs::copy` (the write) and nothing guarded `spawn` (the exec).
+/// `Command::spawn` forks, and a fork inherits every open fd: while test A sits
+/// inside `fs::copy` with a write fd open on its freshly-deployed binary, test
+/// B forks and B's child inherits that fd and holds it for its whole lifetime —
+/// up to four seconds for the watchdog run. A's own `execve` then fails with
+/// "Text file busy". Measured at 5 failures in 18 bare `cargo test` runs.
+///
+/// It was a blocker rather than a nuisance because cargo FAIL-FASTS across test
+/// binaries: in a failing run the no-panics, role-events, transport and the
+/// 246-test studio suites never executed at all, and the run ended in a red
+/// that looks like a flake and teaches a re-run.
+///
+/// Serialising removes the overlap; the retry below stays as the belt.
+fn deploy_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 const HOOK: &str = env!("CARGO_BIN_EXE_jawata-hook");
 
@@ -73,7 +95,19 @@ fn run_at(exe: &std::path::Path, stdin_never_closes: bool) -> (Option<i32>, Stri
     let mut cmd = Command::new(exe);
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let started = Instant::now();
-    let mut child = cmd.spawn().expect("the deployed hook must be executable");
+    // Retry the EXEC too, not just the copy. A concurrent build or a lingering
+    // inherited fd can still make execve report ETXTBSY.
+    let mut attempt = 0;
+    let mut child = loop {
+        match cmd.spawn() {
+            Ok(c) => break c,
+            Err(e) if e.raw_os_error() == Some(26) && attempt < 40 => {
+                attempt += 1;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => panic!("the deployed hook must be executable: {e}"),
+        }
+    };
     let stdin = child.stdin.take().expect("piped");
     if stdin_never_closes {
         std::mem::forget(stdin);
@@ -138,6 +172,7 @@ fn an_absent_config_exits_zero_and_writes_nothing() {
     //
     // Deployed under a REAL role name with NO config beside it, which is the
     // installed-but-not-yet-configured case the clause names.
+    let _serial = deploy_lock().lock().unwrap_or_else(|e| e.into_inner());
     let (_dir, exe) = deploy("absent-config", "jawata-hook-primer", None);
     let (code, out, _) = run_at(&exe, false);
     assert_eq!(Some(0), code, "a missing config must not fail the client");
@@ -153,6 +188,7 @@ fn a_stdin_that_never_closes_still_exits_zero_and_in_time() {
     // Deployed under a real role name WITH a config, so the run genuinely
     // reaches the stdin read. Pointed at a dead port so that if the deadline
     // ever failed to fire, the test would hang rather than pass quietly.
+    let _serial = deploy_lock().lock().unwrap_or_else(|e| e.into_inner());
     let (_dir, exe) = deploy(
         "wedged-stdin",
         "jawata-hook-userprompt",
@@ -178,6 +214,7 @@ fn a_deployed_role_with_an_unreachable_resident_still_exits_zero_and_writes_noth
     // The unreachable-endpoint hazard at process level: a real role, a real
     // config, a port nothing listens on. The recall cannot succeed, and the
     // client must still see success and an empty stream.
+    let _serial = deploy_lock().lock().unwrap_or_else(|e| e.into_inner());
     let (_dir, exe) = deploy(
         "unreachable",
         "jawata-hook-primer",
@@ -191,6 +228,7 @@ fn a_deployed_role_with_an_unreachable_resident_still_exits_zero_and_writes_noth
 
 #[test]
 fn a_deployed_role_with_a_torn_config_still_exits_zero_and_writes_nothing() {
+    let _serial = deploy_lock().lock().unwrap_or_else(|e| e.into_inner());
     let (_dir, exe) = deploy("torn-config", "jawata-hook-primer", Some("{ not json"));
     let (code, out, _) = run_at(&exe, false);
     assert_eq!(Some(0), code);
@@ -247,6 +285,7 @@ fn the_watchdog_ends_a_run_parked_far_past_its_deadline() {
         std::thread::sleep(Duration::from_secs(120));
     });
 
+    let _serial = deploy_lock().lock().unwrap_or_else(|e| e.into_inner());
     let (_dir, exe) = deploy(
         "watchdog",
         "jawata-hook-primer",
