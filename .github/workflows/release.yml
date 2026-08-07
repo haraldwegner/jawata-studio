@@ -155,7 +155,9 @@ jobs:
               # runners; list them and look for the sidecar by name.
               FOUND=""
               for INSTALLER in $(find "$BUNDLE" -name '*.msi' -o -name '*-setup.exe'); do
-                if 7z l "$INSTALLER" 2>/dev/null | grep -qi "jawata-hook"; then
+                # Same SIGPIPE-under-pipefail hazard as the deb branch: capture
+                # first, match second.
+                if printf '%s' "$(7z l "$INSTALLER" 2>/dev/null)" | grep -i "jawata-hook" >/dev/null; then
                   FOUND="$FOUND $INSTALLER"
                 fi
               done
@@ -181,9 +183,17 @@ jobs:
               # bundler leaves beside it.
               DEB=$(find "$BUNDLE/deb" -name '*.deb' | head -1)
               [ -n "$DEB" ] || { echo "FAIL: no .deb built"; exit 1; }
-              dpkg-deb -c "$DEB" | grep -q 'jawata-hook' || {
-                echo "FAIL: the .deb does not contain jawata-hook"; dpkg-deb -c "$DEB" | head -20; exit 1; }
-              echo "deb carries the hook:"; dpkg-deb -c "$DEB" | grep 'jawata-hook'
+              # NOT `dpkg-deb -c | grep -q`. Under `set -o pipefail`, grep -q
+              # exits on the FIRST match and closes the pipe, dpkg-deb dies of
+              # SIGPIPE, and pipefail turns a SUCCESSFUL match into a failed
+              # pipeline. That is what failed both Linux jobs on the re-fired
+              # run while the .deb was correct all along — usr/bin/jawata-hook
+              # was right there in the dump the failure printed.
+              LISTING=$(dpkg-deb -c "$DEB")
+              case "$LISTING" in
+                *jawata-hook*) echo "deb carries the hook:"; printf '%s\n' "$LISTING" | grep 'jawata-hook' ;;
+                *) echo "FAIL: the .deb does not contain jawata-hook"; printf '%s\n' "$LISTING" | head -20; exit 1 ;;
+              esac
               ;;
           esac
 
