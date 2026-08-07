@@ -1,0 +1,38 @@
+{
+  "_why": [
+    "THE SINGLE SOURCE for which client event each hook role handles.",
+    "",
+    "Sprint 28, C5 audit finding F5. The role table asserted the COUNTS 6 and 4",
+    "and nothing else, so nine of the ten event names had no discriminator: rename",
+    "afterMCPExecution in the deploy, leave roles.rs alone, and both crates stay",
+    "green while the observer maps to an event Cursor never fires. That is the",
+    "ten-scripts drift the table was built to end, reproduced inside the table.",
+    "",
+    "A shared constant is impossible: jawata-hook must not depend on the studio",
+    "(a hook process must never link a GUI toolkit) and the studio must not depend",
+    "on the hook (deploy writes the binary, it never runs it). Both forbidden edges",
+    "are asserted by tests. A committed data file is the one thing both sides can",
+    "read without an edge between them — each includes it at compile time and",
+    "asserts its own table against it.",
+    "",
+    "Change an event here and BOTH sides fail until they agree."
+  ],
+  "claude-code": {
+    "primer": "SessionStart",
+    "userprompt": "UserPromptSubmit",
+    "recall": "PreToolUse",
+    "guard": "PreToolUse",
+    "observer": "PostToolUse",
+    "stop": "Stop"
+  },
+  "cursor": {
+    "primer": "sessionStart",
+    "userprompt": "beforeSubmitPrompt",
+    "guard": "beforeShellExecution",
+    "observer": "afterMCPExecution"
+  },
+  "_absent": {
+    "cursor.recall": "Cursor fires no before-a-tool-call event; afterMCPExecution is the only tool-shaped hook and it runs too late to recall INTO the call",
+    "cursor.stop": "Cursor has no agent-stop event, so the stop gate cannot exist there; the discipline it enforces is carried by the rule block instead"
+  }
+}

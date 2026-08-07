@@ -8464,6 +8464,40 @@ mod tests {
     }
 
     #[test]
+    fn cursor_deploy_events_match_the_shared_hook_contract() {
+        // Sprint 28, C5 audit finding F5 — the OTHER end of the contract.
+        // jawata-hook's role table asserts itself against hook-events.json;
+        // that binds nothing unless the DEPLOY is asserted against the same
+        // file. Otherwise renaming an event here leaves both crates green with
+        // the hook mapped to an event Cursor never fires.
+        //
+        // A shared constant is impossible by design: the hook must not depend
+        // on the studio (a hook process must never link a GUI toolkit) and the
+        // studio must not depend on the hook (deploy writes the binary, it
+        // never runs it). A committed data file is the one thing both sides
+        // read with no edge between them.
+        let contract: serde_json::Value =
+            serde_json::from_str(include_str!("../hook-events.json"))
+                .expect("hook-events.json must parse — it is a committed contract");
+        let cursor = contract["cursor"].as_object().expect("the cursor section");
+
+        let deployed: Vec<&str> =
+            managed_cursor_hook_entries().into_iter().map(|(event, _)| event).collect();
+        let mut expected: Vec<&str> =
+            cursor.values().map(|v| v.as_str().expect("an event name")).collect();
+        expected.sort_unstable();
+        let mut actual = deployed.clone();
+        actual.sort_unstable();
+
+        assert_eq!(
+            expected, actual,
+            "the Cursor events this deploy writes have drifted from hook-events.json — \
+             the hook's role table is asserted against that file, so a rename here without \
+             a rename there maps a role onto an event Cursor never fires"
+        );
+    }
+
+    #[test]
     fn cursor_hooks_json_registers_managed_events_failclosed_guard() {
         // Sprint 28 Stage 4 (D-UNWIRED): this test used to assert
         // build_cursor_hooks_json() — a whole-file builder production never
