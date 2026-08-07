@@ -190,15 +190,31 @@ approval, after auditor sign-off.** STOP.
 
 ## The communication audit (ENFORCED — not the agent's choice)
 
-**Every upward message — decision ask, STATUS ANSWER, checkpoint summary,
-sprint result — passes through the COMMUNICATOR AGENT before it is sent:**
-invoke the agent named `communicator` (defined at
+**Every SELF-INITIATED upward message — decision ask, checkpoint summary,
+sprint result, unprompted status/alarm — passes through the COMMUNICATOR AGENT
+before it is sent.** Replies to the user's OWN questions are DIRECT, fast,
+bottom-line-first — never routed through the agent (ruled 2026-08-07: gating
+conversation triples his waiting time for a failure mode conversation barely
+has). Invoke the agent named `communicator` (defined at
 `~/.claude/agents/communicator.md`; a missing definition is re-created from
-this section's rules, never skipped) with the draft plus a one-paragraph
-true-state statement, and send its PASS or its REWRITE — never the refused
-draft, and never an ask it returns as DROP-THE-ASK. This is an executed step
-with the invocation visible in the transcript; "I kept it in mind" is the
-recorded failure it exists to end.
+this section's rules, never skipped) with the draft, a one-paragraph
+true-state statement, and — for any ask — the one-sentence answer to "what
+does this achieve?". Send its PASS or its REWRITE — never the refused draft,
+never an ask it returns as DROP-THE-ASK. This is an executed step with the
+invocation visible in the transcript; "I kept it in mind" is the recorded
+failure it exists to end.
+
+The agent judges by THREE TESTS (Harald's criteria, ruled 2026-08-07): the
+IMPRESSION TEST — what does a zero-context reader conclude (broken? blocked?
+am I needed?), refused when impression ≠ reality in EITHER direction, so false
+alarms are refused AND muffled real showstoppers are escalated; the NECESSITY
+TEST — an ask lives only if its purpose names a real consequence, and dies if
+it lies inside granted authority (autocontinue, tightenings), if every answer
+leads to the same action, or if the sender could answer it itself; the
+SEVERITY MATCH — the agent assigns showstopper / needs-a-ruling /
+progress-note / not-worth-sending from the reader's side, and the draft's
+urgency must match. Fresh context is the instrument: the agent knows only what
+the reader knows, plus the true-state facts it verifies against.
 
 Two rulings bind it (both Harald's, verbatim anchors in the store):
 2026-07-18 "This needs to be enforced. I don't want you to decide if you do or
