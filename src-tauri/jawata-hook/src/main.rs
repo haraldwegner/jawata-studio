@@ -23,15 +23,76 @@
 //! the client will choke on. The fail-safe boundary (Stage 5) is the single
 //! place that guarantees it.
 
+mod config;
 mod cue;
 mod emit;
+mod guard;
+mod pipeline;
 mod query;
 mod roles;
 mod safety;
 
+use safety::{Outcome, SilenceReason};
+
+/// `main` deliberately holds no logic. Everything decidable lives in
+/// [`pipeline::run`], which takes its inputs as arguments and can be driven
+/// without a client, a resident, or a process exit — because a hook whose only
+/// test needs a live editor is a hook nobody tests.
 fn main() {
-    // Stage 5 lands cue/query/emit/roles and the fail-safe boundary behind
-    // this entry point. Until then the binary exists, compiles, and does the
-    // only thing a hook is unconditionally required to do.
-    std::process::exit(0);
+    // FIRST, before anything that could block: whatever the main thread is
+    // doing when the deadline passes, the process ends with status 0.
+    safety::arm_watchdog(safety::TOTAL_DEADLINE);
+
+    let argv0 = std::env::args().next().unwrap_or_default();
+    let outcome = safety::run_guarded(move || dispatch(&argv0));
+
+    // Stage 8 writes `outcome` to the silence log here. Until then the reason
+    // is computed and carried — the value already exists, which is what makes
+    // that log a small addition rather than a redesign.
+    safety::exit_with(&outcome);
+}
+
+fn dispatch(argv0: &str) -> Outcome {
+    let Some(role) = roles::role_for_binary(argv0) else {
+        return Outcome::Silent(SilenceReason::UnknownRole(argv0.to_string()));
+    };
+    let config = match config::load() {
+        Ok(c) => c,
+        Err(reason) => return Outcome::Silent(reason),
+    };
+    let payload = match safety::read_stdin(safety::STDIN_DEADLINE) {
+        Ok(p) => p,
+        Err(reason) => return Outcome::Silent(reason),
+    };
+    let store = pipeline::LiveStore(query::Endpoint {
+        url: config.url.clone(),
+        token: config.token.clone(),
+        timeout: config.timeout(),
+    });
+    pipeline::run(role, &config, &payload, &store)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unowned_binary_name_names_itself_rather_than_guessing_a_role() {
+        // A copy someone renamed, or a client entry still pointing at a name
+        // we retired. Guessing a role here would run the wrong concern against
+        // the wrong event.
+        match dispatch("/usr/local/bin/jawata-hook-typo") {
+            Outcome::Silent(SilenceReason::UnknownRole(name)) => assert!(name.contains("typo")),
+            other => panic!("expected UnknownRole, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_never_panics_on_a_hostile_argv0() {
+        let long = "x".repeat(4096);
+        for argv0 in ["", "/", "\\", "jawata-hook-", "…", long.as_str()] {
+            let out = safety::run_guarded(|| dispatch(argv0));
+            assert!(matches!(out, Outcome::Silent(_)), "{argv0:?} produced {out:?}");
+        }
+    }
 }

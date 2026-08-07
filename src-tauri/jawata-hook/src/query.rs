@@ -30,9 +30,11 @@ pub enum Answer {
 /// silence log; collapsing them is what the scripts did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueryError {
-    /// No endpoint configured — the studio has not deployed, or the config was
-    /// removed. Not a failure of the store.
-    NotConfigured,
+    // NOTE: there is deliberately no `NotConfigured` here. Config is read
+    // before the store is ever reached, and its absence is
+    // SilenceReason::NotConfigured — one name for one fact. A second, unused
+    // variant in this enum would be exactly the hollow shape this sprint
+    // measures: a value that exists, reads as covered, and nothing constructs.
     /// The resident did not answer in time, or at all.
     Unreachable(String),
     /// HTTP answered with a non-success status.
