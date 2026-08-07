@@ -204,6 +204,26 @@ pub const ROLES: &[RoleSpec] = &[
 
 /// Resolve `argv[0]` to a role. Returns `None` for a name we do not own —
 /// which is a fact worth recording, not a reason to guess.
+impl Role {
+    /// The stable log/diagnostic tag for this role.
+    ///
+    /// A separate accessor rather than `Debug`, for the reason the silence
+    /// tags are separate too: a `Debug` rendering ties the on-disk format to
+    /// the variant's Rust identifier, so a rename silently rewrites every
+    /// record and breaks every grep that reads them. The match is exhaustive,
+    /// so a new role cannot be added without naming it here.
+    pub fn name(self) -> &'static str {
+        match self {
+            Role::Primer => "primer",
+            Role::UserPrompt => "user-prompt",
+            Role::ToolRecall => "tool-recall",
+            Role::Guard => "guard",
+            Role::Observer => "observer",
+            Role::Stop => "stop",
+        }
+    }
+}
+
 pub fn role_for_binary(argv0: &str) -> Option<Role> {
     // BOTH separators, on every platform, deliberately — not
     // `Path::file_name`. That resolves per HOST: on Linux a backslash is an

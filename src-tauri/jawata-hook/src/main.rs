@@ -11,16 +11,46 @@
 //! driven from integration tests without a client, a resident, or a process
 //! exit. This file is the shell: arm the watchdog, resolve the role, exit.
 
+use jawata_hook::safety::Outcome;
+
 fn main() {
     // FIRST, before anything that could block: whatever the main thread is
     // doing when the deadline passes, the process ends with status 0.
     jawata_hook::safety::arm_watchdog(jawata_hook::safety::TOTAL_DEADLINE);
 
     let argv0 = std::env::args().next().unwrap_or_default();
-    let outcome = jawata_hook::safety::run_guarded(move || jawata_hook::dispatch(&argv0));
+    let explain = std::env::args().any(|a| a == "--explain");
 
-    // Stage 8 writes `outcome` to the silence log here. Until then the reason
-    // is computed and carried — the value already exists, which is what makes
-    // that log a small addition rather than a redesign.
+    let role_name = jawata_hook::roles::role_for_binary(&argv0)
+        .map(|r| r.name().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let argv0_owned = argv0.clone();
+    let outcome =
+        jawata_hook::safety::run_guarded(move || jawata_hook::dispatch(&argv0_owned));
+
+    // Stage 8: the reason is written down rather than discarded. It was always
+    // computed — every path in the pipeline produces one — and thrown away a
+    // line before it could answer "why did nothing happen?".
+    jawata_hook::silence::record(&role_name, &outcome);
+
+    // `--explain` runs THE REAL PATH and reports it, rather than describing
+    // what the path would do. A diagnostic that takes a different route
+    // answers a question nobody asked: the two-week outage would have been
+    // invisible to a self-check that did not make the same call.
+    if explain {
+        match &outcome {
+            Outcome::Emitted(rendered) => {
+                eprintln!("role {role_name}: EMITTED {} bytes", rendered.len());
+            }
+            Outcome::Silent(reason) => {
+                eprintln!(
+                    "role {role_name}: SILENT [{}] {reason:?}",
+                    jawata_hook::silence::tag(reason)
+                );
+            }
+        }
+    }
+
     jawata_hook::safety::exit_with(&outcome);
 }

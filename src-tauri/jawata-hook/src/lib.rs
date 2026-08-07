@@ -17,6 +17,7 @@ pub mod pipeline;
 pub mod query;
 pub mod roles;
 pub mod safety;
+pub mod silence;
 
 use safety::{Outcome, SilenceReason};
 
