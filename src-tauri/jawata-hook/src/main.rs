@@ -27,6 +27,7 @@ mod cue;
 mod emit;
 mod query;
 mod roles;
+mod safety;
 
 fn main() {
     // Stage 5 lands cue/query/emit/roles and the fail-safe boundary behind

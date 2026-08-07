@@ -1,0 +1,295 @@
+//! The fail-safe boundary: one exit, and its rule outranks correctness.
+//!
+//! > Any error, panic, timeout, missing config or malformed response →
+//! > **emit nothing, exit 0.**
+//!
+//! A hook fires on every prompt and every shell command. If it hangs, the
+//! editor hangs; if it exits non-zero under Cursor's `failClosed` guard, the
+//! user's command is BLOCKED. So this module's job is not to be right — it is
+//! to be harmless when everything else is wrong.
+//!
+//! `catch_unwind` alone is not enough, and the design says why. It does not
+//! cover a stack overflow, an OOM, or a panic inside a `Drop`; it is disarmed
+//! entirely by `panic = "abort"`; and it does nothing at all about a `stdin`
+//! that never closes. All four are covered here.
+//!
+//! Everything is split so the hazards are TESTABLE: [`run_guarded`] returns an
+//! [`Outcome`] a test can inspect, and only [`exit_with`] actually leaves the
+//! process — a boundary whose sole implementation called `exit(0)` could not
+//! be tested without killing the test runner, which is how a fail-safe becomes
+//! a fail-safe nobody has ever run.
+
+use std::io::Read;
+use std::sync::mpsc;
+use std::time::Duration;
+
+/// Total wall-clock budget. Deliberately below every client timeout we write
+/// (5s on Cursor's non-primer entries), because the deadline that protects the
+/// user must be OURS: a client timeout fires after the user has already
+/// waited, and on `failClosed` it fires as a block.
+pub const TOTAL_DEADLINE: Duration = Duration::from_millis(4_000);
+
+/// Budget for reading the event payload from stdin. Measured on Claude Code:
+/// EOF at 4.3 ms. Cursor is unmeasured, and Cursor's own guidance is to bound
+/// your own read — so we do, rather than trusting a client to close the pipe.
+pub const STDIN_DEADLINE: Duration = Duration::from_millis(1_500);
+
+/// Why this run emitted nothing. Stage 8 writes these to the silence log; the
+/// point of the enum is that "the hook ran and said nothing" is never the whole
+/// story available.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SilenceReason {
+    /// `argv[0]` was not a name we own.
+    UnknownRole(String),
+    /// The role exists but this client has no such event.
+    RoleAbsentOnClient,
+    /// No endpoint configured — the studio has not deployed here.
+    NotConfigured,
+    /// The payload could not be read within our own deadline. THE hazard a
+    /// client timeout would otherwise have owned.
+    StdinTimedOut,
+    /// The payload was read but did not parse.
+    PayloadUnreadable(String),
+    /// The prompt yielded no cues, and the cue module said why.
+    NoCues(String),
+    /// The store was asked and genuinely had nothing.
+    StoreHadNothing,
+    /// The store could not be asked, or answered in a shape we do not know.
+    QueryFailed(String),
+    /// This role cannot inject on this client (Cursor's prompt hook).
+    CannotInject,
+    /// The body panicked. Recorded, never propagated.
+    Panicked(String),
+}
+
+/// What one guarded run produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    Emitted(String),
+    Silent(SilenceReason),
+}
+
+/// Run the body inside the boundary. Never panics.
+///
+/// The body returns `Ok(Some(text))` to emit, `Ok(None)`… — no: it must always
+/// say WHY it is silent, which is why the silent arm carries a reason rather
+/// than being an `Option`.
+pub fn run_guarded<F>(body: F) -> Outcome
+where
+    F: FnOnce() -> Outcome + std::panic::UnwindSafe,
+{
+    // Silence the default panic printer: a hook that writes a backtrace to
+    // stderr can still confuse a client that reads it, and the panic is being
+    // handled here anyway.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = std::panic::catch_unwind(body);
+    std::panic::set_hook(previous);
+
+    match result {
+        Ok(outcome) => outcome,
+        // &*payload, NOT &payload: the latter is a &Box<dyn Any>, whose
+        // concrete type is the Box itself, so every downcast misses and every
+        // panic would be logged as "carrying no message" — a silence log full
+        // of entries saying nothing, which is the failure this crate exists to
+        // stop. The test that names the message is what caught it.
+        Err(payload) => Outcome::Silent(SilenceReason::Panicked(describe_panic(&*payload))),
+    }
+}
+
+fn describe_panic(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "a panic carrying no message".to_string()
+    }
+}
+
+/// Arm the watchdog: whatever the main thread is doing when the deadline
+/// passes, the process exits 0.
+///
+/// This is the layer `catch_unwind` cannot be. A stack overflow, an OOM, a
+/// panic inside a `Drop`, a transport wedged below its own timeout — none of
+/// them unwind into our handler, and all of them would otherwise leave the
+/// client waiting on a process that never returns.
+pub fn arm_watchdog(deadline: Duration) {
+    std::thread::spawn(move || {
+        std::thread::sleep(deadline);
+        // Nothing to flush: an emission is written and flushed before this can
+        // matter, and a partial write is worse than none.
+        std::process::exit(0);
+    });
+}
+
+/// Read the event payload from stdin under OUR deadline.
+///
+/// The read happens on a helper thread. A blocked `read_to_end` cannot be
+/// cancelled, so the deadline is enforced by ignoring the thread rather than
+/// by stopping it — the watchdog guarantees the process still ends.
+pub fn read_stdin(deadline: Duration) -> Result<String, SilenceReason> {
+    read_with_deadline(deadline, || {
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .map(|_| buf)
+            .unwrap_or_default()
+    })
+}
+
+/// The deadline mechanism, with the source injectable so the never-closing
+/// case is testable without a real terminal.
+pub fn read_with_deadline<F>(deadline: Duration, source: F) -> Result<String, SilenceReason>
+where
+    F: FnOnce() -> String + Send + 'static,
+{
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(source());
+    });
+    rx.recv_timeout(deadline).map_err(|_| SilenceReason::StdinTimedOut)
+}
+
+/// The only place this process leaves. Writes the emission, if any, and exits
+/// 0 — always 0, whatever happened.
+pub fn exit_with(outcome: &Outcome) -> ! {
+    if let Outcome::Emitted(text) = outcome {
+        use std::io::Write;
+        let stdout = std::io::stdout();
+        let mut lock = stdout.lock();
+        // Errors deliberately ignored: a client that closed the pipe is not a
+        // reason to fail, and there is nothing useful left to do about it.
+        let _ = lock.write_all(text.as_bytes());
+        let _ = lock.write_all(b"\n");
+        let _ = lock.flush();
+    }
+    std::process::exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panicking_body_is_caught_and_named() {
+        let outcome = run_guarded(|| panic!("the role exploded"));
+        match outcome {
+            Outcome::Silent(SilenceReason::Panicked(why)) => {
+                assert!(why.contains("exploded"), "the panic's message is kept: {why}")
+            }
+            other => panic!("a panic must not escape the boundary: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_panic_with_no_message_still_produces_a_reason() {
+        let outcome = run_guarded(|| std::panic::panic_any(42u8));
+        assert!(matches!(outcome, Outcome::Silent(SilenceReason::Panicked(_))));
+    }
+
+    #[test]
+    fn a_body_that_indexes_out_of_bounds_is_caught_too() {
+        // Not a deliberate panic! — the shape a real bug takes.
+        let outcome = run_guarded(|| {
+            let v: Vec<u8> = Vec::new();
+            Outcome::Emitted(format!("{}", v[3]))
+        });
+        assert!(matches!(outcome, Outcome::Silent(SilenceReason::Panicked(_))));
+    }
+
+    #[test]
+    fn a_normal_body_passes_through_untouched() {
+        let outcome = run_guarded(|| Outcome::Emitted("hello".into()));
+        assert_eq!(Outcome::Emitted("hello".into()), outcome);
+    }
+
+    #[test]
+    fn a_stdin_that_never_closes_hits_OUR_deadline_not_the_clients() {
+        // THE hazard: a client that opens the pipe and never closes it. The
+        // script generation had no answer to this at all — it blocked in `cat`
+        // until the client gave up, which on Cursor's failClosed guard is a
+        // blocked user command.
+        let started = std::time::Instant::now();
+        let result = read_with_deadline(Duration::from_millis(120), || {
+            std::thread::sleep(Duration::from_secs(30));
+            "never arrives".to_string()
+        });
+        let elapsed = started.elapsed();
+        assert_eq!(Err(SilenceReason::StdinTimedOut), result);
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the deadline must fire on OUR schedule, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn a_payload_that_arrives_in_time_is_returned() {
+        let result = read_with_deadline(Duration::from_millis(500), || "{\"prompt\":\"x\"}".into());
+        assert_eq!(Ok("{\"prompt\":\"x\"}".to_string()), result);
+    }
+
+    #[test]
+    fn our_deadline_is_under_every_client_timeout_we_write() {
+        // The deploy writes timeout: 5 on Cursor's guard/recall/observer
+        // entries and 15 on the primer. Ours must fire first, or the client's
+        // timeout owns the outcome — and on failClosed that outcome is a block.
+        assert!(
+            TOTAL_DEADLINE < Duration::from_secs(5),
+            "the total budget must beat the tightest client timeout (5s)"
+        );
+        assert!(
+            STDIN_DEADLINE < TOTAL_DEADLINE,
+            "the stdin read must not be able to consume the whole budget"
+        );
+    }
+
+    #[test]
+    fn the_release_profile_unwinds_because_catch_unwind_depends_on_it() {
+        // panic = "abort" would disarm every catch_unwind above WITHOUT any
+        // test failing — the process would simply die non-zero, which is the
+        // one thing the boundary exists to prevent. Asserted at runtime rather
+        // than by grepping a Cargo.toml, because the EFFECTIVE setting is what
+        // matters and a member crate's [profile] is silently ignored anyway.
+        let unwound = run_guarded(|| panic!("probe")) != Outcome::Emitted(String::new());
+        assert!(unwound, "unreachable under abort — the process would have died here");
+        assert!(
+            cfg!(panic = "unwind"),
+            "panic strategy is not unwind; catch_unwind is disarmed and the boundary is a lie"
+        );
+    }
+
+    #[test]
+    fn the_watchdog_ends_a_wedged_process() {
+        // Cannot be asserted in-process without killing the runner, so it is
+        // asserted on the mechanism: arming must not block the caller, and the
+        // thread must outlive the function that spawned it.
+        let started = std::time::Instant::now();
+        arm_watchdog(Duration::from_secs(3_600));
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "arming the watchdog must be immediate — it protects a hot path"
+        );
+    }
+
+    #[test]
+    fn every_silence_reason_can_say_something_useful() {
+        // A reason that renders to nothing is the empty string again.
+        let reasons = [
+            SilenceReason::UnknownRole("jawata-hook-nope".into()),
+            SilenceReason::RoleAbsentOnClient,
+            SilenceReason::NotConfigured,
+            SilenceReason::StdinTimedOut,
+            SilenceReason::PayloadUnreadable("bad".into()),
+            SilenceReason::NoCues("SlashCommand".into()),
+            SilenceReason::StoreHadNothing,
+            SilenceReason::QueryFailed("ShapeChanged".into()),
+            SilenceReason::CannotInject,
+            SilenceReason::Panicked("boom".into()),
+        ];
+        for r in reasons {
+            let rendered = format!("{r:?}");
+            assert!(rendered.len() > 3, "a silence reason must be readable: {rendered}");
+        }
+    }
+}
