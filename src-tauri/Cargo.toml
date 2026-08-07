@@ -30,3 +30,20 @@ tauri-plugin-dialog = "2.7.0"
 tauri-plugin-single-instance = "2"
 walkdir = "2.5.0"
 zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
+
+# Sprint 28 (D-SHIM) — the workspace exists so `jawata-hook` can be a SIBLING
+# crate rather than a module of this one. That is the enforcement, not a
+# convention: a hook binary that could `use` studio's internals would sooner or
+# later reach for tauri, and a hook process must never link a GUI toolkit. The
+# edge is absent from jawata-hook/Cargo.toml, so `hook -> tauri` and
+# `hook -> jawata_studio_lib` are COMPILE ERRORS, asserted by the build.
+[workspace]
+members = ["jawata-hook"]
+
+# panic = "unwind" is load-bearing, not a default worth inheriting silently: the
+# fail-safe boundary catches a panicking role and still exits 0. Under
+# panic = "abort" the process dies with a non-zero status and the client sees a
+# hook failure — which, on Cursor's failClosed guard, blocks the user's shell
+# command. A test asserts this setting.
+[profile.release]
+panic = "unwind"

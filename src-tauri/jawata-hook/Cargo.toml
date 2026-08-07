@@ -1,0 +1,31 @@
+# Sprint 28 (D-SHIM) — the hook binary.
+#
+# THE DEPENDENCY LIST IS THE ARCHITECTURE. There is no `tauri` here and no
+# `jawata_studio_lib`, and their absence is enforced by the compiler rather
+# than by review: a hook fires on every prompt and every shell command, in a
+# process the user never sees, and it must start in milliseconds and never
+# block the editor. Linking a GUI toolkit into that is how a hook becomes a
+# hang. `manager_service` likewise does not depend on this crate — deploy
+# WRITES the binary, it never RUNS it.
+[package]
+name = "jawata-hook"
+version = "3.6.5"
+description = "The JAWATA client hook: one binary, every event, every platform."
+license = "AGPL-3.0-only"
+edition = "2021"
+
+[[bin]]
+name = "jawata-hook"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+# Blocking only, rustls only: no async runtime to start and no system OpenSSL
+# to find. A hook that has to boot tokio to ask one question has already spent
+# its budget.
+reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+dirs = "6.0.0"
+
+[profile.release]
+panic = "unwind"
