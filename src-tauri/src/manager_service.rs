@@ -5655,6 +5655,31 @@ fn deploy_hook_binaries(
     Ok(written)
 }
 
+/// Sprint 28 (C8): rotate the hook's silence log once it exceeds its cap.
+///
+/// This is the OFF-fire-path half of the log-bounding contract. The hook only
+/// appends (with a hard ceiling that drops records in the pathological
+/// no-manager case); the manager — single process, no 4-second deadline, owner
+/// of the directory — does the one rename. No token, no staleness horizon, no
+/// reap protocol: every scheme that tried to do this from inside the
+/// concurrently-firing hook destroyed records or disabled itself, six audit
+/// rounds running.
+///
+/// A concurrent hook APPENDING during the rename is safe: it holds the old
+/// inode and its record lands in `hook_silence.log.1`, still readable. Two
+/// MANAGERS racing is not a real state — the studio is a singleton per user —
+/// and even interleaved, two renames only shuffle which generation a record
+/// sits in; nothing truncates.
+fn rotate_silence_log(hooks_dir: &Path) -> bool {
+    const MAX_BYTES: u64 = 256 * 1024; // must match jawata_hook::silence::MAX_BYTES
+    let live = hooks_dir.join("hook_silence.log");
+    let oversized = fs::metadata(&live).map(|m| m.len() > MAX_BYTES).unwrap_or(false);
+    if !oversized {
+        return false;
+    }
+    fs::rename(&live, hooks_dir.join("hook_silence.log.1")).is_ok()
+}
+
 /// Sprint 28 (D-SHIM, C6 clause 5): write `hook_config.json` beside the hook
 /// binaries — temp file, then rename.
 ///
@@ -5676,6 +5701,11 @@ fn write_hook_config(
 ) -> Result<bool, String> {
     fs::create_dir_all(hooks_dir)
         .map_err(|e| format!("failed to create hooks dir {}: {e}", hooks_dir.display()))?;
+    // Housekeeping rides the config cadence: this function runs on every
+    // deploy and every watch-loop refresh — including the byte-stable no-op
+    // path below — which is exactly when the manager is already standing in
+    // this directory. The hook itself never rotates; see rotate_silence_log.
+    rotate_silence_log(hooks_dir);
     let body = serde_json::json!({
         "url": mcp_url,
         "token": token,
@@ -8994,6 +9024,59 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// THE WIRE. The pure function passing its own test proves nothing about
+    /// production — deleting the call site left it green (measured, the
+    /// Stage-8 lesson again). This drives write_hook_config, the function the
+    /// deploy path actually calls, and requires the rotation to have happened.
+    #[test]
+    fn a_config_deploy_rotates_an_oversized_silence_log_on_the_way() {
+        let dir = std::env::temp_dir().join(format!("jawata-mgr-rotwire-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let live = dir.join("hook_silence.log");
+        let filler = "0\tprimer\tstore-had-nothing\t".to_string() + &"x".repeat(200) + "\n";
+        let mut body = String::new();
+        while body.len() <= 256 * 1024 {
+            body.push_str(&filler);
+        }
+        fs::write(&live, &body).unwrap();
+
+        write_hook_config(&dir, "http://u/mcp", "tw", "claude-code").unwrap();
+
+        assert!(!live.exists(), "the deploy pass must have rotated the oversized log");
+        assert_eq!(
+            body,
+            fs::read_to_string(dir.join("hook_silence.log.1")).unwrap(),
+            "moved whole, never truncated"
+        );
+    }
+
+    #[test]
+    fn the_manager_rotates_an_oversized_silence_log_and_leaves_a_small_one_alone() {
+        let dir = std::env::temp_dir().join(format!("jawata-mgr-rotate-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let live = dir.join("hook_silence.log");
+
+        // Small: untouched.
+        fs::write(&live, "1\tprimer\tstore-had-nothing\t\n").unwrap();
+        assert!(!rotate_silence_log(&dir), "a small log must not rotate");
+        assert!(live.exists());
+        assert!(!dir.join("hook_silence.log.1").exists());
+
+        // Oversized: rotated aside, nothing destroyed.
+        let filler = "0\tprimer\tstore-had-nothing\t".to_string() + &"x".repeat(200) + "\n";
+        let mut body = String::new();
+        while body.len() <= 256 * 1024 {
+            body.push_str(&filler);
+        }
+        fs::write(&live, &body).unwrap();
+        assert!(rotate_silence_log(&dir), "an oversized log must rotate");
+        assert!(!live.exists(), "the live name is free for the next append");
+        let kept = fs::read_to_string(dir.join("hook_silence.log.1")).unwrap();
+        assert_eq!(body, kept, "rotation must move, never truncate or rewrite");
     }
 
     #[test]

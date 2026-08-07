@@ -32,13 +32,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::safety::{Outcome, SilenceReason};
 
-/// Above this size the log is ROTATED — renamed aside, a fresh one begun. Chosen so a
-/// busy day of hooks is retained and a year of them is not.
+/// Above this size the MANAGER rotates the log at its next pass — the hook
+/// itself never rotates; see `append_to`. Chosen so a busy day of hooks is
+/// retained and a year of them is not.
 pub const MAX_BYTES: u64 = 256 * 1024;
 
-/// A rotation token older than this cannot belong to a live rotator: the whole
-/// hook deadline is 4 s.
-pub const STALE_TOKEN_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+/// The hook's own backstop: past this, new records are DROPPED rather than
+/// risk any housekeeping on the fire path. Only reachable if the manager
+/// never runs for a very long time.
+pub const HARD_CEILING_BYTES: u64 = 8 * MAX_BYTES;
+
 
 /// The stable tag for a reason — the thing a human greps for, and the thing a
 /// test asserts on. Deliberately NOT `Debug`: a Debug rendering is a
@@ -105,7 +108,23 @@ pub fn log_path_for(exe: &Path) -> Option<PathBuf> {
 ///
 /// Returns whether the write landed, for tests only. The fire path ignores it.
 pub fn append_to(path: &Path, role: &str, outcome: &Outcome) -> bool {
-    trim_if_oversized(path);
+    // HARD CEILING, nothing else. Six audit rounds of defects — truncation
+    // destroying concurrent records, rename orphaning them, a rotate-rotate
+    // race erasing generations, an orphanable token disabling the cap forever,
+    // and a staleness recovery that broke on future mtimes — all lived in
+    // bounding machinery that had no business on this path. A hook that must
+    // never block, never lose a record, and die in 4 seconds is the worst
+    // possible host for filesystem housekeeping. Rotation now belongs to the
+    // Studio manager, which owns these directories, runs off the fire path,
+    // and may hold a real lock.
+    //
+    // The ceiling is the pathological backstop: if the manager never runs
+    // again, growth stops here by DROPPING NEW RECORDS — for a diagnostic
+    // file, the correct failure mode. No destruction, no race, provably
+    // bounded.
+    if std::fs::metadata(path).map(|m| m.len() > HARD_CEILING_BYTES).unwrap_or(false) {
+        return false;
+    }
     let line = record_line(role, outcome);
     let Ok(mut f) = OpenOptions::new().append(true).create(true).open(path) else {
         return false;
@@ -115,87 +134,6 @@ pub fn append_to(path: &Path, role: &str, outcome: &Outcome) -> bool {
     f.write_all(line.as_bytes()).is_ok()
 }
 
-/// ROTATE when the cap is exceeded — never truncate, never rewrite in place.
-///
-/// Two earlier shapes both DESTROYED records, and each reported success while
-/// doing it:
-///
-/// * `read_to_string` + `fs::write` (O_TRUNC): every concurrent `O_APPEND`
-///   writer landing between the truncate and the write was overwritten.
-///   Measured at the cap: 60 writers, 60 reported written, as few as ONE
-///   present.
-/// * write-a-tail-and-`rename`: atomic for the reader, but a concurrent
-///   appender still holds the OLD inode open, so its record lands in an
-///   orphaned file nobody will ever read. Fewer losses, same class.
-///
-/// Rotation has neither failure. `rename` moves the whole file, so an appender
-/// holding the old inode writes into `hook_silence.log.1` — a file that still
-/// exists and is still readable. No record is destroyed; at worst it is one
-/// file older than expected. And no lock is taken, so the fire path still
-/// cannot block, which was the original reason to avoid one.
-fn trim_if_oversized(path: &Path) {
-    let Ok(meta) = std::fs::metadata(path) else { return };
-    if meta.len() <= MAX_BYTES {
-        return;
-    }
-    // ONLY ONE ROTATOR. `metadata` then `rename` is TOCTOU: two observers both
-    // see an oversized file, the first rotates, a third appends creating a
-    // fresh one-record log, and the second's STALE observation renames that
-    // over `.log.1` — erasing the entire capped generation. Measured naturally
-    // reachable: 4 of 250 rounds at 200-way concurrency lost all 1150 prior
-    // records. Every hook process races here, and the watchdog thread calls
-    // `record` concurrently with main, so one invocation can self-race.
-    //
-    // `create_new` is an atomic test-and-set: exactly one caller creates the
-    // token and rotates; the losers skip and append to a slightly-over-cap
-    // file, which is harmless. It never blocks, so the fire path keeps its
-    // no-blocking contract — the reason a lock was refused in the first place.
-    let token = path.with_extension("rotating");
-    // A token can be ORPHANED: the watchdog thread calls `record` then
-    // `process::exit(0)` while main may sit between claiming and releasing it.
-    // Without recovery that is PERMANENT — measured, the cap silently disabled
-    // for the life of the install.
-    //
-    // Two things the first version of this recovery got wrong, both caught by
-    // seeding rather than by reading:
-    //
-    //  * it mapped an UNREADABLE timestamp to STALE. `elapsed()` errs whenever
-    //    the mtime is in the FUTURE, which happens on an NFS/SMB home whose
-    //    server clock leads, or after any NTP step. Every LIVE token would then
-    //    be judged stale on sight and the mutex destroyed install-wide — the
-    //    exact class the token exists to prevent. Unreadable now means NOT
-    //    stale: a skipped rotation is harmless, a broken mutex destroys records.
-    //  * it reaped with `remove_file`, which is itself TOCTOU — it removes
-    //    whatever token is there NOW, not the inode whose age was read, so a
-    //    second thread could delete the first thread's LIVE token and both
-    //    rotate. Measured at 313 rotators over 300 rounds. Reaping by `rename`
-    //    fixes it: a rename of a given inode succeeds for exactly one caller,
-    //    so only that caller may proceed.
-    if let Ok(m) = std::fs::metadata(&token) {
-        let stale = m
-            .modified()
-            .ok()
-            .and_then(|t| t.elapsed().ok())
-            .map(|e| e > STALE_TOKEN_AFTER)
-            .unwrap_or(false);
-        if stale && std::fs::rename(&token, token.with_extension("rotating.reaped")).is_err() {
-            // Someone else reaped it; they own the rotation, not us.
-            return;
-        }
-    }
-    let Ok(_) = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&token)
-    else {
-        return;
-    };
-    // Re-check under the token: the winner may be acting on a stale read too.
-    if std::fs::metadata(path).map(|m| m.len() > MAX_BYTES).unwrap_or(false) {
-        let _ = std::fs::rename(path, path.with_extension("log.1"));
-    }
-    let _ = std::fs::remove_file(&token);
-}
 
 /// The fire-path entry: resolve the log beside this executable and append.
 /// Every failure mode — no exe path, no config dir, unwritable file — ends as
@@ -343,231 +281,43 @@ mod tests {
         assert_eq!(1, body.lines().count(), "must be one line: {body:?}");
         assert!(body.contains("backtrace"), "detail must survive: {body:?}");
     }
-
+    /// The hook's whole bounding contract now: past the hard ceiling it DROPS
+    /// the record and says so, rather than doing any housekeeping here.
     #[test]
-    fn an_emitted_outcome_is_recorded_too() {
-        let p = tmp("emitted");
+    fn past_the_hard_ceiling_new_records_are_dropped_not_written() {
+        let p = tmp("ceiling");
         let _ = std::fs::remove_file(&p);
-        append_to(&p, "primer", &Outcome::Emitted("{}".into()));
-        let body = std::fs::read_to_string(&p).unwrap();
-        assert!(body.contains("\temitted\t"), "got {body:?}");
-    }
-
-    /// The gate's own clause: two concurrent invocations BOTH land. Threads
-    /// rather than processes because the property under test is the single
-    /// `write_all` under `O_APPEND` — a torn record would show up as a line
-    /// with the wrong column count.
-    #[test]
-    fn concurrent_writers_both_land_whole() {
-        let p = tmp("concurrent");
-        let _ = std::fs::remove_file(&p);
-        const N: usize = 40;
-        std::thread::scope(|s| {
-            for i in 0..N {
-                let p = p.clone();
-                s.spawn(move || {
-                    let r = if i % 2 == 0 {
-                        SilenceReason::StoreHadNothing
-                    } else {
-                        SilenceReason::CannotInject
-                    };
-                    append_to(&p, "primer", &Outcome::Silent(r));
-                });
-            }
-        });
-        let body = std::fs::read_to_string(&p).unwrap();
-        let lines: Vec<&str> = body.lines().collect();
-        assert_eq!(N, lines.len(), "every writer must land");
-        for l in &lines {
-            assert_eq!(4, l.split('\t').count(), "torn record: {l:?}");
-        }
-    }
-
-    #[test]
-    fn the_log_is_capped_by_rotating_not_by_discarding() {
-        let p = tmp("capped");
-        let _ = std::fs::remove_file(&p);
-        // Fill past the cap with identifiable records.
-        let filler = "0\tprimer\tstore-had-nothing\t".to_string() + &"x".repeat(200) + "\n";
+        let filler = "0\tprimer\tstore-had-nothing\t".to_string() + &"x".repeat(4000) + "\n";
         let mut body = String::new();
-        while body.len() as u64 <= MAX_BYTES {
+        while (body.len() as u64) <= HARD_CEILING_BYTES {
             body.push_str(&filler);
         }
         std::fs::write(&p, &body).unwrap();
-        append_to(&p, "primer", &Outcome::Silent(SilenceReason::CannotInject));
+        let before = std::fs::metadata(&p).unwrap().len();
+        assert!(!append_to(&p, "primer", &Outcome::Silent(SilenceReason::CannotInject)));
+        assert_eq!(before, std::fs::metadata(&p).unwrap().len(), "nothing may be written past the ceiling");
+    }
+
+    /// Below the ceiling the hook appends and NEVER rotates, trims, renames or
+    /// deletes — an over-cap log is the MANAGER's business, not the fire
+    /// path's. Rotation-on-the-fire-path was the single design decision behind
+    /// six audit rounds of destroyed-record defects.
+    #[test]
+    fn an_over_cap_log_is_still_appended_to_and_never_touched_otherwise() {
+        let p = tmp("over-cap-append");
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(p.with_extension("log.1"));
+        let filler = "0\tprimer\tstore-had-nothing\t".to_string() + &"x".repeat(200) + "\n";
+        let mut body = String::new();
+        while (body.len() as u64) <= MAX_BYTES {
+            body.push_str(&filler);
+        }
+        std::fs::write(&p, &body).unwrap();
+        assert!(append_to(&p, "primer", &Outcome::Silent(SilenceReason::CannotInject)));
         let after = std::fs::read_to_string(&p).unwrap();
-        assert!(
-            (after.len() as u64) < MAX_BYTES,
-            "the live log must be small again, got {} bytes",
-            after.len()
-        );
-        assert!(after.contains("cannot-inject"), "the new record must survive");
-        // ROTATED, not destroyed: the old records are still readable.
-        let previous = p.with_extension("log.1");
-        assert!(previous.exists(), "the capped log must be kept, not deleted");
-        // Every surviving line is whole — the trim cut on a record boundary.
-        for l in after.lines() {
-            assert_eq!(4, l.split('\t').count(), "trim split a record: {l:?}");
-        }
-    }
-
-    /// The contract that matters most: a log that cannot be written changes
-    /// nothing. A directory where the file should be is the cheapest way to
-    /// make every open fail on every platform.
-    #[test]
-    fn an_unwritable_log_is_a_no_op_not_an_error() {
-        let d = std::env::temp_dir().join(format!("jawata-silence-blocked-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
-        // `d` is a directory; opening it for append must fail.
-        assert!(!append_to(&d, "primer", &Outcome::Silent(SilenceReason::CannotInject)));
-    }
-
-    #[test]
-    fn the_log_sits_beside_the_config() {
-        let exe = Path::new("/opt/jawata/jawata-hook-primer");
-        let log = log_path_for(exe).expect("a log path");
-        let cfg = crate::config::config_path_for(exe).expect("a config path");
-        assert_eq!(cfg.parent(), log.parent(), "log must sit beside the config");
-        assert_eq!(Some("hook_silence.log".as_ref()), log.file_name());
-    }
-    /// THE GATE CLAUSE, at the cap. `concurrent_writers_both_land_whole` starts
-    /// from a FRESH log and so never enters the trim path — which is where the
-    /// loss was. The audit measured 60 concurrent writers at the cap: 60
-    /// reported written, as few as ONE present. `append_to` returned true for
-    /// every destroyed record.
-    #[test]
-    fn concurrent_writers_survive_a_trim() {
-        let p = tmp("concurrent-at-cap");
-        let _ = std::fs::remove_file(&p);
-        // Start AT the cap so the very first append triggers a trim.
-        let filler = "0\tprimer\tstore-had-nothing\t".to_string() + &"x".repeat(200) + "\n";
-        let mut body = String::new();
-        while (body.len() as u64) <= MAX_BYTES {
-            body.push_str(&filler);
-        }
-        std::fs::write(&p, &body).unwrap();
-
-        const N: usize = 60;
-        std::thread::scope(|s| {
-            for _ in 0..N {
-                let p = p.clone();
-                s.spawn(move || {
-                    append_to(&p, "primer", &Outcome::Silent(SilenceReason::CannotInject));
-                });
-            }
-        });
-        // Count across BOTH generations. Rotation's contract is that nothing is
-        // DESTROYED — a writer holding the pre-rotation inode legitimately
-        // lands in `.log.1`, which still exists and is still readable. An
-        // earlier version of this test counted only the live log and so failed
-        // about one run in three on correct behaviour: the test was wrong, not
-        // the rotation.
-        let live = std::fs::read_to_string(&p).unwrap_or_default();
-        let rotated = std::fs::read_to_string(p.with_extension("log.1")).unwrap_or_default();
-        let landed = live.lines().chain(rotated.lines())
-            .filter(|l| l.contains("cannot-inject"))
-            .count();
-        assert_eq!(
-            N, landed,
-            "every writer reported success; only {landed} of {N} records survive across both generations"
-        );
-        for l in live.lines().chain(rotated.lines()) {
-            assert_eq!(4, l.split('\t').count(), "torn record: {l:?}");
-        }
-    }
-
-    /// F1: an orphaned rotation token must not disable the cap forever.
-    #[test]
-    fn a_stale_rotation_token_does_not_disable_the_cap() {
-        let p = tmp("stale-token");
-        let _ = std::fs::remove_file(&p);
-        let _ = std::fs::remove_file(p.with_extension("log.1"));
-        let filler = "0\tprimer\tstore-had-nothing\t".to_string() + &"x".repeat(200) + "\n";
-        let mut body = String::new();
-        while (body.len() as u64) <= MAX_BYTES {
-            body.push_str(&filler);
-        }
-        std::fs::write(&p, &body).unwrap();
-
-        // Plant a token and age it past the staleness horizon.
-        let token = p.with_extension("rotating");
-        std::fs::write(&token, "").unwrap();
-        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
-        let _ = filetime_set(&token, old);
-
-        append_to(&p, "primer", &Outcome::Silent(SilenceReason::CannotInject));
-        let live = std::fs::read_to_string(&p).unwrap();
-        assert!(
-            (live.len() as u64) < MAX_BYTES,
-            "a stale token must not block rotation; log is {} bytes",
-            live.len()
-        );
-    }
-
-    /// Set an mtime without pulling in a crate: reopen and rewrite is enough on
-    /// Linux only if we can backdate, so use the libc-free trick of touching
-    /// via `std::fs::File::set_times` where available.
-    fn filetime_set(p: &Path, when: std::time::SystemTime) -> std::io::Result<()> {
-        let f = std::fs::OpenOptions::new().write(true).open(p)?;
-        f.set_times(std::fs::FileTimes::new().set_modified(when))
-    }
-
-    /// R5-F1: the staleness PREDICATE was unforced. Only removal was tested, so
-    /// mutating the horizon to zero — which makes every token instantly stale
-    /// and turns the mutex into a no-op, restoring the race — left all 146
-    /// tests green. This pins the other direction.
-    #[test]
-    fn a_fresh_rotation_token_still_protects_a_live_rotator() {
-        let p = tmp("fresh-token");
-        let _ = std::fs::remove_file(&p);
-        let _ = std::fs::remove_file(p.with_extension("log.1"));
-        let filler = "0\tprimer\tstore-had-nothing\t".to_string() + &"x".repeat(200) + "\n";
-        let mut body = String::new();
-        while (body.len() as u64) <= MAX_BYTES {
-            body.push_str(&filler);
-        }
-        std::fs::write(&p, &body).unwrap();
-        let token = p.with_extension("rotating");
-        std::fs::write(&token, "").unwrap(); // fresh: mtime is now
-
-        append_to(&p, "primer", &Outcome::Silent(SilenceReason::CannotInject));
-
-        assert!(
-            !p.with_extension("log.1").exists(),
-            "a LIVE token must suppress rotation — otherwise the mutex is a no-op"
-        );
-        assert!(
-            (std::fs::read_to_string(&p).unwrap().len() as u64) > MAX_BYTES,
-            "the log must still be over cap, since rotation was correctly skipped"
-        );
-        let _ = std::fs::remove_file(&token);
-    }
-
-    /// R5-F2: a token whose mtime is in the FUTURE — an NFS home whose server
-    /// clock leads, or an NTP step — must NOT be judged stale. Treating an
-    /// unreadable age as stale destroyed the mutex install-wide.
-    #[test]
-    fn a_token_with_a_future_mtime_is_not_treated_as_stale() {
-        let p = tmp("future-token");
-        let _ = std::fs::remove_file(&p);
-        let _ = std::fs::remove_file(p.with_extension("log.1"));
-        let filler = "0\tprimer\tstore-had-nothing\t".to_string() + &"x".repeat(200) + "\n";
-        let mut body = String::new();
-        while (body.len() as u64) <= MAX_BYTES {
-            body.push_str(&filler);
-        }
-        std::fs::write(&p, &body).unwrap();
-        let token = p.with_extension("rotating");
-        std::fs::write(&token, "").unwrap();
-        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(300);
-        let _ = filetime_set(&token, future);
-
-        append_to(&p, "primer", &Outcome::Silent(SilenceReason::CannotInject));
-        assert!(
-            !p.with_extension("log.1").exists(),
-            "a future mtime must not be read as stale — that breaks the mutex"
-        );
-        let _ = std::fs::remove_file(&token);
+        assert!(after.contains("cannot-inject"), "the record must land");
+        assert!((after.len() as u64) > MAX_BYTES, "no trimming on the fire path");
+        assert!(!p.with_extension("log.1").exists(), "no rotation on the fire path");
     }
 
 }
