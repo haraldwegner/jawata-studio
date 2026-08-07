@@ -37,39 +37,68 @@ pub const STDIN_DEADLINE: Duration = Duration::from_millis(1_500);
 /// Why this run emitted nothing. Stage 8 writes these to the silence log; the
 /// point of the enum is that "the hook ran and said nothing" is never the whole
 /// story available.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SilenceReason {
+/// The silence taxonomy, declared ONCE.
+///
+/// This macro exists because the coupling it provides failed THREE TIMES when
+/// written by hand: a doc comment claiming a witness match that did not exist;
+/// a witness asserted against a hardcoded `0..=12`, defeated by adding a 14th
+/// variant; and a `specimen()` that was exhaustive but only ever called on
+/// seeds drawn from the very list it was meant to check — circular.
+///
+/// Here the variant, its stable log tag, and its test specimen are ONE row.
+/// There is a single place to forget, and forgetting does not compile.
+macro_rules! silence_reasons {
+    ($( $(#[$doc:meta])* $variant:ident $(($ty:ty))? => $tag:literal, $specimen:expr );* $(;)?) => {
+        /// Why the hook stayed quiet.
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub enum SilenceReason {
+            $( $(#[$doc])* $variant $(($ty))? ),*
+        }
+
+        /// The stable log tag — never a `Debug` rendering, which would tie the
+        /// on-disk format to a Rust identifier and break every grep on rename.
+        pub fn tag_of(reason: &SilenceReason) -> &'static str {
+            match reason { $( SilenceReason::$variant { .. } => $tag ),* }
+        }
+
+        /// One specimen of EVERY variant, generated from the same row list.
+        /// A new variant appears here automatically; it cannot be forgotten.
+        #[cfg(test)]
+        pub fn all_specimens() -> Vec<SilenceReason> {
+            vec![ $( $specimen ),* ]
+        }
+    };
+}
+
+silence_reasons! {
     /// `argv[0]` was not a name we own.
-    UnknownRole(String),
+    UnknownRole(String) => "unknown-role", SilenceReason::UnknownRole("jawata-hook-typo".into());
     /// The role exists but this client has no such event.
-    RoleAbsentOnClient,
+    RoleAbsentOnClient => "role-absent-on-client", SilenceReason::RoleAbsentOnClient;
     /// No endpoint configured — the studio has not deployed here.
-    NotConfigured,
-    /// The payload could not be read within our own deadline. THE hazard a
-    /// client timeout would otherwise have owned.
-    StdinTimedOut,
+    NotConfigured => "not-configured", SilenceReason::NotConfigured;
+    /// The payload could not be read within our own deadline.
+    StdinTimedOut => "stdin-timed-out", SilenceReason::StdinTimedOut;
     /// The payload was read but did not parse.
-    PayloadUnreadable(String),
+    PayloadUnreadable(String) => "payload-unreadable", SilenceReason::PayloadUnreadable("expected value".into());
     /// The prompt yielded no cues, and the cue module said why.
-    NoCues(String),
+    NoCues(String) => "no-cues", SilenceReason::NoCues("TooFewContentTokens".into());
     /// The store was asked and genuinely had nothing.
-    StoreHadNothing,
+    StoreHadNothing => "store-had-nothing", SilenceReason::StoreHadNothing;
     /// The store could not be asked, or answered in a shape we do not know.
-    QueryFailed(String),
-    /// This role cannot inject on this client (Cursor's prompt hook).
-    CannotInject,
-    /// The body ran past the total deadline and the watchdog ended the
-    /// process. Recorded BY the watchdog itself — see `arm_watchdog_recording`.
-    WatchdogFired,
-    /// The stop gate had no transcript to read. Fail-open, but RECORDED —
-    /// the previous generation failed open silently.
-    NoTranscript,
-    /// The stop gate declined to judge because autonomy is unobservable. This
-    /// is Rule B's honest record: grep the silence log for `autonomy-unknown`
-    /// to see every run where it was NOT enforced.
-    AutonomyUnknown,
+    QueryFailed(String) => "query-failed", SilenceReason::QueryFailed("ConnectionRefused".into());
+    /// This role cannot inject on this client.
+    CannotInject => "cannot-inject", SilenceReason::CannotInject;
+    /// The body ran past the deadline; the watchdog ended it and said so.
+    WatchdogFired => "watchdog-fired", SilenceReason::WatchdogFired;
+    /// The stop gate had no transcript it could read.
+    NoTranscript => "no-transcript", SilenceReason::NoTranscript;
+    /// The stop gate could not observe autonomy, so it did not judge.
+    AutonomyUnknown => "autonomy-unknown", SilenceReason::AutonomyUnknown;
+    /// The stop gate judged and allowed the turn to end.
+    StopAllowed => "stop-allowed", SilenceReason::StopAllowed;
     /// The body panicked. Recorded, never propagated.
-    Panicked(String),
+    Panicked(String) => "panicked", SilenceReason::Panicked("divide by zero".into());
 }
 
 /// What one guarded run produced.

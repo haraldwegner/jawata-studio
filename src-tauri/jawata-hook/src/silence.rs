@@ -44,53 +44,9 @@ pub const MAX_BYTES: u64 = 256 * 1024;
 /// The payload travels in its own column, so `PayloadUnreadable` and
 /// `QueryFailed` keep their detail without the tag absorbing it.
 pub fn tag(reason: &SilenceReason) -> &'static str {
-    match reason {
-        SilenceReason::UnknownRole(_) => "unknown-role",
-        SilenceReason::RoleAbsentOnClient => "role-absent-on-client",
-        SilenceReason::NotConfigured => "not-configured",
-        SilenceReason::StdinTimedOut => "stdin-timed-out",
-        SilenceReason::PayloadUnreadable(_) => "payload-unreadable",
-        SilenceReason::NoCues(_) => "no-cues",
-        SilenceReason::StoreHadNothing => "store-had-nothing",
-        SilenceReason::QueryFailed(_) => "query-failed",
-        SilenceReason::CannotInject => "cannot-inject",
-        SilenceReason::WatchdogFired => "watchdog-fired",
-        SilenceReason::NoTranscript => "no-transcript",
-        SilenceReason::AutonomyUnknown => "autonomy-unknown",
-        SilenceReason::Panicked(_) => "panicked",
-    }
+    crate::safety::tag_of(reason)
 }
 
-/// A specimen of EVERY variant, built by an exhaustive match rather than a
-/// hand-written list.
-///
-/// This is the coupling the doc used to claim and not have. The previous
-/// version paired a hand-written `Vec` with an assertion against a HARDCODED
-/// `0..=12` range — so a 14th variant could be added to the enum, to `tag()`,
-/// and to the witness, while the list stayed at thirteen and every test still
-/// passed. The audit proved exactly that.
-///
-/// Here the match on `seed` is exhaustive, so a new variant fails to compile
-/// until it is named; and because the list is BUILT from that match, it cannot
-/// then be forgotten.
-#[cfg(test)]
-pub(crate) fn specimen(seed: &SilenceReason) -> SilenceReason {
-    match seed {
-        SilenceReason::UnknownRole(_) => SilenceReason::UnknownRole("jawata-hook-typo".into()),
-        SilenceReason::RoleAbsentOnClient => SilenceReason::RoleAbsentOnClient,
-        SilenceReason::NotConfigured => SilenceReason::NotConfigured,
-        SilenceReason::StdinTimedOut => SilenceReason::StdinTimedOut,
-        SilenceReason::PayloadUnreadable(_) => SilenceReason::PayloadUnreadable("bad json".into()),
-        SilenceReason::NoCues(_) => SilenceReason::NoCues("TooFewContentTokens".into()),
-        SilenceReason::StoreHadNothing => SilenceReason::StoreHadNothing,
-        SilenceReason::QueryFailed(_) => SilenceReason::QueryFailed("refused".into()),
-        SilenceReason::CannotInject => SilenceReason::CannotInject,
-        SilenceReason::WatchdogFired => SilenceReason::WatchdogFired,
-        SilenceReason::NoTranscript => SilenceReason::NoTranscript,
-        SilenceReason::AutonomyUnknown => SilenceReason::AutonomyUnknown,
-        SilenceReason::Panicked(_) => SilenceReason::Panicked("divide by zero".into()),
-    }
-}
 
 /// The detail a reason carries, if any. Newlines and tabs are replaced so one
 /// record is always exactly one line — a panic message is multi-line, and an
@@ -234,44 +190,33 @@ mod tests {
     /// reason exhaustively, so a new variant fails to compile until it is
     /// named there AND added here. The earlier version of this comment claimed
     /// that guarantee existed when no such match had been written.
+    /// Generated from the single row list in `safety.rs`, so a new variant
+    /// appears here automatically. Three hand-written couplings failed before
+    /// this: a claimed-but-absent witness match, a witness asserted against a
+    /// hardcoded range, and a specimen fn called only on seeds from the list it
+    /// was checking. There is now one place to forget, and it does not compile.
     fn every_reason() -> Vec<SilenceReason> {
-        vec![
-            SilenceReason::UnknownRole("jawata-hook-typo".into()),
-            SilenceReason::RoleAbsentOnClient,
-            SilenceReason::NotConfigured,
-            SilenceReason::StdinTimedOut,
-            SilenceReason::PayloadUnreadable("expected value at line 1".into()),
-            SilenceReason::NoCues("TooFewContentTokens { found: 1 }".into()),
-            SilenceReason::StoreHadNothing,
-            SilenceReason::QueryFailed("ConnectionRefused".into()),
-            SilenceReason::CannotInject,
-            SilenceReason::WatchdogFired,
-            SilenceReason::NoTranscript,
-            SilenceReason::AutonomyUnknown,
-            SilenceReason::Panicked("attempt to divide by zero".into()),
-        ]
+        crate::safety::all_specimens()
     }
 
-    /// EVERY variant must appear in `every_reason()` — enforced without any
-    /// hardcoded count.
+    /// Every variant reaches the log with a distinct, non-empty tag.
     ///
-    /// `specimen` matches exhaustively, so a new variant breaks compilation
-    /// there first. This test then requires that each specimen's TAG appears
-    /// among the tags `every_reason()` produces. A variant added to the enum
-    /// and to `tag()` but forgotten in the list now fails here, which is
-    /// precisely what the previous `0..=12` assertion could not do.
+    /// The COVERAGE question this used to guard is now answered at compile
+    /// time: `every_reason()` is generated from the same row list as the enum
+    /// and `tag_of`, so a variant cannot exist without appearing here. Three
+    /// hand-written attempts to enforce that failed; the macro does not need
+    /// a test to hold it up.
     #[test]
-    fn the_reason_list_covers_every_variant() {
+    fn the_reason_list_has_no_duplicate_or_empty_tags() {
         let listed: Vec<&str> = every_reason().iter().map(tag).collect();
-        for seed in every_reason() {
-            let t = tag(&specimen(&seed));
-            assert!(listed.contains(&t), "every_reason() is missing {t}");
-        }
-        // And the list has no duplicates hiding a gap.
+        assert!(listed.len() >= 14, "expected the full taxonomy, got {}", listed.len());
         let mut sorted = listed.clone();
         sorted.sort_unstable();
         sorted.dedup();
-        assert_eq!(listed.len(), sorted.len(), "every_reason() repeats a variant");
+        assert_eq!(listed.len(), sorted.len(), "two variants share a tag");
+        for t in listed {
+            assert!(!t.is_empty() && !t.contains(char::is_whitespace), "bad tag {t:?}");
+        }
     }
 
     #[test]
@@ -311,7 +256,8 @@ mod tests {
             "unknown-role", "role-absent-on-client", "not-configured",
             "stdin-timed-out", "payload-unreadable", "no-cues",
             "store-had-nothing", "query-failed", "cannot-inject",
-            "watchdog-fired", "no-transcript", "autonomy-unknown", "panicked",
+            "watchdog-fired", "no-transcript", "autonomy-unknown",
+            "stop-allowed", "panicked",
         ];
         assert_eq!(expected.len(), lines.len(), "one record per reason");
         for (want, line) in expected.iter().zip(&lines) {

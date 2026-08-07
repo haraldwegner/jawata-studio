@@ -275,7 +275,14 @@ fn stop_gate(client: Client, payload: &str, autonomy: crate::stop::Autonomy) -> 
                 None => Outcome::Silent(SilenceReason::CannotInject),
             }
         }
-        StopVerdict::Allow => Outcome::Silent(SilenceReason::AutonomyUnknown),
+        // Report WHICH allow this was. Logging `autonomy-unknown` for every
+        // pass was fine only while production could not observe autonomy; the
+        // moment Studio supplies it, every judged autonomous stop would file a
+        // false reason.
+        StopVerdict::Allow => Outcome::Silent(match autonomy {
+            crate::stop::Autonomy::Unknown => SilenceReason::AutonomyUnknown,
+            _ => SilenceReason::StopAllowed,
+        }),
     }
 }
 
@@ -307,7 +314,21 @@ fn read_tail(path: &str, max: u64) -> std::io::Result<String> {
     }
     // The probe byte decides. If it is a newline the window already began at a
     // record edge and everything after it is whole.
-    let Some(rest) = text.strip_prefix('\n') else {
+    if let Some(rest) = text.strip_prefix('\n') {
+        // Even here the window may hold no COMPLETE record: the probe byte was
+        // the only newline. Returning it would let read_turn parse zero records
+        // and report "this turn launched nothing" — the manufactured absence
+        // again, on the branch the first fix did not cover.
+        return if rest.contains('\n') || rest.ends_with('\n') {
+            Ok(rest.to_string())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "transcript tail holds no complete record",
+            ))
+        };
+    }
+    {
         // Otherwise the first line is a fragment and must go.
         return match text.find('\n') {
             Some(i) => Ok(text[i + 1..].to_string()),
@@ -321,8 +342,7 @@ fn read_tail(path: &str, max: u64) -> std::io::Result<String> {
                 "transcript tail holds no complete record",
             )),
         };
-    };
-    Ok(rest.to_string())
+    }
 }
 
 #[cfg(test)]

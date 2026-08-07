@@ -29,6 +29,22 @@ use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+/// Retry ETXTBSY, as the other two exec sites in this suite do. Linux refuses
+/// to exec a file any process still holds open for writing, and a freshly
+/// copied binary is exactly that for a moment. Measured at ~1 run in 6 on the
+/// sites that were fixed; this one was missed by that sweep.
+fn spawn_retrying(cmd: &mut Command) -> std::process::Child {
+    for _ in 0..40 {
+        match cmd.spawn() {
+            Err(e) if e.raw_os_error() == Some(26) => {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            other => return other.expect("spawn the deployed hook"),
+        }
+    }
+    panic!("still ETXTBSY after 40 attempts");
+}
+
 const HOOK: &str = env!("CARGO_BIN_EXE_jawata-hook");
 
 /// A real captured store answer — the same body `sibling_channels.rs` pins.
@@ -89,12 +105,12 @@ fn deploy_and_run(tag: &str, role: &str, url: &str) -> (Option<i32>, String) {
     )
     .unwrap();
 
-    let mut child = Command::new(&exe)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn the deployed hook");
+    let mut child = spawn_retrying(
+        Command::new(&exe)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    );
     // A real PreToolUse payload; the recall role reads its cue from it.
     child
         .stdin
