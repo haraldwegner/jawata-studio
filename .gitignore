@@ -34,3 +34,9 @@ docs/prompts/phase2-agent-orchestrator.md
 #.idea/
 docs/private-github-guide.md
 *.code-workspace
+
+# Sprint 28 Stage 7: the hook SIDECAR is a build artefact, produced by
+# build/build-hook-sidecar.sh on every runner before tauri-action. Tracking it
+# would put a ~5MB binary per target in git and let a stale one ship — the exact
+# thing the build script rebuilds to prevent.
+src-tauri/binaries/
