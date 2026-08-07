@@ -4313,12 +4313,22 @@ fn legacy_sentinels(current: &str) -> Vec<String> {
 /// not fail loudly — it silently classifies our own retired script as the
 /// user's and leaves it firing.
 const SCRIPT_GENERATION: &[(&str, &str)] = &[
-    ("jawata-hook-guard", "jawata-studio/pretooluse-guard.sh"),
-    ("jawata-hook-observer", "jawata-studio/posttooluse-observer.sh"),
-    ("jawata-hook-primer", "jawata-studio/sessionstart-primer.sh"),
-    ("jawata-hook-recall", "jawata-studio/pretooluse-recall.sh"),
-    ("jawata-hook-userprompt", "jawata-studio/userpromptsubmit-recall.sh"),
-    ("jawata-hook-stop", "jawata-studio stop gate"),
+    // The sentinel CONSTANTS, not copies of their values. Writing the strings
+    // out again left each one defined twice and the constants themselves dead
+    // in production — caught by the hollow-wiring gate the moment the
+    // predicates were rerouted through this table (C6 audit fixes). Two
+    // definitions of one string is how a rename fixes half a system.
+    ("jawata-hook-guard", JAWATA_HOOK_SENTINEL),
+    ("jawata-hook-observer", JAWATA_POSTHOOK_SENTINEL),
+    ("jawata-hook-primer", JAWATA_PRIMER_SENTINEL),
+    ("jawata-hook-recall", JAWATA_RECALL_SENTINEL),
+    ("jawata-hook-userprompt", JAWATA_USERPROMPT_SENTINEL),
+    // NOT JAWATA_STOP_SENTINEL. That constant is a marker inside the script's
+    // BODY, never a command, so a row using it could not match a live entry —
+    // and the unit test passed it only by fabricating a command that cannot
+    // exist. Exactly the failure this table's own comment warns about: a wrong
+    // guess here does not fail loudly (C6 audit, F1).
+    ("jawata-hook-stop", "stop-gate.sh"),
 ];
 
 /// Whether an entry's command names ANY generation of a managed hook.
@@ -4650,19 +4660,7 @@ fn build_managed_hook_entry(guard_path: &Path) -> serde_json::Value {
 /// the managed guard script). Used to replace/remove our entries and leave the
 /// user's hooks alone.
 fn is_managed_hook_entry(entry: &serde_json::Value) -> bool {
-    entry
-        .get("hooks")
-        .and_then(|hooks| hooks.as_array())
-        .map(|hooks| {
-            hooks.iter().any(|hook| {
-                hook.get("command")
-                    .and_then(|command| command.as_str())
-                    .map(|command| command.contains(JAWATA_HOOK_SENTINEL)
-                        || command.contains(&legacy_sentinel(JAWATA_HOOK_SENTINEL)))
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false)
+    entry_is_managed_any_generation(entry, "jawata-hook-guard")
 }
 
 /// Write the guard script + register the managed `PreToolUse` entry in the client's
@@ -5259,19 +5257,7 @@ fn build_managed_posthook_entry(observer_path: &Path) -> serde_json::Value {
 /// True iff a `PostToolUse` entry is one jawata-studio wrote (its command references the
 /// managed observer script).
 fn is_managed_posthook_entry(entry: &serde_json::Value) -> bool {
-    entry
-        .get("hooks")
-        .and_then(|hooks| hooks.as_array())
-        .map(|hooks| {
-            hooks.iter().any(|hook| {
-                hook.get("command")
-                    .and_then(|command| command.as_str())
-                    .map(|command| command.contains(JAWATA_POSTHOOK_SENTINEL)
-                        || command.contains(&legacy_sentinel(JAWATA_POSTHOOK_SENTINEL)))
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false)
+    entry_is_managed_any_generation(entry, "jawata-hook-observer")
 }
 
 /// Write the observer script + register the managed `PostToolUse` entry, preserving
@@ -5803,11 +5789,7 @@ fn managed_stop_script_path() -> Option<PathBuf> {
 }
 
 fn is_managed_stop_entry(entry: &serde_json::Value) -> bool {
-    entry["hooks"].as_array().is_some_and(|hooks| {
-        hooks.iter().any(|h| {
-            h["command"].as_str().is_some_and(|c| c.contains("stop-gate.sh"))
-        })
-    })
+    entry_is_managed_any_generation(entry, "jawata-hook-stop")
 }
 
 fn build_managed_stop_entry(script: &Path) -> serde_json::Value {
@@ -9001,42 +8983,53 @@ mod tests {
 
     #[test]
     fn an_install_from_a_previous_generation_converges_to_one_entry_per_event() {
-        // C6 exit clause 1, end to end. A user upgrading from the .sh
-        // generation has entries we no longer write. If they are not recognised
-        // they are kept as the user's own, and BOTH the retired script and the
-        // new managed entry fire on every event — twice the work, two answers,
-        // and no signal that it is happening.
+        // C6 exit clause 1, end to end, across ALL SIX roles and FOUR events —
+        // the audit found the first version covering two. PreToolUse is the one
+        // that matters most: it holds TWO managed entries (guard and recall) in
+        // one array, so a predicate that over-claims deletes its sibling.
+        //
+        // The fixture also carries a MIXED install — a goja-generation entry
+        // and a jawata-generation entry for the SAME event — which nothing
+        // tested before, and which is what a user who upgraded once already has.
         let dir = unique_tempdir("gen-converge");
         let settings = dir.join("settings.json");
         let settings_path = settings.to_string_lossy().to_string();
-        let hooks_dir = dir.join("hooks");
-        std::fs::create_dir_all(&hooks_dir).unwrap();
+        let managed = dir.join("jawata-studio");
+        std::fs::create_dir_all(&managed).unwrap();
 
-        // An install as it looks BEFORE this sprint: our generation-2 entries,
-        // plus two hooks the user wrote themselves.
+        let old = |script: &str| serde_json::json!({
+            "hooks": [ { "type": "command",
+                         "command": format!("/home/u/.claude/{script}") } ]
+        });
+        let mine = |name: &str| serde_json::json!({
+            "hooks": [ { "type": "command", "command": format!("/home/u/bin/{name}") } ]
+        });
         std::fs::write(&settings, serde_json::json!({
             "hooks": {
-                "SessionStart": [
-                    { "hooks": [ { "type": "command",
-                        "command": "/home/u/.claude/jawata-studio/sessionstart-primer.sh" } ] },
-                    { "hooks": [ { "type": "command", "command": "/home/u/bin/my-own-primer.sh" } ] }
+                "SessionStart": [ old("jawata-studio/sessionstart-primer.sh"), mine("my-primer.sh") ],
+                "UserPromptSubmit": [ old("jawata-studio/userpromptsubmit-recall.sh") ],
+                // BOTH generations of the guard, plus the recall, plus a user
+                // hook — the crowded array.
+                "PreToolUse": [
+                    old("jawata-studio/pretooluse-guard.sh"),
+                    old("goja-studio/pretooluse-guard.sh"),
+                    old("jawata-studio/pretooluse-recall.sh"),
+                    mine("my-pretool.sh")
                 ],
-                "UserPromptSubmit": [
-                    { "hooks": [ { "type": "command",
-                        "command": "/home/u/.claude/jawata-studio/userpromptsubmit-recall.sh" } ] }
-                ]
+                "PostToolUse": [ old("jawata-studio/posttooluse-observer.sh") ],
+                "Stop": [ old("jawata-studio/stop-gate.sh"), mine("my-stop.sh") ]
             }
         }).to_string()).unwrap();
 
-        // The deploy writes the script at the path it is GIVEN, and in
-        // production that path carries the sentinel. Passing an arbitrary name
-        // here produced an entry matching no generation at all — a fixture
-        // wrong in the direction that makes the test fail loudly, which is the
-        // safe direction, but worth naming: this test only means something
-        // while these paths are the ones the product deploys.
-        let managed = dir.join("jawata-studio");
-        std::fs::create_dir_all(&managed).unwrap();
+        write_managed_hook(&settings_path, &managed.join("pretooluse-guard.sh"),
+            "http://u/health", false, false).unwrap();
+        write_managed_posthook(&settings_path, &managed.join("posttooluse-observer.sh"),
+            "http://u/mcp", "t", false, false).unwrap();
+        write_managed_stop(&settings_path, &managed.join("stop-gate.sh"),
+            "http://u/mcp", "t", false, false).unwrap();
         write_managed_primer(&settings_path, &managed.join("sessionstart-primer.sh"),
+            "http://u/mcp", "t", false, false).unwrap();
+        write_managed_recall(&settings_path, &managed.join("pretooluse-recall.sh"),
             "http://u/mcp", "t", false, false).unwrap();
         write_managed_userprompt(&settings_path, &managed.join("userpromptsubmit-recall.sh"),
             "http://u/mcp", "t", false, false).unwrap();
@@ -9044,56 +9037,153 @@ mod tests {
         let after: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
 
-        let count_managed = |event: &str, binary: &str| -> usize {
-            after["hooks"][event].as_array().map(|a| {
-                a.iter().filter(|e| entry_is_managed_any_generation(e, binary)).count()
-            }).unwrap_or(0)
+        let count = |event: &str, predicate: fn(&serde_json::Value) -> bool| -> usize {
+            after["hooks"][event].as_array()
+                .map(|a| a.iter().filter(|e| predicate(e)).count())
+                .unwrap_or(0)
         };
-        assert_eq!(1, count_managed("SessionStart", "jawata-hook-primer"),
-            "exactly ONE managed primer entry must survive the upgrade: {after}");
-        assert_eq!(1, count_managed("UserPromptSubmit", "jawata-hook-userprompt"),
-            "exactly ONE managed userprompt entry must survive: {after}");
+        let checks: Vec<(&str, &str, fn(&serde_json::Value) -> bool)> = vec![
+            ("SessionStart", "primer", is_managed_primer_entry),
+            ("UserPromptSubmit", "userprompt", is_managed_userprompt_entry),
+            ("PreToolUse", "guard", is_managed_hook_entry),
+            ("PreToolUse", "recall", is_managed_recall_entry),
+            ("PostToolUse", "observer", is_managed_posthook_entry),
+            ("Stop", "stop", is_managed_stop_entry),
+        ];
+        for (event, role, predicate) in checks {
+            assert_eq!(1, count(event, predicate),
+                "{event}/{role}: exactly ONE managed entry must survive the upgrade — the \
+                 mixed-generation array must collapse to one, not accumulate: {after}");
+        }
 
-        // And the user's own hook is untouched — the failure that costs them.
-        let session = after["hooks"]["SessionStart"].as_array().unwrap();
-        assert!(
-            session.iter().any(|e| e["hooks"][0]["command"] == "/home/u/bin/my-own-primer.sh"),
-            "the user's own SessionStart hook was removed by the migration: {after}"
-        );
+        // Every user hook intact, on all three events that carried one.
+        for (event, name) in [("SessionStart", "my-primer.sh"), ("PreToolUse", "my-pretool.sh"),
+                              ("Stop", "my-stop.sh")] {
+            assert!(
+                after["hooks"][event].as_array().is_some_and(|a| a.iter()
+                    .any(|e| e["hooks"][0]["command"].as_str()
+                        .is_some_and(|c| c.ends_with(name)))),
+                "{event}: the user's own {name} was removed by the migration: {after}"
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn every_generation_of_a_managed_hook_is_recognised_as_ours() {
-        // Sprint 28 C6 exit clause 1, at the unit the migration turns on.
-        // legacy_sentinel covered ONE prior generation. Stage 6 renames the
-        // managed scripts to role-named binaries, making the current .sh names
-        // a SECOND legacy generation — and an install carrying those would
-        // match no sentinel, be classified as the USER's own hook, and be kept
-        // forever, with the retired script and the new binary both firing on
-        // every event. That is the hook-outage shape, shipped by the fix for
-        // the hook outage.
-        for (binary, script) in SCRIPT_GENERATION {
-            let generations = [
-                // gen 3 — what this sprint deploys
-                format!("/home/u/.claude/hooks/{binary}"),
-                // gen 2 — the script it replaces
-                format!("/home/u/.claude/{script}"),
-                // gen 1 — that script's pre-rebrand twin
-                format!("/home/u/.claude/{}", legacy_sentinel(script)),
-            ];
-            for command in generations {
+    fn every_role_recognises_what_its_own_builder_writes() {
+        // C6 audit F1. The previous version tested the PREDICATE FUNCTION and
+        // never the call sites, so it passed with six rows while only three
+        // roles were wired — "built but not connected", in the stage whose
+        // headline deliverable is preventing exactly that. It also fabricated
+        // the stop command, which is why the wrong SCRIPT_GENERATION row
+        // survived: JAWATA_STOP_SENTINEL is a marker inside the script BODY,
+        // never a command.
+        //
+        // This goes through the REAL builders and the REAL predicates, so a
+        // predicate left on the old check fails here.
+        let base = std::path::Path::new("/home/u/.claude/jawata-studio");
+        let cases: Vec<(&str, serde_json::Value, fn(&serde_json::Value) -> bool)> = vec![
+            ("guard", build_managed_hook_entry(&base.join("pretooluse-guard.sh")),
+                is_managed_hook_entry),
+            ("observer", build_managed_posthook_entry(&base.join("posttooluse-observer.sh")),
+                is_managed_posthook_entry),
+            ("primer", build_managed_primer_entry(&base.join("sessionstart-primer.sh")),
+                is_managed_primer_entry),
+            ("recall", build_managed_recall_entry(&base.join("pretooluse-recall.sh")),
+                is_managed_recall_entry),
+            ("userprompt", build_managed_userprompt_entry(&base.join("userpromptsubmit-recall.sh")),
+                is_managed_userprompt_entry),
+            ("stop", build_managed_stop_entry(&base.join("stop-gate.sh")),
+                is_managed_stop_entry),
+        ];
+        assert_eq!(6, cases.len(), "all six Claude roles");
+        for (role, entry, predicate) in &cases {
+            assert!(predicate(entry),
+                "{role}: the deploy writes an entry its OWN predicate does not recognise — \
+                 a redeploy would duplicate it and an undeploy would leave it: {entry}");
+        }
+
+        // And no predicate claims another role's entry, or an undeploy of one
+        // role would delete another's.
+        for (role_a, entry_a, _) in &cases {
+            for (role_b, _, predicate_b) in &cases {
+                if role_a == role_b { continue; }
+                // guard and recall BOTH live on PreToolUse; their commands
+                // differ, so neither may claim the other.
+                assert!(!predicate_b(entry_a),
+                    "{role_b}'s predicate claims {role_a}'s entry — an undeploy of one would \
+                     remove the other from the same event array");
+            }
+        }
+    }
+
+    #[test]
+    fn every_role_recognises_both_earlier_generations() {
+        // The migration proper: gen-2 (the .sh this sprint replaces) and gen-1
+        // (its pre-rebrand goja twin) must both read as OURS, or an upgrading
+        // install keeps them as the user's own and they fire forever beside the
+        // new binary.
+        let predicates: Vec<(&str, fn(&serde_json::Value) -> bool)> = vec![
+            ("jawata-hook-guard", is_managed_hook_entry),
+            ("jawata-hook-observer", is_managed_posthook_entry),
+            ("jawata-hook-primer", is_managed_primer_entry),
+            ("jawata-hook-recall", is_managed_recall_entry),
+            ("jawata-hook-userprompt", is_managed_userprompt_entry),
+            ("jawata-hook-stop", is_managed_stop_entry),
+        ];
+        for (binary, predicate) in &predicates {
+            let script = SCRIPT_GENERATION.iter().find(|(b, _)| b == binary)
+                .unwrap_or_else(|| panic!("{binary} has no generation-2 row"))
+                .1;
+            for command in [
+                format!("/home/u/.claude/hooks/{binary}"),          // gen 3
+                format!("/home/u/.claude/{script}"),                 // gen 2
+                format!("/home/u/.claude/{}", legacy_sentinel(script)),   // gen 1
+            ] {
                 let entry = serde_json::json!({
                     "hooks": [ { "type": "command", "command": command } ]
                 });
-                assert!(
-                    entry_is_managed_any_generation(&entry, binary),
-                    "{command} is one of OUR generations and was not recognised — it would be \
-                     preserved as the user's own hook and keep firing beside the new binary"
-                );
+                assert!(predicate(&entry),
+                    "{binary}: {command} is one of OUR generations and its own predicate does \
+                     not recognise it — it would be preserved as the user's hook and keep firing");
             }
         }
+    }
+
+    #[test]
+    fn the_deployed_role_list_matches_the_shared_hook_contract() {
+        // C6 audit F2. HOOK_ROLES — the list the deploy actually writes — was
+        // asserted against NOTHING: not against the hook's role table, not
+        // against hook-events.json, not against SCRIPT_GENERATION. Drop a name
+        // and that binary is never deployed while its settings entry points at
+        // a file that does not exist; typo one and the binary deploys under a
+        // name argv[0] dispatch cannot resolve, so it exits silent forever.
+        // Both stay green across both crates.
+        //
+        // This is C5's own finding — "that is a count, not a linkage" —
+        // reintroduced one layer up, which is why it gets the same cure.
+        let contract: serde_json::Value =
+            serde_json::from_str(include_str!("../hook-events.json")).unwrap();
+        let claude = contract["claude-code"].as_object().expect("claude-code section");
+
+        let mut expected: Vec<String> =
+            claude.keys().map(|role| format!("jawata-hook-{role}")).collect();
+        expected.sort();
+        let mut actual: Vec<String> = HOOK_ROLES.iter().map(|s| s.to_string()).collect();
+        actual.sort();
+        assert_eq!(expected, actual,
+            "the binaries the deploy writes have drifted from the shared hook contract");
+
+        // And every deployed name has a generation-2 row, or its migration is
+        // silently absent.
+        for role in HOOK_ROLES {
+            assert!(SCRIPT_GENERATION.iter().any(|(b, _)| b == role),
+                "{role} is deployed but has no generation-2 row — an upgrading install keeps \
+                 its old entry as the user's own");
+        }
+        assert_eq!(HOOK_ROLES.len(), SCRIPT_GENERATION.len(),
+            "SCRIPT_GENERATION carries a row for a binary the deploy never writes");
     }
 
     #[test]
