@@ -190,14 +190,32 @@ approval, after auditor sign-off.** STOP.
 
 ## The communication audit (ENFORCED — not the agent's choice)
 
-Every DECISION ASK, CHECKPOINT SUMMARY, and SPRINT RESULT sent to the user
-must FIRST pass a fresh-context communication audit applying check 8 (the
-decision test) to the message itself; on refuse, rewrite and re-audit before
-sending. This is a prescribed step, executed with evidence — never satisfied
-by "I kept it in mind" (Harald, 2026-07-18: "This needs to be enforced. I
-don't want you to decide if you do or leave"). Mechanized hook-level
-enforcement is a Sprint-26 deliverable; until it ships, THIS step is the
-enforcement.
+**Every upward message — decision ask, STATUS ANSWER, checkpoint summary,
+sprint result — passes through the COMMUNICATOR AGENT before it is sent:**
+invoke the agent named `communicator` (defined at
+`~/.claude/agents/communicator.md`; a missing definition is re-created from
+this section's rules, never skipped) with the draft plus a one-paragraph
+true-state statement, and send its PASS or its REWRITE — never the refused
+draft, and never an ask it returns as DROP-THE-ASK. This is an executed step
+with the invocation visible in the transcript; "I kept it in mind" is the
+recorded failure it exists to end.
+
+Two rulings bind it (both Harald's, verbatim anchors in the store):
+2026-07-18 "This needs to be enforced. I don't want you to decide if you do or
+leave" — and 2026-08-07, after an unintelligible ask stalled an authorized
+full-night sprint while every fix was already green: "I wanted a communication
+agent." The Sprint-26 stop-gate hook is SHAPE enforcement only (trigger words,
+length, abbreviations) and is never an argument against the communicator pass;
+the mechanical block-until-communicator-pass lands in the hook binary (Sprint
+28 D-SHIM), and the product-side communicator seat for all clients is Sprint
+29.
+
+Core content rules the communicator applies: bottom line first (green/red,
+moving/blocked-on-what, in the first two lines); the decision test — what is
+broken (or that NOTHING is, explicitly), what yes changes, what no costs, one
+recommendation; no loop interior (same-session found-and-fixed is never
+reported as an open problem); every abbreviation defined; a gate reported as
+what it proves, never as how it ran.
 
 ## Execution discipline (after GATE 2)
 
