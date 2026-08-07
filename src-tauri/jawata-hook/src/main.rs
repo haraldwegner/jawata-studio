@@ -52,7 +52,7 @@ fn main() {
             Outcome::Silent(reason) => {
                 eprintln!(
                     "role {role_name}: SILENT [{}] {reason:?}",
-                    jawata_hook::silence::tag(reason)
+                    reason.tag()
                 );
             }
         }

@@ -6030,6 +6030,35 @@ try:
             'C8 were one wrong design decision generating bugs on demand.' % rounds)
 except Exception:
     pass
+# UNJUDGED UPWARD ASK. The communicator requirement lived only as prose in
+# CLAUDE.md — binding on the agent by reading it, enforced by nothing. Asked
+# "how can you skip a hook?", the honest answer was that no hook existed: this
+# gate checked message shape, seat discipline, length and abbreviations, and
+# had no concept of the communicator at all. Caught three times in one session,
+# the third an hour after the agent recorded the rule as a lesson.
+#
+# A rule that depends on the agent remembering is not a rule. This is the
+# cheapest layer that does not: the transcript is written by the HARNESS, so
+# whether a communicator subagent ran is a fact the agent cannot fake by
+# writing a marker.
+try:
+    asking = ('YOUR WORD' in U or 'NEEDS YOUR' in U or 'YOUR CALL' in U
+              or 'YOUR RULING' in U or 'YOUR SIGN-OFF' in U
+              or 'SHALL I' in U or 'WANT ME TO' in U or 'DO YOU WANT' in U
+              or 'DECISION:' in U)
+    if asking:
+        # Scope to the window since the last human turn: a communicator run
+        # three hours ago does not judge THIS message.
+        cut = tail.rfind('"type":"user"')
+        recent = tail[cut:] if cut >= 0 else tail
+        if 'communicator' not in recent:
+            reasons.append(
+                'UNJUDGED ASK: this message asks Harald for a word, a ruling or a '
+                'decision, and no communicator subagent ran since his last turn. '
+                'Run the communicator on it, apply its verdict, then send. The rule '
+                'is binding and has been skipped three times by memory alone.')
+except Exception as e:
+    reasons.append('UNJUDGED-ASK CHECK FAILED: %s' % e)
 # Seat-gate block (D4): a seat command in this transcript but no gate calls after it.
 try:
     whole = tail
@@ -7364,6 +7393,80 @@ mod tests {
 
     // ---------- Sprint 26: the Stop gate ----------
 
+    fn ask_transcript(dir: &Path, ask: &str, with_communicator: bool) -> PathBuf {
+        let p = dir.join("t.jsonl");
+        let mut body = String::from(
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"go on\"}]}}\n",
+        );
+        if with_communicator {
+            body.push_str("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Agent\",\"input\":{\"subagent_type\":\"communicator\"}}]}}\n");
+        }
+        body.push_str(&format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{ask}\"}}]}}}}\n"
+        ));
+        fs::write(&p, body).unwrap();
+        p
+    }
+
+    /// THE RULE THAT HAD NO HOOK. "Every self-initiated upward message passes
+    /// the communicator" lived only as prose in CLAUDE.md — binding by reading,
+    /// enforced by nothing. Asked "how can you skip a hook?", the honest answer
+    /// was that no hook existed. Skipped three times in one session, the third
+    /// an hour after the rule was recorded as a lesson.
+    #[test]
+    fn the_stop_gate_blocks_an_ask_the_communicator_never_judged() {
+        let dir = unique_tempdir("stop-ask");
+        let tp = ask_transcript(&dir, "One thing needs your word before I push.", false);
+        let out = run_stop_script(&serde_json::json!({
+            "transcript_path": tp, "stop_hook_active": false
+        }));
+        assert_eq!(Some("block"), out.get("decision").and_then(|d| d.as_str()),
+            "an unjudged ask must block: {out}");
+        assert!(out["reason"].as_str().unwrap().contains("UNJUDGED ASK"));
+    }
+
+    /// And it must NOT block when the communicator did run — otherwise the
+    /// only way to satisfy it is to stop asking, which is worse.
+    #[test]
+    fn the_stop_gate_allows_an_ask_the_communicator_judged() {
+        let dir = unique_tempdir("stop-ask-ok");
+        let tp = ask_transcript(&dir, "One thing needs your word before I push.", true);
+        let out = run_stop_script(&serde_json::json!({
+            "transcript_path": tp, "stop_hook_active": false
+        }));
+        assert!(out.get("decision").is_none(), "a judged ask must pass: {out}");
+    }
+
+    /// A communicator run BEFORE the human's last turn does not judge this
+    /// message. The window is what makes the check mean anything.
+    #[test]
+    fn a_stale_communicator_run_does_not_satisfy_a_new_ask() {
+        let dir = unique_tempdir("stop-ask-stale");
+        let p = dir.join("t.jsonl");
+        let mut body = String::from(
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Agent\",\"input\":{\"subagent_type\":\"communicator\"}}]}}\n",
+        );
+        body.push_str("{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"new question\"}]}}\n");
+        body.push_str("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Shall I push this?\"}]}}\n");
+        fs::write(&p, body).unwrap();
+        let out = run_stop_script(&serde_json::json!({
+            "transcript_path": p, "stop_hook_active": false
+        }));
+        assert_eq!(Some("block"), out.get("decision").and_then(|d| d.as_str()),
+            "a communicator run from before his turn must not count: {out}");
+    }
+
+    /// Ordinary work with no ask is untouched.
+    #[test]
+    fn the_stop_gate_allows_a_message_that_asks_nothing() {
+        let dir = unique_tempdir("stop-noask");
+        let tp = ask_transcript(&dir, "Committed and green, continuing.", false);
+        let out = run_stop_script(&serde_json::json!({
+            "transcript_path": tp, "stop_hook_active": false
+        }));
+        assert!(out.get("decision").is_none(), "no ask, no block: {out}");
+    }
+
     /// Build a transcript with `refusals` audit refusals and no checkpoint.
     fn loop_transcript(dir: &Path, refusals: usize, pad_mb: usize) -> PathBuf {
         let p = dir.join("t.jsonl");
@@ -7483,10 +7586,24 @@ mod tests {
         serde_json::from_slice(&out.stdout).expect("script prints JSON")
     }
 
+    /// NOTE: these fixtures now carry a communicator run.
+    ///
+    /// They predate the unjudged-ask check and used a bare `DECISION:` message
+    /// with no communicator anywhere — which under the rule that was always
+    /// meant to be binding is exactly the state that must BLOCK. The fixtures
+    /// were stale, not the check: these tests exist to prove the SHAPE checks
+    /// (length, undefined terms, second pass), so they now supply the judged
+    /// precondition rather than asserting an unjudged ask may pass.
     fn transcript_with(dir_label: &str, final_text: &str, extra: &str) -> String {
         let dir = unique_tempdir(dir_label);
         let tp = dir.join("transcript.jsonl");
         let mut lines = String::new();
+        lines.push_str(&serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "name": "Agent",
+                                     "input": {"subagent_type": "communicator"}}]}
+        }).to_string());
+        lines.push('\n');
         lines.push_str(extra);
         lines.push_str(&serde_json::json!({
             "type": "assistant",
