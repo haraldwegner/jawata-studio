@@ -115,6 +115,17 @@ while dropping the doc's goal).
    sprint follows"; Harald: "Every sprint should have an end result — either we stick
    with the old or we implement this immediately").
 
+11. **CRITICAL PATH DERIVED, NOT ASSUMED** (plan only) — every stage declares
+   `DEPENDS ON` and `RESOURCE`; the plan states the critical path and names the
+   long pole. **REFUSE a stage sequenced without a real input dependency** — the
+   auditor's question is "what does stage N consume that stage M produces?", and
+   "it reads more tidily in this order" is a REFUSE. Also REFUSE a plan that
+   schedules `token` work (audits, seat runs) strictly after the work it reviews
+   when it could start on commit, or that leaves the local machine idle across a
+   `remote` wait. Conversely REFUSE unsafe concurrency: two stages marked parallel
+   that share a `cpu` saturation point or an `artifact` path, without the plan
+   naming why they do not collide.
+
 ## The traceability matrix — anchored to the RAW
 
 | RAW requirement (verbatim) | Where the CLEAN satisfies it + its measure | kept / deferred-with-home / **DROPPED → refuse** |
@@ -181,10 +192,46 @@ the spec + the editor's parked mechanics. Structure per the Collaboration-spec t
 with two changes:
 - **§1 is a MANAGEMENT SUMMARY the user reads** — because the spec deliberately lacks
   steps and sequence, this is where the user sees them: stages-at-a-glance, the
-  **critical path** (what gates what, where the long pole is), the user's own manual
-  steps and when they land, expected checkpoints. Plus the traceability matrix anchored
-  to the spec's deliverables.
+  **critical path**, the user's own manual steps and when they land, expected
+  checkpoints. Plus the traceability matrix anchored to the spec's deliverables.
 - **NO risk section.** Deviation or failure = STOP + the user's decision.
+- **EVERY STAGE DECLARES ITS DEPENDENCY AND ITS RESOURCE CLASS** — see below.
+
+### The critical path is derived, not assumed (binding)
+
+A plan that sequences stages by habit wastes calendar time the user is paying for
+in wall-clock, not tokens. **Sequential is a claim that must be justified per
+stage**; parallel is the default. Every stage carries two declarations:
+
+**DEPENDS ON: <stage ids, or "nothing">** — a real input dependency: stage N
+consumes an artifact, a measurement, or a decision that stage M produces. "It
+feels tidier to finish M first" is NOT a dependency. The **critical path** is the
+longest chain of these; the plan states it explicitly and names the long pole.
+Everything not on it is marked **PARALLEL WITH: <stage ids>**.
+
+**RESOURCE: <class>** — because independence is necessary but not sufficient; two
+independent stages still collide if they want the same scarce thing. The classes:
+
+| Class | Scarce thing | Concurrency rule |
+|---|---|---|
+| `token` | model tokens; subagents, fresh-context audits, seat runs | **Fan out freely.** No local CPU. Split one audit into concurrent per-dimension audits rather than one generalist doing them serially. |
+| `remote` | a CI runner, a hosted job | **Free locally — always fill the wait.** Never idle while a remote job runs. |
+| `cpu` | the local machine's cores and RAM | **One at a time against each other.** A full test suite or release build saturates the box. |
+| `artifact` | a shared file a build writes and a test reads (a dist jar, a shard dir, an install tree) | **Exclusive.** Two stages touching the same path serialize even when both are `cpu`-cheap. |
+| `human` | the user's attention and decisions | **Blocks by definition.** Everything schedulable BEFORE the ask is done before the ask. |
+
+**Oversubscription is not free, and the caution is earned, not theoretical.**
+Running `cpu` work concurrently has repeatedly manufactured FALSE REDS — a
+timing-sensitive race that appears only under contention, a shared build artifact
+rewritten mid-read, two runs corrupting each other's output directory. A false red
+costs a full debugging cycle plus trust in the gate, which is strictly worse than
+a serial wait. So `token` and `remote` parallelism is taken greedily; `cpu` and
+`artifact` parallelism is taken only where the plan can name why they do not
+collide.
+
+**The shape the plan must make possible:** an audit of stage N running while
+stage N+1 is being built, and a remote job in flight while local work continues.
+If the plan's stage order forbids that, the order is wrong.
 Auditor refuse-loop as in Phase A (baseline = the signed-off spec). **GATE 2 — plan-mode
 approval, after auditor sign-off.** STOP.
 
