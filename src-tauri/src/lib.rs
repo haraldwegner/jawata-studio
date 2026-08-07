@@ -20,8 +20,14 @@ mod resident;
 // The attribute stays so the build is not buried in 74 warnings, but it no
 // longer hides anything: build/unwired-gate.sh audits with --force-warn
 // dead_code, which sees through it, and every one of those items is in the
-// committed baseline. Whether the hosted runner ships or goes is a product
-// decision, not a lint.
+// committed baseline.
+//
+// Whether the hosted runner ships or goes is SPRINT 28b's call (Lane B hosted
+// execution — the sprint whose subject is exactly "the runner drives seats",
+// and which already declares a dependency on Sprint 28). Shipping Lane B is
+// what would give these items a production caller; deferring it again makes
+// deleting them the honest alternative. The measurement is staged in that
+// sprint's doc so the decision starts from evidence.
 #[allow(dead_code)]
 mod runner;
 mod runtime_manager;

@@ -67,7 +67,29 @@ if [ "$PLAIN" -eq 0 ]; then
 fi
 
 LC_ALL=C comm -23 "$WORK/plain.txt" "$WORK/cfgtest.txt" > "$WORK/current.txt"
-echo "gate: hollow (dead without cfg(test), alive with it) = $(wc -l < "$WORK/current.txt")"
+HOLLOW=$(wc -l < "$WORK/current.txt")
+echo "gate: hollow (dead without cfg(test), alive with it) = $HOLLOW"
+
+# THE COMPARISON MUST STILL BE A COMPARISON. If --profile test ever stops
+# applying cfg(test) — a toolchain change, a renamed flag — the two sets become
+# identical, the difference is empty, and this gate would print "74 items
+# FIXED" and exit 0. That is the vacuous comparison this arm was built to
+# escape, passing itself. The crate has a known non-empty hollow set, so an
+# empty one means the method broke, not that the code got clean; clearing it
+# legitimately is a --update-baseline away and says so.
+if [ "$HOLLOW" -eq 0 ] && [ -s "$BASELINE" ]; then
+    echo "gate: RESULT=comparison-collapsed — the two warning sets are identical, so the"
+    echo "gate: cfg(test) build is no longer distinguishable from the plain one and this"
+    echo "gate: gate is measuring nothing. It is NOT evidence that $(wc -l < "$BASELINE") baseline"
+    echo "gate: item(s) were fixed. If they really were, re-run with --update-baseline."
+    exit 2
+fi
+if [ "$CFGTEST" -ge "$PLAIN" ]; then
+    echo "gate: RESULT=comparison-collapsed — the cfg(test) build reported as many dead items"
+    echo "gate: ($CFGTEST) as the plain build ($PLAIN). Test code is supposed to USE things;"
+    echo "gate: if it uses nothing, the test target did not compile as one."
+    exit 2
+fi
 
 if [ "$UPDATE" = "1" ]; then
     cp "$WORK/current.txt" "$BASELINE"
