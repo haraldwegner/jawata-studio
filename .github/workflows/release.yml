@@ -54,16 +54,6 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
-      # Sprint 28 (D-UNWIRED), the Rust half of the same gate jawata-mcp runs
-      # on its release: an item the compiler calls dead without cfg(test) but
-      # not with it is used exclusively by test code. Fails on anything not in
-      # build/unwired-baseline.txt. Linux only — the answer is a property of
-      # the source, identical on every target, so paying for it three times
-      # buys nothing.
-      - name: Hollow-wiring gate (test-only items)
-        if: matrix.platform == 'ubuntu-22.04'
-        run: ./build/unwired-gate.sh
-
       # Sprint 14 (v0.14.0, bugs.md #1 full fix): tauri-action builds
       # the bundles but does NOT upload them yet (tagName omitted on
       # purpose). The Linux-only step below post-processes the AppImage
@@ -128,6 +118,19 @@ jobs:
           echo "--- spctl (informational; the runner is not the user's machine) ---"
           spctl -a -vvv -t install "$DMG" || true
 
+      # Sprint 28 (D-UNWIRED), the Rust half of the same gate jawata-mcp runs
+      # on its release. Linux only — the answer is a property of the source,
+      # identical on every target.
+      #
+      # AFTER the Tauri build, not before it: jawata-studio's build script needs
+      # the built frontend, so running this earlier failed the compile — and the
+      # gate then reported "arm-did-not-run" rather than the compile error,
+      # because CI colourises cargo's output and the error match did not allow
+      # for ANSI escapes. Both found by firing a real CI run (C7).
+      - name: Hollow-wiring gate (test-only items)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: ./build/unwired-gate.sh
+
       # C7 exit: "a built bundle on each of the five targets CONTAINS the hook
       # binary". Checked on the artefact, per platform, because externalBin
       # failing to copy is silent from the app's point of view — the studio
@@ -138,15 +141,51 @@ jobs:
           set -euo pipefail
           TRIPLE=$(rustc -vV | awk '/^host:/ {print $2}')
           EXT=""; case "$TRIPLE" in *windows*) EXT=".exe" ;; esac
-          NAME="jawata-hook-$TRIPLE$EXT"
-          FOUND=$(find src-tauri/target/release/bundle -name "$NAME" -o -name "jawata-hook$EXT" 2>/dev/null | head -5)
-          if [ -z "$FOUND" ]; then
-            echo "FAIL: no hook binary in the bundle. externalBin did not copy $NAME."
-            echo "--- what the bundle does contain ---"
-            find src-tauri/target/release/bundle -maxdepth 3 -type d | head -20
-            exit 1
-          fi
-          echo "bundle carries the hook:"; echo "$FOUND"
+          BUNDLE=src-tauri/target/release/bundle
+
+          # PER-PLATFORM, because the payload is a different KIND of thing on
+          # each. The first version ran one `find` over $BUNDLE and passed on
+          # Linux and macOS while FAILING both Windows jobs — the Windows
+          # bundle holds only .msi and NSIS .exe archives, and `find` cannot
+          # see inside an archive. That check would have blocked a real release
+          # instead of catching a defect. Found by firing a build-only run.
+          case "$TRIPLE" in
+            *windows*)
+              # The installers are archives. 7z ships on GitHub's Windows
+              # runners; list them and look for the sidecar by name.
+              FOUND=""
+              for INSTALLER in $(find "$BUNDLE" -name '*.msi' -o -name '*-setup.exe'); do
+                if 7z l "$INSTALLER" 2>/dev/null | grep -qi "jawata-hook"; then
+                  FOUND="$FOUND $INSTALLER"
+                fi
+              done
+              if [ -z "$FOUND" ]; then
+                echo "FAIL: no installer under $BUNDLE contains jawata-hook$EXT."
+                find "$BUNDLE" -maxdepth 2 -type f | head -20
+                exit 1
+              fi
+              echo "installers carrying the hook:$FOUND"
+              ;;
+            *darwin*)
+              # The .app IS the payload — a real directory tree.
+              APP_HOOK=$(find "$BUNDLE/macos" -path '*/Contents/MacOS/jawata-hook' | head -1)
+              [ -n "$APP_HOOK" ] || { echo "FAIL: no jawata-hook in the .app"; find "$BUNDLE" -maxdepth 3 | head -20; exit 1; }
+              echo "app carries the hook: $APP_HOOK"
+              # And it must be SIGNED, or Apple's notary service rejects the
+              # whole bundle for a nested unsigned executable.
+              codesign -dv --verbose=2 "$APP_HOOK" 2>&1 | head -5 || {
+                echo "FAIL: the sidecar is not signed; notarization would reject the bundle"; exit 1; }
+              ;;
+            *)
+              # Linux: inspect the .deb itself, not the staging directory the
+              # bundler leaves beside it.
+              DEB=$(find "$BUNDLE/deb" -name '*.deb' | head -1)
+              [ -n "$DEB" ] || { echo "FAIL: no .deb built"; exit 1; }
+              dpkg-deb -c "$DEB" | grep -q 'jawata-hook' || {
+                echo "FAIL: the .deb does not contain jawata-hook"; dpkg-deb -c "$DEB" | head -20; exit 1; }
+              echo "deb carries the hook:"; dpkg-deb -c "$DEB" | grep 'jawata-hook'
+              ;;
+          esac
 
       - name: Bake WEBKIT_DISABLE_DMABUF_RENDERER into AppImage AppRun + .deb wrapper (ubuntu only)
         if: startsWith(matrix.platform, 'ubuntu-')

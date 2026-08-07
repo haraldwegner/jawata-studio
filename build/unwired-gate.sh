@@ -46,12 +46,17 @@ deadcode() {   # deadcode <outfile> <package> [extra cargo args...]
     # tests can drive its modules), so --lib is right for both.
     local target="--lib"
     # shellcheck disable=SC2086
-    cargo rustc -p "$pkg" $target --message-format=short "$@" -- --force-warn dead_code \
-        > "$WORK/raw.txt" 2>&1
+    # CARGO_TERM_COLOR=never: CI sets it to `always`, which prefixes every line
+    # with ANSI escapes, so the `^error` check below never matched and a real
+    # compile failure surfaced as "arm-did-not-run" — the right refusal with
+    # the wrong reason, which is the failure mode this sprint exists to remove.
+    # Found by firing a real CI run (C7, 2026-08-07).
+    CARGO_TERM_COLOR=never cargo rustc -p "$pkg" $target --message-format=short "$@" \
+        -- --force-warn dead_code > "$WORK/raw.txt" 2>&1
     grep -E ': warning: ' "$WORK/raw.txt" \
         | sed 's/:[0-9]*:[0-9]*: warning: /|/' \
         | LC_ALL=C sort -u > "$out"
-    if grep -qE '^error' "$WORK/raw.txt"; then
+    if grep -qE '(^|[[:space:]])error(\[|:)' "$WORK/raw.txt"; then
         echo "gate: RESULT=compile-error during the audit compile:"
         grep -E '^error' "$WORK/raw.txt" | head -5
         return 2
