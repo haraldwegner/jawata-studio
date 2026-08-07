@@ -22,7 +22,11 @@
 //!    a lock introduces a way to block — and blocking is the one thing the fire
 //!    path may never do.
 //! 3. **It cannot grow without bound.** A hook fires on every prompt of every
-//!    session forever. The log is capped and truncated from the front.
+//!    session forever. The hook NEVER bounds the file itself: it appends, and
+//!    past a hard ceiling it drops new records. The Studio manager rotates the
+//!    log off the fire path. Six audit rounds established that in-path
+//!    bounding cannot be made safe here — every scheme destroyed records or
+//!    disabled itself.
 
 use std::fmt::Write as _;
 use std::fs::OpenOptions;
@@ -33,7 +37,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::safety::{Outcome, SilenceReason};
 
 /// Above this size the MANAGER rotates the log at its next pass — the hook
-/// itself never rotates; see `append_to`. Chosen so a busy day of hooks is
+/// itself never rotates; see `append_to`.
+///
+/// Retention is ONE generation: a second rotation overwrites `hook_silence.log.1`.
+/// A generation therefore survives at least one full fill of this size, which
+/// is the right trade for a diagnostic file — but it is a discard, and saying
+/// so here is cheaper than someone discovering it while debugging. Chosen so a busy day of hooks is
 /// retained and a year of them is not.
 pub const MAX_BYTES: u64 = 256 * 1024;
 
@@ -318,6 +327,106 @@ mod tests {
         assert!(after.contains("cannot-inject"), "the record must land");
         assert!((after.len() as u64) > MAX_BYTES, "no trimming on the fire path");
         assert!(!p.with_extension("log.1").exists(), "no rotation on the fire path");
+    }
+
+
+    /// The gate's own clause: two concurrent invocations BOTH land. Threads
+    /// rather than processes because the property under test is the single
+    /// `write_all` under `O_APPEND` — a torn record would show up as a line
+    /// with the wrong column count.
+    #[test]
+    fn concurrent_writers_both_land_whole() {
+        let p = tmp("concurrent");
+        let _ = std::fs::remove_file(&p);
+        const N: usize = 40;
+        std::thread::scope(|s| {
+            for i in 0..N {
+                let p = p.clone();
+                s.spawn(move || {
+                    let r = if i % 2 == 0 {
+                        SilenceReason::StoreHadNothing
+                    } else {
+                        SilenceReason::CannotInject
+                    };
+                    append_to(&p, "primer", &Outcome::Silent(r));
+                });
+            }
+        });
+        let body = std::fs::read_to_string(&p).unwrap();
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(N, lines.len(), "every writer must land");
+        for l in &lines {
+            assert_eq!(4, l.split('\t').count(), "torn record: {l:?}");
+        }
+    }
+
+
+    #[test]
+    fn an_emitted_outcome_is_recorded_too() {
+        let p = tmp("emitted");
+        let _ = std::fs::remove_file(&p);
+        append_to(&p, "primer", &Outcome::Emitted("{}".into()));
+        let body = std::fs::read_to_string(&p).unwrap();
+        assert!(body.contains("\temitted\t"), "got {body:?}");
+    }
+
+
+    /// The contract that matters most: a log that cannot be written changes
+    /// nothing. A directory where the file should be is the cheapest way to
+    /// make every open fail on every platform.
+    #[test]
+    fn an_unwritable_log_is_a_no_op_not_an_error() {
+        let d = std::env::temp_dir().join(format!("jawata-silence-blocked-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        // `d` is a directory; opening it for append must fail.
+        assert!(!append_to(&d, "primer", &Outcome::Silent(SilenceReason::CannotInject)));
+    }
+
+
+    #[test]
+    fn the_log_sits_beside_the_config() {
+        let exe = Path::new("/opt/jawata/jawata-hook-primer");
+        let log = log_path_for(exe).expect("a log path");
+        let cfg = crate::config::config_path_for(exe).expect("a config path");
+        assert_eq!(cfg.parent(), log.parent(), "log must sit beside the config");
+        assert_eq!(Some("hook_silence.log".as_ref()), log.file_name());
+    }
+
+    /// The gate clause at the OTHER two regimes. The concurrency test was
+    /// deleted in the redesign under the rotation machinery's label — but the
+    /// property it guarded SURVIVES that deletion: the single `write_all`
+    /// under `O_APPEND` in `append_to`. Six rounds of history say
+    /// concurrent-writer destruction is the regression this file attracts, so
+    /// it is guarded above the cap too, where the old design did its damage.
+    #[test]
+    fn concurrent_writers_land_whole_above_the_cap_as_well() {
+        let p = tmp("concurrent-above-cap");
+        let _ = std::fs::remove_file(&p);
+        let filler = "0\tprimer\tstore-had-nothing\t".to_string() + &"x".repeat(200) + "\n";
+        let mut body = String::new();
+        while (body.len() as u64) <= MAX_BYTES {
+            body.push_str(&filler);
+        }
+        std::fs::write(&p, &body).unwrap();
+
+        const N: usize = 40;
+        std::thread::scope(|s| {
+            for _ in 0..N {
+                let p = p.clone();
+                s.spawn(move || {
+                    append_to(&p, "primer", &Outcome::Silent(SilenceReason::CannotInject));
+                });
+            }
+        });
+        let after = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(
+            N,
+            after.lines().filter(|l| l.contains("cannot-inject")).count(),
+            "every writer must land even above the cap — the hook no longer trims"
+        );
+        for l in after.lines() {
+            assert_eq!(4, l.split('\t').count(), "torn record: {l:?}");
+        }
     }
 
 }

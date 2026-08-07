@@ -5671,7 +5671,19 @@ fn deploy_hook_binaries(
 /// and even interleaved, two renames only shuffle which generation a record
 /// sits in; nothing truncates.
 fn rotate_silence_log(hooks_dir: &Path) -> bool {
-    const MAX_BYTES: u64 = 256 * 1024; // must match jawata_hook::silence::MAX_BYTES
+    // DUPLICATED, deliberately and with the cost named. Importing
+    // `jawata_hook::silence::MAX_BYTES` would add a studio -> hook dependency
+    // edge; the workspace exists precisely to keep those two crates
+    // independent (see the edge assertions in jawata-hook/tests/
+    // dependency_edges.rs), and inventing a new edge under time pressure is
+    // how this stage generated seven consecutive defects.
+    //
+    // The drift consequence is mild and bounded: if the two values diverge,
+    // rotation triggers at a different size than the hook documents, and the
+    // hook's 8x hard ceiling still bounds growth absolutely. Homed as a real
+    // fix: put the cap in hook-events.json, the shared contract file both
+    // sides already read.
+    const MAX_BYTES: u64 = 256 * 1024;
     let live = hooks_dir.join("hook_silence.log");
     let oversized = fs::metadata(&live).map(|m| m.len() > MAX_BYTES).unwrap_or(false);
     if !oversized {
