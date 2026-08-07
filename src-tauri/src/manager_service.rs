@@ -5963,18 +5963,31 @@ except Exception:
 if data.get('stop_hook_active'):
     print('{}'); sys.exit(0)  # one rewrite loop only
 tp = data.get('transcript_path')
+# TAIL ONLY. This used to read every line of the transcript to end up with the
+# LAST assistant message, and then read the whole file a SECOND time for the
+# seat check. Measured on a real session: 332 MB, ~3 s per turn, twice over,
+# with the entire file in memory. Nothing here needs history.
+WIN = 1 << 20
 text = ''
+tail = ''
 try:
-    with open(tp) as f:
-        for line in f:
-            try:
-                j = json.loads(line)
-            except Exception:
-                continue
-            m = j.get('message') or {}
-            if (j.get('type') == 'assistant') and isinstance(m.get('content'), list):
-                parts = [c.get('text','') for c in m['content'] if c.get('type')=='text']
-                if parts: text = chr(10).join(parts)
+    with open(tp, 'rb') as f:
+        f.seek(0, 2); size = f.tell()
+        f.seek(max(0, size - WIN))
+        raw = f.read()
+    if size > WIN:
+        nl = raw.find(b'\n')
+        raw = raw[nl+1:] if nl >= 0 else raw
+    tail = raw.decode('utf-8', 'replace')
+    for line in tail.splitlines():
+        try:
+            j = json.loads(line)
+        except Exception:
+            continue
+        m = j.get('message') or {}
+        if (j.get('type') == 'assistant') and isinstance(m.get('content'), list):
+            parts = [c.get('text','') for c in m['content'] if c.get('type')=='text']
+            if parts: text = chr(10).join(parts)
 except Exception:
     print('{}'); sys.exit(0)
 U = text.upper()
@@ -5983,14 +5996,53 @@ shaped = (U.startswith('DECISION:') or 'DECISION:' in U[:400]
           or ('CHECKPOINT' in U and 'SHIPPED' in U)
           or ('SPRINT' in U and ('CLOSED' in U or 'RESULT' in U)))
 reasons = []
+# AUDIT-FIX LOOP (Sprint 28 C8). Every other check here waits for a CHECKPOINT
+# marker, and a churn loop never produces one — the checkpoint never passes, so
+# it is never written. The failure state and the trigger condition were mutually
+# exclusive by construction: this gate ran every turn through six audit rounds
+# and correctly found nothing to judge, while the pathology it exists to catch
+# ran in front of it. Evidence: C8 took six REFUSEs, each new defect introduced
+# by the previous round's fix, and the cure was a redesign that deleted 186
+# lines — visible from round two, acted on after round six.
+#
+# So this trigger counts the LOOP, not the checkpoint.
+try:
+    # `tail`, not `whole` — `whole` is not assigned until the seat block BELOW
+    # this one. The first version referenced it here, raised NameError, and was
+    # swallowed by this block's own `except: pass`: the check reported nothing
+    # and looked identical to a check that found nothing. That is the failure
+    # this entire sprint exists to end, committed inside the trigger written to
+    # detect it.
+    rounds = tail.count('REFUSE')
+    # NO "but a checkpoint happened" suppression. The first version of this
+    # check looked for a checkpoint marker in the window and stood down if it
+    # found one — and on the very session it was written for it found the
+    # PAUSE GLYPH inside the quoted checkpoint-format TEMPLATE, not an actual
+    # checkpoint, and suppressed itself. Matching a shape the agent's own text
+    # can contain is the identical defect this gate already has elsewhere.
+    # Three refusals in a megabyte IS the loop, whatever else is in the window.
+    if rounds >= 3:
+        reasons.append(
+            'AUDIT-FIX LOOP: %d refusals in this window with no checkpoint reached. '
+            'Repeated defect-in-the-fixing-commit is a DESIGN alarm, not a bug streak. '
+            'STOP fixing findings and run the architect seat (/refactor) as a watch-diff '
+            'against the ARCHITECTURE artifact: design fix or bandage? Six rounds of '
+            'C8 were one wrong design decision generating bugs on demand.' % rounds)
+except Exception:
+    pass
 # Seat-gate block (D4): a seat command in this transcript but no gate calls after it.
 try:
-    with open(tp) as f: whole = f.read()
+    whole = tail
     seats = [s for s in ('/javadocs','/cover','/refactor','/debug','/profile') if s in whole]
     if seats and not any(g in whole for g in ('compile_workspace','run_tests','get_diagnostics')):
         reasons.append('SEAT DISCIPLINE: %s invoked but no gate call (compile_workspace / run_tests / get_diagnostics) appears in this session — a gate you did not run has NOT passed. Run the gates before proposing.' % ','.join(seats))
 except Exception:
     pass
+# NOTE: no early emit for un-shaped reasons. An added `if reasons and not
+# shaped: print(block)` here was DEAD CODE — the general `if reasons:` below
+# already emits regardless of shape, which is precisely why the loop trigger
+# works on ordinary prose. Seeding the early path out killed no test, and that
+# was the code being wrong, not the test.
 if shaped and not reasons:
     if len(text) > 3500:
         reasons.append('THE DECISION TEST: too long (%d chars) — noise includes LENGTH; a correct but bloated message fails. Cut to what the reader needs to decide.' % len(text))
@@ -7311,6 +7363,106 @@ mod tests {
 
 
     // ---------- Sprint 26: the Stop gate ----------
+
+    /// Build a transcript with `refusals` audit refusals and no checkpoint.
+    fn loop_transcript(dir: &Path, refusals: usize, pad_mb: usize) -> PathBuf {
+        let p = dir.join("t.jsonl");
+        let mut body = String::new();
+        // Optional head padding, to prove the TAIL is what is read.
+        for i in 0..(pad_mb * 1024) {
+            body.push_str(&format!(
+                "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"pad {i} {}\"}}]}}}}\n",
+                "x".repeat(900)
+            ));
+        }
+        for i in 0..refusals {
+            body.push_str(&format!(
+                "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"audit round {i}: REFUSE, one finding\"}}]}}}}\n"
+            ));
+        }
+        body.push_str("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"fixed it, moving on\"}]}}\n");
+        fs::write(&p, body).unwrap();
+        p
+    }
+
+    /// THE TRIGGER THAT WAS MISSING. Every other check in this gate waits for a
+    /// CHECKPOINT marker, and an audit-fix loop never produces one — the
+    /// checkpoint never passes, so it is never written. The gate ran every turn
+    /// through six C8 refusals and correctly found nothing to judge.
+    #[test]
+    fn the_stop_gate_blocks_an_audit_fix_loop_that_never_reaches_a_checkpoint() {
+        let dir = unique_tempdir("stop-loop");
+        let tp = loop_transcript(&dir, 5, 0);
+        let out = run_stop_script(&serde_json::json!({
+            "transcript_path": tp, "stop_hook_active": false
+        }));
+        assert_eq!(Some("block"), out.get("decision").and_then(|d| d.as_str()),
+            "five refusals with no checkpoint must block: {out}");
+        let reason = out["reason"].as_str().unwrap();
+        assert!(reason.contains("AUDIT-FIX LOOP"), "{reason}");
+        assert!(reason.contains("/refactor"), "must name the architect seat: {reason}");
+    }
+
+    /// Ordinary work must pass. A gate that fires on every session is turned
+    /// off by the first person it annoys.
+    #[test]
+    fn the_stop_gate_allows_a_session_with_no_loop() {
+        let dir = unique_tempdir("stop-noloop");
+        let tp = loop_transcript(&dir, 1, 0);
+        let out = run_stop_script(&serde_json::json!({
+            "transcript_path": tp, "stop_hook_active": false
+        }));
+        assert!(out.get("decision").is_none(), "one refusal is not a loop: {out}");
+    }
+
+    /// The anti-wedge valve: a second pass always allows, or the gate can trap
+    /// a session, which is worse than the problem it solves.
+    #[test]
+    fn the_stop_gate_never_blocks_twice() {
+        let dir = unique_tempdir("stop-twice");
+        let tp = loop_transcript(&dir, 9, 0);
+        let out = run_stop_script(&serde_json::json!({
+            "transcript_path": tp, "stop_hook_active": true
+        }));
+        assert!(out.get("decision").is_none(), "second pass must allow: {out}");
+    }
+
+    /// It reads the TAIL, not the file — proven by CONTENT, not by a stopwatch.
+    ///
+    /// The first version of this test asserted an elapsed-time bound, and
+    /// seeding the seek back to the start of the file killed nothing: a few MB
+    /// reads fast either way. So the refusals now sit ONLY in the head, past
+    /// the window. A tail reader cannot see them and must allow; a whole-file
+    /// reader would see them and block. The verdict itself is the measurement.
+    #[test]
+    fn the_stop_gate_reads_only_the_tail() {
+        let dir = unique_tempdir("stop-tail");
+        let p = dir.join("t.jsonl");
+        let mut body = String::new();
+        // Head: the refusals, which a tail read must NOT reach.
+        for i in 0..9 {
+            body.push_str(&format!(
+                "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"round {i}: REFUSE\"}}]}}}}\n"
+            ));
+        }
+        // 4 MB of padding pushes them out of the 1 MiB window.
+        for i in 0..(4 * 1024) {
+            body.push_str(&format!(
+                "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"pad {i} {}\"}}]}}}}\n",
+                "x".repeat(900)
+            ));
+        }
+        fs::write(&p, &body).unwrap();
+        assert!(fs::metadata(&p).unwrap().len() > 3 * 1024 * 1024);
+
+        let out = run_stop_script(&serde_json::json!({
+            "transcript_path": p, "stop_hook_active": false
+        }));
+        assert!(
+            out.get("decision").is_none(),
+            "refusals sit past the window; seeing them proves the whole file was read: {out}"
+        );
+    }
 
     fn run_stop_script(input: &serde_json::Value) -> serde_json::Value {
         let dir = unique_tempdir("stop-gate");
