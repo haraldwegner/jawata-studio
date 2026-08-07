@@ -153,20 +153,43 @@ jobs:
             *windows*)
               # The installers are archives. 7z ships on GitHub's Windows
               # runners; list them and look for the sidecar by name.
-              FOUND=""
+              # PER INSTALLER, not "at least one". The first version appended
+              # matches to a list and passed when the list was merely
+              # NON-EMPTY. Both Windows jobs ship TWO installers (.msi and the
+              # NSIS -setup.exe, both uploaded at the bottom of this file) and
+              # it matched ONE — so the .msi shipped to every user with no
+              # containment assertion whatsoever, and the check printed only
+              # what it found, never what it failed to see. It was true by
+              # luck: the C7 audit downloaded both and confirmed the hook IS
+              # in the MSI File table. Guarded by nothing is not guarded.
+              #
+              # Match jawata[-_]hook: WiX keys a File by an identifier that
+              # cannot contain a hyphen, so the same payload is listed as
+              # `Bin_jawata_hook.exe` in an .msi and `jawata-hook.exe` in the
+              # NSIS archive. A hyphen-only pattern is why one of the two
+              # silently missed.
+              N=0
               for INSTALLER in $(find "$BUNDLE" -name '*.msi' -o -name '*-setup.exe'); do
-                # Same SIGPIPE-under-pipefail hazard as the deb branch: capture
-                # first, match second.
-                if printf '%s' "$(7z l "$INSTALLER" 2>/dev/null)" | grep -i "jawata-hook" >/dev/null; then
-                  FOUND="$FOUND $INSTALLER"
+                # Capture first, match second — the SIGPIPE-under-pipefail
+                # hazard that inverted the deb check on the previous run.
+                if printf '%s' "$(7z l "$INSTALLER" 2>/dev/null)" | grep -Eiq 'jawata[-_]hook'; then
+                  echo "carries the hook: $INSTALLER"
+                else
+                  echo "FAIL: $INSTALLER does not contain the hook sidecar."
+                  7z l "$INSTALLER" 2>&1 | head -40
+                  exit 1
                 fi
+                N=$((N+1))
               done
-              if [ -z "$FOUND" ]; then
-                echo "FAIL: no installer under $BUNDLE contains jawata-hook$EXT."
+              # A floor, because an empty `find` and a genuine pass are
+              # otherwise the same observable: zero iterations of a loop that
+              # never fails is indistinguishable from every installer passing.
+              if [ "$N" -lt 2 ]; then
+                echo "FAIL: expected the .msi AND the NSIS installer; inspected only $N."
                 find "$BUNDLE" -maxdepth 2 -type f | head -20
                 exit 1
               fi
-              echo "installers carrying the hook:$FOUND"
+              echo "inspected $N Windows installers, all carry the hook"
               ;;
             *darwin*)
               # The .app IS the payload — a real directory tree.
@@ -228,6 +251,17 @@ jobs:
           # Repack. --appimage-extract-and-run avoids FUSE on CI runners.
           wget -q "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${APPIMAGETOOL_ARCH}.AppImage" -O /tmp/appimagetool
           chmod +x /tmp/appimagetool
+          # Assert on the tree about to be packed. The AppImage is the PRIMARY
+          # Linux download (install.sh resolves /releases/latest) and was the
+          # one shipped artifact nothing inspected — the containment check
+          # reads only the .deb, and this repack is the step most able to lose
+          # the sidecar, since it extracts and rebuilds the payload.
+          if [ ! -x squashfs-root/usr/bin/jawata-hook ] || [ ! -x squashfs-root/usr/bin/jawata-studio ]; then
+            echo "FAIL: the AppImage payload has no hook beside the executable"
+            find squashfs-root/usr/bin -maxdepth 1
+            exit 1
+          fi
+          echo "AppImage payload adjacency OK: jawata-hook beside jawata-studio"
           /tmp/appimagetool --appimage-extract-and-run squashfs-root "$APP_IMAGE"
           rm -rf squashfs-root /tmp/appimagetool
           popd
@@ -284,7 +318,7 @@ jobs:
           body: 'See the assets to download this version and install.'
           draft: true
           prerelease: false
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
           files: |
             src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/release/bundle/deb/*.deb
