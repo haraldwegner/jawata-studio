@@ -8530,6 +8530,71 @@ mod tests {
     }
 
     #[test]
+    fn an_install_from_a_previous_generation_converges_to_one_entry_per_event() {
+        // C6 exit clause 1, end to end. A user upgrading from the .sh
+        // generation has entries we no longer write. If they are not recognised
+        // they are kept as the user's own, and BOTH the retired script and the
+        // new managed entry fire on every event — twice the work, two answers,
+        // and no signal that it is happening.
+        let dir = unique_tempdir("gen-converge");
+        let settings = dir.join("settings.json");
+        let settings_path = settings.to_string_lossy().to_string();
+        let hooks_dir = dir.join("hooks");
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+
+        // An install as it looks BEFORE this sprint: our generation-2 entries,
+        // plus two hooks the user wrote themselves.
+        std::fs::write(&settings, serde_json::json!({
+            "hooks": {
+                "SessionStart": [
+                    { "hooks": [ { "type": "command",
+                        "command": "/home/u/.claude/jawata-studio/sessionstart-primer.sh" } ] },
+                    { "hooks": [ { "type": "command", "command": "/home/u/bin/my-own-primer.sh" } ] }
+                ],
+                "UserPromptSubmit": [
+                    { "hooks": [ { "type": "command",
+                        "command": "/home/u/.claude/jawata-studio/userpromptsubmit-recall.sh" } ] }
+                ]
+            }
+        }).to_string()).unwrap();
+
+        // The deploy writes the script at the path it is GIVEN, and in
+        // production that path carries the sentinel. Passing an arbitrary name
+        // here produced an entry matching no generation at all — a fixture
+        // wrong in the direction that makes the test fail loudly, which is the
+        // safe direction, but worth naming: this test only means something
+        // while these paths are the ones the product deploys.
+        let managed = dir.join("jawata-studio");
+        std::fs::create_dir_all(&managed).unwrap();
+        write_managed_primer(&settings_path, &managed.join("sessionstart-primer.sh"),
+            "http://u/mcp", "t", false, false).unwrap();
+        write_managed_userprompt(&settings_path, &managed.join("userpromptsubmit-recall.sh"),
+            "http://u/mcp", "t", false, false).unwrap();
+
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+
+        let count_managed = |event: &str, binary: &str| -> usize {
+            after["hooks"][event].as_array().map(|a| {
+                a.iter().filter(|e| entry_is_managed_any_generation(e, binary)).count()
+            }).unwrap_or(0)
+        };
+        assert_eq!(1, count_managed("SessionStart", "jawata-hook-primer"),
+            "exactly ONE managed primer entry must survive the upgrade: {after}");
+        assert_eq!(1, count_managed("UserPromptSubmit", "jawata-hook-userprompt"),
+            "exactly ONE managed userprompt entry must survive: {after}");
+
+        // And the user's own hook is untouched — the failure that costs them.
+        let session = after["hooks"]["SessionStart"].as_array().unwrap();
+        assert!(
+            session.iter().any(|e| e["hooks"][0]["command"] == "/home/u/bin/my-own-primer.sh"),
+            "the user's own SessionStart hook was removed by the migration: {after}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn every_generation_of_a_managed_hook_is_recognised_as_ours() {
         // Sprint 28 C6 exit clause 1, at the unit the migration turns on.
         // legacy_sentinel covered ONE prior generation. Stage 6 renames the
