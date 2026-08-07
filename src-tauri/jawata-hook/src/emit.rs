@@ -16,6 +16,10 @@ pub enum Emission {
     Context { event: &'static str, body: String },
     /// A permission decision from the guard.
     Permission { allowed: bool, reason: String },
+    /// The stop gate's answer. A third dialect: Claude's Stop hook takes
+    /// `{"decision":"block","reason":…}` and feeds `reason` back to the model,
+    /// which is why the reason must say what to DO, not merely what is wrong.
+    StopDecision { reason: String },
     /// Deliberately nothing — and the caller knows why.
     Silent,
 }
@@ -38,6 +42,14 @@ pub fn render(client: Client, emission: &Emission) -> Option<String> {
             // Cursor's own shape: no hookSpecificOutput wrapper, no event echo.
             Client::Cursor => serde_json::json!({ "additional_context": body }).to_string(),
         }),
+        Emission::StopDecision { reason } => match client {
+            Client::ClaudeCode => Some(
+                serde_json::json!({ "decision": "block", "reason": reason }).to_string(),
+            ),
+            // Cursor has no Stop event at all (roles::spec reports it Absent),
+            // so there is nothing to say rather than something to say quietly.
+            Client::Cursor => None,
+        },
         Emission::Permission { allowed, reason } => Some(match client {
             Client::ClaudeCode => serde_json::json!({
                 "hookSpecificOutput": {

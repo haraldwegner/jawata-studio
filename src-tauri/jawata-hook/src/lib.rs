@@ -18,6 +18,7 @@ pub mod query;
 pub mod roles;
 pub mod safety;
 pub mod silence;
+pub mod stop;
 
 use safety::{Outcome, SilenceReason};
 

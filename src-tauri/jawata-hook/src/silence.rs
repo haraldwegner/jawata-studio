@@ -54,6 +54,8 @@ pub fn tag(reason: &SilenceReason) -> &'static str {
         SilenceReason::StoreHadNothing => "store-had-nothing",
         SilenceReason::QueryFailed(_) => "query-failed",
         SilenceReason::CannotInject => "cannot-inject",
+        SilenceReason::NoTranscript => "no-transcript",
+        SilenceReason::AutonomyUnknown => "autonomy-unknown",
         SilenceReason::Panicked(_) => "panicked",
     }
 }

@@ -50,7 +50,8 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
         Role::Guard => guard(client, payload),
         Role::Primer => primer(client, store),
         Role::UserPrompt | Role::ToolRecall => recall(role, client, payload, store),
-        Role::Observer | Role::Stop => Outcome::Silent(SilenceReason::CannotInject),
+        Role::Stop => stop_gate(client, payload),
+        Role::Observer => Outcome::Silent(SilenceReason::CannotInject),
     }
 }
 
@@ -217,6 +218,54 @@ fn extract_prompt(payload: &str) -> Result<String, SilenceReason> {
         "the payload carried no `prompt` and no recognised tool input — the event shape moved"
             .into(),
     ))
+}
+
+
+/// The stop gate. Reads the transcript the HARNESS wrote — never a marker the
+/// agent writes, because skipping such a write would be passing the gate.
+///
+/// Fails OPEN on every unreadable condition (no payload, no path, no file),
+/// but RECORDS which one: the previous generation of this hook failed open
+/// silently, and a silent fail-open is indistinguishable from a pass.
+fn stop_gate(client: Client, payload: &str) -> Outcome {
+    use crate::stop::{self, Autonomy, StopFacts, StopVerdict};
+
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) else {
+        return Outcome::Silent(SilenceReason::PayloadUnreadable(
+            "stop payload is not JSON".to_string(),
+        ));
+    };
+    let already_bounced = v
+        .get("stop_hook_active")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let Some(path) = v.get("transcript_path").and_then(|p| p.as_str()) else {
+        return Outcome::Silent(SilenceReason::NoTranscript);
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Outcome::Silent(SilenceReason::NoTranscript);
+    };
+    let turn = match stop::read_turn(&text) {
+        Ok(t) => t,
+        Err(reason) => return Outcome::Silent(reason),
+    };
+
+    // RULE B's honest position. Nothing readable here says whether the human
+    // granted autonomy, so the gate does not pretend to know. `Unknown` makes
+    // judge() allow — and the reason is written to the silence log, which is
+    // what makes "not enforced on this run" a fact you can grep for rather
+    // than an assumption.
+    let autonomy = Autonomy::Unknown;
+
+    match stop::judge(&StopFacts { already_bounced, turn, autonomy }) {
+        StopVerdict::Block { reason } => {
+            match crate::emit::render(client, &crate::emit::Emission::StopDecision { reason }) {
+                Some(rendered) => Outcome::Emitted(rendered),
+                None => Outcome::Silent(SilenceReason::CannotInject),
+            }
+        }
+        StopVerdict::Allow => Outcome::Silent(SilenceReason::AutonomyUnknown),
+    }
 }
 
 #[cfg(test)]
@@ -396,4 +445,88 @@ mod tests {
             }
         }
     }
+
+        use crate::stop::{Autonomy, StopFacts, StopVerdict, Turn, ToolUse};
+
+    /// THE WIRE TEST. Seeding `Role::Stop => stop_gate(...)` back to
+    /// `CannotInject` left all eleven suites green — the gate was HOLLOW, the
+    /// very shape this sprint exists to catch, one hour after building the
+    /// detector for it. Every assertion below goes through `run`, so the arm
+    /// in the match is load-bearing.
+    fn transcript(body: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("jawata-stopwire-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        let p = d.join(format!("t-{}.jsonl", body.len()));
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+
+    #[test]
+    fn stop_reaches_the_gate_through_run() {
+        // A turn with no communicator and nothing armed. Autonomy is Unknown in
+        // production today, so the honest outcome is the RECORDED reason — not
+        // a block, and not the inherited CannotInject the hollow arm produced.
+        let p = transcript(
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n",
+        );
+        let payload = format!(
+            "{{\"transcript_path\":\"{}\",\"stop_hook_active\":false}}",
+            p.display()
+        );
+        let out = run(Role::Stop, &config("claude-code"), &payload, &Stub(Ok(Answer::Nothing)));
+        assert_eq!(
+            Outcome::Silent(SilenceReason::AutonomyUnknown),
+            out,
+            "Stop must reach the gate and record why it did not enforce"
+        );
+    }
+
+    #[test]
+    fn a_stop_payload_without_a_transcript_names_itself_through_run() {
+        let out = run(Role::Stop, &config("claude-code"), "{}", &Stub(Ok(Answer::Nothing)));
+        assert_eq!(Outcome::Silent(SilenceReason::NoTranscript), out);
+    }
+
+    /// The gate's blocking path renders the third dialect. Driven at the
+    /// judge+emit seam because production cannot yet produce `Granted`.
+    #[test]
+    fn a_block_renders_claudes_stop_dialect() {
+        let facts = StopFacts {
+            already_bounced: false,
+            turn: Turn { final_text: "summary".into(), launches: vec![] },
+            autonomy: Autonomy::Granted,
+        };
+        let StopVerdict::Block { reason } = crate::stop::judge(&facts) else {
+            panic!("must block");
+        };
+        let rendered = crate::emit::render(
+            crate::roles::Client::ClaudeCode,
+            &crate::emit::Emission::StopDecision { reason },
+        )
+        .expect("claude renders a stop decision");
+        let v: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+        assert_eq!("block", v["decision"], "got {rendered}");
+        assert!(v["reason"].as_str().unwrap().contains("communicator"));
+    }
+
+    /// Cursor has no Stop event, so the dialect must render to nothing at all
+    /// rather than to an empty object a client could read as a decision.
+    #[test]
+    fn cursor_renders_no_stop_decision() {
+        assert_eq!(
+            None,
+            crate::emit::render(
+                crate::roles::Client::Cursor,
+                &crate::emit::Emission::StopDecision { reason: "x".into() }
+            )
+        );
+    }
+
+    #[test]
+    fn the_communicator_never_counts_as_armed_work() {
+        let c = ToolUse { name: "Agent".into(), subagent: Some("communicator".into()), backgrounded: false };
+        assert!(!c.arms_work(), "else the two rules cancel each other out");
+    }
+
 }

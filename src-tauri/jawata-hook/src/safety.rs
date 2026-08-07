@@ -58,6 +58,13 @@ pub enum SilenceReason {
     QueryFailed(String),
     /// This role cannot inject on this client (Cursor's prompt hook).
     CannotInject,
+    /// The stop gate had no transcript to read. Fail-open, but RECORDED —
+    /// the previous generation failed open silently.
+    NoTranscript,
+    /// The stop gate declined to judge because autonomy is unobservable. This
+    /// is Rule B's honest record: grep the silence log for `autonomy-unknown`
+    /// to see every run where it was NOT enforced.
+    AutonomyUnknown,
     /// The body panicked. Recorded, never propagated.
     Panicked(String),
 }
