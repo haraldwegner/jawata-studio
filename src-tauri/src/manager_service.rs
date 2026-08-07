@@ -2226,14 +2226,31 @@ impl ManagerService {
                     // deliberately distinct from a deploy that FAILED: a
                     // present-but-unwritable binary is an error, a missing one
                     // is not yet shipped.
-                    if let Some(source) = hook_binary_source() {
-                        match deploy_hook_binaries(&source, hooks_dir, HOOK_ROLES) {
+                    match hook_binary_source() {
+                        Some(source) => match deploy_hook_binaries(&source, hooks_dir, HOOK_ROLES) {
                             Ok(written) if !written.is_empty() => {
                                 changed_sections.push("hook_binaries".into())
                             }
                             Ok(_) => {}
                             Err(error) => errors.push(error),
-                        }
+                        },
+                        // C7 audit, F6 — the affordance that HID F1. A bare
+                        // `if let Some(...)` swallowed the miss entirely: on a
+                        // shipped .deb whose bake step had moved the executable
+                        // away from the sidecar, the deploy skipped every hook
+                        // binary and reported success. "Not shipped yet" and
+                        // "shipped but unreachable" looked identical, and only
+                        // one of them is normal.
+                        //
+                        // An INSTALLED build that cannot find its own sidecar is
+                        // a defect and says so. A dev build without one is not.
+                        None if running_from_an_installed_build() => errors.push(
+                            "the hook binary is not beside this executable — the install is \
+                             missing its sidecar, so NO hooks were deployed. Reinstall, or \
+                             report this: it means the package was built wrong."
+                                .to_string(),
+                        ),
+                        None => {}
                     }
                 }
             }
@@ -5525,15 +5542,44 @@ fn is_managed_recall_entry(entry: &serde_json::Value) -> bool {
 /// answer today — the scripts still deploy — and deliberately distinct from a
 /// deploy that failed: a present-but-unwritable binary is an error, a missing
 /// one is simply not shipped yet.
+/// The places a sidecar may be, beside a given executable directory.
+///
+/// Split out so a test can assert the list against the name `tauri.conf.json`
+/// actually ships (C7 audit, F3) — the previous binding was a tautology that
+/// could not fail.
+fn hook_source_candidates(exe_dir: &Path) -> Vec<PathBuf> {
+    vec![exe_dir.join("jawata-hook"), exe_dir.join("jawata-hook.exe")]
+}
+
 fn hook_binary_source() -> Option<PathBuf> {
     let beside_app = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from));
-    let candidates = [
-        beside_app.as_ref().map(|d| d.join("jawata-hook")),
-        beside_app.as_ref().map(|d| d.join("jawata-hook.exe")),
-        Some(PathBuf::from("src-tauri/target/release/jawata-hook")),
-        Some(PathBuf::from("src-tauri/target/debug/jawata-hook")),
-    ];
-    candidates.into_iter().flatten().find(|p| p.exists())
+    let mut candidates: Vec<PathBuf> = beside_app
+        .as_ref()
+        .map(|d| hook_source_candidates(d))
+        .unwrap_or_default();
+    // Dev fallbacks, relative to the repo root.
+    candidates.push(PathBuf::from("src-tauri/target/release/jawata-hook"));
+    candidates.push(PathBuf::from("src-tauri/target/debug/jawata-hook"));
+    candidates.into_iter().find(|p| p.exists())
+}
+
+/// Whether this is an installed build rather than a dev run.
+///
+/// C7 audit F6: the distinction the deploy needs in order to tell "the sidecar
+/// is not shipped yet" from "the sidecar is shipped and unreachable". A dev
+/// `cargo run` legitimately has no sidecar; an install that lacks one is
+/// broken, and before this the two were the same silent branch.
+fn running_from_an_installed_build() -> bool {
+    std::env::current_exe()
+        .ok()
+        .map(|exe| {
+            let p = exe.to_string_lossy().to_string();
+            // A dev binary lives under target/{debug,release}; anything else
+            // that got this far is an install.
+            !p.contains("/target/debug/") && !p.contains("/target/release/")
+                && !p.contains("\\target\\debug\\") && !p.contains("\\target\\release\\")
+        })
+        .unwrap_or(false)
 }
 
 /// The six role names the deploy writes, dispatched by `argv[0]`.
@@ -8843,34 +8889,38 @@ mod tests {
     }
 
     #[test]
-    fn the_resolver_looks_where_the_bundle_actually_puts_the_hook() {
-        // Sprint 28 Stage 7. Tauri's externalBin STRIPS the target-triple
-        // suffix when it places the sidecar: `binaries/jawata-hook-<triple>`
-        // ships as plain `jawata-hook` beside the app executable. Verified on a
-        // real .deb built from this tree —
-        //   usr/bin/jawata-hook
-        //   usr/bin/jawata-studio
-        // — same directory, which is exactly what hook_binary_source() checks
-        // first. Asserted here rather than left as an observation, because the
-        // packaging and the resolver are in different files and nothing else
-        // connects them: get the name or the location wrong and the studio
-        // deploys no hooks at all, silently, on an installed build only.
-        let dir = unique_tempdir("resolver-shape");
-        let app = dir.join("jawata-studio");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(&app, "app").unwrap();
-        let sidecar = dir.join("jawata-hook");
-        std::fs::write(&sidecar, "hook").unwrap();
+    fn the_resolver_looks_for_the_name_tauri_conf_actually_ships() {
+        // C7 audit F3. The previous version of this test was a TAUTOLOGY: it
+        // wrote a file it named itself and asserted the file had that name —
+        // `dir.join("jawata-hook").file_name() == "jawata-hook"` is true for
+        // every dir. It never called hook_binary_source(), never read
+        // tauri.conf.json, and the name was an independent literal on both
+        // sides, so renaming either one left it green. Its comment claimed "a
+        // rename on either side breaks this"; no rename could.
+        //
+        // This reads the SHIPPED name out of tauri.conf.json — Tauri strips the
+        // target-triple suffix when it places an externalBin, so
+        // "binaries/jawata-hook" ships as "jawata-hook" beside the executable —
+        // and asserts the resolver looks for exactly that.
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json"))
+                .expect("tauri.conf.json must parse");
+        let external = conf["bundle"]["externalBin"]
+            .as_array()
+            .expect("bundle.externalBin — Stage 7 declares the sidecar here")
+            .first()
+            .and_then(|v| v.as_str())
+            .expect("at least one externalBin entry");
+        let shipped_name = external.rsplit('/').next().unwrap_or(external);
 
-        // The resolver's first two candidates are <exe dir>/jawata-hook and
-        // <exe dir>/jawata-hook.exe. Assert the NAME the bundle produces is one
-        // of them; a rename on either side breaks this.
+        let exe_dir = std::path::Path::new("/opt/app");
+        let candidates = hook_source_candidates(exe_dir);
         assert!(
-            sidecar.exists() && sidecar.file_name().unwrap() == "jawata-hook",
-            "the bundle places the sidecar as `jawata-hook` beside the app; the resolver \
-             must look for exactly that name in exactly that directory"
+            candidates.iter().any(|c| c == &exe_dir.join(shipped_name)),
+            "tauri.conf.json ships the sidecar as {shipped_name:?}, but the resolver's \
+             candidates beside the executable are {candidates:?} — the studio would find no \
+             hook on an installed build and deploy none"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

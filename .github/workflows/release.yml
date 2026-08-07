@@ -191,6 +191,13 @@ jobs:
           dpkg-deb -R "$DEB" /tmp/deb-extract
           mkdir -p /tmp/deb-extract/usr/lib/jawata-studio
           mv /tmp/deb-extract/usr/bin/jawata-studio /tmp/deb-extract/usr/lib/jawata-studio/jawata-studio
+          # Sprint 28 (C7 audit, F1): THE SIDECAR MOVES WITH THE EXECUTABLE.
+          # Relocating the binary and leaving the hook in /usr/bin breaks the
+          # adjacency the studio resolves by: current_exe() follows the wrapper's
+          # exec to /usr/lib/jawata-studio/, finds no jawata-hook beside it, and
+          # the deploy skips the hook binaries with NO error — a shipped install
+          # with no hooks that reports success. Reproduced from the real .deb.
+          mv /tmp/deb-extract/usr/bin/jawata-hook /tmp/deb-extract/usr/lib/jawata-studio/jawata-hook
           # Wrapper at /usr/bin/jawata-studio: sets the env-var,
           # then execs the real binary. Covers BOTH shell launches
           # and GNOME/KDE app-menu launches (which exec via PATH).
@@ -202,6 +209,19 @@ jobs:
             'exec /usr/lib/jawata-studio/jawata-studio "$@"' \
             > /tmp/deb-extract/usr/bin/jawata-studio
           chmod +x /tmp/deb-extract/usr/bin/jawata-studio
+          # ADJACENCY ASSERTED AFTER THE BAKE, not before it. The earlier
+          # "bundle must contain the hook" step ran before this one and verified
+          # an adjacency this step then dismantled — which is exactly how F1
+          # survived a check that was looking straight at it.
+          REAL_DIR=/tmp/deb-extract/usr/lib/jawata-studio
+          if [ ! -x "$REAL_DIR/jawata-hook" ] || [ ! -x "$REAL_DIR/jawata-studio" ]; then
+            echo "FAIL: after the bake, the hook is not beside the real executable."
+            echo "The studio resolves the hook relative to current_exe(); without this"
+            echo "adjacency it deploys no hooks and reports success."
+            find /tmp/deb-extract/usr -maxdepth 3 -type f | head -20
+            exit 1
+          fi
+          echo "post-bake adjacency OK: $(ls "$REAL_DIR")"
           dpkg-deb -b /tmp/deb-extract "$DEB"
           rm -rf /tmp/deb-extract
           popd
