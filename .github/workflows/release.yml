@@ -40,6 +40,16 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
+      # Sprint 28 (D-UNWIRED), the Rust half of the same gate jawata-mcp runs
+      # on its release: an item the compiler calls dead without cfg(test) but
+      # not with it is used exclusively by test code. Fails on anything not in
+      # build/unwired-baseline.txt. Linux only — the answer is a property of
+      # the source, identical on every target, so paying for it three times
+      # buys nothing.
+      - name: Hollow-wiring gate (test-only items)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: ./build/unwired-gate.sh
+
       # Sprint 14 (v0.14.0, bugs.md #1 full fix): tauri-action builds
       # the bundles but does NOT upload them yet (tagName omitted on
       # purpose). The Linux-only step below post-processes the AppImage

@@ -1,5 +1,3 @@
-src/conductor.rs|constant `CONDUCTOR_SECTION_BUDGET_INTELLIJ` is never used
-src/conductor.rs|constant `CONDUCTOR_SECTION_BUDGET_UNIVERSAL` is never used
 src/gateway.rs|field `workspace_name` is never read
 src/manager_service.rs|constant `JAWATA_STOP_SENTINEL` is never used
 src/runner.rs|associated function `from_config_dir` is never used

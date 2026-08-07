@@ -25,6 +25,15 @@ use std::thread::{self, JoinHandle};
 /// One routable resident: a workspace's JVM endpoint + the projects it owns.
 #[derive(Debug, Clone)]
 pub struct GatewayRoute {
+    /// The workspace this route belongs to. Production POPULATES it and never
+    /// reads it — forwarding needs only `url` and `token` — so Sprint 28's
+    /// hollow-wiring audit flags it, correctly, and it stays in the baseline
+    /// rather than being fake-resolved. Deliberate: it is the route's identity,
+    /// and the routing tests assert on it because "routed to alpha" is what
+    /// they actually mean. Deleting it would force those assertions onto `url`
+    /// and make them less readable; adding a log line purely so something reads
+    /// it would be inventing behaviour to satisfy a lint. It becomes genuinely
+    /// live the day the gateway reports where it sent a call.
     pub workspace_name: String,
     /// Full resident MCP URL, e.g. `http://127.0.0.1:8800/mcp`.
     pub url: String,

@@ -376,7 +376,17 @@ pub fn render_antigravity_utility(command: &str, description: &str) -> String {
 
 /// Line budgets for the rule-block conductor section (the R2 guard — the
 /// numbers are FIXED in dossier-25a C0; the build-failing test pins them).
+///
+/// Sprint 28 Stage 4 (D-UNWIRED): `#[cfg(test)]` because that is the truth.
+/// Nothing in the shipped binary reads these — the render path does not
+/// enforce a budget at runtime, the guard test does, by measuring what
+/// `render_conductor_section` produced. They were public production constants
+/// whose only consumers were assertions, which is the shape this sprint
+/// exists to stop; scoping them to the test build says so in the type system
+/// instead of in a comment.
+#[cfg(test)]
 pub const CONDUCTOR_SECTION_BUDGET_UNIVERSAL: usize = 30;
+#[cfg(test)]
 pub const CONDUCTOR_SECTION_BUDGET_INTELLIJ: usize = 60;
 
 /// The rule-block conductor section (Sprint 25a D2): the universal tight
