@@ -23,6 +23,8 @@
 //! the client will choke on. The fail-safe boundary (Stage 5) is the single
 //! place that guarantees it.
 
+mod cue;
+
 fn main() {
     // Stage 5 lands cue/query/emit/roles and the fail-safe boundary behind
     // this entry point. Until then the binary exists, compiles, and does the

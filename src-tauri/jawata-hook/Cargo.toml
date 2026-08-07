@@ -27,5 +27,10 @@ serde_json = "1.0.149"
 reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 dirs = "6.0.0"
 
-[profile.release]
-panic = "unwind"
+# NO [profile] here on purpose. Cargo IGNORES profiles declared by a non-root
+# workspace member and says so ("profiles for the non root package will be
+# ignored"). A `panic = "unwind"` pinned in this file would therefore be dead
+# configuration that READS like the guarantee the fail-safe boundary depends
+# on — the exact shape this sprint exists to remove. The setting lives in the
+# workspace root, src-tauri/Cargo.toml, and Stage 5's test asserts the
+# EFFECTIVE value at runtime rather than the presence of a line in a file.
