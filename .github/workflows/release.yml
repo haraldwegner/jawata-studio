@@ -168,12 +168,26 @@ jobs:
               # `Bin_jawata_hook.exe` in an .msi and `jawata-hook.exe` in the
               # NSIS archive. A hyphen-only pattern is why one of the two
               # silently missed.
-              N=0
+              N=0; SAW_MSI=0; SAW_NSIS=0
               for INSTALLER in $(find "$BUNDLE" -name '*.msi' -o -name '*-setup.exe'); do
                 # Capture first, match second — the SIGPIPE-under-pipefail
                 # hazard that inverted the deb check on the previous run.
-                if printf '%s' "$(7z l "$INSTALLER" 2>/dev/null)" | grep -Eiq 'jawata[-_]hook'; then
-                  echo "carries the hook: $INSTALLER"
+                #
+                # The grep runs over `7z l` LISTING OUTPUT — names and
+                # metadata — and that is what makes the pattern sound. Do NOT
+                # "simplify" this to grep over the installer BYTES: the NSIS
+                # payload carries 40 ASCII `jawata[-_]hook` occurrences and the
+                # DMG 329, every one a string constant compiled into the
+                # binaries (jawata-hook-primer, jawata-hook/src/cue.rs, ...).
+                # Byte-matching would make this assertion a tautology that can
+                # never fail.
+                MATCH=$(printf '%s' "$(7z l "$INSTALLER" 2>/dev/null)" | grep -Ei 'jawata[-_]hook' | head -1)
+                if [ -n "$MATCH" ]; then
+                  # Print the MATCHED ENTRY, not merely the path: a pass that
+                  # shows only what was searched cannot be told apart from a
+                  # pass that found nothing, which was the original complaint.
+                  echo "carries the hook: $INSTALLER  <- $MATCH"
+                  case "$INSTALLER" in *.msi) SAW_MSI=1 ;; *-setup.exe) SAW_NSIS=1 ;; esac
                 else
                   echo "FAIL: $INSTALLER does not contain the hook sidecar."
                   7z l "$INSTALLER" 2>&1 | head -40
@@ -184,12 +198,14 @@ jobs:
               # A floor, because an empty `find` and a genuine pass are
               # otherwise the same observable: zero iterations of a loop that
               # never fails is indistinguishable from every installer passing.
-              if [ "$N" -lt 2 ]; then
-                echo "FAIL: expected the .msi AND the NSIS installer; inspected only $N."
+              # Per KIND, not a count: `N -ge 2` was satisfied by two .msi and
+              # zero NSIS, which is not what the sentence above it claimed.
+              if [ "$SAW_MSI" -ne 1 ] || [ "$SAW_NSIS" -ne 1 ]; then
+                echo "FAIL: need BOTH installers verified (msi=$SAW_MSI nsis=$SAW_NSIS, inspected $N)."
                 find "$BUNDLE" -maxdepth 2 -type f | head -20
                 exit 1
               fi
-              echo "inspected $N Windows installers, all carry the hook"
+              echo "inspected $N Windows installers (msi + nsis), all carry the hook"
               ;;
             *darwin*)
               # The .app IS the payload — a real directory tree.
@@ -318,7 +334,15 @@ jobs:
           body: 'See the assets to download this version and install.'
           draft: true
           prerelease: false
-          fail_on_unmatched_files: true
+          # DELIBERATELY false. The `files:` list above passes all five globs on
+          # EVERY platform while each platform produces only a subset, and the
+          # action throws once per unmatched pattern — so `true` fails all five
+          # jobs on the next tag, uploads nothing, and leaves /releases/latest
+          # pointing at the old version. Flipped to `true` in a61b542 as a
+          # "safe tightening"; it was never executed, because this step is
+          # tag-gated and every run since has been a workflow_dispatch. A
+          # tightening that cannot run is not safe — it is untested.
+          fail_on_unmatched_files: false
           files: |
             src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/release/bundle/deb/*.deb
