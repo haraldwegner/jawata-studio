@@ -39,6 +39,14 @@ zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
 # `hook -> jawata_studio_lib` are COMPILE ERRORS, asserted by the build.
 [workspace]
 members = ["jawata-hook"]
+# default-members is NOT optional here. Without it, `cargo build` and
+# `cargo test` — the commands CONTRIBUTING.md and the PR template tell people
+# to run — build ONLY jawata-studio: the hook crate is never compiled, its 76
+# tests never run, and a PR that breaks the payload parser is green with the
+# test that would have caught it sitting uncompiled. Found by the C5 audit,
+# which also refuted the design doc's claim that "a workspace member is driven
+# by cargo test exactly as a module is".
+default-members = [".", "jawata-hook"]
 
 # panic = "unwind" is load-bearing, not a default worth inheriting silently: the
 # fail-safe boundary catches a panicking role and still exits 0. Under

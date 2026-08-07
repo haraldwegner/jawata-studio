@@ -14,6 +14,10 @@ description = "The JAWATA client hook: one binary, every event, every platform."
 license = "AGPL-3.0-only"
 edition = "2021"
 
+[lib]
+name = "jawata_hook"
+path = "src/lib.rs"
+
 [[bin]]
 name = "jawata-hook"
 path = "src/main.rs"
@@ -25,7 +29,6 @@ serde_json = "1.0.149"
 # to find. A hook that has to boot tokio to ask one question has already spent
 # its budget.
 reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-dirs = "6.0.0"
 
 # NO [profile] here on purpose. Cargo IGNORES profiles declared by a non-root
 # workspace member and says so ("profiles for the non root package will be

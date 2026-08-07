@@ -40,12 +40,11 @@ deadcode() {   # deadcode <outfile> <package> [extra cargo args...]
     # emits no lints, and an empty warning set would read as "clean".
     case "$pkg" in
         jawata-studio) touch src/lib.rs ;;
-        jawata-hook)   touch jawata-hook/src/main.rs ;;
+        jawata-hook)   touch jawata-hook/src/lib.rs ;;
     esac
-    # --lib for the library crate, --bin for the hook (it has no lib target;
-    # asking for --lib there silently measures nothing).
+    # Both crates have a lib target now (the hook gained one so integration
+    # tests can drive its modules), so --lib is right for both.
     local target="--lib"
-    [ "$pkg" = "jawata-hook" ] && target="--bin jawata-hook"
     # shellcheck disable=SC2086
     cargo rustc -p "$pkg" $target --message-format=short "$@" -- --force-warn dead_code \
         > "$WORK/raw.txt" 2>&1

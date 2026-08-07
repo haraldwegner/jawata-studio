@@ -245,17 +245,28 @@ mod tests {
     }
 
     #[test]
-    fn the_release_profile_unwinds_because_catch_unwind_depends_on_it() {
+    fn a_panicking_body_never_escapes_the_boundary() {
         // panic = "abort" would disarm every catch_unwind above WITHOUT any
         // test failing — the process would simply die non-zero, which is the
         // one thing the boundary exists to prevent. Asserted at runtime rather
         // than by grepping a Cargo.toml, because the EFFECTIVE setting is what
         // matters and a member crate's [profile] is silently ignored anyway.
-        let unwound = run_guarded(|| panic!("probe")) != Outcome::Emitted(String::new());
-        assert!(unwound, "unreachable under abort — the process would have died here");
+        // THE ASSERTION THAT USED TO LIVE HERE WAS VACUOUS, and the C5 audit
+        // proved it with a control: cfg!(panic = "unwind") reads the TEST
+        // profile, and Cargo IGNORES `panic` for test/bench profiles — an
+        // isolated crate declaring panic = "abort" passed the identical
+        // assertion under both `cargo test` and `cargo test --release`. It
+        // could not fail, which made it worse than no test: it read as the
+        // guarantee catch_unwind depends on.
+        //
+        // The real check asks rustc for the effective cfg of the RELEASE
+        // profile — the one that ships — and lives in
+        // tests/fail_safe_boundary.rs, where it can spawn a subprocess.
+        // What stays here is the behaviour, which IS falsifiable in-process:
+        // a panicking body must produce a Panicked outcome, not an escape.
         assert!(
-            cfg!(panic = "unwind"),
-            "panic strategy is not unwind; catch_unwind is disarmed and the boundary is a lie"
+            matches!(run_guarded(|| panic!("probe")), Outcome::Silent(SilenceReason::Panicked(_))),
+            "a panic escaped the boundary"
         );
     }
 
