@@ -239,6 +239,19 @@ Stages sequential; STOP at every checkpoint with the summary format; every numbe
 annotated expected-vs-actual; never advance after a failure and never deviate from the
 plan without the user's decision; commits per checkpoint; push/tag/release only on the
 user's explicit word; update the plan file when a user-approved change lands.
+
+**AUTOCONTINUE is an instruction, not a scheduler — mind the turn boundary**
+(Harald 2026-08-07, Sprint 28: the sprint halted silently at a checkpoint
+summary and resumed only because an unrelated command woke the session). The
+agent runs only while a turn is active; a turn is started only by user input or
+by a background job's completion. Therefore, when the user has granted
+autocontinue: a checkpoint summary is MID-TURN text, never a turn's end; the
+STOP-at-checkpoint rule above is REPLACED by summarize-and-continue; and a turn
+may end only (a) genuinely blocked on the user's decision or (b) with a
+background job RUNNING whose completion re-invokes the agent. Before ending any
+turn, verify which of the two holds — if neither and stages remain, keep
+working. Writing "work continues" while nothing is armed to wake the session is
+describing machinery that does not exist.
 **Every release in a plan is followed by a PLANNED dogfood-in-anger + re-release
 stage** (Harald 2026-07-13, Sprint 24 GATE 2: "I cannot imagine that we don't have
 fixes here" — the record agrees: v2.7.1/v2.8.1/v2.9.1–.2 were all dogfood patches):
