@@ -8616,6 +8616,68 @@ mod tests {
     }
 
     #[test]
+    fn deploy_undeploy_deploy_is_byte_stable() {
+        // C6 exit clause 2. A cycle that does not return to the same bytes
+        // leaves residue — an orphaned key, a reordered array, a stale entry —
+        // and residue is what the next migration has to guess about. Compared
+        // as BYTES rather than as parsed JSON, because key order and formatting
+        // are part of what a user diffing their settings.json sees.
+        let dir = unique_tempdir("byte-stable");
+        let settings = dir.join("settings.json");
+        let settings_path = settings.to_string_lossy().to_string();
+        let managed = dir.join("jawata-studio");
+        std::fs::create_dir_all(&managed).unwrap();
+
+        // A user's own hook is present throughout: the cycle must preserve it
+        // exactly, not merely leave something equivalent.
+        std::fs::write(&settings, serde_json::json!({
+            "hooks": {
+                "SessionStart": [
+                    { "hooks": [ { "type": "command", "command": "/home/u/bin/mine.sh" } ] }
+                ]
+            }
+        }).to_string()).unwrap();
+        let primer = managed.join("sessionstart-primer.sh");
+        let deploy = || {
+            write_managed_primer(&settings_path, &primer, "http://u/mcp", "t", false, false).unwrap()
+        };
+        let undeploy = || remove_managed_primer(&settings_path, &primer, false).unwrap();
+        let read = || std::fs::read_to_string(&settings).unwrap();
+
+        // The baseline is the file after ONE FULL CYCLE, not the hand-written
+        // one. The product pretty-prints settings.json — correctly, since users
+        // read and edit it — so comparing against compact input measures
+        // FORMATTING, not residue. The first version of this test failed for
+        // exactly that reason, and the fix belongs in the baseline rather than
+        // in the writer.
+        deploy();
+        let after_first = read();
+        undeploy();
+        let settled = read();
+
+        deploy();
+        assert_eq!(after_first, read(), "the second deploy did not reproduce the first's bytes");
+        assert!(!deploy(), "an unchanged redeploy must be a no-op");
+        assert_eq!(after_first, read(), "a redeploy changed the file while reporting no change");
+
+        undeploy();
+        assert_eq!(settled, read(), "the cycle is not closed — undeploy left different bytes");
+
+        // The user's own hook survives every cycle, asserted on CONTENT so a
+        // formatting change cannot mask its loss.
+        let v: serde_json::Value = serde_json::from_str(&read()).unwrap();
+        assert!(
+            v["hooks"]["SessionStart"].as_array().is_some_and(|a| a
+                .iter()
+                .any(|e| e["hooks"][0]["command"] == "/home/u/bin/mine.sh")),
+            "the user's own hook did not survive the cycles: {}",
+            read()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn hook_config_is_never_seen_torn_by_a_concurrent_reader() {
         // C6 exit clause 5, second half. Concurrency here is MEASURED: three
         // sessions with a holding hook produced three overlapping pairs, so a
