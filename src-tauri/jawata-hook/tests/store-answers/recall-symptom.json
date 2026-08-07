@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1,"result":{"content":[{"text":"{\"success\":true,\"data\":\"No known knowledge for this cue.\",\"meta\":{\"steering\":\"Grounded next step: verify with compile_workspace + get_diagnostics; JAWATA changes are reversible (undo / undo_plan).\"}}","type":"text"}]}}
