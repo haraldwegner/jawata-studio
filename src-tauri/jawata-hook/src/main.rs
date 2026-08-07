@@ -24,6 +24,7 @@
 //! place that guarantees it.
 
 mod cue;
+mod query;
 mod roles;
 
 fn main() {
