@@ -33,10 +33,21 @@ cd "$CRATE" || { echo "gate: RESULT=no-crate at $CRATE. exit 2"; exit 2; }
 
 # Touch the crate root so both compiles emit their lints (a cached unit emits
 # none, and an empty warning set would read as "clean").
-deadcode() {   # deadcode <outfile> [extra cargo args...]
+deadcode() {   # deadcode <outfile> <package> [extra cargo args...]
     local out="$1"; shift
-    touch src/lib.rs
-    cargo rustc --lib --message-format=short "$@" -- --force-warn dead_code \
+    local pkg="$1"; shift
+    # Touch the crate root so the unit actually recompiles — a cached unit
+    # emits no lints, and an empty warning set would read as "clean".
+    case "$pkg" in
+        jawata-studio) touch src/lib.rs ;;
+        jawata-hook)   touch jawata-hook/src/main.rs ;;
+    esac
+    # --lib for the library crate, --bin for the hook (it has no lib target;
+    # asking for --lib there silently measures nothing).
+    local target="--lib"
+    [ "$pkg" = "jawata-hook" ] && target="--bin jawata-hook"
+    # shellcheck disable=SC2086
+    cargo rustc -p "$pkg" $target --message-format=short "$@" -- --force-warn dead_code \
         > "$WORK/raw.txt" 2>&1
     grep -E ': warning: ' "$WORK/raw.txt" \
         | sed 's/:[0-9]*:[0-9]*: warning: /|/' \
@@ -49,8 +60,14 @@ deadcode() {   # deadcode <outfile> [extra cargo args...]
     return 0
 }
 
-deadcode "$WORK/plain.txt" || exit 2
-deadcode "$WORK/cfgtest.txt" --profile test || exit 2
+# BOTH crates. The hook crate is where Sprint 28's new code lives, and a gate
+# blind to the code its own sprint adds is the shape it exists to catch.
+deadcode "$WORK/studio-plain.txt" jawata-studio || exit 2
+deadcode "$WORK/studio-cfgtest.txt" jawata-studio --profile test || exit 2
+deadcode "$WORK/hook-plain.txt" jawata-hook || exit 2
+deadcode "$WORK/hook-cfgtest.txt" jawata-hook --profile test || exit 2
+cat "$WORK/studio-plain.txt" "$WORK/hook-plain.txt" | LC_ALL=C sort -u > "$WORK/plain.txt"
+cat "$WORK/studio-cfgtest.txt" "$WORK/hook-cfgtest.txt" | LC_ALL=C sort -u > "$WORK/cfgtest.txt"
 
 PLAIN=$(wc -l < "$WORK/plain.txt")
 CFGTEST=$(wc -l < "$WORK/cfgtest.txt")
