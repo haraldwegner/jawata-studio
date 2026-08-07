@@ -4341,12 +4341,33 @@ const SCRIPT_GENERATION: &[(&str, &str)] = &[
 /// The predicate every managed-entry check should use. Matching only the
 /// current generation is what preserves a retired script as the user's own.
 fn entry_is_managed_any_generation(entry: &serde_json::Value, current: &str) -> bool {
-    if entry_command_contains(entry, current) {
-        return true;
-    }
-    legacy_sentinels(current)
+    // SEPARATOR-INSENSITIVE. Every sentinel is written with a forward slash
+    // ("jawata-studio/sessionstart-primer.sh"), but `PathBuf::join` emits
+    // BACKSLASHES on Windows — so on Windows every predicate missed its own
+    // entry, and since write_managed_hook_section is retain(!is_managed) then
+    // push, each deploy appended one more entry per role, unbounded, with
+    // undeploy leaving them all. Pre-existing and measured by the C6 audit
+    // (round 3, N4); not introduced by this sprint, but this sprint is where
+    // the predicate became the single place it can be fixed.
+    //
+    // The hook crate already solved the same hazard in `role_for_binary`,
+    // splitting on both separators, with the comment "Windows is the platform
+    // D-SHIM exists to serve". One crate knew and the other did not.
+    let normalise = |s: &str| s.replace('\\', "/");
+    let Some(commands) = entry.get("hooks").and_then(|h| h.as_array()) else {
+        return false;
+    };
+    let commands: Vec<String> = commands
         .iter()
-        .any(|old| entry_command_contains(entry, old))
+        .filter_map(|h| h.get("command").and_then(|c| c.as_str()))
+        .map(normalise)
+        .collect();
+    let mut wanted = vec![current.to_string()];
+    wanted.extend(legacy_sentinels(current));
+    wanted
+        .iter()
+        .map(|w| normalise(w))
+        .any(|w| commands.iter().any(|c| c.contains(&w)))
 }
 
 /// Sprint 22b: a pre-rebrand deploy left a `goja-studio…`-named rule FILE beside
@@ -4392,9 +4413,22 @@ fn derive_hook_settings_path(client: &str) -> Option<String> {
 /// scripts, trygate/editgate state, outcomes.log) is RENAMED to the new dir on first
 /// touch, never clobbered (if the new dir already exists, the old one is left alone).
 /// The redeploy then overwrites the scripts; the state/logs carry over.
+/// The managed-scripts directory NAME, derived from a home dir. Pure.
+///
+/// C6 audit round 3, N5: `claude_scripts_dir()` is not a path getter — it
+/// performs an irreversible `fs::rename` of a pre-rebrand directory as a side
+/// effect. My new path-linkage test called it six times, so `cargo test --lib`
+/// migrated the developer's real home on any machine still carrying a goja
+/// install. It was a no-op here, which is why it passed unnoticed. A getter a
+/// test may call must not move the user's files, so the derivation is split out
+/// and the test uses THIS.
+fn claude_scripts_dir_under(home: &Path) -> PathBuf {
+    home.join(".claude").join("jawata-studio")
+}
+
 fn claude_scripts_dir() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
-    let new = home.join(".claude").join("jawata-studio");
+    let new = claude_scripts_dir_under(&home);
     let old = home.join(".claude").join("goja-studio"); // migration literal (exception class 3)
     if old.exists() && !new.exists() {
         match fs::rename(&old, &new) {
@@ -4416,13 +4450,24 @@ fn claude_scripts_dir() -> Option<PathBuf> {
 /// Absolute path of the managed guard script jawata-studio writes + owns. Lives under
 /// `~/.claude/jawata-studio/` so the settings.json entry is a stable one-liner and all
 /// the branching logic lives in a shell file we overwrite on every deploy.
+/// The managed script filenames, named ONCE. The production path functions and
+/// the linkage test both use these, so a rename cannot land in one and not the
+/// other — which is what made the whole suite stay green while production
+/// accumulated entries (C6 audit round 2, N1).
+const GUARD_SCRIPT_FILE: &str = "pretooluse-guard.sh";
+const OBSERVER_SCRIPT_FILE: &str = "posttooluse-observer.sh";
+const PRIMER_SCRIPT_FILE: &str = "sessionstart-primer.sh";
+const RECALL_SCRIPT_FILE: &str = "pretooluse-recall.sh";
+const USERPROMPT_SCRIPT_FILE: &str = "userpromptsubmit-recall.sh";
+const STOP_SCRIPT_FILE: &str = "stop-gate.sh";
+
 fn managed_guard_script_path() -> Option<PathBuf> {
-    Some(claude_scripts_dir()?.join("pretooluse-guard.sh"))
+    Some(claude_scripts_dir()?.join(GUARD_SCRIPT_FILE))
 }
 
 /// Absolute path of the managed PostToolUse observer script (sibling of the guard).
 fn managed_observer_script_path() -> Option<PathBuf> {
-    Some(claude_scripts_dir()?.join("posttooluse-observer.sh"))
+    Some(claude_scripts_dir()?.join(OBSERVER_SCRIPT_FILE))
 }
 
 /// The bash guard. `health_url` (the deployed gateway `/mcp` URL) is baked in so the
@@ -5425,17 +5470,17 @@ const JAWATA_USERPROMPT_SENTINEL: &str = "jawata-studio/userpromptsubmit-recall.
 
 /// Absolute path of the managed SessionStart primer script (sibling of the guard).
 fn managed_primer_script_path() -> Option<PathBuf> {
-    Some(claude_scripts_dir()?.join("sessionstart-primer.sh"))
+    Some(claude_scripts_dir()?.join(PRIMER_SCRIPT_FILE))
 }
 
 /// Absolute path of the managed PreToolUse recall script (sibling of the guard).
 fn managed_recall_script_path() -> Option<PathBuf> {
-    Some(claude_scripts_dir()?.join("pretooluse-recall.sh"))
+    Some(claude_scripts_dir()?.join(RECALL_SCRIPT_FILE))
 }
 
 /// Absolute path of the managed UserPromptSubmit recall script (Sprint 21c item D).
 fn managed_userprompt_script_path() -> Option<PathBuf> {
-    Some(claude_scripts_dir()?.join("userpromptsubmit-recall.sh"))
+    Some(claude_scripts_dir()?.join(USERPROMPT_SCRIPT_FILE))
 }
 
 /// True iff a hook entry's command references the given managed sentinel.
@@ -5790,7 +5835,7 @@ fn remove_managed_hook_section(
 const JAWATA_STOP_SENTINEL: &str = "jawata-studio stop gate";
 
 fn managed_stop_script_path() -> Option<PathBuf> {
-    claude_scripts_dir().map(|dir| dir.join("stop-gate.sh"))
+    claude_scripts_dir().map(|dir| dir.join(STOP_SCRIPT_FILE))
 }
 
 fn is_managed_stop_entry(entry: &serde_json::Value) -> bool {
@@ -8889,7 +8934,12 @@ mod tests {
         let reader = std::thread::spawn(move || {
             let mut reads = 0u32;
             let mut torn = Vec::new();
-            while !reader_stop.load(std::sync::atomic::Ordering::Relaxed) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            // Keep reading until the writer says stop AND we have a usable
+            // sample — bounded, so a starved thread cannot hang the suite.
+            while (!reader_stop.load(std::sync::atomic::Ordering::Relaxed) || reads < 60)
+                && std::time::Instant::now() < deadline
+            {
                 match std::fs::read_to_string(&reader_path) {
                     Ok(text) => {
                         reads += 1;
@@ -8913,7 +8963,23 @@ mod tests {
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         let (reads, torn) = reader.join().expect("reader thread");
 
-        assert!(reads > 50, "the reader barely ran ({reads} reads) — this proves little");
+        // C6 audit round 3, N3. This was the suite's ONLY load-sensitive
+        // threshold and therefore the standing suspect for a single
+        // unreproduced red observed at 85ddeac: the reader is a spin loop
+        // racing 300 writes, and a thread starved on a busy machine could do
+        // fewer than 50 reads and fail once, for no reason connected to the
+        // property under test.
+        //
+        // The property is "no read is ever torn", and it does not need a fixed
+        // count — it needs enough reads to be meaningful. So the reader now
+        // runs until it has taken a decent sample OR a wall-clock bound
+        // expires, and the assertion is on the sample it actually took. A
+        // starved machine now makes the test slower, not red.
+        assert!(
+            reads > 5,
+            "the reader took {reads} reads even with a wall-clock budget — the file was \
+             unreadable, not merely contended"
+        );
         assert!(torn.is_empty(), "{} torn read(s), first: {:?}", torn.len(), torn.first());
 
         // And no staging file is left behind.
@@ -9157,6 +9223,44 @@ mod tests {
     }
 
     #[test]
+    fn a_windows_style_command_is_recognised_as_ours() {
+        // C6 audit round 3, N4 — measured, not hypothesised: every sentinel
+        // carries a forward slash while PathBuf::join emits backslashes on
+        // Windows, so on Windows every predicate missed its own entry and each
+        // deploy appended another, unbounded, with undeploy leaving them all.
+        //
+        // Asserted here on Linux because the DEFECT is not platform-specific
+        // even though the symptom is: the matching rule is the same code
+        // everywhere, and a backslash command is exactly what a Windows install
+        // presents to it.
+        let windows = |c: &str| serde_json::json!({
+            "hooks": [ { "type": "command", "command": c } ]
+        });
+        let cases: Vec<(&str, serde_json::Value, fn(&serde_json::Value) -> bool)> = vec![
+            ("guard", windows(r"C:\Users\h\.claude\jawata-studio\pretooluse-guard.sh"),
+                is_managed_hook_entry),
+            ("observer", windows(r"C:\Users\h\.claude\jawata-studio\posttooluse-observer.sh"),
+                is_managed_posthook_entry),
+            ("primer", windows(r"C:\Users\h\.claude\jawata-studio\sessionstart-primer.sh"),
+                is_managed_primer_entry),
+            ("recall", windows(r"C:\Users\h\.claude\jawata-studio\pretooluse-recall.sh"),
+                is_managed_recall_entry),
+            ("userprompt", windows(r"C:\Users\h\.claude\jawata-studio\userpromptsubmit-recall.sh"),
+                is_managed_userprompt_entry),
+            ("stop", windows(r"C:\Users\h\.claude\jawata-studio\stop-gate.sh"),
+                is_managed_stop_entry),
+            ("gen-3 binary", windows(r"C:\Users\h\.claude\hooks\jawata-hook-primer"),
+                is_managed_primer_entry),
+        ];
+        for (role, entry, predicate) in cases {
+            assert!(predicate(&entry),
+                "{role}: a Windows-style command is one of OURS and was not recognised — on \
+                 Windows every deploy would append another entry and undeploy would leave \
+                 them all: {entry}");
+        }
+    }
+
+    #[test]
     fn the_production_path_functions_write_what_the_predicates_look_for() {
         // C6 audit round 2, N1 — THE LAST LINK, and the one closest to
         // production. managed_*_script_path() decides the filename that appears
@@ -9171,13 +9275,22 @@ mod tests {
         // The chain was HOOK_ROLES <-> hook-events.json <-> SCRIPT_GENERATION
         // <-> sentinel constants <-> builders, and stopped one link short of
         // the paths. This closes it.
+        // Derived under a FAKE home. Calling the real managed_*_script_path()
+        // here would invoke claude_scripts_dir(), which renames a pre-rebrand
+        // directory as a side effect — so `cargo test` would migrate the
+        // developer's actual home (C6 audit round 3, N5). The filenames below
+        // are the ones those functions append, and the assertion is that each
+        // contains its predicate's sentinel; a rename in the production
+        // function still has to be mirrored here, and the control proves it.
+        let home = std::path::Path::new("/fake-home");
+        let dir = claude_scripts_dir_under(home);
         let paths: Vec<(&str, Option<PathBuf>)> = vec![
-            ("jawata-hook-guard", managed_guard_script_path()),
-            ("jawata-hook-observer", managed_observer_script_path()),
-            ("jawata-hook-primer", managed_primer_script_path()),
-            ("jawata-hook-recall", managed_recall_script_path()),
-            ("jawata-hook-userprompt", managed_userprompt_script_path()),
-            ("jawata-hook-stop", managed_stop_script_path()),
+            ("jawata-hook-guard", Some(dir.join(GUARD_SCRIPT_FILE))),
+            ("jawata-hook-observer", Some(dir.join(OBSERVER_SCRIPT_FILE))),
+            ("jawata-hook-primer", Some(dir.join(PRIMER_SCRIPT_FILE))),
+            ("jawata-hook-recall", Some(dir.join(RECALL_SCRIPT_FILE))),
+            ("jawata-hook-userprompt", Some(dir.join(USERPROMPT_SCRIPT_FILE))),
+            ("jawata-hook-stop", Some(dir.join(STOP_SCRIPT_FILE))),
         ];
         assert_eq!(HOOK_ROLES.len(), paths.len(), "one production path per deployed role");
 
