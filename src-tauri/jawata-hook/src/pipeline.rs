@@ -575,7 +575,7 @@ mod tests {
     fn a_block_renders_claudes_stop_dialect() {
         let facts = StopFacts {
             already_bounced: false,
-            turn: Turn { final_text: "summary".into(), launches: vec![] },
+            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: false },
             autonomy: Autonomy::Granted,
         };
         let StopVerdict::Block { reason } = crate::stop::judge(&facts) else {

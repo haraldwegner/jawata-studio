@@ -93,6 +93,12 @@ pub struct Turn {
     pub final_text: String,
     /// Tool calls made since the last human message.
     pub launches: Vec<ToolUse>,
+    /// Refusals the AGENT ITSELF emitted in this window — not strings it read.
+    /// The bash gate counted the raw transcript and fired on any session that
+    /// merely READ a file containing the word; this counts assistant text only.
+    pub refusals_emitted: usize,
+    /// Whether the final message asks the human for a word, ruling or decision.
+    pub asks_the_human: bool,
 }
 
 impl Turn {
@@ -127,6 +133,41 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
     // wedge a session, and a wedged session is worse than an unjudged message.
     if facts.already_bounced {
         return StopVerdict::Allow;
+    }
+
+    // PORTED FROM THE SCRIPT GENERATION, and deliberately NOT gated on
+    // autonomy — which is why these two can fire today while Rules A and B
+    // cannot. The parity contract in hook-events.json lists what the script
+    // still holds alone; pointing a client at this binary before these were
+    // ported would have STRIPPED five working protections to gain two inert
+    // ones. Found by the first dogfood probe after the release.
+
+    // The audit-fix loop. Every other trigger in the script generation waits
+    // for a CHECKPOINT marker, and a churn loop never produces one — so the
+    // failure state and the trigger condition were mutually exclusive. This
+    // counts the loop instead.
+    if facts.turn.refusals_emitted >= 3 {
+        return StopVerdict::Block {
+            reason: format!(
+                "AUDIT-FIX LOOP: {} refusals you emitted in this window with no \
+                 checkpoint reached. Repeated defect-in-the-fixing-commit is a \
+                 DESIGN alarm, not a bug streak. Stop fixing findings and run the \
+                 architect seat as a watch-diff against the ARCHITECTURE artifact: \
+                 design fix or bandage?",
+                facts.turn.refusals_emitted
+            ),
+        };
+    }
+
+    // The unjudged ask. Independent of autonomy: an ask is an ask.
+    if facts.turn.asks_the_human && !facts.turn.communicator_ran() {
+        return StopVerdict::Block {
+            reason: "UNJUDGED ASK: this message asks for a word, a ruling or a \
+                     decision, and no communicator subagent ran since the human's \
+                     last turn. Run the communicator on it, apply its verdict, \
+                     then stop."
+                .to_string(),
+        };
     }
 
     // RULE A. In an autonomous session the default inverts: EVERY stop must
@@ -197,6 +238,11 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                         Some("text") => {
                             if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
                                 turn.final_text = t.to_string();
+                                // Count refusals the AGENT EMITTED, from
+                                // assistant text only — never the raw window,
+                                // which made the script fire on any session
+                                // that merely READ the word.
+                                turn.refusals_emitted += t.matches("REFUSE").count();
                             }
                         }
                         Some("tool_use") => {
@@ -225,7 +271,24 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
             _ => {}
         }
     }
+    turn.asks_the_human = asks_the_human(&turn.final_text);
     Ok(turn)
+}
+
+/// Does this message ask the human for something?
+///
+/// Deliberately a small closed set rather than a shape like `DECISION:`: the
+/// script generation keyed on tokens the AGENT AUTHORS, so an ask phrased
+/// without them passed untouched. These are the phrasings an ask cannot avoid
+/// while still being an ask.
+fn asks_the_human(text: &str) -> bool {
+    let u = text.to_uppercase();
+    [
+        "YOUR WORD", "NEEDS YOUR", "YOUR CALL", "YOUR RULING", "YOUR SIGN-OFF",
+        "SHALL I", "WANT ME TO", "DO YOU WANT", "MAY I", "DECISION:",
+    ]
+    .iter()
+    .any(|p| u.contains(p))
 }
 
 /// A `user` entry carrying a tool RESULT is the harness echoing our own tool
@@ -256,7 +319,7 @@ mod tests {
     fn facts(autonomy: Autonomy, launches: Vec<ToolUse>) -> StopFacts {
         StopFacts {
             already_bounced: false,
-            turn: Turn { final_text: "done".into(), launches },
+            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false },
             autonomy,
         }
     }
@@ -372,4 +435,59 @@ mod tests {
         let t = read_turn(s).expect("parses");
         assert!(t.armed_anything());
     }
+    /// PORTED RULE 1, and it fires WITHOUT autonomy — which is the whole point.
+    /// The parity contract listed this as script-only; cutting a client over to
+    /// the binary before it existed would have stripped a working protection.
+    #[test]
+    fn the_audit_fix_loop_blocks_without_needing_autonomy() {
+        let mut f = facts(Autonomy::Unknown, vec![]);
+        f.turn.refusals_emitted = 3;
+        match judge(&f) {
+            StopVerdict::Block { reason } => {
+                assert!(reason.contains("AUDIT-FIX LOOP"), "{reason}");
+                assert!(reason.contains("architect"), "must name the actuator: {reason}");
+            }
+            StopVerdict::Allow => panic!("three emitted refusals must block"),
+        }
+        // Two is not a loop.
+        f.turn.refusals_emitted = 2;
+        assert_eq!(StopVerdict::Allow, judge(&f));
+    }
+
+    /// PORTED RULE 2, likewise ungated by autonomy: an ask is an ask.
+    #[test]
+    fn an_unjudged_ask_blocks_and_a_judged_one_does_not() {
+        let mut f = facts(Autonomy::Unknown, vec![]);
+        f.turn.asks_the_human = true;
+        match judge(&f) {
+            StopVerdict::Block { reason } => assert!(reason.contains("UNJUDGED ASK"), "{reason}"),
+            StopVerdict::Allow => panic!("an unjudged ask must block"),
+        }
+        f.turn.launches = vec![communicator()];
+        assert_eq!(StopVerdict::Allow, judge(&f), "a judged ask must pass");
+    }
+
+    /// Refusals are counted from ASSISTANT TEXT, never the raw window. The
+    /// script generation counted the whole transcript and fired on any session
+    /// that merely READ the word — reading is not refusing.
+    #[test]
+    fn refusals_are_counted_only_from_what_the_agent_emitted() {
+        let quoted = "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"REFUSE REFUSE REFUSE\"}]}}\n{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"all green\"}]}}\n";
+        let t = read_turn(quoted).expect("parses");
+        assert_eq!(0, t.refusals_emitted, "quoted refusals are not emitted ones");
+
+        let emitted = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"round 1 REFUSE\"}]}}\n{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"round 2 REFUSE\"}]}}\n";
+        assert_eq!(2, read_turn(emitted).expect("parses").refusals_emitted);
+    }
+
+    /// The ask detector must not key on a shape the agent authors freely. A
+    /// message that asks in plain words is caught even without `DECISION:`.
+    #[test]
+    fn an_ask_phrased_without_the_token_is_still_an_ask() {
+        let s = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"One thing needs your word before I push.\"}]}}\n";
+        assert!(read_turn(s).expect("parses").asks_the_human);
+        let plain = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Committed and green, continuing.\"}]}}\n";
+        assert!(!read_turn(plain).expect("parses").asks_the_human);
+    }
+
 }

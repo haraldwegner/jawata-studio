@@ -76,7 +76,15 @@
       "shape inverted, at the one moment nobody is reading the old file.",
       "",
       "Every rule is declared here with its status on each side. A rule may be",
-      "ported or deliberately dropped \u2014 but not silently lost."
+      "ported or deliberately dropped \u2014 but not silently lost.",
+      "",
+      "Sprint 28 dogfood, first probe after the release: the six role binaries were",
+      "DEPLOYED and every client event still invoked the .sh script \u2014 the deploy",
+      "writes binaries, then writes settings entries pointing at scripts, and no code",
+      "path builds a command aimed at a binary. Pointing a client at the binary then",
+      "would have STRIPPED five working protections to gain two inert ones. The",
+      "audit-fix loop and the unjudged ask are now PORTED and fire without autonomy;",
+      "three remain script-only, and the cutover stays blocked until they follow."
     ],
     "rules": {
       "anti_loop": {
@@ -86,12 +94,12 @@
       },
       "audit_fix_loop": {
         "bash": "present",
-        "rust": "todo",
+        "rust": "present",
         "what": "3+ refusals with no checkpoint reached -> run the architect"
       },
       "unjudged_ask": {
         "bash": "present",
-        "rust": "todo",
+        "rust": "present",
         "what": "an upward ask with no communicator run since the human's turn"
       },
       "communicator_rule_a": {
