@@ -201,11 +201,15 @@ pub fn arm_watchdog(deadline: Duration) {
 /// to end, and it was reachable for EVERY role, not just the slow one.
 ///
 /// So the deadline path now writes its own record first. It is the last thing
-/// that happens before the process ends. NOT free: `record` may first trim an
-/// oversized log, which reads and rewrites up to `silence::MAX_BYTES`. Measured
-/// overshoot past the deadline is ~3 ms, which is why this is acceptable rather
-/// than because it does no work — an earlier version of this comment claimed
-/// "one write_all of one line", which was simply false.
+/// that happens before the process ends, and it costs one `metadata` probe plus
+/// one `write_all` — no read-modify-write anywhere, since rotation moved to the
+/// Studio manager.
+///
+/// FIVE versions of this sentence have been wrong. The one this replaces
+/// described a trim that the redesign had already deleted, and did so inside
+/// the very clause boasting that it corrected an earlier false claim — while
+/// the claim it "corrected", one write_all of one line, had become true. The
+/// churn is itself the evidence that the machinery never belonged on this path.
 pub fn arm_watchdog_recording(deadline: Duration, role: String) {
     std::thread::spawn(move || {
         std::thread::sleep(deadline);

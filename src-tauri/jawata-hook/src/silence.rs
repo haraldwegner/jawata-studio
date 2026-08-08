@@ -122,9 +122,18 @@ pub fn append_to(path: &Path, role: &str, outcome: &Outcome) -> bool {
 /// Every failure mode — no exe path, no config dir, unwritable file — ends as
 /// a no-op rather than an error, because nothing here may change the exit.
 pub fn record(role: &str, outcome: &Outcome) {
-    let Ok(exe) = std::env::current_exe() else { return };
-    let Some(path) = log_path_for(&exe) else { return };
-    append_to(&path, role, outcome);
+    let _ = record_reporting(role, outcome);
+}
+
+/// As [`record`], but REPORTS whether the line landed.
+///
+/// The fire path ignores it by contract; `--explain` does not. A dropped record
+/// and an unwritable log were otherwise byte-identical from outside, and a
+/// small stale log reads exactly like a hook that never ran.
+pub fn record_reporting(role: &str, outcome: &Outcome) -> bool {
+    let Ok(exe) = std::env::current_exe() else { return false };
+    let Some(path) = log_path_for(&exe) else { return false };
+    append_to(&path, role, outcome)
 }
 
 #[cfg(test)]

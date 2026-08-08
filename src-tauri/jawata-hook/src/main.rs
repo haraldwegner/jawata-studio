@@ -38,7 +38,7 @@ fn main() {
     // Stage 8: the reason is written down rather than discarded. It was always
     // computed — every path in the pipeline produces one — and thrown away a
     // line before it could answer "why did nothing happen?".
-    jawata_hook::silence::record(&role_name, &outcome);
+    let logged = jawata_hook::silence::record_reporting(&role_name, &outcome);
 
     // `--explain` runs THE REAL PATH and reports it, rather than describing
     // what the path would do. A diagnostic that takes a different route
@@ -58,5 +58,12 @@ fn main() {
         }
     }
 
+    // F4: a DROPPED record (past the hard ceiling) and an UNWRITABLE log were
+    // byte-identical from outside — and a small stale log is indistinguishable
+    // from "the hook never ran", which is the two-week outage's own signature
+    // one level up. --explain now says which. Off the silent fire path.
+    if explain && !logged {
+        eprintln!("role {role_name}: the silence log was NOT written (dropped past the ceiling, or unwritable)");
+    }
     jawata_hook::safety::exit_with(&outcome);
 }

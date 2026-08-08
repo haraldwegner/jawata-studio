@@ -5979,6 +5979,7 @@ tp = data.get('transcript_path')
 WIN = 1 << 20
 text = ''
 tail = ''
+emitted = ''
 try:
     with open(tp, 'rb') as f:
         f.seek(0, 2); size = f.tell()
@@ -5996,7 +5997,9 @@ try:
         m = j.get('message') or {}
         if (j.get('type') == 'assistant') and isinstance(m.get('content'), list):
             parts = [c.get('text','') for c in m['content'] if c.get('type')=='text']
-            if parts: text = chr(10).join(parts)
+            if parts:
+                text = chr(10).join(parts)
+                emitted += text + chr(10)
 except Exception:
     print('{}'); sys.exit(0)
 U = text.upper()
@@ -6022,7 +6025,11 @@ try:
     # and looked identical to a check that found nothing. That is the failure
     # this entire sprint exists to end, committed inside the trigger written to
     # detect it.
-    rounds = tail.count('REFUSE')
+    # Count what the AGENT EMITTED, not strings in the window. Counting the raw
+    # tail matched tool results and file contents, so any session that READ this
+    # file, hook-events.json or a C8 sprint doc was told to abandon correct
+    # work. Reading the word is not refusing.
+    rounds = emitted.count('REFUSE')
     # NO "but a checkpoint happened" suppression. The first version of this
     # check looked for a checkpoint marker in the window and stood down if it
     # found one — and on the very session it was written for it found the
@@ -6058,9 +6065,23 @@ try:
     if asking:
         # Scope to the window since the last human turn: a communicator run
         # three hours ago does not judge THIS message.
-        cut = tail.rfind('"type":"user"')
+        # A HUMAN TURN, not any user-role line. In this client a TOOL RESULT is
+        # written as "type":"user" too — measured on a live transcript: 23,087
+        # user entries, 20,142 of them tool results, so only 13% are turns.
+        # Scoping on the last user-role line meant ONE ordinary tool call after
+        # a communicator run re-armed the check and blocked a compliant ask.
+        cut = -1
+        for ln in tail.splitlines():
+            if '"type":"user"' in ln and '"toolUseResult"' not in ln \
+               and '"tool_result"' not in ln:
+                cut = tail.rfind(ln)
         recent = tail[cut:] if cut >= 0 else tail
-        if 'communicator' not in recent:
+        # THE TOOL CALL, not the word. Matching bare 'communicator' was
+        # satisfied by the AGENT'S OWN PROSE, which makes the harness-writes-the
+        # -transcript argument true but irrelevant: the agent's text is in that
+        # transcript too.
+        if '"subagent_type":"communicator"' not in recent \
+           and '"subagent_type": "communicator"' not in recent:
             reasons.append(
                 'UNJUDGED ASK: this message asks Harald for a word, a ruling or a '
                 'decision, and no communicator subagent ran since his last turn. '
@@ -7401,6 +7422,63 @@ mod tests {
 
 
     // ---------- Sprint 26: the Stop gate ----------
+
+    /// F1: a TOOL RESULT is `"type":"user"` too. Scoping the communicator
+    /// window on the last user-role line meant one ordinary tool call after a
+    /// judged pass re-armed the check and BLOCKED a compliant ask. Measured on
+    /// a live transcript: 23,087 user entries, 20,142 of them tool results.
+    #[test]
+    fn a_tool_result_after_the_communicator_does_not_re_arm_the_ask_check() {
+        let dir = unique_tempdir("stop-toolresult");
+        let p = dir.join("t.jsonl");
+        let mut b = String::from(
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"go\"}]}}\n",
+        );
+        b.push_str("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Agent\",\"input\":{\"subagent_type\":\"communicator\"}}]}}\n");
+        b.push_str("{\"type\":\"user\",\"toolUseResult\":{\"ok\":true},\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"done\"}]}}\n");
+        b.push_str("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"One thing needs your word.\"}]}}\n");
+        fs::write(&p, b).unwrap();
+        let out = run_stop_script(&serde_json::json!({
+            "transcript_path": p, "stop_hook_active": false }));
+        assert!(out.get("decision").is_none(),
+            "a judged ask must survive an ordinary tool call: {out}");
+    }
+
+    /// F1b: matching the bare word was satisfied by the AGENT'S OWN PROSE — so
+    /// the harness-writes-the-transcript argument was true but irrelevant.
+    #[test]
+    fn writing_the_word_communicator_does_not_satisfy_the_check() {
+        let dir = unique_tempdir("stop-word");
+        let p = dir.join("t.jsonl");
+        let mut b = String::from(
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"go\"}]}}\n",
+        );
+        b.push_str("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"I ran the communicator on this. One thing needs your word.\"}]}}\n");
+        fs::write(&p, b).unwrap();
+        let out = run_stop_script(&serde_json::json!({
+            "transcript_path": p, "stop_hook_active": false }));
+        assert_eq!(Some("block"), out.get("decision").and_then(|d| d.as_str()),
+            "claiming a pass in prose must not satisfy the gate: {out}");
+    }
+
+    /// F2: counting REFUSE over the raw window matched TOOL RESULTS and FILE
+    /// CONTENTS, so any session that read this file or a C8 sprint doc was told
+    /// to abandon correct work. Reading the word is not refusing.
+    #[test]
+    fn refusals_quoted_in_a_tool_result_are_not_an_audit_fix_loop() {
+        let dir = unique_tempdir("stop-quoted");
+        let p = dir.join("t.jsonl");
+        let mut b = String::from(
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"go\"}]}}\n",
+        );
+        b.push_str("{\"type\":\"user\",\"toolUseResult\":{\"stdout\":\"the auditor may REFUSE; round 2 REFUSE; the verdict was REFUSE\"},\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"REFUSE REFUSE REFUSE\"}]}}\n");
+        b.push_str("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Fixed the typo in the README and the build is green.\"}]}}\n");
+        fs::write(&p, b).unwrap();
+        let out = run_stop_script(&serde_json::json!({
+            "transcript_path": p, "stop_hook_active": false }));
+        assert!(out.get("decision").is_none(),
+            "reading refusals is not refusing: {out}");
+    }
 
     /// The studio's half of the silence-log seam assertion. The hook's half is
     /// jawata-hook/tests/silence_log_contract_matches_the_deploy.rs. Both read
