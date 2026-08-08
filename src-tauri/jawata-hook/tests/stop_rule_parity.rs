@@ -50,7 +50,10 @@ fn every_stop_rule_declares_its_status_on_both_sides() {
 /// Flip `SCRIPTS_RETIRED` in the same change that stops deploying them.
 #[test]
 fn no_rule_is_lost_when_the_scripts_retire() {
-    const SCRIPTS_RETIRED: bool = false;
+    // FLIPPED. All eight rules now exist on both sides, and the deploy points a
+    // client at the binary when one is present. From here, a rule that lives
+    // only in the scripts fails this test.
+    const SCRIPTS_RETIRED: bool = true;
     let r = rules();
     let missing: Vec<String> = r
         .as_object()

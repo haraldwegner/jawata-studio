@@ -38,6 +38,36 @@
 
 use crate::safety::SilenceReason;
 
+/// Characters past which a message to the human must have been judged.
+/// Length is a trigger BECAUSE it is wording-independent.
+pub const LENGTH_BUDGET: usize = 2200;
+
+/// Abbreviations a reader of this project already holds.
+const KNOWN_TERMS: &[&str] = &[
+    "API","MCP","JDT","CPU","JVM","CI","PR","TDD","AST","JSON","HTTP","URL","ID",
+    "OK","DONE","STOP","NOT","AND","THE","ALL","NEW","YOUR","BOTH","RED","YES","NO",
+    "MSI","NSIS","DMG","DEB","XML","SHIM","E2E","OS","UI","IDE","GUI","SDK","LTS",
+];
+
+/// Capitalised terms the message never defines. A term counts as defined when
+/// the text explains it in parentheses on either side.
+fn undefined_terms(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in text.split(|c: char| !c.is_ascii_alphanumeric()) {
+        // 2..=10, not 2..=5. The first version skipped TOCTOU, SIGPIPE and
+        // ETXTBSY — every term in its own test — because real jargon is
+        // usually longer than five characters.
+        if raw.len() < 2 || raw.len() > 10 { continue; }
+        if !raw.chars().all(|c| c.is_ascii_uppercase()) { continue; }
+        if KNOWN_TERMS.contains(&raw) { continue; }
+        let defined = text.contains(&format!("{raw} (")) || text.contains(&format!("({raw}"));
+        if !defined && !out.iter().any(|o| o == raw) {
+            out.push(raw.to_string());
+        }
+    }
+    out
+}
+
 /// Whether the human granted autonomous continuation for this session.
 ///
 /// `Unknown` is the honest default and today the only value produced: nothing
@@ -99,6 +129,10 @@ pub struct Turn {
     pub refusals_emitted: usize,
     /// Whether the final message asks the human for a word, ruling or decision.
     pub asks_the_human: bool,
+    /// Seat commands invoked in this window (/refactor, /cover, ...).
+    pub seats_invoked: Vec<String>,
+    /// Whether a verification gate ran after them.
+    pub gate_ran: bool,
 }
 
 impl Turn {
@@ -167,6 +201,45 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
                      last turn. Run the communicator on it, apply its verdict, \
                      then stop."
                 .to_string(),
+        };
+    }
+
+    // PORTED: the length budget. Harald's own suggestion, and stronger than a
+    // phrase list because it does not depend on wording — which is exactly how
+    // the ten-phrase ask detector failed on its first live outing.
+    if facts.turn.final_text.len() > LENGTH_BUDGET && !facts.turn.communicator_ran() {
+        return StopVerdict::Block {
+            reason: format!(
+                "TOO LONG: {} characters, and the communicator has not judged it. \
+                 Length is noise. Cut to what the reader needs, run the \
+                 communicator, then send.",
+                facts.turn.final_text.len()
+            ),
+        };
+    }
+
+    // PORTED: seat discipline. A seat that proposes without running its gates
+    // is proposing work it has not verified.
+    if !facts.turn.seats_invoked.is_empty() && !facts.turn.gate_ran {
+        return StopVerdict::Block {
+            reason: format!(
+                "SEAT DISCIPLINE: {} invoked with no verification gate after it. \
+                 A gate you did not run has NOT passed. Run it before proposing.",
+                facts.turn.seats_invoked.join(", ")
+            ),
+        };
+    }
+
+    // PORTED: undefined jargon. The reader cannot decide on terms he cannot
+    // resolve, and this is the rule he most wanted kept.
+    let undefined = undefined_terms(&facts.turn.final_text);
+    if undefined.len() > 2 {
+        return StopVerdict::Block {
+            reason: format!(
+                "UNDEFINED TERMS: {} — define every abbreviation at first use, or \
+                 cut it. He cannot decide on words he cannot resolve.",
+                undefined.join(", ")
+            ),
         };
     }
 
@@ -272,23 +345,56 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
         }
     }
     turn.asks_the_human = asks_the_human(&turn.final_text);
+    for seat in ["/refactor", "/cover", "/javadocs", "/debug", "/profile"] {
+        if transcript_text.contains(seat) && !turn.seats_invoked.iter().any(|s| s == seat) {
+            turn.seats_invoked.push(seat.to_string());
+        }
+    }
+    turn.gate_ran = ["compile_workspace", "run_tests", "get_diagnostics", "cargo test"]
+        .iter()
+        .any(|g| transcript_text.contains(g));
     Ok(turn)
 }
 
 /// Does this message ask the human for something?
 ///
-/// Deliberately a small closed set rather than a shape like `DECISION:`: the
-/// script generation keyed on tokens the AGENT AUTHORS, so an ask phrased
-/// without them passed untouched. These are the phrasings an ask cannot avoid
-/// while still being an ask.
+/// FIRST LIVE FAILURE, on the day it shipped: this was a list of ten phrases,
+/// and the very next ask the agent wrote — "you decide whether it becomes
+/// v3.7.2 or waits" — matched none of them. The deployed gate returned allow.
+/// That is the SAME defect this function's own comment claimed to fix about the
+/// script generation: keying on tokens the agent authors freely.
+///
+/// STATE THE LIMIT PLAINLY: a closed list of phrasings, written by the party it
+/// constrains, can always be walked around — usually by accident, as here. The
+/// list below is materially wider (a direct question, the decision verbs, the
+/// option-offering shapes) and that is a REDUCTION IN LEAKAGE, not a fix.
+///
+/// The only non-evadable form is the inversion Rule A describes: in an
+/// autonomous session EVERY stop must show a communicator pass, whatever the
+/// message says. That requires the autonomy signal the hook cannot yet read —
+/// which makes the Studio autonomy file the difference between a rule that
+/// leaks and a rule that holds.
 fn asks_the_human(text: &str) -> bool {
     let u = text.to_uppercase();
-    [
+    // Explicit requests for a ruling.
+    const PHRASES: &[&str] = &[
         "YOUR WORD", "NEEDS YOUR", "YOUR CALL", "YOUR RULING", "YOUR SIGN-OFF",
-        "SHALL I", "WANT ME TO", "DO YOU WANT", "MAY I", "DECISION:",
-    ]
-    .iter()
-    .any(|p| u.contains(p))
+        "YOUR DECISION", "SHALL I", "WANT ME TO", "DO YOU WANT", "MAY I",
+        "DECISION:", "LET ME KNOW", "UP TO YOU", "YOU DECIDE", "YOU CHOOSE",
+        "IF YOU'D RATHER", "IF YOU PREFER", "SAY THE WORD", "ON YOUR WORD",
+        "AWAITING", "AWAIT YOUR", "SHOULD I", "WOULD YOU LIKE", "PREFER THAT I",
+    ];
+    if PHRASES.iter().any(|p| u.contains(p)) {
+        return true;
+    }
+    // A DIRECT QUESTION to the reader. The phrase list above is what the agent
+    // remembers; a question mark is what the agent cannot avoid while asking.
+    // Scoped to the last few lines so a question quoted mid-report — an audit
+    // brief, a rhetorical framing — does not trip it.
+    text.lines()
+        .rev()
+        .take(6)
+        .any(|l| l.trim_end().ends_with('?'))
 }
 
 /// A `user` entry carrying a tool RESULT is the harness echoing our own tool
@@ -319,7 +425,7 @@ mod tests {
     fn facts(autonomy: Autonomy, launches: Vec<ToolUse>) -> StopFacts {
         StopFacts {
             already_bounced: false,
-            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false },
+            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, seats_invoked: vec![], gate_ran: true },
             autonomy,
         }
     }
@@ -488,6 +594,87 @@ mod tests {
         assert!(read_turn(s).expect("parses").asks_the_human);
         let plain = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Committed and green, continuing.\"}]}}\n";
         assert!(!read_turn(plain).expect("parses").asks_the_human);
+    }
+
+    /// THE LIVE MISS, as a test. On the day the check shipped, the next ask the
+    /// agent wrote matched none of its ten phrases and the deployed gate
+    /// allowed it. This is that exact sentence.
+    #[test]
+    fn the_ask_that_slipped_past_the_first_phrase_list_is_caught() {
+        for ask in [
+            "This is dogfood output; you decide whether it becomes v3.7.2 or waits.",
+            "Not pushed. Up to you whether we ship it.",
+            "Do we cut a patch, or leave it?",
+            "Let me know which you'd prefer.",
+        ] {
+            let s = format!(
+                "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{ask}\"}}]}}}}\n"
+            );
+            assert!(
+                read_turn(&s).expect("parses").asks_the_human,
+                "must be read as an ask: {ask:?}"
+            );
+        }
+    }
+
+    /// And ordinary reporting must still pass, or the check is turned off by
+    /// the first person it annoys.
+    #[test]
+    fn a_report_that_asks_nothing_is_not_an_ask() {
+        for plain in [
+            "Committed and green, continuing to Stage 9.",
+            "The suite is 156 tests, five clean runs. Nothing outstanding.",
+            "I fixed the escaping and re-tagged; all five targets published.",
+        ] {
+            let s = format!(
+                "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{plain}\"}}]}}}}\n"
+            );
+            assert!(
+                !read_turn(&s).expect("parses").asks_the_human,
+                "must not be read as an ask: {plain:?}"
+            );
+        }
+    }
+
+    /// The three ported checks, each fired without autonomy.
+    #[test]
+    fn the_length_budget_blocks_an_unjudged_wall_of_text() {
+        let mut f = facts(Autonomy::Unknown, vec![]);
+        f.turn.final_text = "Committed and green. ".repeat(140);
+        match judge(&f) {
+            StopVerdict::Block { reason } => assert!(reason.contains("TOO LONG"), "{reason}"),
+            StopVerdict::Allow => panic!("a wall of text must be judged first"),
+        }
+        // A judged one passes — the check must be satisfiable by judging, not
+        // only by staying quiet.
+        f.turn.launches = vec![communicator()];
+        assert_eq!(StopVerdict::Allow, judge(&f));
+    }
+
+    #[test]
+    fn a_seat_without_its_gate_blocks() {
+        let mut f = facts(Autonomy::Unknown, vec![]);
+        f.turn.seats_invoked = vec!["/refactor".into()];
+        f.turn.gate_ran = false;
+        match judge(&f) {
+            StopVerdict::Block { reason } => assert!(reason.contains("SEAT DISCIPLINE"), "{reason}"),
+            StopVerdict::Allow => panic!("a seat that skipped its gate must block"),
+        }
+        f.turn.gate_ran = true;
+        assert_eq!(StopVerdict::Allow, judge(&f));
+    }
+
+    #[test]
+    fn undefined_jargon_blocks_and_defined_jargon_does_not() {
+        let mut f = facts(Autonomy::Unknown, vec![]);
+        f.turn.final_text = "The TOCTOU in the SIGPIPE path broke the ETXTBSY retry.".into();
+        match judge(&f) {
+            StopVerdict::Block { reason } => assert!(reason.contains("UNDEFINED TERMS"), "{reason}"),
+            StopVerdict::Allow => panic!("three undefined terms must block"),
+        }
+        f.turn.final_text =
+            "TOCTOU (a check-then-act race) hit the SIGPIPE (broken-pipe signal) path.".into();
+        assert_eq!(StopVerdict::Allow, judge(&f), "defined terms must pass");
     }
 
 }

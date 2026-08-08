@@ -4478,13 +4478,39 @@ const RECALL_SCRIPT_FILE: &str = "pretooluse-recall.sh";
 const USERPROMPT_SCRIPT_FILE: &str = "userpromptsubmit-recall.sh";
 const STOP_SCRIPT_FILE: &str = "stop-gate.sh";
 
+/// The path a client should INVOKE for a hook role.
+///
+/// Sprint 28 dogfood: the six role binaries were deployed and every client
+/// event still invoked the `.sh` script, because the deploy wrote binaries and
+/// then wrote settings entries pointing at scripts — no code path built a
+/// command aimed at a binary. The headline deliverable shipped its artifact and
+/// not its effect, and seven audit rounds plus a five-platform release gate all
+/// passed, because every one of them checked CODE callers and none checked what
+/// the editor actually calls.
+///
+/// Prefer the binary when it is on disk; fall back to the script when it is
+/// not, so an install that has not yet received a binary keeps working.
+fn managed_hook_invocation_path(role: &str, script_file: &str) -> Option<PathBuf> {
+    invocation_path_in(&claude_scripts_dir()?, role, script_file)
+}
+
+/// The same rule against an explicit directory, so it is testable without
+/// resolving — and mutating — the developer's real home.
+fn invocation_path_in(dir: &Path, role: &str, script_file: &str) -> Option<PathBuf> {
+    let binary = dir.join(if cfg!(windows) { format!("{role}.exe") } else { role.to_string() });
+    if binary.exists() {
+        return Some(binary);
+    }
+    Some(dir.join(script_file))
+}
+
 fn managed_guard_script_path() -> Option<PathBuf> {
-    Some(claude_scripts_dir()?.join(GUARD_SCRIPT_FILE))
+    managed_hook_invocation_path("jawata-hook-guard", GUARD_SCRIPT_FILE)
 }
 
 /// Absolute path of the managed PostToolUse observer script (sibling of the guard).
 fn managed_observer_script_path() -> Option<PathBuf> {
-    Some(claude_scripts_dir()?.join(OBSERVER_SCRIPT_FILE))
+    managed_hook_invocation_path("jawata-hook-observer", OBSERVER_SCRIPT_FILE)
 }
 
 /// The bash guard. `health_url` (the deployed gateway `/mcp` URL) is baked in so the
@@ -5487,17 +5513,17 @@ const JAWATA_USERPROMPT_SENTINEL: &str = "jawata-studio/userpromptsubmit-recall.
 
 /// Absolute path of the managed SessionStart primer script (sibling of the guard).
 fn managed_primer_script_path() -> Option<PathBuf> {
-    Some(claude_scripts_dir()?.join(PRIMER_SCRIPT_FILE))
+    managed_hook_invocation_path("jawata-hook-primer", PRIMER_SCRIPT_FILE)
 }
 
 /// Absolute path of the managed PreToolUse recall script (sibling of the guard).
 fn managed_recall_script_path() -> Option<PathBuf> {
-    Some(claude_scripts_dir()?.join(RECALL_SCRIPT_FILE))
+    managed_hook_invocation_path("jawata-hook-recall", RECALL_SCRIPT_FILE)
 }
 
 /// Absolute path of the managed UserPromptSubmit recall script (Sprint 21c item D).
 fn managed_userprompt_script_path() -> Option<PathBuf> {
-    Some(claude_scripts_dir()?.join(USERPROMPT_SCRIPT_FILE))
+    managed_hook_invocation_path("jawata-hook-userprompt", USERPROMPT_SCRIPT_FILE)
 }
 
 /// True iff a hook entry's command references the given managed sentinel.
@@ -5932,7 +5958,7 @@ fn remove_managed_hook_section(
 const JAWATA_STOP_SENTINEL: &str = "jawata-studio stop gate";
 
 fn managed_stop_script_path() -> Option<PathBuf> {
-    claude_scripts_dir().map(|dir| dir.join(STOP_SCRIPT_FILE))
+    managed_hook_invocation_path("jawata-hook-stop", STOP_SCRIPT_FILE)
 }
 
 fn is_managed_stop_entry(entry: &serde_json::Value) -> bool {
@@ -6058,10 +6084,27 @@ except Exception:
 # whether a communicator subagent ran is a fact the agent cannot fake by
 # writing a marker.
 try:
-    asking = ('YOUR WORD' in U or 'NEEDS YOUR' in U or 'YOUR CALL' in U
-              or 'YOUR RULING' in U or 'YOUR SIGN-OFF' in U
-              or 'SHALL I' in U or 'WANT ME TO' in U or 'DO YOU WANT' in U
-              or 'DECISION:' in U)
+    # FIRST LIVE FAILURE, hours after this shipped: the next ask the agent wrote
+    # — "you decide whether it becomes v3.7.2 or waits" — matched none of the
+    # original ten phrases and this gate returned allow. That is the SAME defect
+    # the comment above claims to cure: keying on tokens the agent authors
+    # freely. Wider list, plus a DIRECT QUESTION, which an ask cannot avoid.
+    # This REDUCES leakage; it does not close it. The non-evadable form is the
+    # inversion — every stop shows a pass — and that needs the autonomy signal.
+    phrases = ('YOUR WORD','NEEDS YOUR','YOUR CALL','YOUR RULING','YOUR SIGN-OFF',
+               'YOUR DECISION','SHALL I','WANT ME TO','DO YOU WANT','MAY I',
+               'DECISION:','LET ME KNOW','UP TO YOU','YOU DECIDE','YOU CHOOSE',
+               "IF YOU'D RATHER",'IF YOU PREFER','SAY THE WORD','ON YOUR WORD',
+               'AWAITING','AWAIT YOUR','SHOULD I','WOULD YOU LIKE','PREFER THAT I')
+    tail_lines = [l.rstrip() for l in text.splitlines() if l.strip()][-6:]
+    # LENGTH IS A TRIGGER TOO (Harald's own suggestion, and better than the
+    # phrase list): it does not depend on wording, so the agent cannot walk
+    # past it by accident — which is exactly how the ten-phrase list failed on
+    # the first live ask hours after shipping. A long message to him is one the
+    # communicator should have seen, whether or not it asks for anything.
+    asking = (any(p in U for p in phrases)
+              or any(l.endswith('?') for l in tail_lines)
+              or len(text) > 2200)
     if asking:
         # Scope to the window since the last human turn: a communicator run
         # three hours ago does not judge THIS message.
@@ -7422,6 +7465,79 @@ mod tests {
 
 
     // ---------- Sprint 26: the Stop gate ----------
+
+    /// THE WIRE THE WHOLE SPRINT MISSED. Seven audit rounds and a five-platform
+    /// release gate all passed while every client event still invoked the .sh
+    /// script, because they checked CODE callers and none checked what the
+    /// editor is pointed at. This asserts the invocation path itself.
+    #[test]
+    fn a_client_is_pointed_at_the_binary_when_one_is_deployed() {
+        let dir = unique_tempdir("invoke-path");
+        // No binary yet: the script is the honest answer.
+        let script = dir.join(PRIMER_SCRIPT_FILE);
+        fs::write(&script, "#!/bin/sh
+").unwrap();
+        assert_eq!(
+            Some(script.clone()),
+            invocation_path_in(&dir, "jawata-hook-primer", PRIMER_SCRIPT_FILE),
+            "with no binary deployed the script must still be used"
+        );
+        // Binary present: it wins.
+        let binary = dir.join("jawata-hook-primer");
+        fs::write(&binary, "ELF").unwrap();
+        assert_eq!(
+            Some(binary),
+            invocation_path_in(&dir, "jawata-hook-primer", PRIMER_SCRIPT_FILE),
+            "a deployed binary must be what the client invokes"
+        );
+    }
+
+    /// LENGTH AS A TRIGGER — Harald's suggestion, and stronger than the phrase
+    /// list because it does not depend on wording. A long message is one the
+    /// communicator should have judged, ask or not.
+    #[test]
+    fn a_long_message_needs_the_communicator_even_if_it_asks_nothing() {
+        let dir = unique_tempdir("stop-long");
+        let p = dir.join("t.jsonl");
+        let long = "Committed and green. ".repeat(140); // ~2.8k, no question, no phrase
+        let mut b = String::from(
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"go\"}]}}\n",
+        );
+        b.push_str(&format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{long}\"}}]}}}}\n"
+        ));
+        fs::write(&p, b).unwrap();
+        let out = run_stop_script(&serde_json::json!({
+            "transcript_path": p, "stop_hook_active": false }));
+        assert_eq!(Some("block"), out.get("decision").and_then(|d| d.as_str()),
+            "a wall of text must be judged before it is sent: {out}");
+    }
+
+    /// THE LIVE MISS. Hours after the unjudged-ask check shipped, the next ask
+    /// the agent wrote matched none of its phrases and the deployed gate
+    /// returned allow. Harald: "why is the communicator not firing?"
+    #[test]
+    fn the_stop_gate_catches_an_ask_phrased_outside_its_phrase_list() {
+        for ask in [
+            "This is dogfood output; you decide whether it becomes v3.7.2 or waits.",
+            "Do we cut a patch, or leave it?",
+            "Up to you whether we ship it.",
+        ] {
+            let dir = unique_tempdir("stop-liveask");
+            let p = dir.join("t.jsonl");
+            let mut b = String::from(
+                "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"go\"}]}}\n",
+            );
+            b.push_str(&format!(
+                "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{ask}\"}}]}}}}\n"
+            ));
+            fs::write(&p, b).unwrap();
+            let out = run_stop_script(&serde_json::json!({
+                "transcript_path": p, "stop_hook_active": false }));
+            assert_eq!(Some("block"), out.get("decision").and_then(|d| d.as_str()),
+                "must be read as an ask: {ask:?} -> {out}");
+        }
+    }
 
     /// F1: a TOOL RESULT is `"type":"user"` too. Scoping the communicator
     /// window on the last user-role line meant one ordinary tool call after a

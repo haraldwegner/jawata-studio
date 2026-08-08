@@ -84,7 +84,12 @@
       "path builds a command aimed at a binary. Pointing a client at the binary then",
       "would have STRIPPED five working protections to gain two inert ones. The",
       "audit-fix loop and the unjudged ask are now PORTED and fire without autonomy;",
-      "three remain script-only, and the cutover stays blocked until they follow."
+      "three remain script-only, and the cutover stays blocked until they follow.",
+      "",
+      "All eight rules now exist on BOTH sides \u2014 the cutover is no longer blocked by",
+      "parity. Length became a trigger on Harald's own suggestion: it does not depend",
+      "on wording, so the agent cannot walk past it by accident, which is exactly how",
+      "the ten-phrase ask detector failed on its first live outing."
     ],
     "rules": {
       "anti_loop": {
@@ -114,17 +119,17 @@
       },
       "seat_discipline": {
         "bash": "present",
-        "rust": "todo",
+        "rust": "present",
         "what": "a seat invoked with no gate call after it"
       },
       "decision_test_length": {
         "bash": "present",
-        "rust": "todo",
+        "rust": "present",
         "what": "a shaped message over the length budget"
       },
       "undefined_abbreviations": {
         "bash": "present",
-        "rust": "todo",
+        "rust": "present",
         "what": "undefined terms in a shaped message"
       }
     }
