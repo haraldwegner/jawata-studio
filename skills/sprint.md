@@ -185,6 +185,48 @@ must come from the project's source roots, not a path convention, because
 jawata's own `compile_workspace(scope=)` gets this wrong on jawata's own
 repository. Those residuals are what the end-to-end gate below is for.
 
+## The architect runs at EVERY checkpoint, not only at design time
+
+The design-mode step above produces the artifact. **Every checkpoint then diffs
+its changes against that artifact** — the architect's watch mode, asking one
+question the code auditors never ask: **design fix or bandage?**
+
+**Every stage's checkpoint definition carries this line**, in the plan, not only
+here. Sprint 28 C8 is the evidence: the plan mentioned the architect at the
+release ask and at one stage, and nothing at execution time required it. Six
+adversarial code audits ran, all six REFUSED, and every one correctly answered
+*"does this meet the gate?"* Not one asked *"is this the right shape?"* — that
+is not their brief and they will not volunteer it. The architect is the only
+seat whose whole mandate is that question, and it was run zero times.
+
+### The escalation trigger (binding)
+
+**A defect introduced by the fixing commit, TWICE IN A ROW, is a DESIGN ALARM.**
+Stop fixing findings. Run the architect against the artifact before writing the
+next fix.
+
+C8 hit that condition at round two and ran to round six — five more fixing
+commits, each generating the next round's defect, inside a design with no fixed
+point. The cure, when it finally came, DELETED 186 lines and moved the work to a
+process that may block. It was available at round two for the cost of one
+question.
+
+### Two cheap reads that beat six audits
+
+Both are available at INTRODUCTION, before any defect exists:
+
+1. **When a module's own doc states two properties, ask whether both can hold at
+   once.** C8's `silence.rs` header said, in adjacent bullets, *"no lock file,
+   because a lock introduces a way to block"* and *"capped and truncated from
+   the front"* — while its append path opened with a trim. Unsynchronised
+   read-modify-write over a concurrently-appended file cannot preserve records.
+   That is arithmetic, not an emergent bug, and it was written on day one.
+2. **Grep the architecture artifact for the file the module writes.** The same
+   artifact already said: *"any file a hook writes (decision log, counters) is
+   append-under-lock or per-process — never read-modify-write."* The prohibition
+   was in writing before the stage began. Six rounds of code audits read the
+   code and never read the artifact against it.
+
 ## Phase B — the actionable plan
 
 The signed-off spec = the baseline; the plan = the clean, in AGENT language, built from
@@ -280,6 +322,30 @@ recommendation; no loop interior (same-session found-and-fixed is never
 reported as an open problem); every abbreviation defined; a gate reported as
 what it proves, never as how it ran.
 
+## The communicator is ENFORCED, not remembered
+
+Every self-initiated upward message — decision ask, checkpoint summary,
+unprompted status — passes the fresh-context communicator agent BEFORE sending.
+His own questions are answered directly and fast; the gate is for what the agent
+initiates.
+
+**This is not a rule the agent keeps by reading it.** It lived as prose for
+months and was skipped three times in one session, the third an hour after being
+recorded as a lesson. Harald: *"A rule in claude.md is optional and will not be
+applied anywhere else. Have I told you to leave it optional?"*
+
+It is now enforced by the deployed Stop hook: a message asking for a word, a
+ruling, a decision or a sign-off BLOCKS unless a communicator subagent ran since
+the human's last turn. The transcript is written by the HARNESS, so that is a
+fact the agent cannot fake by writing a marker — which is the whole reason the
+check can exist at all.
+
+**The general form, and the reason it keeps mattering:** a fix is GENERAL only
+in a BINDING layer. The experience store carries knowledge and is a recall
+NOMINEE. Skill text binds the agent that reads it. Only a hook enforces. Every
+rule broken during Sprint 28's night — the turn boundary, the communicator, the
+architect at every checkpoint — lived in exactly one of the first two layers.
+
 ## Execution discipline (after GATE 2)
 
 Stages sequential; STOP at every checkpoint with the summary format; every number
@@ -323,6 +389,16 @@ work the released features in anger on real targets; findings → fix → vX.Y.1
 word; a genuinely clean dogfood is recorded as "clean, no patch" WITH the probes that
 prove it — the stage ends shipped either way, and the plan auditor checks such a stage
 exists for every release the plan contains.
+**Sixth rule (Harald 2026-08-07, Sprint 28 C8; evidence: six audit rounds, every
+one refusing a defect introduced by the previous round's fix, inside a design
+the baseline artifact had already prohibited):** at EVERY checkpoint, run the
+ARCHITECT's watch mode against the design artifact — *design fix or bandage?* —
+in addition to the fresh-context code audit. And **two consecutive
+defect-in-the-fixing-commit rounds STOP the fixing** and force that pass. A code
+audit answers whether the change meets the gate; only the architect asks whether
+the shape is right, and a loop of correct answers to the first question can run
+indefinitely inside a wrong answer to the second.
+
 **Three rules from the Sprint-24 post-close audit (Harald 2026-07-15, Sprint 25 C0;
 evidence: 4×REFUSE on a sprint whose every checkpoint was green and whose close-out
 claimed "no narrowing"):**
