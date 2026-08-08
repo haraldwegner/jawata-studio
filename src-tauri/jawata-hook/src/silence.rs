@@ -34,7 +34,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::safety::{Outcome, SilenceReason};
+use crate::safety::Outcome;
 
 /// Above this size the MANAGER rotates the log at its next pass — the hook
 /// itself never rotates; see `append_to`.
@@ -130,6 +130,10 @@ pub fn record(role: &str, outcome: &Outcome) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Test-only: the production paths reach reasons through `Outcome`, so a
+    // top-level import made this look like a production dependency. The
+    // hollow-wiring gate flagged exactly that.
+    use crate::safety::SilenceReason;
 
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("jawata-silence-{}-{name}", std::process::id()));

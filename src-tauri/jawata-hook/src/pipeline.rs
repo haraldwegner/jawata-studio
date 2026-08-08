@@ -548,10 +548,13 @@ mod tests {
         let p = transcript(
             "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n",
         );
-        let payload = format!(
-            "{{\"transcript_path\":\"{}\",\"stop_hook_active\":false}}",
-            p.display()
-        );
+        // serde_json, NOT format!. A Windows path is C:\Users\... and a raw
+        // backslash in a JSON string is an ESCAPE — the payload parsed on Linux
+        // and was invalid JSON on Windows, where these tests had never run until
+        // the crate's tests became a CI gate.
+        let payload = serde_json::json!({
+            "transcript_path": p, "stop_hook_active": false
+        }).to_string();
         let out = run(Role::Stop, &config("claude-code"), &payload, &Stub(Ok(Answer::Nothing)));
         assert_eq!(
             Outcome::Silent(SilenceReason::AutonomyUnknown),
@@ -718,8 +721,8 @@ mod tests {
         )
         .unwrap();
 
-        let first = format!("{{\"transcript_path\":\"{}\",\"stop_hook_active\":false}}", p.display());
-        let again = format!("{{\"transcript_path\":\"{}\",\"stop_hook_active\":true}}", p.display());
+        let first = serde_json::json!({"transcript_path": p, "stop_hook_active": false}).to_string();
+        let again = serde_json::json!({"transcript_path": p, "stop_hook_active": true}).to_string();
 
         let blocked = stop_gate(Client::ClaudeCode, &first, crate::stop::Autonomy::Granted);
         assert!(
@@ -778,7 +781,7 @@ mod tests {
             "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}}\n",
         )
         .unwrap();
-        let payload = format!("{{\"transcript_path\":\"{}\",\"stop_hook_active\":false}}", p.display());
+        let payload = serde_json::json!({"transcript_path": p, "stop_hook_active": false}).to_string();
 
         assert_eq!(
             Outcome::Silent(SilenceReason::StopAllowed),
