@@ -5698,13 +5698,20 @@ const BINARY_LIVE_ROLES: &[&str] = &[
     "jawata-hook-primer",
     "jawata-hook-userprompt",
     "jawata-hook-recall",
-    "jawata-hook-guard",
     "jawata-hook-stop",
 ];
 
 /// Roles whose binary must NOT be on disk: a stale one from an earlier deploy
 /// would sit unfired forever — the 3.7.1 unwired shape, resurrected per role.
-const BINARY_RETIRED_ROLES: &[&str] = &["jawata-hook-observer"];
+///
+/// The GUARD joined the observer here in the 3.7.3 dogfood (F5): its binary
+/// held parity on the shell-command half (java-grep redirect, the
+/// `jawata-fallback:` escape) and silently dropped the other half — the
+/// `.java` hand-edit gate with its `jawata-author:` authoring windows. A
+/// front-door Edit of a `.java` file went through unblocked. The script
+/// generation carries BOTH halves, so the role reverts until the binary
+/// ports the edit gate.
+const BINARY_RETIRED_ROLES: &[&str] = &["jawata-hook-guard", "jawata-hook-observer"];
 
 /// Sprint 28 (D-SHIM, C6 clause 5 first half): deploy the role-named hook
 /// binaries — UNLINK, then write.
@@ -9528,7 +9535,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&source, "#!/bin/sh\nexit 0\n").unwrap();
 
-        let roles = ["jawata-hook-primer", "jawata-hook-guard"];
+        // Two LIVE roles — a retired role (guard, observer) here would be
+        // contradictory: the deploy unconditionally removes retired binaries
+        // before writing, so it can never be byte-stable for one.
+        let roles = ["jawata-hook-primer", "jawata-hook-recall"];
         assert_eq!(2, deploy_hook_binaries(&source, &hooks, &roles).unwrap().len());
         assert!(deploy_hook_binaries(&source, &hooks, &roles).unwrap().is_empty(),
             "an unchanged redeploy must write nothing — otherwise every deploy churns \
@@ -9554,10 +9564,11 @@ mod tests {
         let binary_bytes = b"\x7fELF fake role binary".to_vec();
         std::fs::write(&source, &binary_bytes).unwrap();
 
-        // A stale observer binary from 3.7.1/3.7.2. The deploy must REMOVE it:
-        // its existence is what used to flip the observer away from its live
-        // script (the invocation path preferred any binary on disk).
+        // Stale retired-role binaries from 3.7.1/3.7.2/3.7.3. The deploy must
+        // REMOVE them: their existence is what used to flip a role away from
+        // its live script (the invocation path preferred any binary on disk).
         std::fs::write(hooks.join("jawata-hook-observer"), &binary_bytes).unwrap();
+        std::fs::write(hooks.join("jawata-hook-guard"), &binary_bytes).unwrap();
 
         deploy_hook_binaries(&source, &hooks, BINARY_LIVE_ROLES).unwrap();
 
@@ -9608,9 +9619,15 @@ mod tests {
         assert_eq!(build_observer_script(url, token),
             std::fs::read_to_string(hooks.join(OBSERVER_SCRIPT_FILE)).unwrap(),
             "the observer's live generation is the SCRIPT (role_generations)");
-        assert!(!hooks.join("jawata-hook-observer").exists(),
-            "the retired observer binary must come off the disk — a stale one flips \
-             the invocation path back to the stub");
+        assert_eq!(build_guard_script(url),
+            std::fs::read_to_string(hooks.join(GUARD_SCRIPT_FILE)).unwrap(),
+            "the guard's live generation is the SCRIPT — the binary dropped the \
+             .java hand-edit gate (3.7.3 dogfood F5)");
+        for retired in BINARY_RETIRED_ROLES {
+            assert!(!hooks.join(retired).exists(),
+                "{retired}: the retired binary must come off the disk — a stale one \
+                 flips the invocation path back to the incomplete generation");
+        }
 
         // And the settings entries point at what actually runs: the binary
         // for live roles, the script for the observer — the wiring the last
@@ -9634,6 +9651,10 @@ mod tests {
             "the observer entry must point at its script; commands: {commands:?}");
         assert!(!commands.iter().any(|c| c.ends_with("jawata-hook-observer")),
             "no entry may point at the retired observer binary; commands: {commands:?}");
+        assert!(commands.iter().any(|c| c.ends_with(GUARD_SCRIPT_FILE)),
+            "the guard entry must point at its script; commands: {commands:?}");
+        assert!(!commands.iter().any(|c| c.ends_with("jawata-hook-guard")),
+            "no entry may point at the retired guard binary; commands: {commands:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

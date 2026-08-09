@@ -147,7 +147,13 @@
       "tool outcomes and the jawata-fallback audit trail. outcomes.log froze the",
       "moment the observer entry first pointed at the binary. Both crates assert",
       "against this section: the deploy writes binaries for exactly the roles",
-      "declared binary here, and keeps the script for the rest."
+      "declared binary here, and keeps the script for the rest.",
+      "",
+      "3.7.3 dogfood F5: the guard binary held parity on the shell-command half",
+      "(java-grep redirect, jawata-fallback escape) and silently dropped the OTHER",
+      "half — the .java hand-edit gate with its jawata-author authoring windows.",
+      "Proven by a front-door Edit of a .java file that went through unblocked.",
+      "The guard reverts to its script (which carries both halves) until the port."
     ],
     "primer": {
       "live": "binary"
@@ -159,7 +165,8 @@
       "live": "binary"
     },
     "guard": {
-      "live": "binary"
+      "live": "script",
+      "until": "the binary ports the .java hand-edit gate (Edit/Write/MultiEdit + jawata-author authoring windows) — 3.7.3 dogfood: the binary judges shell commands only, so the edit gate silently dropped at cutover"
     },
     "observer": {
       "live": "script",
