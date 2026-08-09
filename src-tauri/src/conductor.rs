@@ -5,7 +5,7 @@
 
 use crate::runner::{parse_seat_definition, GateClass, SeatDefinition};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// The seven seat definitions shipped in the binary. Materialized into
 /// `<config>/seats/` where absent; the materialized copy wins so a
@@ -58,9 +58,6 @@ pub fn command_for(seat_name: &str) -> Option<(&'static str, &'static str)> {
         .map(|(_, cmd, desc)| (*cmd, *desc))
 }
 
-/// Writes the embedded seats into `seats_dir`, absent-only: an existing
-/// file is NEVER overwritten (config wins — a user edit survives every
-/// redeploy). Returns the paths actually written.
 /// What one materialization pass did, per seat — surfaced into the deploy
 /// result so nothing about the user's instruments changes silently.
 #[derive(Debug, Default)]
@@ -597,7 +594,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn unique_tempdir(label: &str) -> PathBuf {
+    fn unique_tempdir(label: &str) -> std::path::PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let nanos = SystemTime::now()
