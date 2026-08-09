@@ -61,18 +61,118 @@ pub fn command_for(seat_name: &str) -> Option<(&'static str, &'static str)> {
 /// Writes the embedded seats into `seats_dir`, absent-only: an existing
 /// file is NEVER overwritten (config wins — a user edit survives every
 /// redeploy). Returns the paths actually written.
-pub fn materialize_seats(seats_dir: &Path) -> Result<Vec<PathBuf>, String> {
+/// What one materialization pass did, per seat — surfaced into the deploy
+/// result so nothing about the user's instruments changes silently.
+#[derive(Debug, Default)]
+pub struct SeatMaterialization {
+    /// Freshly seeded (file was absent).
+    pub seeded: Vec<String>,
+    /// UNEDITED copy refreshed to this build's content.
+    pub refreshed: Vec<String>,
+    /// User-EDITED copy left in place while this build ships different
+    /// content — the user's version wins, and the deploy says so.
+    pub shadowed: Vec<String>,
+    /// Pre-manifest copy that differed from this build: backed up beside
+    /// itself and refreshed (we cannot prove it was unedited, so nothing is
+    /// destroyed — but a silently stale instrument is the worse failure).
+    pub migrated: Vec<String>,
+}
+
+/// The manifest of content hashes THIS APP wrote, per seat file. A copy whose
+/// hash still matches is an unedited seed; one that differs was edited by the
+/// user. Lives beside the seats, dot-named, never rendered.
+const SEED_MANIFEST: &str = ".seeded.json";
+
+fn content_hash(body: &str) -> String {
+    // Not cryptographic — an identity check between bytes we wrote and bytes
+    // on disk. FNV-1a over the content, hex-rendered.
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in body.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
+/// Materialize the embedded seats into `seats_dir` — and keep UNEDITED copies
+/// CURRENT.
+///
+/// The original contract was materialize-if-absent with "config wins"
+/// absolutely. The 3.7.6 dogfood showed what that costs: every install's
+/// seats freeze at their first materialization, so a seat improvement shipped
+/// in an update exists in the binary and never reaches the deployed
+/// instrument — the invisible-stale-deploy defect class, on the files that
+/// define the roles. Ruled a major bug (Harald, 2026-08-09).
+///
+/// The refined contract, per file:
+/// - absent                          → seed it, record its hash;
+/// - hash matches the manifest       → an unedited seed: refresh it whenever
+///   this build's content differs, and re-record;
+/// - hash differs from the manifest  → the user edited it: PRESERVE it, and
+///   report the shadowing loudly when this build ships different content;
+/// - no manifest entry (pre-manifest install): identical to this build →
+///   adopt silently; different → back it up beside itself and refresh,
+///   reported — provenance is unknowable there, so nothing is destroyed,
+///   and the instrument does not stay silently stale.
+pub fn materialize_seats(seats_dir: &Path) -> Result<SeatMaterialization, String> {
     fs::create_dir_all(seats_dir)
         .map_err(|e| format!("cannot create seats dir {}: {e}", seats_dir.display()))?;
-    let mut written = Vec::new();
+    let manifest_path = seats_dir.join(SEED_MANIFEST);
+    let mut manifest: std::collections::BTreeMap<String, String> =
+        fs::read_to_string(&manifest_path)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+
+    let mut report = SeatMaterialization::default();
     for (file, body) in EMBEDDED_SEATS {
         let path = seats_dir.join(file);
-        if !path.exists() {
+        let write_current = |report_bucket: &mut Vec<String>,
+                             manifest: &mut std::collections::BTreeMap<String, String>|
+         -> Result<(), String> {
             fs::write(&path, body).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-            written.push(path);
+            manifest.insert(file.to_string(), content_hash(body));
+            report_bucket.push(file.to_string());
+            Ok(())
+        };
+
+        let Ok(existing) = fs::read_to_string(&path) else {
+            write_current(&mut report.seeded, &mut manifest)?;
+            continue;
+        };
+        match manifest.get(file) {
+            Some(seeded_hash) if *seeded_hash == content_hash(&existing) => {
+                // Unedited seed — keep it current.
+                if existing != body {
+                    write_current(&mut report.refreshed, &mut manifest)?;
+                }
+            }
+            Some(_) => {
+                // User-edited: config wins, loudly.
+                if existing != body {
+                    report.shadowed.push(file.to_string());
+                }
+            }
+            None => {
+                if existing == body {
+                    // Pre-manifest but identical: adopt.
+                    manifest.insert(file.to_string(), content_hash(body));
+                } else {
+                    // Pre-manifest and different: provenance unknowable.
+                    // Back up, refresh, say so.
+                    let backup = seats_dir.join(format!("{file}.pre-refresh"));
+                    fs::copy(&path, &backup)
+                        .map_err(|e| format!("cannot back up {}: {e}", path.display()))?;
+                    write_current(&mut report.migrated, &mut manifest)?;
+                }
+            }
         }
     }
-    Ok(written)
+    let rendered = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| format!("cannot render the seed manifest: {e}"))?;
+    fs::write(&manifest_path, rendered)
+        .map_err(|e| format!("cannot write {}: {e}", manifest_path.display()))?;
+    Ok(report)
 }
 
 /// The Lane-1 stance-handoff contract embedded in every generated command:
@@ -689,18 +789,63 @@ mod tests {
     }
 
     #[test]
-    fn materialize_writes_absent_only_and_user_edits_survive() {
+    fn materialize_seeds_refreshes_unedited_and_preserves_edits() {
         let seats_dir = unique_tempdir("materialize").join("seats");
-        let written = materialize_seats(&seats_dir).unwrap();
-        assert_eq!(written.len(), 7, "all seven materialized on first run");
-        // User edits one seat.
+        let first = materialize_seats(&seats_dir).unwrap();
+        assert_eq!(first.seeded.len(), 7, "all seven materialized on first run");
+
+        // A user edit survives every later run — config wins for EDITED files.
         let edited = seats_dir.join("javadoc-writer.md");
         let custom = fs::read_to_string(&edited).unwrap() + "\nCUSTOM RULE.\n";
         fs::write(&edited, &custom).unwrap();
-        // Second run writes nothing, the edit survives.
-        let written2 = materialize_seats(&seats_dir).unwrap();
-        assert!(written2.is_empty(), "second run writes nothing");
-        assert_eq!(fs::read_to_string(&edited).unwrap(), custom);
+        let second = materialize_seats(&seats_dir).unwrap();
+        assert!(second.seeded.is_empty() && second.refreshed.is_empty() && second.migrated.is_empty(),
+            "nothing rewritten on a converged run: {second:?}");
+        assert_eq!(fs::read_to_string(&edited).unwrap(), custom, "the edit survives");
+        assert!(second.shadowed.contains(&"javadoc-writer.md".to_string()),
+            "an edited seat that differs from this build is REPORTED, never silent: {second:?}");
+
+        // An UNEDITED seed from an older build refreshes. Simulated by writing
+        // old content AND recording its hash as the seeded one — exactly what
+        // an older app version would have left behind.
+        let stale = seats_dir.join("architect.md");
+        let old_body = "OLD SEAT BODY from a previous release\n";
+        fs::write(&stale, old_body).unwrap();
+        let manifest_path = seats_dir.join(".seeded.json");
+        let mut manifest: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        manifest.insert("architect.md".into(), content_hash(old_body));
+        fs::write(&manifest_path, serde_json::to_string(&manifest).unwrap()).unwrap();
+
+        let third = materialize_seats(&seats_dir).unwrap();
+        assert!(third.refreshed.contains(&"architect.md".to_string()),
+            "the 3.7.6 dogfood defect: an unedited stale seed must refresh: {third:?}");
+        let refreshed = fs::read_to_string(&stale).unwrap();
+        let embedded = EMBEDDED_SEATS.iter().find(|(f, _)| *f == "architect.md").unwrap().1;
+        assert_eq!(refreshed, embedded, "the file now carries this build's content");
+    }
+
+    /// The install this defect was found on: seats seeded by a pre-manifest
+    /// build, no record of what was written. Identical files are adopted;
+    /// differing ones are backed up and refreshed — provenance is unknowable
+    /// there, so nothing is destroyed, and nothing stays silently stale.
+    #[test]
+    fn pre_manifest_installs_adopt_matching_and_migrate_differing_with_backup() {
+        let seats_dir = unique_tempdir("premanifest").join("seats");
+        materialize_seats(&seats_dir).unwrap();
+        fs::remove_file(seats_dir.join(".seeded.json")).unwrap();
+        let stale = seats_dir.join("architect.md");
+        let old_body = "SEAT BODY as an older release shipped it\n";
+        fs::write(&stale, old_body).unwrap();
+
+        let report = materialize_seats(&seats_dir).unwrap();
+        assert!(report.migrated.contains(&"architect.md".to_string()), "{report:?}");
+        assert!(report.shadowed.is_empty() && report.seeded.is_empty(),
+            "the six identical files are adopted silently: {report:?}");
+        let embedded = EMBEDDED_SEATS.iter().find(|(f, _)| *f == "architect.md").unwrap().1;
+        assert_eq!(fs::read_to_string(&stale).unwrap(), embedded, "refreshed to this build");
+        assert_eq!(fs::read_to_string(seats_dir.join("architect.md.pre-refresh")).unwrap(),
+            old_body, "the displaced content is preserved beside the file");
     }
 
     #[test]

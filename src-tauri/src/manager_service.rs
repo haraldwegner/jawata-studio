@@ -2092,7 +2092,28 @@ impl ManagerService {
             let seats_dir = self.config_store.paths().config_dir.join("seats");
             match crate::conductor::materialize_seats(&seats_dir) {
                 Err(error) => errors.push(format!("{client}: seat materialization: {error}")),
-                Ok(_) => {
+                Ok(seat_report) => {
+                    // v3.7.7 (the seat-staleness bug, ruled major): what the
+                    // materialization DID is part of the deploy result —
+                    // refreshed seeds, pre-manifest migrations (backed up
+                    // beside the file), and user edits shadowing this build's
+                    // content are each named, never silent.
+                    if !seat_report.refreshed.is_empty() {
+                        changed_sections
+                            .push(format!("seatsRefreshed: {}", seat_report.refreshed.join(", ")));
+                    }
+                    if !seat_report.migrated.is_empty() {
+                        changed_sections.push(format!(
+                            "seatsMigrated (old copy kept as *.pre-refresh): {}",
+                            seat_report.migrated.join(", ")
+                        ));
+                    }
+                    if !seat_report.shadowed.is_empty() {
+                        changed_sections.push(format!(
+                            "seatsShadowedByYourEdits (this build ships a newer {}; your version stays)",
+                            seat_report.shadowed.join(", ")
+                        ));
+                    }
                     let (seats, seat_errors) = crate::runner::load_seat_definitions(&seats_dir);
                     for (seat_path, error) in &seat_errors {
                         errors.push(format!(
