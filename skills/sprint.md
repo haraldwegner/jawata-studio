@@ -455,6 +455,17 @@ sign-off ask — never after it, and never in CI.**
    either way. It is necessary, not sufficient — a production site passing an explicit
    `null` keeps a caller and still leaves the wire dead — which is why rule 1 stands
    above it.
+2a. **A CHANGED CONTRACT NEEDS ONE TEST EXERCISING PRODUCER AND CONSUMER TOGETHER,
+   wherever they live — and that test must FAIL when either side moves.** (Sprint 28,
+   "E2E means E2E"; written here because a rule left as prose in a closed sprint is
+   the instrument blindness that sprint existed to end.) Two per-product tests are
+   not an end-to-end test: the hook outage lived exactly in the seam both sides'
+   suites stopped short of. Falsifiability is the clause that matters — a
+   consumer-side test against a committed capture of the producer's answer stays
+   green when the producer moves, and a self-check that emits a canned string
+   before calling the other side cannot fail at all; neither satisfies this rule.
+   For a cross-repo seam that means one gate drives the REAL artifact of each side
+   together, however inconvenient the plumbing.
 3. **A CAPABILITY DECLARES ITS OWN REACH.** Where the product has a health/status
    surface, wiring reports which surfaces a capability actually reaches, not merely that
    the component loaded. "Component available: true" was true and misleading for the

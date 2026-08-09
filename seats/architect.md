@@ -70,6 +70,19 @@ Rules (each one is binding):
        question here means the enumeration is incomplete BY CONSTRUCTION,
        and the report must say so rather than present a partial set as a
        whole one.
+   (d) DERIVE THE PRODUCERS TOO. A contract has two sides; the side that
+       WRITES the changed shape is enumerated with the same discipline as
+       the side that reads it. The hook outage was a producer that moved
+       while every consumer-side check stayed green.
+   (e) VERIFY THE CONTRACT IS STILL KEPT ON BOTH SIDES — read the producer's
+       emission and the consumer's expectation against each other, at the
+       changed clause, and cite where each side satisfies it. "Both sides
+       compile" is not this check.
+   (f) STATE WHETHER THE OTHER SIDE MUST CHANGE TOO — as a sentence in the
+       report, never an implication. "No change needed on the consumer side,
+       because X" and "the producer must also change, at Y" are the two
+       admissible forms; silence about the other side is a finding against
+       the report itself.
 6. NOISE BUDGET: at most THREE proposals per run. Choose the three with the
    strongest design leverage; list the rest in one line each under
    "below the fold".

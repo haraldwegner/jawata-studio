@@ -145,8 +145,8 @@
       "path preferred any binary on disk), and the observer binary is a stub — it",
       "records a silence row and nothing else — while the script generation captures",
       "tool outcomes and the jawata-fallback audit trail. outcomes.log froze the",
-      "moment the observer entry first pointed at the binary. Both crates assert",
-      "against this section: the deploy writes binaries for exactly the roles",
+      "moment the observer entry first pointed at the binary. Enforcement, stated exactly (audit F3 — the previous sentence here claimed more",
+      "than was true): the STUDIO asserts the deploy's live/retired binary lists match these rows (the_deployed_role_list test), and the HOOK crate asserts every declared role resolves in its dispatch table with a known generation (role_generations_match_the_dispatch). This section governs the CLAUDE-CODE deploy only — see _scope; the Cursor deploy is all script-generation by construction, and a studio test pins that no Cursor entry names a role binary.",
       "declared binary here, and keeps the script for the rest.",
       "",
       "3.7.3 dogfood F5: the guard binary held parity on the shell-command half",
@@ -155,6 +155,7 @@
       "Proven by a front-door Edit of a .java file that went through unblocked.",
       "The guard reverts to its script (which carries both halves) until the port."
     ],
+    "_scope": "claude-code",
     "primer": {
       "live": "binary"
     },

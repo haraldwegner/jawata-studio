@@ -9701,25 +9701,45 @@ mod tests {
             p
         };
 
+        // Retry ETXTBSY: a parallel test forking between this test's write and
+        // exec inherits the write fd and holds it briefly — the same race the
+        // fail_safe_boundary harness documents. Production deploys are
+        // sequential in one thread and never hit it.
+        let retry = |f: &dyn Fn() -> Result<(), String>| {
+            let mut last = Ok(());
+            for _ in 0..40 {
+                last = f();
+                match &last {
+                    Err(e) if e.contains("Text file busy") => {
+                        std::thread::sleep(std::time::Duration::from_millis(50))
+                    }
+                    _ => break,
+                }
+            }
+            last
+        };
+
         let stop = write_exec(
             "jawata-hook-stop",
             "#!/bin/sh\nprintf '{\"decision\":\"block\",\"reason\":\"selftest\"}'\n",
         );
-        selftest_stop_hook_script(&stop)
+        retry(&|| selftest_stop_hook_script(&stop))
             .expect("a block-with-reason through direct exec is the Stop contract");
 
         let primer = write_exec(
             "jawata-hook-primer",
             "#!/bin/sh\nprintf '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"x\"}}'\n",
         );
-        selftest_hook_script(&primer)
+        retry(&|| selftest_hook_script(&primer))
             .expect("a context emission through direct exec is the injecting contract");
 
         // And a role binary that emits NOTHING is a real failure, loudly —
         // never the silent Ok(()) the missing-bash arm grants scripts.
         let mute = write_exec("jawata-hook-userprompt", "#!/bin/sh\nexit 0\n");
-        assert!(selftest_hook_script(&mute).is_err(),
-            "a mute role binary must fail its selftest");
+        let err = retry(&|| selftest_hook_script(&mute))
+            .expect_err("a mute role binary must fail its selftest");
+        assert!(err.contains("NOTHING"),
+            "the failure must be about the empty output, not a spawn race: {err}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -10345,6 +10365,57 @@ mod tests {
         }
         assert_eq!(BINARY_LIVE_ROLES.len() + BINARY_RETIRED_ROLES.len(), SCRIPT_GENERATION.len(),
             "SCRIPT_GENERATION carries a row for a role the deploy neither writes nor retires");
+    }
+
+    /// Audit F3, the bash column: `stop_rules` declared each rule's status in
+    /// the bash generation and NOTHING asserted it — a rule could be dropped
+    /// from the template while the contract still said "present", which is the
+    /// divergence the section exists to prevent. Each declared-present rule
+    /// pins to a distinctive marker in the template it claims to live in.
+    #[test]
+    fn every_stop_rule_declared_present_in_bash_has_its_marker_in_the_template() {
+        let contract: serde_json::Value =
+            serde_json::from_str(include_str!("../hook-events.json")).unwrap();
+        let rules = contract["stop_rules"]["rules"].as_object().expect("stop_rules.rules");
+        let marker: std::collections::HashMap<&str, &str> = [
+            ("anti_loop", "stop_hook_active"),
+            ("audit_fix_loop", "AUDIT-FIX LOOP"),
+            ("unjudged_ask", "UNJUDGED"),
+            ("seat_discipline", "SEAT DISCIPLINE"),
+            ("decision_test_length", "2200"),
+            ("undefined_abbreviations", "undefined terms"),
+        ]
+        .into();
+        for (rule, row) in rules {
+            if row["bash"].as_str() != Some("present") {
+                continue;
+            }
+            let m = marker.get(rule.as_str()).unwrap_or_else(|| {
+                panic!("{rule}: declared present in bash but this test knows no marker \
+                        for it — add one here alongside the rule")
+            });
+            assert!(STOP_TEMPLATE.contains(m),
+                "{rule}: declared present in the bash generation, but its marker \
+                 {m:?} is not in STOP_TEMPLATE — the contract says more than the \
+                 script does");
+        }
+    }
+
+    /// Audit F3, the Cursor side: `role_generations` governs the claude-code
+    /// deploy (`_scope`), and the Cursor deploy must stay all-script BY
+    /// CONSTRUCTION — a Cursor entry naming a role binary would be a cutover
+    /// no contract row governs.
+    #[test]
+    fn no_cursor_entry_ever_names_a_role_binary() {
+        for (event, entry) in managed_cursor_hook_entries() {
+            let command = entry["command"].as_str().unwrap_or_default();
+            assert!(!command.contains("jawata-hook-"),
+                "{event}: the Cursor entry {command:?} names a role binary — the \
+                 Cursor deploy is script-generation only, and no role_generations \
+                 row governs a Cursor cutover");
+            assert!(command.ends_with(".sh"),
+                "{event}: the Cursor entry {command:?} is not a script");
+        }
     }
 
     #[test]

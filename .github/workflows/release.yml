@@ -62,6 +62,19 @@ jobs:
         working-directory: src-tauri
         run: cargo test -p jawata-hook --release
 
+      # Sprint 28 outcome audit, F1: the STUDIO crate's suite — the carrier of
+      # the deploy proofs (writer/binary convergence, user-hook preservation,
+      # the hook-events.json contract assertions) — ran in NO workflow: the
+      # step above gates only the hook crate, so every deploy proof could go
+      # red and a release would ship regardless. The sprint's own defect class
+      # (a proof that exists and gates nothing), one level up. Linux only:
+      # these tests exercise deploy logic, not platform bundles.
+      - name: Test the studio crate
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        working-directory: src-tauri
+        run: cargo test --release
+
       - name: Install frontend dependencies
         run: npm install
 

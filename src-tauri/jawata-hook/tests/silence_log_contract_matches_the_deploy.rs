@@ -99,3 +99,23 @@ fn the_contract_says_the_studio_rotates_and_the_hook_only_appends() {
         "one generation is the stated trade; changing it is a decision, not a detail"
     );
 }
+
+/// Sprint 28 outcome audit, F3: the `hook_config.json` seam row was asserted
+/// by NEITHER side. This is the hook's half: the filename the crate actually
+/// reads is the filename the contract declares, and the row says the hook is
+/// its reader. (The studio's half is its temp-file-plus-rename writer tests;
+/// the `atomicity` cell names that discipline for the human reader.)
+#[test]
+fn the_hook_config_seam_row_names_the_file_this_crate_reads() {
+    let row = contract()["seam_files"][jawata_hook::config::CONFIG_FILE].clone();
+    assert!(
+        row.is_object(),
+        "seam_files has no row for {} — the file this crate reads at every \
+         invocation is an undeclared seam",
+        jawata_hook::config::CONFIG_FILE
+    );
+    assert_eq!("hook", row["reader"].as_str().unwrap_or(""),
+        "the contract must name the hook as this file's reader");
+    assert_eq!("studio", row["writer"].as_str().unwrap_or(""),
+        "the contract must name the studio as this file's writer");
+}

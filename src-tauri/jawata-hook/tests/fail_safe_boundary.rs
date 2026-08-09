@@ -235,6 +235,44 @@ fn a_deployed_role_with_a_torn_config_still_exits_zero_and_writes_nothing() {
     assert!(out.is_empty(), "got: {out:?}");
 }
 
+/// Sprint 28 outcome audit, F12: the module doc above claims the malformed-
+/// RESPONSE hazard, and its coverage was unit-level only (query.rs asserts an
+/// error VALUE) — `exit_with` on that path was executed by no test, which is
+/// this file's own founding complaint. The REAL binary, a REAL socket, a 200
+/// whose body is garbage: exit 0, stdout empty.
+#[test]
+fn a_deployed_role_served_garbage_with_a_200_still_exits_zero_and_writes_nothing() {
+    let _serial = deploy_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        // One request is all the hook gets to make.
+        if let Ok((mut sock, _)) = listener.accept() {
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf);
+            let body = "this is not json at all {{{ ";
+            let _ = std::io::Write::write_all(
+                &mut sock,
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    let config = format!(
+        r#"{{"client":"claude-code","token":"t","url":"http://{addr}/mcp"}}"#
+    );
+    let (_dir, exe) = deploy("garbage-200", "jawata-hook-primer", Some(&config));
+    let (code, out, _) = run_at(&exe, false);
+    let _ = server.join();
+    assert_eq!(Some(0), code, "a garbage answer must not change the exit status");
+    assert!(out.is_empty(),
+        "a garbage answer must produce NO stdout — a failClosed client reads \
+         any output as a decision; got: {out:?}");
+}
+
 #[test]
 fn the_release_profile_really_unwinds() {
     // The C5 audit proved the previous in-process assertion VACUOUS: it read
