@@ -75,6 +75,30 @@ jobs:
         working-directory: src-tauri
         run: cargo test --release
 
+      # Sprint 28 "E2E means E2E", closed for real (outcome audit F10): the
+      # in-crate seam test drives the hook against a MOCK store serving a
+      # committed capture, so a producer-side move cannot fail it. This gate
+      # crosses the seam with nothing canned: the freshly built hook binary,
+      # the PUBLISHED jawata.jar over real HTTP, a real prompt — and the answer
+      # must arrive as injectable context. Red-proven with a mute consumer;
+      # a moved store envelope lands in the same failure. Linux only: one
+      # honest crossing gates the release; per-OS behaviour is 28a's matrix.
+      - name: Cross-product seam gate (hook binary vs published store)
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          # Resolve the CURRENT latest asset by shape, never by a baked-in
+          # version — a hardcoded name goes stale on the next store release.
+          ASSET_URL="$(curl -s https://api.github.com/repos/haraldwegner/jawata-mcp/releases/latest \
+            | grep -o 'https://[^"]*linux-x64\.tar\.gz' | head -1)"
+          [ -n "$ASSET_URL" ] || { echo "no linux-x64 asset on the latest jawata-mcp release"; exit 1; }
+          curl -sLo /tmp/jawata-dist.tar.gz "$ASSET_URL"
+          tar -xzf /tmp/jawata-dist.tar.gz -C /tmp
+          JAR="$(ls /tmp/jawata-v*/jawata.jar | head -1)"
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          export PATH="$JAVA_HOME_21_X64/bin:$PATH"
+          ./build/seam-gate.sh src-tauri/target/release/jawata-hook "$JAR"
+
       - name: Install frontend dependencies
         run: npm install
 
