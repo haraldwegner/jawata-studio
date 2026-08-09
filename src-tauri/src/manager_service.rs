@@ -4813,17 +4813,26 @@ fn write_managed_hook(
             script_parent.display()
         )
     })?;
+    // v3.7.3 audit F1: this writer predates write_managed_hook_section and
+    // carries its own copy of the body write — which is exactly where the
+    // clobber survived the first fix. Same refusal as the section writer:
+    // a role-binary path's content belongs to deploy_hook_binaries; here we
+    // own only the settings entry. `read_to_string` on an ELF fails on
+    // non-UTF-8, `unwrap_or(true)` called that "changed", and the bash guard
+    // landed over the binary on every full deploy.
+    let body_is_ours = !path_is_role_binary(guard_path);
     let script_body = build_guard_script(health_url);
-    let script_changed = fs::read_to_string(guard_path)
-        .map(|existing| existing != script_body)
-        .unwrap_or(true);
-    if script_changed || force_rewrite {
+    let script_changed = body_is_ours
+        && fs::read_to_string(guard_path)
+            .map(|existing| existing != script_body)
+            .unwrap_or(true);
+    if body_is_ours && (script_changed || force_rewrite) {
         fs::write(guard_path, &script_body).map_err(|error| {
             format!("failed writing guard script {}: {error}", guard_path.display())
         })?;
     }
     #[cfg(unix)]
-    {
+    if body_is_ours {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(guard_path, fs::Permissions::from_mode(0o755));
     }
@@ -5426,17 +5435,25 @@ fn write_managed_posthook(
     fs::create_dir_all(script_parent).map_err(|error| {
         format!("failed to create observer dir {}: {error}", script_parent.display())
     })?;
+    // Same refusal as write_managed_hook / the section writer (v3.7.3 audit
+    // F1): a role-binary path's content is deploy_hook_binaries'. Today the
+    // observer resolves to its script (role_generations declares the script
+    // generation live), so this arm is latent — it becomes load-bearing the
+    // day the observer binary cuts over, which is exactly when nobody will
+    // remember this copy of the body write exists.
+    let body_is_ours = !path_is_role_binary(observer_path);
     let script_body = build_observer_script(mcp_url, token);
-    let script_changed = fs::read_to_string(observer_path)
-        .map(|existing| existing != script_body)
-        .unwrap_or(true);
-    if script_changed || force_rewrite {
+    let script_changed = body_is_ours
+        && fs::read_to_string(observer_path)
+            .map(|existing| existing != script_body)
+            .unwrap_or(true);
+    if body_is_ours && (script_changed || force_rewrite) {
         fs::write(observer_path, &script_body).map_err(|error| {
             format!("failed writing observer script {}: {error}", observer_path.display())
         })?;
     }
     #[cfg(unix)]
-    {
+    if body_is_ours {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(observer_path, fs::Permissions::from_mode(0o755));
     }
@@ -9544,46 +9561,79 @@ mod tests {
 
         deploy_hook_binaries(&source, &hooks, BINARY_LIVE_ROLES).unwrap();
 
+        // The PRODUCTION writers, in the production order, with force_rewrite
+        // (Regenerate mode) — the strongest clobber attempt. The first version
+        // of this test drove all six roles through write_managed_hook_section
+        // and stayed green while production's guard step, write_managed_hook,
+        // carried its own unguarded copy of the body write (v3.7.3 audit F1/F2)
+        // — verifying a parallel implementation instead of the deployed one,
+        // which is this sprint's founding failure shape.
         let settings = dir.join("settings.json");
-        let generation2_body = "#!/usr/bin/env bash\n# generation-2 body\n";
-        for (role, script_file) in [
-            ("jawata-hook-guard", GUARD_SCRIPT_FILE),
-            ("jawata-hook-observer", OBSERVER_SCRIPT_FILE),
-            ("jawata-hook-primer", PRIMER_SCRIPT_FILE),
-            ("jawata-hook-recall", RECALL_SCRIPT_FILE),
-            ("jawata-hook-userprompt", USERPROMPT_SCRIPT_FILE),
-            ("jawata-hook-stop", STOP_SCRIPT_FILE),
-        ] {
-            let path = invocation_path_in(&hooks, role, script_file).unwrap();
-            write_managed_hook_section(
-                settings.to_str().unwrap(),
-                &path,
-                generation2_body,
-                "PreToolUse",
-                serde_json::json!({
-                    "hooks": [ { "type": "command", "command": display_path(&path) } ]
-                }),
-                |_| false,
-                false,
-                true, // force_rewrite: the strongest clobber attempt
-            )
+        let s = settings.to_str().unwrap();
+        let (url, token) = ("http://127.0.0.1:1/mcp", "t");
+        let resolve = |role: &str, script_file: &str| {
+            invocation_path_in(&hooks, role, script_file).unwrap()
+        };
+        write_managed_hook(s, &resolve("jawata-hook-guard", GUARD_SCRIPT_FILE), url, false, true)
             .unwrap();
-        }
+        write_managed_posthook(
+            s, &resolve("jawata-hook-observer", OBSERVER_SCRIPT_FILE), url, token, false, true,
+        )
+        .unwrap();
+        write_managed_primer(
+            s, &resolve("jawata-hook-primer", PRIMER_SCRIPT_FILE), url, token, false, true,
+        )
+        .unwrap();
+        write_managed_recall(
+            s, &resolve("jawata-hook-recall", RECALL_SCRIPT_FILE), url, token, false, true,
+        )
+        .unwrap();
+        write_managed_userprompt(
+            s, &resolve("jawata-hook-userprompt", USERPROMPT_SCRIPT_FILE), url, token, false, true,
+        )
+        .unwrap();
+        write_managed_stop(
+            s, &resolve("jawata-hook-stop", STOP_SCRIPT_FILE), url, token, false, true,
+        )
+        .unwrap();
 
         for role in BINARY_LIVE_ROLES {
             let content = std::fs::read(hooks.join(role)).unwrap_or_else(|e| {
                 panic!("{role}: the deployed binary is gone after the writers ran: {e}")
             });
             assert_eq!(binary_bytes, content,
-                "{role}: a section writer clobbered the deployed binary with the \
+                "{role}: a production writer clobbered the deployed binary with the \
                  generation-2 script — the 3.7.2 dogfood defect");
         }
-        assert_eq!(generation2_body,
+        assert_eq!(build_observer_script(url, token),
             std::fs::read_to_string(hooks.join(OBSERVER_SCRIPT_FILE)).unwrap(),
             "the observer's live generation is the SCRIPT (role_generations)");
         assert!(!hooks.join("jawata-hook-observer").exists(),
             "the retired observer binary must come off the disk — a stale one flips \
              the invocation path back to the stub");
+
+        // And the settings entries point at what actually runs: the binary
+        // for live roles, the script for the observer — the wiring the last
+        // two releases got wrong.
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        let commands: Vec<String> = ["PreToolUse", "PostToolUse", "SessionStart",
+                "UserPromptSubmit", "Stop"]
+            .iter()
+            .flat_map(|section| {
+                written["hooks"][section].as_array().cloned().unwrap_or_default()
+            })
+            .flat_map(|entry| entry["hooks"].as_array().cloned().unwrap_or_default())
+            .filter_map(|h| h["command"].as_str().map(|c| c.to_string()))
+            .collect();
+        for role in BINARY_LIVE_ROLES {
+            assert!(commands.iter().any(|c| c.ends_with(role)),
+                "{role}: no settings entry points at the deployed binary; commands: {commands:?}");
+        }
+        assert!(commands.iter().any(|c| c.ends_with(OBSERVER_SCRIPT_FILE)),
+            "the observer entry must point at its script; commands: {commands:?}");
+        assert!(!commands.iter().any(|c| c.ends_with("jawata-hook-observer")),
+            "no entry may point at the retired observer binary; commands: {commands:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
