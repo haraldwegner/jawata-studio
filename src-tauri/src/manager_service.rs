@@ -6631,9 +6631,18 @@ input="$(cat)"
 cmd="$(printf '%s' "$input" | tr '\n\r' '  ')"
 # Deny Java-semantic shell text search/edit; steer to JAWATA MCP. failClosed in hooks.json
 # means a crash/timeout also blocks. Everything else is allowed.
+# THE ESCAPE COMES FIRST (3.7.3 Cursor dogfood, P3): this guard's own deny
+# message says "or declare a jawata-fallback" — and no case implemented it, so
+# the documented valve was a dead end in this client. The declaration is the
+# audit trail; being inconvenient is the point, being impossible is not.
+case "$cmd" in
+  *jawata-fallback:*|*jawata-author:*)
+    printf '%s\n' '{"continue":true,"permission":"allow"}'
+    exit 0 ;;
+esac
 case "$cmd" in
   *grep*.java*|*\ rg\ *.java*|*sed*.java*|*awk*.java*)
-    printf '%s\n' '{"continue":true,"permission":"deny","user_message":"Blocked: use JAWATA MCP for Java semantic search.","agent_message":"Shell text search on .java is blocked — call search_symbols / find_references via JAWATA MCP (or declare a jawata-fallback)."}'
+    printf '%s\n' '{"continue":true,"permission":"deny","user_message":"Blocked: use JAWATA MCP for Java semantic search.","agent_message":"Shell text search on .java is blocked — call search_symbols / find_references via JAWATA MCP (or declare a jawata-fallback: <why> in the command; the declaration is logged)."}'
     exit 0 ;;
 esac
 printf '%s\n' '{"continue":true,"permission":"allow"}'
@@ -10521,6 +10530,50 @@ mod tests {
         assert!(s.contains(r#""permission":"deny""#), "denies");
         assert!(s.contains("grep") && s.contains(".java"), "targets Java grep");
         assert!(s.contains(r#""agent_message""#), "steers the agent to JAWATA");
+    }
+
+    /// 3.7.3 Cursor dogfood, P3: the guard's own deny message said "or declare
+    /// a jawata-fallback" and NO case implemented it — the documented valve was
+    /// a dead end, found because the claude-side guard honored the declaration
+    /// and this script then blocked the same command anyway. Behavioral, not
+    /// shape: the real script runs under bash with the real payloads.
+    #[test]
+    #[cfg(unix)]
+    fn cursor_guard_honors_the_declared_fallback_it_advertises() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let dir = unique_tempdir("cursor-guard-escape");
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("jawata-guard.sh");
+        std::fs::write(&script, build_cursor_guard_script()).unwrap();
+
+        let run = |payload: &str| -> String {
+            let mut child = Command::new("bash")
+                .arg(&script)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
+            let out = child.wait_with_output().unwrap();
+            String::from_utf8_lossy(&out.stdout).to_string()
+        };
+
+        let denied = run(r#"{"command":"grep -n addSourceEntries src/ProjectImporter.java"}"#);
+        assert!(denied.contains(r#""permission":"deny""#), "a bare java grep is denied: {denied}");
+        assert!(denied.contains("jawata-fallback"),
+            "the deny message must advertise the escape it implements: {denied}");
+
+        let declared = run(
+            r#"{"command":"grep -n addSourceEntries src/ProjectImporter.java # jawata-fallback: cursor dogfood probe"}"#,
+        );
+        assert!(declared.contains(r#""permission":"allow""#),
+            "the declared fallback must proceed — the declaration is the audit trail: {declared}");
+
+        let authored = run(r#"{"command":"echo ok # jawata-author: opening a window"}"#);
+        assert!(authored.contains(r#""permission":"allow""#), "{authored}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
