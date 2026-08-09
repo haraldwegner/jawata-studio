@@ -6642,7 +6642,7 @@ case "$cmd" in
 esac
 case "$cmd" in
   *grep*.java*|*\ rg\ *.java*|*sed*.java*|*awk*.java*)
-    printf '%s\n' '{"continue":true,"permission":"deny","user_message":"Blocked: use JAWATA MCP for Java semantic search.","agent_message":"Shell text search on .java is blocked — call search_symbols / find_references via JAWATA MCP (or declare a jawata-fallback: <why> in the command; the declaration is logged)."}'
+    printf '%s\n' '{"continue":true,"permission":"deny","user_message":"Blocked: use JAWATA MCP for Java semantic search (or declare a jawata-fallback: <why> in the command; the declaration is logged).","agent_message":"Shell text search on .java is blocked — call search_symbols / find_references via JAWATA MCP (or declare a jawata-fallback: <why> in the command; the declaration is logged)."}'
     exit 0 ;;
 esac
 printf '%s\n' '{"continue":true,"permission":"allow"}'
@@ -10561,8 +10561,14 @@ mod tests {
 
         let denied = run(r#"{"command":"grep -n addSourceEntries src/ProjectImporter.java"}"#);
         assert!(denied.contains(r#""permission":"deny""#), "a bare java grep is denied: {denied}");
-        assert!(denied.contains("jawata-fallback"),
-            "the deny message must advertise the escape it implements: {denied}");
+        // BOTH message fields carry the signpost: the Cursor re-run dogfood
+        // showed the client surfacing user_message to the agent, so a signpost
+        // living only in agent_message never reaches whoever was denied.
+        for field in ["user_message", "agent_message"] {
+            let msg = denied.split(&format!("\"{field}\":\"")).nth(1).unwrap_or("").split('"').next().unwrap_or("");
+            assert!(msg.contains("jawata-fallback"),
+                "{field} must advertise the escape it implements: {msg:?}");
+        }
 
         let declared = run(
             r#"{"command":"grep -n addSourceEntries src/ProjectImporter.java # jawata-fallback: cursor dogfood probe"}"#,
