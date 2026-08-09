@@ -12,15 +12,15 @@
     "(a hook process must never link a GUI toolkit) and the studio must not depend",
     "on the hook (deploy writes the binary, it never runs it). Both forbidden edges",
     "are asserted by tests. A committed data file is the one thing both sides can",
-    "read without an edge between them \u2014 each includes it at compile time and",
+    "read without an edge between them — each includes it at compile time and",
     "asserts its own table against it.",
     "",
     "Change an event here and BOTH sides fail until they agree.",
     "",
     "Sprint 28, C8 architect finding F2. The same argument now covers the FILES",
     "that cross the boundary, not only the event names. The hook appends to",
-    "hook_silence.log and the studio renames it away \u2014 two processes, two crates,",
-    "one file \u2014 and that seam was declared NOWHERE. It had already produced three",
+    "hook_silence.log and the studio renames it away — two processes, two crates,",
+    "one file — and that seam was declared NOWHERE. It had already produced three",
     "hand-copied facts (the cap, the filename, the rotated name) with nothing",
     "asserting they agree, plus an ordering contract living only in a private doc",
     "comment. Same fix, same file: declare it once, assert from both sides."
@@ -63,30 +63,30 @@
       "rotated_name": "hook_silence.log.1",
       "retention_generations": 1,
       "bounding": "the STUDIO rotates; the hook only appends and drops past the ceiling",
-      "violation": "a hook that trims, truncates or renames this file \u2014 six audit rounds proved in-path bounding destroys records"
+      "violation": "a hook that trims, truncates or renames this file — six audit rounds proved in-path bounding destroys records"
     }
   },
   "stop_rules": {
     "_why": [
       "Sprint 28, C8 architect finding F3. TWO stop gates exist: the deployed bash",
       "script (live today) and the Rust stop::judge (built, inert). Their rule sets",
-      "have DIVERGED \u2014 the audit-fix-loop trigger and the unjudged-ask check were",
+      "have DIVERGED — the audit-fix-loop trigger and the unjudged-ask check were",
       "added to the bash generation, which the architecture schedules for deletion.",
       "At cutover the binary would ship WITHOUT rules the script had: the hook-outage",
       "shape inverted, at the one moment nobody is reading the old file.",
       "",
       "Every rule is declared here with its status on each side. A rule may be",
-      "ported or deliberately dropped \u2014 but not silently lost.",
+      "ported or deliberately dropped — but not silently lost.",
       "",
       "Sprint 28 dogfood, first probe after the release: the six role binaries were",
-      "DEPLOYED and every client event still invoked the .sh script \u2014 the deploy",
+      "DEPLOYED and every client event still invoked the .sh script — the deploy",
       "writes binaries, then writes settings entries pointing at scripts, and no code",
       "path builds a command aimed at a binary. Pointing a client at the binary then",
       "would have STRIPPED five working protections to gain two inert ones. The",
       "audit-fix loop and the unjudged ask are now PORTED and fire without autonomy;",
       "three remain script-only, and the cutover stays blocked until they follow.",
       "",
-      "All eight rules now exist on BOTH sides \u2014 the cutover is no longer blocked by",
+      "All eight rules now exist on BOTH sides — the cutover is no longer blocked by",
       "parity. Length became a trigger on Harald's own suggestion: it does not depend",
       "on wording, so the agent cannot walk past it by accident, which is exactly how",
       "the ten-phrase ask detector failed on its first live outing."
@@ -132,6 +132,41 @@
         "rust": "present",
         "what": "undefined terms in a shaped message"
       }
+    }
+  },
+  "role_generations": {
+    "_why": [
+      "Which GENERATION is live per role: the binary, or the generation-2 script.",
+      "The stop_rules parity discipline, applied at role granularity — a role cuts",
+      "over to the binary only when the binary holds parity, and a drop is declared",
+      "here, never discovered.",
+      "",
+      "3.7.2 dogfood F4: the observer cut over by FILE EXISTENCE (the invocation",
+      "path preferred any binary on disk), and the observer binary is a stub — it",
+      "records a silence row and nothing else — while the script generation captures",
+      "tool outcomes and the jawata-fallback audit trail. outcomes.log froze the",
+      "moment the observer entry first pointed at the binary. Both crates assert",
+      "against this section: the deploy writes binaries for exactly the roles",
+      "declared binary here, and keeps the script for the rest."
+    ],
+    "primer": {
+      "live": "binary"
+    },
+    "userprompt": {
+      "live": "binary"
+    },
+    "recall": {
+      "live": "binary"
+    },
+    "guard": {
+      "live": "binary"
+    },
+    "observer": {
+      "live": "script",
+      "until": "the binary ports outcome capture and the jawata-fallback audit trail"
+    },
+    "stop": {
+      "live": "binary"
     }
   }
 }

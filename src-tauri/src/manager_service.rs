@@ -2134,6 +2134,73 @@ impl ManagerService {
             }
         }
 
+        // Sprint 28 (D-SHIM), v3.7.3: hook_config.json + the role binaries land
+        // FIRST — before any settings writer runs. Every writer below resolves
+        // its invocation path by looking at the disk, so the binaries must be
+        // their final selves before the first writer looks. The previous order
+        // put this block in the middle: the two writers before it survived
+        // (their scripts were overwritten by the binaries), the four after it
+        // clobbered their binaries with scripts — same filenames, so all six
+        // files LOOKED deployed while four events ran the previous generation.
+        // Found by the 3.7.2 dogfood; the ordering is now load-bearing and the
+        // section writer refuses to write a body over a role binary either way.
+        if let Some(server) = servers.first() {
+            // hook_config.json: endpoint, token and client on disk, so one
+            // binary can serve every role instead of ten scripts each carrying
+            // a baked-in URL. Written temp-file-plus-rename because hook
+            // invocations genuinely overlap (three sessions produced three
+            // overlapping pairs, measured), and a reader must never see a
+            // truncated file.
+            if let Some(primer_path) = managed_primer_script_path() {
+                if let Some(hooks_dir) = primer_path.parent() {
+                    let client_key = if client.eq_ignore_ascii_case("cursor") {
+                        "cursor"
+                    } else {
+                        "claude-code"
+                    };
+                    match write_hook_config(hooks_dir, &server.url, &server.token, client_key) {
+                        Ok(true) => changed_sections.push("hook_config".into()),
+                        Ok(false) => {}
+                        Err(error) => errors.push(error),
+                    }
+
+                    // The role-named binaries, UNLINKED before writing so a
+                    // redeploy landing on top of an executing hook does not
+                    // fail with ETXTBSY — a hazard the `.sh` generation never
+                    // had, and one that hooks firing on every prompt will meet
+                    // routinely.
+                    match hook_binary_source() {
+                        Some(source) => {
+                            match deploy_hook_binaries(&source, hooks_dir, BINARY_LIVE_ROLES) {
+                                Ok(written) if !written.is_empty() => {
+                                    changed_sections.push("hook_binaries".into())
+                                }
+                                Ok(_) => {}
+                                Err(error) => errors.push(error),
+                            }
+                        }
+                        // C7 audit, F6 — the affordance that HID F1. A bare
+                        // `if let Some(...)` swallowed the miss entirely: on a
+                        // shipped .deb whose bake step had moved the executable
+                        // away from the sidecar, the deploy skipped every hook
+                        // binary and reported success. "Not shipped yet" and
+                        // "shipped but unreachable" looked identical, and only
+                        // one of them is normal.
+                        //
+                        // An INSTALLED build that cannot find its own sidecar is
+                        // a defect and says so. A dev build without one is not.
+                        None if running_from_an_installed_build() => errors.push(
+                            "the hook binary is not beside this executable — the install is \
+                             missing its sidecar, so NO hooks were deployed. Reinstall, or \
+                             report this: it means the package was built wrong."
+                                .to_string(),
+                        ),
+                        None => {}
+                    }
+                }
+            }
+        }
+
         // Sprint 18 Track 2 / Stage 9: write the PreToolUse enforcement hook
         // (Claude Code only). Health URL = the deployed gateway `/mcp` URL so the
         // guard's liveness probe needs no config lookup.
@@ -2191,69 +2258,6 @@ impl ManagerService {
         // fail safe (jawata down / empty / absence → inject nothing).
         if let Some(server) = servers.first() {
             let regenerate = matches!(mode, DeployMode::Regenerate);
-
-            // Sprint 28 (D-SHIM): hook_config.json beside the managed hooks —
-            // endpoint, token and client on disk, so one binary can serve every
-            // role instead of ten scripts each carrying a baked-in URL. Written
-            // temp-file-plus-rename because hook invocations genuinely overlap
-            // (three sessions produced three overlapping pairs, measured), and a
-            // reader must never see a truncated file.
-            //
-            // Written NOW, before the binaries that read it ship, so an install
-            // upgraded mid-sprint already carries it. A config with no reader is
-            // inert; a reader with no config is a silent hook.
-            if let Some(primer_path) = managed_primer_script_path() {
-                if let Some(hooks_dir) = primer_path.parent() {
-                    let client_key = if client.eq_ignore_ascii_case("cursor") {
-                        "cursor"
-                    } else {
-                        "claude-code"
-                    };
-                    match write_hook_config(hooks_dir, &server.url, &server.token, client_key) {
-                        Ok(true) => changed_sections.push("hook_config".into()),
-                        Ok(false) => {}
-                        Err(error) => errors.push(error),
-                    }
-
-                    // Sprint 28 (D-SHIM): the role-named binaries, UNLINKED
-                    // before writing so a redeploy landing on top of an
-                    // executing hook does not fail with ETXTBSY — a hazard the
-                    // `.sh` generation never had, and one that hooks firing on
-                    // every prompt will meet routinely.
-                    //
-                    // Absent before Stage 7 packages the sidecar, which is a
-                    // NORMAL state today (the scripts still deploy) and
-                    // deliberately distinct from a deploy that FAILED: a
-                    // present-but-unwritable binary is an error, a missing one
-                    // is not yet shipped.
-                    match hook_binary_source() {
-                        Some(source) => match deploy_hook_binaries(&source, hooks_dir, HOOK_ROLES) {
-                            Ok(written) if !written.is_empty() => {
-                                changed_sections.push("hook_binaries".into())
-                            }
-                            Ok(_) => {}
-                            Err(error) => errors.push(error),
-                        },
-                        // C7 audit, F6 — the affordance that HID F1. A bare
-                        // `if let Some(...)` swallowed the miss entirely: on a
-                        // shipped .deb whose bake step had moved the executable
-                        // away from the sidecar, the deploy skipped every hook
-                        // binary and reported success. "Not shipped yet" and
-                        // "shipped but unreachable" looked identical, and only
-                        // one of them is normal.
-                        //
-                        // An INSTALLED build that cannot find its own sidecar is
-                        // a defect and says so. A dev build without one is not.
-                        None if running_from_an_installed_build() => errors.push(
-                            "the hook binary is not beside this executable — the install is \
-                             missing its sidecar, so NO hooks were deployed. Reinstall, or \
-                             report this: it means the package was built wrong."
-                                .to_string(),
-                        ),
-                        None => {}
-                    }
-                }
-            }
 
             if let (Some(settings_path), Some(primer_path)) =
                 (derive_hook_settings_path(client), managed_primer_script_path())
@@ -4497,11 +4501,43 @@ fn managed_hook_invocation_path(role: &str, script_file: &str) -> Option<PathBuf
 /// The same rule against an explicit directory, so it is testable without
 /// resolving — and mutating — the developer's real home.
 fn invocation_path_in(dir: &Path, role: &str, script_file: &str) -> Option<PathBuf> {
-    let binary = dir.join(if cfg!(windows) { format!("{role}.exe") } else { role.to_string() });
-    if binary.exists() {
-        return Some(binary);
+    if role_is_binary_live(role) {
+        let binary = dir.join(role_binary_file_name(role));
+        if binary.exists() {
+            return Some(binary);
+        }
     }
     Some(dir.join(script_file))
+}
+
+/// The role binary's on-disk file name (`.exe` on Windows).
+fn role_binary_file_name(role: &str) -> String {
+    if cfg!(windows) { format!("{role}.exe") } else { role.to_string() }
+}
+
+/// Whether a managed-hook invocation path names a deployed role BINARY rather
+/// than a generation-2 script. The binaries are exactly the role names
+/// (`jawata-hook-guard`, …; plus `.exe` on Windows); every script ends `.sh`.
+fn path_is_role_binary(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.starts_with("jawata-hook-") && !n.ends_with(".sh"))
+        .unwrap_or(false)
+}
+
+/// Whether a role's BINARY generation is the live one — the stop_rules parity
+/// discipline applied at role granularity.
+///
+/// The observer is NOT live as a binary: its binary arm is a deliberate stub
+/// (`pipeline.rs`: record a silence row, nothing else), while the script
+/// generation captures tool outcomes and the `jawata-fallback:` audit trail.
+/// The 3.7.2 dogfood found both dead on the live machine — `outcomes.log`
+/// froze the moment the observer entry first pointed at the binary — because
+/// the cutover was decided by file existence, not by parity. Until the binary
+/// ports those jobs, the observer's invocation path is the SCRIPT and its
+/// binary is not deployed. Declared in `hook-events.json` (`role_generations`).
+fn role_is_binary_live(role: &str) -> bool {
+    BINARY_LIVE_ROLES.contains(&role)
 }
 
 fn managed_guard_script_path() -> Option<PathBuf> {
@@ -5222,20 +5258,39 @@ fn call_resident_tool(
 /// `JAWATA_HOOK_SELFTEST=1` path (which shares the live emit format) and validate the bytes
 /// it prints parse as the hook JSON contract. Fail-OPEN when bash is unavailable (the
 /// check cannot judge), fail-CLOSED on empty/invalid output (the deploy reports it).
+/// Run a hook's self-check process: a role BINARY executes directly (running
+/// an ELF through `bash` yields "cannot execute binary file" and an empty
+/// stdout — which reads as a failed selftest for a correct binary); a script
+/// still goes through `bash` so the check works on Windows dev machines too.
+fn selftest_command(script: &Path) -> std::process::Command {
+    use std::process::Command;
+    if path_is_role_binary(script) {
+        Command::new(script)
+    } else {
+        let mut c = Command::new("bash");
+        c.arg(script);
+        c
+    }
+}
+
 fn selftest_hook_script(script: &Path) -> Result<(), String> {
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     if !script.exists() {
         return Ok(());
     }
-    let output = match Command::new("bash")
-        .arg(script)
+    let output = match selftest_command(script)
         .env("JAWATA_HOOK_SELFTEST", "1")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
     {
         Ok(output) => output,
-        Err(_) => return Ok(()),          // no bash on this platform — cannot judge
+        // A script needs bash, which this platform may lack — cannot judge.
+        // A BINARY that cannot be spawned is a real deploy defect and says so.
+        Err(e) if path_is_role_binary(script) => {
+            return Err(format!("hook self-check could not run {}: {e}", script.display()))
+        }
+        Err(_) => return Ok(()),
     };
     if output.stdout.is_empty() {
         return Err(format!(
@@ -5275,18 +5330,20 @@ fn selftest_hook_script(script: &Path) -> Result<(), String> {
 /// contract instead. Fail-OPEN when bash is unavailable; fail-CLOSED on
 /// empty / invalid / wrong-shaped output.
 fn selftest_stop_hook_script(script: &Path) -> Result<(), String> {
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     if !script.exists() {
         return Ok(());
     }
-    let output = match Command::new("bash")
-        .arg(script)
+    let output = match selftest_command(script)
         .env("JAWATA_HOOK_SELFTEST", "1")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
     {
         Ok(output) => output,
+        Err(e) if path_is_role_binary(script) => {
+            return Err(format!("stop-gate self-check could not run {}: {e}", script.display()))
+        }
         Err(_) => return Ok(()), // no bash on this platform — cannot judge
     };
     if output.stdout.is_empty() {
@@ -5608,20 +5665,29 @@ fn running_from_an_installed_build() -> bool {
         .unwrap_or(false)
 }
 
-/// The six role names the deploy writes, dispatched by `argv[0]`.
+/// The role names whose BINARY generation is live — the deploy writes exactly
+/// these, dispatched by `argv[0]`.
 ///
 /// Kept beside the deploy rather than imported from the hook crate: the studio
 /// must NOT depend on jawata-hook (deploy writes the binary, it never runs it),
 /// and that edge is asserted by a test. `hook-events.json` is what keeps the
 /// two lists honest with each other.
-const HOOK_ROLES: &[&str] = &[
+///
+/// `jawata-hook-observer` is deliberately ABSENT — its binary is a stub and
+/// the script generation still owns the role (`role_is_binary_live`). The
+/// deploy also REMOVES a previously-deployed observer binary, because a binary
+/// on disk is what flips the invocation path.
+const BINARY_LIVE_ROLES: &[&str] = &[
     "jawata-hook-primer",
     "jawata-hook-userprompt",
     "jawata-hook-recall",
     "jawata-hook-guard",
-    "jawata-hook-observer",
     "jawata-hook-stop",
 ];
+
+/// Roles whose binary must NOT be on disk: a stale one from an earlier deploy
+/// would sit unfired forever — the 3.7.1 unwired shape, resurrected per role.
+const BINARY_RETIRED_ROLES: &[&str] = &["jawata-hook-observer"];
 
 /// Sprint 28 (D-SHIM, C6 clause 5 first half): deploy the role-named hook
 /// binaries — UNLINK, then write.
@@ -5655,6 +5721,17 @@ fn deploy_hook_binaries(
 
     let fresh = fs::read(source)
         .map_err(|e| format!("failed reading {}: {e}", source.display()))?;
+    // Retired-role binaries come OFF the disk: the invocation path prefers a
+    // binary that exists, so a stale one from an earlier deploy is not inert —
+    // it is the thing that flips the role away from its live script.
+    for retired in BINARY_RETIRED_ROLES {
+        let stale = hooks_dir.join(role_binary_file_name(retired));
+        match fs::remove_file(&stale) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("failed removing retired {}: {e}", stale.display())),
+        }
+    }
     let mut written = Vec::new();
     for role in roles {
         let target = hooks_dir.join(role);
@@ -5797,10 +5874,17 @@ fn build_managed_primer_entry(primer_path: &Path) -> serde_json::Value {
                      "timeout": PRIMER_TIMEOUT_SECS } ]
     })
 }
-/// PreToolUse entry for recall: fires on jawata tool calls (the script gates to refactor verbs).
+/// PreToolUse entry for recall: fires on jawata tool calls, and on hand-edits.
+///
+/// `Edit|Write|MultiEdit` restored in v3.7.3: the Sprint 22a capability —
+/// recall the type's prior lessons when a source file is hand-edited — existed
+/// in the script's own case-statement but the MATCHER never sent those events
+/// to it, so the branch was unreachable for both generations. (`Read` stays
+/// out deliberately: neither generation claimed it, and a hook process per
+/// file read is cost without a declared capability behind it.)
 fn build_managed_recall_entry(recall_path: &Path) -> serde_json::Value {
     serde_json::json!({
-        "matcher": "mcp__jawata.*",
+        "matcher": "Edit|Write|MultiEdit|mcp__jawata.*",
         "hooks": [ { "type": "command", "timeout": HOOK_TIMEOUT_SECS, "command": display_path(recall_path) } ]
     })
 }
@@ -5833,15 +5917,23 @@ fn write_managed_hook_section(
         .ok_or_else(|| format!("script path has no parent: {}", script_path.display()))?;
     fs::create_dir_all(script_parent)
         .map_err(|error| format!("failed to create hook dir {}: {error}", script_parent.display()))?;
-    let script_changed = fs::read_to_string(script_path)
-        .map(|existing| existing != script_body)
-        .unwrap_or(true);
-    if script_changed || force_rewrite {
+    // When the invocation path is a deployed role BINARY, its content belongs
+    // to `deploy_hook_binaries` — this writer owns only the settings entry.
+    // Writing the bash generation here is the 3.7.3 dogfood clobber: the
+    // deploy wrote six binaries, then four of these writers ran after it and
+    // wrote scripts back over four of them — same filenames, so every file
+    // looked deployed and four events ran the previous generation.
+    let body_is_ours = !path_is_role_binary(script_path);
+    let script_changed = body_is_ours
+        && fs::read_to_string(script_path)
+            .map(|existing| existing != script_body)
+            .unwrap_or(true);
+    if body_is_ours && (script_changed || force_rewrite) {
         fs::write(script_path, script_body)
             .map_err(|error| format!("failed writing hook script {}: {error}", script_path.display()))?;
     }
     #[cfg(unix)]
-    {
+    if body_is_ours {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(script_path, fs::Permissions::from_mode(0o755));
     }
@@ -9428,6 +9520,130 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The 3.7.2 dogfood clobber, reproduced END TO END: binaries land first
+    /// (the production order since v3.7.3), then EVERY section writer runs
+    /// with `force_rewrite` — the strongest clobber attempt. 3.7.2 shipped
+    /// with four of the six role files as bash scripts because four writers
+    /// ran after the binary deploy and wrote the generation-2 body over the
+    /// binary, same filenames, so every file LOOKED deployed. The per-step
+    /// checks all passed at their instant; only the end state was wrong —
+    /// which is why this asserts the end state.
+    #[test]
+    fn the_full_deploy_order_leaves_live_roles_binaries_and_the_observer_a_script() {
+        let dir = unique_tempdir("deploy-order");
+        let hooks = dir.join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let source = dir.join("source-binary");
+        let binary_bytes = b"\x7fELF fake role binary".to_vec();
+        std::fs::write(&source, &binary_bytes).unwrap();
+
+        // A stale observer binary from 3.7.1/3.7.2. The deploy must REMOVE it:
+        // its existence is what used to flip the observer away from its live
+        // script (the invocation path preferred any binary on disk).
+        std::fs::write(hooks.join("jawata-hook-observer"), &binary_bytes).unwrap();
+
+        deploy_hook_binaries(&source, &hooks, BINARY_LIVE_ROLES).unwrap();
+
+        let settings = dir.join("settings.json");
+        let generation2_body = "#!/usr/bin/env bash\n# generation-2 body\n";
+        for (role, script_file) in [
+            ("jawata-hook-guard", GUARD_SCRIPT_FILE),
+            ("jawata-hook-observer", OBSERVER_SCRIPT_FILE),
+            ("jawata-hook-primer", PRIMER_SCRIPT_FILE),
+            ("jawata-hook-recall", RECALL_SCRIPT_FILE),
+            ("jawata-hook-userprompt", USERPROMPT_SCRIPT_FILE),
+            ("jawata-hook-stop", STOP_SCRIPT_FILE),
+        ] {
+            let path = invocation_path_in(&hooks, role, script_file).unwrap();
+            write_managed_hook_section(
+                settings.to_str().unwrap(),
+                &path,
+                generation2_body,
+                "PreToolUse",
+                serde_json::json!({
+                    "hooks": [ { "type": "command", "command": display_path(&path) } ]
+                }),
+                |_| false,
+                false,
+                true, // force_rewrite: the strongest clobber attempt
+            )
+            .unwrap();
+        }
+
+        for role in BINARY_LIVE_ROLES {
+            let content = std::fs::read(hooks.join(role)).unwrap_or_else(|e| {
+                panic!("{role}: the deployed binary is gone after the writers ran: {e}")
+            });
+            assert_eq!(binary_bytes, content,
+                "{role}: a section writer clobbered the deployed binary with the \
+                 generation-2 script — the 3.7.2 dogfood defect");
+        }
+        assert_eq!(generation2_body,
+            std::fs::read_to_string(hooks.join(OBSERVER_SCRIPT_FILE)).unwrap(),
+            "the observer's live generation is the SCRIPT (role_generations)");
+        assert!(!hooks.join("jawata-hook-observer").exists(),
+            "the retired observer binary must come off the disk — a stale one flips \
+             the invocation path back to the stub");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// role_generations, enforced at the resolver: an observer binary ON DISK
+    /// must not win the invocation path — the script generation is live.
+    #[test]
+    fn the_observer_invocation_path_ignores_a_binary_on_disk() {
+        let dir = unique_tempdir("observer-script-gen");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("jawata-hook-observer"), b"stub").unwrap();
+        assert_eq!(
+            Some(dir.join(OBSERVER_SCRIPT_FILE)),
+            invocation_path_in(&dir, "jawata-hook-observer", OBSERVER_SCRIPT_FILE),
+            "the observer binary is a stub; the invocation path must stay on the script"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The selftests must EXEC a role binary rather than feed it to bash —
+    /// `bash <elf>` prints "cannot execute binary file" to stderr and nothing
+    /// to stdout, which reads as a failed selftest for a CORRECT binary. The
+    /// stand-ins use shebangs so direct exec works; their outputs are the real
+    /// contract shapes the deploy asserts.
+    #[test]
+    #[cfg(unix)]
+    fn selftests_execute_role_binaries_directly_not_through_bash() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = unique_tempdir("selftest-direct");
+        std::fs::create_dir_all(&dir).unwrap();
+        let write_exec = |name: &str, body: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, body).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+
+        let stop = write_exec(
+            "jawata-hook-stop",
+            "#!/bin/sh\nprintf '{\"decision\":\"block\",\"reason\":\"selftest\"}'\n",
+        );
+        selftest_stop_hook_script(&stop)
+            .expect("a block-with-reason through direct exec is the Stop contract");
+
+        let primer = write_exec(
+            "jawata-hook-primer",
+            "#!/bin/sh\nprintf '{\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"x\"}}'\n",
+        );
+        selftest_hook_script(&primer)
+            .expect("a context emission through direct exec is the injecting contract");
+
+        // And a role binary that emits NOTHING is a real failure, loudly —
+        // never the silent Ok(()) the missing-bash arm grants scripts.
+        let mute = write_exec("jawata-hook-userprompt", "#!/bin/sh\nexit 0\n");
+        assert!(selftest_hook_script(&mute).is_err(),
+            "a mute role binary must fail its selftest");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_resolver_looks_for_the_name_tauri_conf_actually_ships() {
         // C7 audit F3. The previous version of this test was a TAUTOLOGY: it
@@ -9966,7 +10182,8 @@ mod tests {
             ("jawata-hook-userprompt", Some(dir.join(USERPROMPT_SCRIPT_FILE))),
             ("jawata-hook-stop", Some(dir.join(STOP_SCRIPT_FILE))),
         ];
-        assert_eq!(HOOK_ROLES.len(), paths.len(), "one production path per deployed role");
+        assert_eq!(BINARY_LIVE_ROLES.len() + BINARY_RETIRED_ROLES.len(), paths.len(),
+            "one production path per role, live or retired");
 
         for (binary, path) in paths {
             let Some(path) = path else {
@@ -10005,23 +10222,49 @@ mod tests {
             serde_json::from_str(include_str!("../hook-events.json")).unwrap();
         let claude = contract["claude-code"].as_object().expect("claude-code section");
 
-        let mut expected: Vec<String> =
-            claude.keys().map(|role| format!("jawata-hook-{role}")).collect();
-        expected.sort();
-        let mut actual: Vec<String> = HOOK_ROLES.iter().map(|s| s.to_string()).collect();
-        actual.sort();
-        assert_eq!(expected, actual,
+        // v3.7.3: the deploy no longer writes a binary for every role — it
+        // writes exactly the roles the contract declares `live: "binary"`
+        // (role_generations), and RETIRES the binaries of the rest. The
+        // declaration is what makes an observer-style drop a decision instead
+        // of a discovery.
+        let generations = contract["role_generations"]
+            .as_object()
+            .expect("role_generations section");
+        let mut expected_live: Vec<String> = Vec::new();
+        let mut expected_retired: Vec<String> = Vec::new();
+        for role in claude.keys() {
+            let generation = generations
+                .get(role)
+                .and_then(|g| g["live"].as_str())
+                .unwrap_or_else(|| panic!("{role}: no role_generations row — every role \
+                     declares which generation is live"));
+            match generation {
+                "binary" => expected_live.push(format!("jawata-hook-{role}")),
+                "script" => expected_retired.push(format!("jawata-hook-{role}")),
+                other => panic!("{role}: unknown generation {other:?}"),
+            }
+        }
+        expected_live.sort();
+        expected_retired.sort();
+        let mut actual_live: Vec<String> = BINARY_LIVE_ROLES.iter().map(|s| s.to_string()).collect();
+        actual_live.sort();
+        let mut actual_retired: Vec<String> =
+            BINARY_RETIRED_ROLES.iter().map(|s| s.to_string()).collect();
+        actual_retired.sort();
+        assert_eq!(expected_live, actual_live,
             "the binaries the deploy writes have drifted from the shared hook contract");
+        assert_eq!(expected_retired, actual_retired,
+            "the binaries the deploy retires have drifted from the shared hook contract");
 
-        // And every deployed name has a generation-2 row, or its migration is
-        // silently absent.
-        for role in HOOK_ROLES {
+        // Every role — live or retired — has a generation-2 row, or its
+        // migration is silently absent.
+        for role in BINARY_LIVE_ROLES.iter().chain(BINARY_RETIRED_ROLES) {
             assert!(SCRIPT_GENERATION.iter().any(|(b, _)| b == role),
-                "{role} is deployed but has no generation-2 row — an upgrading install keeps \
+                "{role} has no generation-2 row — an upgrading install keeps \
                  its old entry as the user's own");
         }
-        assert_eq!(HOOK_ROLES.len(), SCRIPT_GENERATION.len(),
-            "SCRIPT_GENERATION carries a row for a binary the deploy never writes");
+        assert_eq!(BINARY_LIVE_ROLES.len() + BINARY_RETIRED_ROLES.len(), SCRIPT_GENERATION.len(),
+            "SCRIPT_GENERATION carries a row for a role the deploy neither writes nor retires");
     }
 
     #[test]

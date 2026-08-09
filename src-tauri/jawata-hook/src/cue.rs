@@ -66,13 +66,27 @@ const MAX_TOKENS: usize = 40;
 /// Cap on symbol cues tried. Two precise attempts, then symptoms.
 const MAX_SYMBOLS: usize = 2;
 
-/// Extract cues, or say why there are none.
+/// Extract cues from a TYPED prompt — the user's own words. A leading `/`
+/// is the client's slash-command syntax here and is skipped.
 pub fn extract(prompt: &str) -> Result<Cues, SkipReason> {
+    extract_inner(prompt, true)
+}
+
+/// Extract cues from a TOOL TARGET — a file path or a shell command, never
+/// something the user typed at the client. The slash-command rule must NOT
+/// apply: on Linux every absolute path begins with `/`, and applying it made
+/// every Read/Edit recall silent — the 3.7.2 dogfood's `no-cues SlashCommand`
+/// silence row on a plain file path is that bug's signature.
+pub fn extract_tool_target(target: &str) -> Result<Cues, SkipReason> {
+    extract_inner(target, false)
+}
+
+fn extract_inner(prompt: &str, typed: bool) -> Result<Cues, SkipReason> {
     let prompt = prompt.trim();
     if prompt.is_empty() {
         return Err(SkipReason::EmptyPrompt);
     }
-    if prompt.starts_with('/') {
+    if typed && prompt.starts_with('/') {
         return Err(SkipReason::SlashCommand);
     }
 
@@ -210,6 +224,20 @@ fn ident(s: &str) -> bool {
         && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// The script generation's Edit-recall cue, carried over: `.../Foo.java` →
+/// `Foo`, so a hand-edit of a source file recalls the type's prior lessons.
+/// Only `.java` — the store's symbol anchors are Java types; a `.rs` or `.md`
+/// stem is not a symbol the store indexes.
+pub fn symbol_from_path(path: &str) -> Option<String> {
+    let name = path.rsplit(['/', '\\']).next()?;
+    let stem = name.strip_suffix(".java")?;
+    if ident(stem) {
+        Some(stem.to_string())
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +245,26 @@ mod tests {
     #[test]
     fn a_slash_command_is_skipped_with_its_reason() {
         assert_eq!(Err(SkipReason::SlashCommand), extract("/memorize something"));
+    }
+
+    /// The 3.7.2 dogfood bug, pinned: an absolute file path is NOT a slash
+    /// command. Fed through the typed path it was skipped — which silenced
+    /// every Read/Edit recall on Linux, where all absolute paths start `/`.
+    #[test]
+    fn an_absolute_path_is_not_a_slash_command_on_the_tool_target_path() {
+        let cues = extract_tool_target("/home/u/src/org/jawata/core/ProjectImporter.java")
+            .expect("a path must yield cues, not a SlashCommand skip");
+        assert!(cues.content_tokens > 0, "path segments are content tokens: {cues:?}");
+        // And the TYPED path still skips real slash commands unchanged.
+        assert_eq!(Err(SkipReason::SlashCommand), extract("/memorize something"));
+    }
+
+    #[test]
+    fn a_java_path_yields_its_type_as_the_symbol_cue() {
+        assert_eq!(Some("ProjectImporter".into()), symbol_from_path("/a/b/ProjectImporter.java"));
+        assert_eq!(Some("Foo".into()), symbol_from_path(r"C:\src\Foo.java"));
+        assert_eq!(None, symbol_from_path("/a/b/notes.md"), "non-Java stems are not store symbols");
+        assert_eq!(None, symbol_from_path("/a/b/.java"), "an empty stem is not an identifier");
     }
 
     #[test]

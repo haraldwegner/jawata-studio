@@ -31,6 +31,15 @@ fn main() {
         role_name.clone(),
     );
 
+    // The deploy's self-check: no stdin, no store — the role's contract shape
+    // through the real render path (see `jawata_hook::selftest`).
+    if std::env::var("JAWATA_HOOK_SELFTEST").ok().as_deref() == Some("1") {
+        let argv0_owned = argv0.clone();
+        let outcome =
+            jawata_hook::safety::run_guarded(move || jawata_hook::selftest(&argv0_owned));
+        jawata_hook::safety::exit_with(&outcome);
+    }
+
     let argv0_owned = argv0.clone();
     let outcome =
         jawata_hook::safety::run_guarded(move || jawata_hook::dispatch(&argv0_owned));

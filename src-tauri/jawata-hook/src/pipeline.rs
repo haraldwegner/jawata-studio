@@ -112,13 +112,9 @@ fn primer(client: Client, store: &dyn Store) -> Outcome {
 }
 
 fn recall(role: Role, client: Client, payload: &str, store: &dyn Store) -> Outcome {
-    let prompt = match extract_prompt(payload) {
-        Ok(p) => p,
-        Err(reason) => return Outcome::Silent(reason),
-    };
-    let cues = match crate::cue::extract(&prompt) {
+    let cues = match cues_for(role, payload) {
         Ok(c) => c,
-        Err(skip) => return Outcome::Silent(SilenceReason::NoCues(format!("{skip:?}"))),
+        Err(reason) => return Outcome::Silent(reason),
     };
 
     // Symbol cues first — they are precise, and they fire independently of the
@@ -184,40 +180,84 @@ fn finish(
 /// Both clients put it under `prompt`; Claude's `PreToolUse` payload instead
 /// carries a tool input. `serde_json`, never a regex — a payload whose shape
 /// moved must be a named failure, not an empty prompt.
-fn extract_prompt(payload: &str) -> Result<String, SilenceReason> {
+/// Cues for a recall, derived PER ROLE — because the two roles receive
+/// different kinds of text and the difference is load-bearing.
+///
+/// A UserPrompt payload is TYPED text: the slash-command rule applies. A
+/// ToolRecall payload is a tool target — a symbol, a file path, a command —
+/// and applying the typed rules to it is the 3.7.2 dogfood bug F2: every
+/// absolute path begins with `/`, so every Read/Edit recall was skipped as a
+/// "slash command" and the role went silent on Linux entirely.
+fn cues_for(role: Role, payload: &str) -> Result<crate::cue::Cues, SilenceReason> {
+    let value = parse_payload(payload)?;
+    match role {
+        Role::UserPrompt => {
+            let prompt = string_at(&value, &["prompt"]).ok_or_else(|| {
+                SilenceReason::PayloadUnreadable(
+                    "the payload carried no `prompt` — the event shape moved".into(),
+                )
+            })?;
+            crate::cue::extract(&prompt)
+                .map_err(|skip| SilenceReason::NoCues(format!("{skip:?}")))
+        }
+        _ => tool_cues(&value),
+    }
+}
+
+/// Cues for a TOOL event, in the script generation's own priority order
+/// (Sprint 21a dogfood: the subject identifiers win — a rename carrying
+/// `symbol` + `newName` must query the OLD name, so `newName` is last):
+/// the refactor-subject keys, then the edited file's type name
+/// (`Foo.java` → `Foo`), then the raw strings through the untyped extractor.
+fn tool_cues(value: &serde_json::Value) -> Result<crate::cue::Cues, SilenceReason> {
+    for key in ["typeName", "symbol", "query", "newName"] {
+        if let Some(sym) = string_at(value, &["tool_input", key]) {
+            return Ok(crate::cue::Cues {
+                symbols: vec![sym],
+                symptoms: Vec::new(),
+                content_tokens: 0,
+            });
+        }
+    }
+    if let Some(path) = string_at(value, &["tool_input", "file_path"]) {
+        if let Some(sym) = crate::cue::symbol_from_path(&path) {
+            return Ok(crate::cue::Cues {
+                symbols: vec![sym],
+                symptoms: Vec::new(),
+                content_tokens: 0,
+            });
+        }
+        return crate::cue::extract_tool_target(&path)
+            .map_err(|skip| SilenceReason::NoCues(format!("{skip:?}")));
+    }
+    if let Some(cmd) = string_at(value, &["tool_input", "command"]) {
+        return crate::cue::extract_tool_target(&cmd)
+            .map_err(|skip| SilenceReason::NoCues(format!("{skip:?}")));
+    }
+    Err(SilenceReason::PayloadUnreadable(
+        "the payload carried no recognised tool input — the event shape moved".into(),
+    ))
+}
+
+fn parse_payload(payload: &str) -> Result<serde_json::Value, SilenceReason> {
     if payload.trim().is_empty() {
         return Err(SilenceReason::PayloadUnreadable("the event payload was empty".into()));
     }
-    let value: serde_json::Value = serde_json::from_str(payload)
-        .map_err(|e| SilenceReason::PayloadUnreadable(format!("payload is not JSON: {e}")))?;
-    for path in [
-        &["prompt"][..],
-        &["tool_input", "file_path"][..],
-        &["tool_input", "command"][..],
-    ] {
-        let mut cursor = &value;
-        let mut found = true;
-        for key in path {
-            match cursor.get(key) {
-                Some(next) => cursor = next,
-                None => {
-                    found = false;
-                    break;
-                }
-            }
-        }
-        if found {
-            if let Some(s) = cursor.as_str() {
-                if !s.trim().is_empty() {
-                    return Ok(s.to_string());
-                }
-            }
-        }
+    serde_json::from_str(payload)
+        .map_err(|e| SilenceReason::PayloadUnreadable(format!("payload is not JSON: {e}")))
+}
+
+/// The non-empty string at a key path, or `None` — an empty string is an
+/// absence, not a cue.
+fn string_at(value: &serde_json::Value, path: &[&str]) -> Option<String> {
+    let mut cursor = value;
+    for key in path {
+        cursor = cursor.get(key)?;
     }
-    Err(SilenceReason::PayloadUnreadable(
-        "the payload carried no `prompt` and no recognised tool input — the event shape moved"
-            .into(),
-    ))
+    cursor
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string())
 }
 
 
@@ -651,6 +691,63 @@ mod tests {
                 assert_eq!("PreToolUse", v["hookSpecificOutput"]["hookEventName"], "got {s}");
             }
             other => panic!("expected a PreToolUse recall: {other:?}"),
+        }
+    }
+
+    /// 3.7.2 dogfood F2, pinned at the run() level: an ABSOLUTE path must
+    /// recall, not be skipped as a slash command. The existing test above used
+    /// a relative path, which is why the bug lived through it.
+    #[test]
+    fn tool_recall_on_an_absolute_path_queries_the_type_symbol() {
+        struct SymbolAsserting;
+        impl Store for SymbolAsserting {
+            fn ask(&self, args: serde_json::Value) -> Result<Answer, QueryError> {
+                assert_eq!("ProjectImporter", args["symbol"], "the .java stem is the cue");
+                Ok(Answer::Text("[lesson] a line".into()))
+            }
+        }
+        let out = run(
+            Role::ToolRecall,
+            &config("claude-code"),
+            r#"{"tool_input":{"file_path":"/home/u/org/jawata/core/ProjectImporter.java"}}"#,
+            &SymbolAsserting,
+        );
+        assert!(matches!(out, Outcome::Emitted(_)), "an absolute path must recall: {out:?}");
+    }
+
+    /// The subject-key priority carried over from the script generation: a
+    /// rename carrying `symbol` AND `newName` queries the OLD name.
+    #[test]
+    fn tool_recall_prefers_the_subject_key_over_new_name_and_path() {
+        struct SymbolAsserting;
+        impl Store for SymbolAsserting {
+            fn ask(&self, args: serde_json::Value) -> Result<Answer, QueryError> {
+                assert_eq!("com.example.Old#field", args["symbol"]);
+                Ok(Answer::Text("[hazard] a line".into()))
+            }
+        }
+        let out = run(
+            Role::ToolRecall,
+            &config("claude-code"),
+            r#"{"tool_input":{"newName":"renamed","symbol":"com.example.Old#field","file_path":"/x/Y.java"}}"#,
+            &SymbolAsserting,
+        );
+        assert!(matches!(out, Outcome::Emitted(_)), "{out:?}");
+    }
+
+    /// And the TYPED slash-command skip still holds for the prompt role —
+    /// the fix must not have widened UserPrompt.
+    #[test]
+    fn user_prompt_still_skips_slash_commands_after_the_path_fix() {
+        let out = run(
+            Role::UserPrompt,
+            &config("claude-code"),
+            r#"{"prompt":"/sprint resume"}"#,
+            &Stub(Ok(Answer::Text("x".into()))),
+        );
+        match out {
+            Outcome::Silent(SilenceReason::NoCues(why)) => assert!(why.contains("SlashCommand")),
+            other => panic!("expected NoCues(SlashCommand): {other:?}"),
         }
     }
 

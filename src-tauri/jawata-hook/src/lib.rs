@@ -44,6 +44,74 @@ pub fn dispatch(argv0: &str) -> Outcome {
     pipeline::run(role, &config, &payload, &store)
 }
 
+/// The deploy's post-write self-check, mirrored from the script generation:
+/// under `JAWATA_HOOK_SELFTEST=1` each role emits its contract shape through
+/// the REAL render path — the same [`emit::render`] the live path uses — so
+/// the deploy validates the exact bytes a real emission would produce,
+/// without a store, a client, or stdin. (Sprint 21a item J, carried into the
+/// binary: a self-check that takes a different route than production
+/// validates a different program.)
+pub fn selftest(argv0: &str) -> Outcome {
+    use emit::Emission;
+    use roles::{Client, Role};
+    let Some(role) = roles::role_for_binary(argv0) else {
+        return Outcome::Silent(SilenceReason::UnknownRole(argv0.to_string()));
+    };
+    let emission = match role {
+        Role::Primer | Role::UserPrompt | Role::ToolRecall | Role::Observer => emit::context_for(
+            role,
+            Client::ClaudeCode,
+            "[lesson] selftest canned line (accepted)".to_string(),
+        ),
+        Role::Guard => Emission::Permission { allowed: true, reason: String::new() },
+        // The BLOCK shape, deliberately: it is the one with content, and the
+        // deploy-side check accepts block-with-reason — so the selftest proves
+        // the shape a real refusal would take.
+        Role::Stop => Emission::StopDecision {
+            reason: "selftest: the gate can block".to_string(),
+        },
+    };
+    match emit::render(Client::ClaudeCode, &emission) {
+        Some(rendered) => Outcome::Emitted(rendered),
+        None => Outcome::Silent(SilenceReason::CannotInject),
+    }
+}
+
+#[cfg(test)]
+mod selftest_tests {
+    use super::*;
+
+    #[test]
+    fn every_deployed_role_selftests_to_its_contract_shape() {
+        // The four roles the deploy self-checks, each against the assertion
+        // the deploy actually makes on its output.
+        for (name, key) in [
+            ("/x/jawata-hook-primer", "additionalContext"),
+            ("/x/jawata-hook-recall", "additionalContext"),
+            ("/x/jawata-hook-userprompt", "additionalContext"),
+        ] {
+            match selftest(name) {
+                Outcome::Emitted(s) => {
+                    let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+                    assert!(
+                        v["hookSpecificOutput"][key].as_str().is_some_and(|c| !c.is_empty()),
+                        "{name}: {s}"
+                    );
+                }
+                other => panic!("{name} must emit its contract shape: {other:?}"),
+            }
+        }
+        match selftest("/x/jawata-hook-stop") {
+            Outcome::Emitted(s) => {
+                let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+                assert_eq!("block", v["decision"], "{s}");
+                assert!(v["reason"].as_str().is_some_and(|r| !r.is_empty()), "{s}");
+            }
+            other => panic!("the stop selftest must emit a Stop decision: {other:?}"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod dispatch_tests {
     use super::*;
