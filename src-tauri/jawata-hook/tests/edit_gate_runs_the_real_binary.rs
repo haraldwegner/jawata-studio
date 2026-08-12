@@ -48,14 +48,34 @@ fn guard_says(payload: &str, home: &std::path::Path) -> String {
     )
     .expect("write the hook config");
 
-    let mut child = Command::new(&exe)
-        .env("HOME", home)
-        .env("USERPROFILE", home)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("the guard binary must be executable");
+    // RETRY THE EXEC, not just the copy. Linux refuses to exec a binary that is
+    // still open for writing (ETXTBSY, errno 26), and these tests run
+    // concurrently — each copying the same source to its own role name. The
+    // race is timing-dependent: it passed locally and on x64 and failed only on
+    // ubuntu-22.04-arm, which is precisely how a race hides until it does not.
+    //
+    // This is the SECOND copy of this dance; `fail_safe_boundary.rs` has the
+    // first, with the same errno and the same reasoning. Two copies of one
+    // workaround is a duplication worth extracting into a shared test helper —
+    // recorded rather than done here, because it spans two integration binaries.
+    let mut attempt = 0;
+    let mut child = loop {
+        let spawned = Command::new(&exe)
+            .env("HOME", home)
+            .env("USERPROFILE", home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn();
+        match spawned {
+            Ok(c) => break c,
+            Err(e) if e.raw_os_error() == Some(26) && attempt < 40 => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => panic!("the guard binary must be executable: {e}"),
+        }
+    };
     child
         .stdin
         .take()
