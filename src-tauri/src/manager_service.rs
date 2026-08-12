@@ -9658,12 +9658,33 @@ mod tests {
 
         // Start it, and hold it running across the redeploy.
         let deployed = hooks.join("jawata-hook-primer");
-        let mut child = std::process::Command::new(&deployed)
-            .arg("30")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("the deployed binary must be executable");
+        // RETRY THE FIRST EXEC. This test copies a binary and immediately runs
+        // it, and Linux refuses to exec a file still open for writing — the very
+        // errno this test exists to prove the DEPLOY handles. It was latent
+        // until enough tests spawned binaries concurrently for the window to be
+        // hit, and then failed on ubuntu-22.04 while green everywhere else.
+        //
+        // THIRD COPY of this retry (fail_safe_boundary.rs and
+        // edit_gate_runs_the_real_binary.rs have the others). Three copies of
+        // one workaround is debt: it wants a shared test helper, which spans a
+        // lib test and two integration binaries and is therefore its own change,
+        // not a rider on a release.
+        let mut attempt = 0;
+        let mut child = loop {
+            match std::process::Command::new(&deployed)
+                .arg("30")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                Ok(c) => break c,
+                Err(e) if e.raw_os_error() == Some(26) && attempt < 40 => {
+                    attempt += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => panic!("the deployed binary must be executable: {e}"),
+            }
+        };
         std::thread::sleep(std::time::Duration::from_millis(150));
 
         // A CHANGED binary, so the byte-stable short-circuit cannot hide the
