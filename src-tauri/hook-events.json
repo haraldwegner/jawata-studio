@@ -155,7 +155,7 @@
       "Proven by a front-door Edit of a .java file that went through unblocked.",
       "The guard reverts to its script (which carries both halves) until the port."
     ],
-    "_scope": "claude-code",
+    "_scope": "claude-code, and — since Sprint 28a — the GUARD row governs Cursor too. Before that, Cursor was all script-generation by construction and a studio test pinned that no Cursor entry named a role binary. That test now checks the weaker, truer thing: a Cursor entry may name a role binary only where a row here declares that role live as a binary. The other three Cursor roles remain scripts, governed by the same rows.",
     "primer": {
       "live": "binary"
     },
@@ -166,8 +166,8 @@
       "live": "binary"
     },
     "guard": {
-      "live": "script",
-      "until": "the binary ports the .java hand-edit gate (Edit/Write/MultiEdit + jawata-author authoring windows) — 3.7.3 dogfood: the binary judges shell commands only, so the edit gate silently dropped at cutover"
+      "live": "binary",
+      "ported": "Sprint 28a (2026-08-12). The .java hand-edit gate moved into the binary: tool_name extraction, Edit/Write/MultiEdit denial, the session-scoped jawata-author window (TTL-bounded, so it cannot become a standing bypass), and the new-file allowance. BOTH halves are pinned by tests that SPAWN THE REAL BINARY — edit_gate_runs_the_real_binary.rs — including a regression asserting the shell half still denies a java grep, because the two previous cutovers each shipped one half. Windows forced the timing: a .sh cannot execute there, Cursor runs this role failClosed, and a hook that never returns BLOCKS the command — observed live on 2026-08-12 as an interactive bash window hung on cat."
     },
     "observer": {
       "live": "script",

@@ -11,8 +11,19 @@ while dropping the doc's goal).
   drafts, even implementation details. Nothing is filtered out and nothing is descoped:
   *in the raw we just talk* — difficulty is not allowed to touch it. When `/sprint` runs,
   the existing working doc **is renamed with the `-raw` suffix** and becomes the
-  immutable audit baseline. **On the user's sign-off of the clean spec, the raw is
+  audit baseline. **On the user's sign-off of the clean spec, the raw is
   DELETED** — the clean supersedes it.
+  **Immutability is ONE-DIRECTIONAL, and a requirement arriving mid-run goes HERE**
+  (Harald, 2026-08-11). The editor may never remove, reword or soften a raw item — that
+  is the property the whole audit rests on. The USER may always add: a requirement that
+  comes out of discussion after `/sprint` has started is appended to the raw as a dated
+  entry in their own words, and the next audit round re-baselines against the raw as it
+  now stands. **It does not go straight into the clean.** Sprint 28a D12 is the case that
+  found this: a requirement from discussion went directly into the clean, so the auditor
+  had no row to compare it against and could only check it for internal soundness —
+  which is exactly what a well-built wrong thing has. Appending costs nothing (the raw is
+  deleted at sign-off anyway) and it keeps every deliverable inside the one check that
+  matters.
 - **CLEAN** (the canonical `<name>.md`) — the sprint spec the EDITOR derives from the
   raw. **Reader: the USER.** Plain language throughout. MAY contain high-level design:
   ASCII architecture, design decisions, short snippets for new tech — **high level
@@ -70,7 +81,12 @@ while dropping the doc's goal).
 - **The audit trail records verdicts AFTER they are given — never pre-written** (writing
   "signed off" before the verdict exists is pre-claiming; caught live 2026-07-10).
 
-## The auditor's checks (all blocking)
+## The auditor's checks
+
+**1 to 12 are BLOCKING — they end in SIGN-OFF or REFUSE and the auditor decides them.
+13 is the exception: it ESCALATES.** Whether a simpler solution is good enough is the
+user's judgement, so check 13's product is a named decision for them, never a verdict.
+(Check 11 applies to the plan only.)
 
 1. **Measurable** — every deliverable has a measure (plain sentence in the spec;
    mechanical in the plan).
@@ -126,6 +142,106 @@ while dropping the doc's goal).
    that share a `cpu` saturation point or an `artifact` path, without the plan
    naming why they do not collide.
 
+12. **IS THERE A REQUIREMENT AT ALL?** (Harald, 2026-08-11: *"You tend to
+   overcomplicate. An auditor should check if there is a requirement at all."*)
+   Checks 1–11 all assume the requirement exists and ask whether the clean
+   preserved it. **This one asks whether it exists.** Every deliverable names the
+   requirement it serves and quotes it from the raw. Then the blocking question:
+   **is this the smallest thing that satisfies those words?** Machinery the quoted
+   requirement does not demand is a REFUSE, and so is a deliverable whose only
+   provenance is "it enables" or "it follows from" — an inference is not a
+   requirement.
+
+   **This is a text comparison, not a judgement** (Harald, 2026-08-11: *"if the
+   raw contains the requirements an auditor can check if you overshoot"*). Because
+   the requirement is quoted, the auditor does not have to form an opinion about
+   whether the editor over-built — it reads the sentence, reads the deliverable,
+   and names what the deliverable does that the sentence never asked for. That
+   list IS the finding. It is the same discipline as the traceability matrix,
+   pointed the other way: the matrix catches what the clean LOST, this catches
+   what it ADDED.
+
+13. **IS THERE AN EASIER WAY?** (Harald, 2026-08-11: *"the auditor should ask
+   nasty questions, like are all the tests and the way of testing necessary or do
+   you achieve the goals with them. Or is there an easier architecture and the
+   current solution is over the top."*) Check 12 asks whether each piece traces to
+   a requirement. **This one accepts the requirements and attacks the SOLUTION.**
+   Ask, hard, and in the user's terms:
+
+   - Is there a simpler way to reach the same sprint goals altogether?
+   - Are all these tests necessary, and is this WAY of testing necessary — or do
+     the goals hold with fewer, cheaper, or different ones?
+   - Is the architecture over the top for what it buys? Would a smaller structure
+     do the same job?
+   - Which deliverable costs the most and buys the least?
+
+   **THIS CHECK ESCALATES, IT DOES NOT REFUSE.** Whether a simpler solution is
+   good enough is a judgement only the user can make, so the product here is a
+   NAMED DECISION for them — the simpler alternative stated concretely, what it
+   gives up, what it saves — never a verdict the auditor reaches alone. That is
+   the one difference from every other check: 1 through 12 are the auditor's to
+   decide; 13 is the user's, and the auditor's job is to ensure it REACHES them
+   instead of being settled quietly by whoever wrote the spec.
+
+   Two guards. **Do not manufacture an alternative to look diligent** — if the
+   solution is already the simple one, say so in a sentence and move on; a
+   fabricated option spends the user's attention for nothing. And **cheaper is not
+   automatically better**: state what the simpler path gives up, especially where
+   the expensive path exists because something already failed.
+
+   **The failure this catches is not scope-dropping, it is scope-inventing**, and
+   declaring the invention does not cure it. Sprint 28a D12 is the case: the user
+   said *"do it at the beginning, because I do not want to do the test runs
+   twice."* I built impact selection over the reference graph, which then required
+   a network call before every shell command, which then required a whole risk
+   decision (R12) with three options and a recommendation. Two audit rounds
+   analysed that risk seriously. **It existed only because of machinery no
+   requirement asked for** — his sentence needed a table written before the sweep,
+   and R12 vanished with the mechanism that invented it.
+
+   **A deliverable with no raw row is itself the finding.** Do not invent a
+   special anchoring rule for it — a requirement from discussion belongs in the
+   raw (see the one-directional immutability rule above), so its absence there
+   means the editor skipped a step. REFUSE, and the fix is to append the user's
+   words to the raw and re-derive, not to argue the deliverable's merits.
+
+## THE ROUND CAP — three, four at the outside (Harald, 2026-08-11, BINDING)
+
+*"We need to cut this behaviour by the count of audits. We should not have more than 3 or
+4 rounds typically. Every small detail now which is a bit wording here and then — and we
+have not even started planning nor implementation which might turn out wrong anyhow. We
+need a basis for the output we produce to compare, but this is again overkill."*
+
+**The spec is a BASIS FOR COMPARISON, not a finished artifact.** Its job is to be good
+enough that the implementation can be judged against it. Polish beyond that is waste, and
+it is waste spent before the plan exists — on text the implementation may invalidate.
+
+**HARD CAP: 3 rounds. A 4th only if round 3 found something genuinely blocking.** At the
+cap, remaining findings are ACCEPTED AS-IS or written into the spec as named open items.
+They are never another round. Sprint 28a ran to TEN and the last three found almost nothing
+but text the editor had itself generated.
+
+**Only these are BLOCKING findings** — everything else is a note folded silently or not at
+all:
+1. A claim about the code or the product that is FALSE.
+2. A requirement dropped, narrowed or softened against the raw.
+3. A deliverable with no measure, or a measure that cannot fail.
+4. A deferral with no named home.
+
+**NOT blocking, ever:** wording · tone · a stale cross-reference · a count restated · trail
+phrasing · a heading order · the same fact expressed differently in two places. If an
+auditor returns these as blocking, the editor fixes what is cheap and IGNORES the rest.
+
+**TWO EDITOR HABITS GENERATE THE FINDINGS.** Sprint 28a proved both:
+- **A long audit trail is auditable text.** Narrating each round's findings in prose adds
+  ~30 lines per round, and the next auditor audits THAT. The trail is verdict + what
+  changed, a few lines each. It is not a confession log, and it is not written for the
+  auditor — the user reads it.
+- **Never state the same fact in two places.** Every duplicate is a future finding, because
+  a fix lands in one copy. One home per fact; everywhere else points at it.
+
+**The cap applies to the plan's audit too.**
+
 ## The traceability matrix — anchored to the RAW
 
 | RAW requirement (verbatim) | Where the CLEAN satisfies it + its measure | kept / deferred-with-home / **DROPPED → refuse** |
@@ -145,6 +261,30 @@ to narrative. Clean elements mapping to no raw item = scope creep, flag.
 2. **AUDITOR** (raw + clean + chat): checks + matrix → SIGN-OFF / REFUSE + findings in
    plain language (each names the raw item, how the clean failed it, minimal fix).
 3. **LOOP** until auditor sign-off; unresolved disagreements → the user.
+   **THE ARTIFACT LOOP DOES NOT WAIT FOR THE USER — only GATE 1 does** (Harald,
+   2026-08-11: *"And what have you been waiting for? That's your loop."*). This
+   is the editor↔auditor loop over a DOCUMENT: it has no checkpoints and no flag,
+   it simply runs to sign-off. A revision is not a terminal state — the instant
+   the clean changes, including a change the user just dictated, the next round
+   launches in the same turn, before any summary is written. Reporting a revision
+   and waiting is the turn-boundary failure wearing process clothes: it looks like
+   deference and it is the sprint asleep. On 2026-08-11 the editor revised one
+   deliverable four times across four turns, summarising after each, and
+   re-audited only when the user asked whether it had been audited at all.
+   **While a round runs, edits to the audited document STOP** — an auditor reading
+   a moving file reports on a version that no longer exists. Everything else
+   continues.
+   **Do not confuse this with autocontinue**, which belongs to plan EXECUTION and
+   is defined at Phase B. The instant the clean changes — including a change the user
+   themself just dictated — **the next audit round is launched in the same turn**,
+   before any summary is written. Reporting a revision and waiting is the
+   turn-boundary failure wearing process clothes: it looks like deference and it
+   is the sprint asleep. On 2026-08-11 the editor revised the same deliverable
+   four times across four turns, summarising after each, and re-audited only when
+   the user asked whether it had been audited at all.
+   **While a round runs, work that would edit the audited document STOPS** — an
+   auditor reading a moving file reports on a version that no longer exists.
+   Everything else continues.
 4. **GATE 1 — user sign-off.** STOP and wait.
 5. On sign-off: **delete the raw**; the clean is canonical.
 
@@ -353,17 +493,30 @@ annotated expected-vs-actual; never advance after a failure and never deviate fr
 plan without the user's decision; commits per checkpoint; push/tag/release only on the
 user's explicit word; update the plan file when a user-approved change lands.
 
-**AUTOCONTINUE is an instruction, not a scheduler — mind the turn boundary**
-(Harald 2026-08-07, Sprint 28: the sprint halted silently at a checkpoint
-summary and resumed only because an unrelated command woke the session). The
-agent runs only while a turn is active; a turn is started only by user input or
-by a background job's completion. Therefore, when the user has granted
-autocontinue: a checkpoint summary is MID-TURN text, never a turn's end; the
-STOP-at-checkpoint rule above is REPLACED by summarize-and-continue; and a turn
-may end only (a) genuinely blocked on the user's decision or (b) with a
-background job RUNNING whose completion re-invokes the agent. Writing "work
-continues" while nothing is armed to wake the session is describing machinery
-that does not exist.
+**AUTOCONTINUE IS A FLAG, AND IT BELONGS TO PLAN EXECUTION ONLY** (Harald,
+2026-08-11). Scope and effect, exactly:
+
+- It applies to **executing an approved plan** — nothing else. It is not a mode
+  the agent is ever in by default, and it is never inferred.
+- The user sets it, at their discretion, and only they can.
+- **Default (no flag): the agent posts the checkpoint summary and WAITS for
+  `continue`.**
+- **With the flag: the checkpoints are UNTOUCHED** — every one still happens,
+  still posts its full summary, still runs its gate, still applies its exit
+  criteria. The single difference is that the agent **does not wait for the word
+  before moving on**.
+- **A checkpoint that FAILS its exit criteria stops regardless of the flag** —
+  it reports the failure with diagnostics and waits. Autocontinue removes the
+  wait, never the gate.
+
+**Then mind the turn boundary** (Harald 2026-08-07, Sprint 28: the sprint halted
+silently at a checkpoint summary and resumed only because an unrelated command
+woke the session). The agent runs only while a turn is active, and a turn starts
+only from user input or a background job's completion. So under the flag: a
+checkpoint summary is MID-TURN text, never a turn's end; and a turn may end only
+(a) genuinely blocked on the user's decision or (b) with a background job RUNNING
+whose completion re-invokes the agent. Writing "work continues" while nothing is
+armed to wake the session is describing machinery that does not exist.
 
 **The mechanic, because "verify before ending" failed twice in the session that
 wrote this rule:** ARM FIRST, THEN SPEAK. Under granted autocontinue, launch the

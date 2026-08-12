@@ -59,8 +59,20 @@ pub fn render(client: Client, emission: &Emission) -> Option<String> {
                 }
             })
             .to_string(),
+            // Cursor reads FOUR keys here, and the two beyond `permission` are
+            // not decoration:
+            //   `continue`      — omitting it once made a deny read as a crash.
+            //   `user_message`  — what the HUMAN sees. v3.7.5 shipped exactly one
+            //                     change: putting the escape signpost in BOTH
+            //                     message fields, because a deny that tells only
+            //                     the agent how to proceed leaves the person
+            //                     staring at a wall.
+            // The bash script this replaces emitted all four. Dropping either
+            // would have been a silent regression of a shipped fix.
             Client::Cursor => serde_json::json!({
+                "continue": true,
                 "permission": if *allowed { "allow" } else { "deny" },
+                "user_message": reason,
                 "agent_message": reason,
             })
             .to_string(),

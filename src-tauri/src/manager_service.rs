@@ -5720,6 +5720,17 @@ const BINARY_LIVE_ROLES: &[&str] = &[
     "jawata-hook-userprompt",
     "jawata-hook-recall",
     "jawata-hook-stop",
+    // Sprint 28a (2026-08-12): the guard rejoins, because the binary now carries
+    // BOTH halves. It lost this place in the 3.7.3 dogfood for holding only the
+    // shell half while the `.java` hand-edit gate stayed in the script; the gate
+    // is now in `editgate.rs` and both halves are pinned by tests that spawn the
+    // real binary.
+    //
+    // Windows forced the timing rather than tidiness: a `.sh` cannot execute
+    // there, Cursor runs this role `failClosed`, and a hook that never returns
+    // BLOCKS the user's command — seen live as an interactive bash window hung
+    // on `cat` waiting for a payload nobody piped in.
+    "jawata-hook-guard",
 ];
 
 /// Roles whose binary must NOT be on disk: a stale one from an earlier deploy
@@ -5732,7 +5743,7 @@ const BINARY_LIVE_ROLES: &[&str] = &[
 /// front-door Edit of a `.java` file went through unblocked. The script
 /// generation carries BOTH halves, so the role reverts until the binary
 /// ports the edit gate.
-const BINARY_RETIRED_ROLES: &[&str] = &["jawata-hook-guard", "jawata-hook-observer"];
+const BINARY_RETIRED_ROLES: &[&str] = &["jawata-hook-observer"];
 
 /// Sprint 28 (D-SHIM, C6 clause 5 first half): deploy the role-named hook
 /// binaries — UNLINK, then write.
@@ -6712,10 +6723,49 @@ const CURSOR_HOOK_SENTINEL: &str = "hooks/jawata-";
 
 /// The four managed (event, entry) pairs — the SINGLE source used by the
 /// merge-into-the-user's-file deploy path, which is the ONLY writer.
-fn managed_cursor_hook_entries() -> Vec<(&'static str, serde_json::Value)> {
+/// Sprint 28a (2026-08-12): the GUARD now names the role BINARY, not a script.
+///
+/// Why this one entry changed and the other three did not. On Windows a `.sh`
+/// cannot execute: Cursor launches it as an interactive login shell, the script's
+/// first act is to read its payload from stdin with `cat`, nothing is piped in,
+/// and it waits forever in a visible window. This entry carries
+/// `failClosed: true`, so a hook that never returns BLOCKS the user's command —
+/// a guard strictly worse than no guard. Observed live on a Windows 11 machine.
+///
+/// The binary has no shell in its path on any platform, and it carries a
+/// wedged-stdin watchdog, so the same launch shape exits cleanly instead of
+/// hanging. It moved only now because until Sprint 28a it held just the
+/// shell-command half of the guard; the `.java` hand-edit gate is now in it too
+/// (`editgate.rs`), which is the condition `role_generations` requires.
+///
+/// The other three roles stay on scripts here for the reason recorded in
+/// `hook-events.json` — their binaries do not yet hold parity — and they are
+/// the observer's problem to finish, not the guard's.
+fn managed_cursor_hook_entries(hooks_dir: &Path) -> Vec<(&'static str, serde_json::Value)> {
+    // ONE resolver decides binary-or-script, and it is the one the Claude Code
+    // side has run on since Sprint 28: `invocation_path_in`. This function used
+    // to hand-roll the same rule, and a second copy of a rule is a second copy
+    // that can disagree — the entry said "binary" while the writer had written a
+    // script. Delegating removes the disagreement rather than reconciling it.
+    //
+    // `hooks_dir` is a PARAMETER for the reason `invocation_path_in` documents:
+    // so the decision is testable without resolving — and mutating — the
+    // developer's real home. A declaration whose value depends on the ambient
+    // filesystem cannot be asserted.
+    //
+    // The command stays RELATIVE (`./hooks/…`, resolved against `~/.cursor/`)
+    // for two reasons: it must not reach into Claude Code's directory, which
+    // would make one client's deploy depend on another's; and
+    // `CURSOR_HOOK_SENTINEL` identifies our own entries by the substring
+    // `hooks/jawata-`. An absolute path need not contain it, and an entry we
+    // cannot recognise is one a redeploy will not replace and a removal will not
+    // strip.
+    let guard_command = invocation_path_in(hooks_dir, "jawata-hook-guard", "jawata-guard.sh")
+        .and_then(|p| p.file_name().map(|n| format!("./hooks/{}", n.to_string_lossy())))
+        .unwrap_or_else(|| "./hooks/jawata-guard.sh".to_string());
     vec![
         ("sessionStart", serde_json::json!({ "command": "./hooks/jawata-session-primer.sh", "timeout": 15 })),
-        ("beforeShellExecution", serde_json::json!({ "command": "./hooks/jawata-guard.sh", "timeout": 5, "failClosed": true, "matcher": "grep |rg |sed |awk " })),
+        ("beforeShellExecution", serde_json::json!({ "command": guard_command, "timeout": 5, "failClosed": true, "matcher": "grep |rg |sed |awk " })),
         ("beforeSubmitPrompt", serde_json::json!({ "command": "./hooks/jawata-recall.sh", "timeout": 5 })),
         ("afterMCPExecution", serde_json::json!({ "command": "./hooks/jawata-observer.sh", "timeout": 5 })),
     ]
@@ -6784,15 +6834,58 @@ fn write_managed_cursor_hooks(
     backup_before_write: bool,
     force_rewrite: bool,
 ) -> Result<bool, String> {
-    // 1. Write the four managed scripts (jawata-studio owns them outright).
     fs::create_dir_all(hooks_dir)
         .map_err(|e| format!("failed to create cursor hooks dir {}: {e}", hooks_dir.display()))?;
-    let scripts: [(&str, String); 4] = [
+
+    // 1. DEPLOY THE GUARD BINARY FIRST, so the single resolver below sees the
+    //    truth rather than the state from before this deploy.
+    //
+    // Unlink-then-write: Linux refuses to open an executing binary for writing
+    // (ETXTBSY) and hooks fire on every prompt, so a redeploy routinely lands on
+    // a running process. The running one keeps its inode and dies with the
+    // process; the new file takes the name. Windows needs the same order because
+    // a running image cannot be replaced.
+    //
+    // A missing source is NOT fatal: an install whose bundle did not ship the
+    // binary keeps the script generation instead of losing its guard. That
+    // choice is expressed once, by `invocation_path_in` below — not repeated
+    // here as a second opinion.
+    if let Some(source) = hook_binary_source() {
+        if source.exists() {
+            let target = hooks_dir.join(role_binary_file_name("jawata-hook-guard"));
+            let _ = fs::remove_file(&target);
+            if let Err(e) = fs::copy(&source, &target) {
+                eprintln!(
+                    "[jawata-studio] cursor guard binary not deployed ({e}); \
+                     the script generation stands"
+                );
+            } else {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = fs::set_permissions(&target, fs::Permissions::from_mode(0o755));
+                }
+            }
+        }
+    }
+
+    // 2. ASK THE RESOLVER — once — which generation is live for the guard, and
+    //    write exactly that one. The entries built later ask the SAME function
+    //    with the SAME directory, so the file on disk and the hooks.json entry
+    //    cannot disagree. They used to be two independent probes, and the
+    //    disagreement between them was the defect.
+    let guard_is_binary = invocation_path_in(hooks_dir, "jawata-hook-guard", "jawata-guard.sh")
+        .map(|p| path_is_role_binary(&p))
+        .unwrap_or(false);
+
+    let mut scripts: Vec<(&str, String)> = vec![
         ("jawata-session-primer.sh", build_cursor_primer_script(mcp_url, token)),
-        ("jawata-guard.sh", build_cursor_guard_script()),
         ("jawata-recall.sh", build_cursor_recall_script(mcp_url, token)),
         ("jawata-observer.sh", build_cursor_observer_script()),
     ];
+    if !guard_is_binary {
+        scripts.push(("jawata-guard.sh", build_cursor_guard_script()));
+    }
     let mut script_changed = false;
     for (name, body) in &scripts {
         let p = hooks_dir.join(name);
@@ -6815,6 +6908,18 @@ fn write_managed_cursor_hooks(
             fs::remove_file(&legacy)
                 .map_err(|e| format!("failed removing legacy cursor hook {}: {e}", legacy.display()))?;
             script_changed = true;
+        }
+    }
+
+    // 3. Retire the script generation once the binary is live, so an install
+    //    never carries two generations of one role.
+    if guard_is_binary {
+        for stale in ["jawata-guard.sh", &legacy_sentinel("jawata-guard.sh")] {
+            let p = hooks_dir.join(stale);
+            if p.exists() {
+                let _ = fs::remove_file(&p);
+                script_changed = true;
+            }
         }
     }
 
@@ -6842,7 +6947,7 @@ fn write_managed_cursor_hooks(
             *hooks = serde_json::json!({});
         }
         let hooks_object = hooks.as_object_mut().expect("hooks is an object");
-        for (event, entry) in managed_cursor_hook_entries() {
+        for (event, entry) in managed_cursor_hook_entries(hooks_dir) {
             merge_cursor_event(hooks_object, event, entry);
         }
     }
@@ -8468,7 +8573,14 @@ mod tests {
         .unwrap();
 
         assert!(!hooks_dir.join("goja-guard.sh").exists(), "legacy script removed");
-        assert!(hooks_dir.join("jawata-guard.sh").exists(), "new script written");
+        // Sprint 28a: exactly ONE generation of the guard is on disk. Which one
+        // depends on whether the bundle shipped a binary; that both are never
+        // present does not.
+        let binary = hooks_dir.join(role_binary_file_name("jawata-hook-guard")).exists();
+        let script = hooks_dir.join("jawata-guard.sh").exists();
+        assert!(binary ^ script,
+            "exactly one guard generation must be on disk (binary={binary}, script={script}) \
+             — two is the unfired-stale-generation defect, none is no guard at all");
         let out: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&hooks_json).unwrap()).unwrap();
         let shell = out["hooks"]["beforeShellExecution"].as_array().unwrap();
@@ -9091,16 +9203,36 @@ mod tests {
         assert!(bsp.iter().any(|e| e["command"] == "./hooks/jawata-recall.sh"), "managed recall added");
         // The user's bespoke event is untouched.
         assert!(hooks.contains_key("stop"), "unrelated user event preserved");
-        // The guard is failClosed.
+        // The guard is failClosed, and — Sprint 28a — it names the role BINARY.
+        //
+        // The `.sh` assertion below is the one that matters on Windows: a shell
+        // script there is launched as an interactive login shell, blocks on
+        // `cat` waiting for a payload nobody pipes in, and never returns. Under
+        // `failClosed` that is a BLOCK on the user's command, so a regression to
+        // a script here is not cosmetic — it breaks the client.
         let guard = hooks["beforeShellExecution"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|e| e["command"] == "./hooks/jawata-guard.sh")
-            .unwrap();
+            .find(|e| cursor_entry_is_managed(e))
+            .expect("our guard entry is present");
         assert_eq!(guard["failClosed"], true, "guard is failClosed");
-        // Scripts written + executable; the recall script baked the url + token.
-        for name in ["jawata-session-primer.sh", "jawata-guard.sh", "jawata-recall.sh", "jawata-observer.sh"] {
+        // THE INVARIANT the redesign guarantees: the entry and the file on disk
+        // name the SAME generation. Asserting "always a binary" would be wrong —
+        // an install whose bundle shipped no binary correctly keeps the script.
+        // What must never happen is the entry pointing at one and the deploy
+        // having written the other, which is what two independent probes used to
+        // allow.
+        let guard_cmd = guard["command"].as_str().unwrap_or_default().to_string();
+        let named = guard_cmd.rsplit('/').next().unwrap_or_default();
+        assert!(
+            hooks_dir.join(named).exists(),
+            "the guard entry names {named:?} but no such file was deployed — the \
+             entry and the deploy disagree, which is the defect this design removes"
+        );
+        // The three roles still on scripts are written + executable; the recall
+        // script baked the url + token.
+        for name in ["jawata-session-primer.sh", "jawata-recall.sh", "jawata-observer.sh"] {
             let p = hooks_dir.join(name);
             assert!(p.exists(), "{name} written");
             #[cfg(unix)]
@@ -9185,16 +9317,12 @@ mod tests {
         write_managed_cursor_hooks(&hooks_path, &hooks_dir, "http://127.0.0.1:1/mcp", "t", false, false).unwrap();
 
         use std::process::{Command, Stdio};
-        // guard: empty stdin -> allow -> valid JSON with permission=allow.
-        if let Ok(out) = Command::new("bash")
-            .arg(hooks_dir.join("jawata-guard.sh"))
-            .stdin(Stdio::null())
-            .output()
-        {
-            let v: serde_json::Value =
-                serde_json::from_slice(&out.stdout).expect("guard emits valid JSON");
-            assert_eq!(v["permission"], "allow", "an empty command is allowed");
-        }
+        // The GUARD is no longer a script here (Sprint 28a) — its equivalent
+        // check runs the real binary in
+        // jawata-hook/tests/edit_gate_runs_the_real_binary.rs, which is a
+        // stronger test than this one: it drives both halves of the role and
+        // asserts the Cursor permission dialect, rather than only that empty
+        // stdin yields valid JSON.
         // primer: selftest mode -> valid JSON carrying additional_context.
         if let Ok(out) = Command::new("bash")
             .arg(hooks_dir.join("jawata-session-primer.sh"))
@@ -9649,10 +9777,12 @@ mod tests {
         assert_eq!(build_observer_script(url, token),
             std::fs::read_to_string(hooks.join(OBSERVER_SCRIPT_FILE)).unwrap(),
             "the observer's live generation is the SCRIPT (role_generations)");
-        assert_eq!(build_guard_script(url),
-            std::fs::read_to_string(hooks.join(GUARD_SCRIPT_FILE)).unwrap(),
-            "the guard's live generation is the SCRIPT — the binary dropped the \
-             .java hand-edit gate (3.7.3 dogfood F5)");
+        // Sprint 28a: the guard resolves to whichever generation this deploy
+        // actually produced, and the OTHER one must not be left behind.
+        let guard_binary = hooks.join(role_binary_file_name("jawata-hook-guard")).exists();
+        let guard_script = hooks.join(GUARD_SCRIPT_FILE).exists();
+        assert!(guard_binary || guard_script,
+            "the guard must exist in one generation or the other");
         for retired in BINARY_RETIRED_ROLES {
             assert!(!hooks.join(retired).exists(),
                 "{retired}: the retired binary must come off the disk — a stale one \
@@ -9681,10 +9811,14 @@ mod tests {
             "the observer entry must point at its script; commands: {commands:?}");
         assert!(!commands.iter().any(|c| c.ends_with("jawata-hook-observer")),
             "no entry may point at the retired observer binary; commands: {commands:?}");
-        assert!(commands.iter().any(|c| c.ends_with(GUARD_SCRIPT_FILE)),
-            "the guard entry must point at its script; commands: {commands:?}");
-        assert!(!commands.iter().any(|c| c.ends_with("jawata-hook-guard")),
-            "no entry may point at the retired guard binary; commands: {commands:?}");
+        // The guard's two assertions are GONE, not softened: it is a
+        // BINARY_LIVE_ROLE as of Sprint 28a, so the loop above already requires
+        // an entry naming its binary, and requiring the script too would demand
+        // both generations at once. The observer keeps its pair because it is
+        // still declared script-generation.
+        assert!(!commands.iter().any(|c| c.ends_with(GUARD_SCRIPT_FILE)),
+            "the guard script is retired on the Claude side once its binary is live; \
+             commands: {commands:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -10053,7 +10187,10 @@ mod tests {
         assert_eq!(6, checked, "all six Claude entries checked, got {checked}");
 
         // Cursor's four, from the source both its deploy and the hook read.
-        for (event, entry) in managed_cursor_hook_entries() {
+        // An empty dir: no binary on disk, so every role resolves to its
+        // script. This test is about EVENT NAMES, which do not vary with it.
+        let empty = std::env::temp_dir().join("jawata-cursor-events-shape");
+        for (event, entry) in managed_cursor_hook_entries(&empty) {
             assert!(
                 entry["timeout"].as_u64().is_some(),
                 "cursor {event} carries no explicit timeout: {entry}"
@@ -10422,20 +10559,119 @@ mod tests {
         }
     }
 
-    /// Audit F3, the Cursor side: `role_generations` governs the claude-code
-    /// deploy (`_scope`), and the Cursor deploy must stay all-script BY
-    /// CONSTRUCTION — a Cursor entry naming a role binary would be a cutover
-    /// no contract row governs.
+    /// Audit F3, the Cursor side — restated for Sprint 28a.
+    ///
+    /// The original form asserted the Cursor deploy was all-script BY
+    /// CONSTRUCTION. That was the right guard for the wrong invariant: what
+    /// actually matters is that **no cutover happens without a declared row**,
+    /// and "never cut over" was merely the cheapest way to guarantee it while
+    /// no Cursor role had a binary.
+    ///
+    /// The guard now does, so the check becomes the weaker and truer one: a
+    /// Cursor entry may name a role binary EXACTLY WHERE `role_generations`
+    /// declares that role live as a binary, and must be a script everywhere
+    /// else. A cutover that outruns the contract still fails here — which is
+    /// the property the 3.7.2 and 3.7.3 dogfoods paid for.
     #[test]
-    fn no_cursor_entry_ever_names_a_role_binary() {
-        for (event, entry) in managed_cursor_hook_entries() {
+    fn a_cursor_entry_names_a_binary_only_where_the_contract_declares_one() {
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("../hook-events.json")).expect("contract parses");
+        let generations = &doc["role_generations"];
+
+        // BOTH states, or this test proves nothing. With no binary on disk every
+        // role resolves to its script and the loop below would `continue` past
+        // every assertion — green, and blind. So the binary case is staged
+        // explicitly, and the script case is checked as the fallback it is.
+        let dir = std::env::temp_dir()
+            .join(format!("jawata-cursor-contract-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch hooks dir");
+
+        // --- state 1: no binary deployed -> the fallback is the script ---
+        let fallback = managed_cursor_hook_entries(&dir);
+        let guard_fallback = fallback
+            .iter()
+            .find(|(ev, _)| *ev == "beforeShellExecution")
+            .map(|(_, e)| e["command"].as_str().unwrap_or_default().to_string())
+            .expect("a guard entry exists");
+        assert!(
+            guard_fallback.ends_with(".sh"),
+            "with no binary deployed the guard must fall back to its script, got {guard_fallback:?}"
+        );
+
+        // --- state 2: binary deployed -> the entry names it ---
+        std::fs::write(dir.join(role_binary_file_name("jawata-hook-guard")), b"x")
+            .expect("stage the binary");
+
+        for (event, entry) in managed_cursor_hook_entries(&dir) {
             let command = entry["command"].as_str().unwrap_or_default();
-            assert!(!command.contains("jawata-hook-"),
-                "{event}: the Cursor entry {command:?} names a role binary — the \
-                 Cursor deploy is script-generation only, and no role_generations \
-                 row governs a Cursor cutover");
-            assert!(command.ends_with(".sh"),
-                "{event}: the Cursor entry {command:?} is not a script");
+            let names_binary = command.contains("jawata-hook-");
+
+            // Which role is this entry? Read it from the command itself so the
+            // test cannot drift from what the deploy writes.
+            let role = if names_binary {
+                command
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or_default()
+                    .trim_end_matches(".exe")
+                    .strip_prefix("jawata-hook-")
+                    .unwrap_or_default()
+                    .to_string()
+            } else {
+                continue; // scripts need no row; the contract only governs cutovers
+            };
+
+            let declared = generations[&role]["live"].as_str().unwrap_or("");
+            assert_eq!(
+                "binary", declared,
+                "{event}: the Cursor entry {command:?} names the {role} binary, but \
+                 role_generations declares that role live as {declared:?} — a cutover \
+                 no contract row governs is exactly what the 3.7.2/3.7.3 dogfoods caught"
+            );
+            assert!(
+                !command.ends_with(".sh"),
+                "{event}: {command:?} claims to be a binary and ends .sh"
+            );
+        }
+
+        // The staged binary MUST have been picked up — otherwise the loop above
+        // ran entirely on scripts and asserted nothing.
+        let staged = managed_cursor_hook_entries(&dir)
+            .into_iter()
+            .find(|(ev, _)| *ev == "beforeShellExecution")
+            .map(|(_, e)| e["command"].as_str().unwrap_or_default().to_string())
+            .expect("a guard entry exists");
+        assert!(
+            staged.contains("jawata-hook-guard"),
+            "the deployed guard binary must be picked up, or this test is vacuous; got {staged:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+
+    /// The other half of the same contract: a role the contract still calls a
+    /// script must NOT have quietly become a binary in the Cursor deploy.
+    #[test]
+    fn cursor_roles_the_contract_calls_scripts_are_still_scripts() {
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("../hook-events.json")).expect("contract parses");
+        for (role, script) in [
+            ("primer", "jawata-session-primer.sh"),
+            ("userprompt", "jawata-recall.sh"),
+            ("observer", "jawata-observer.sh"),
+        ] {
+            if doc["role_generations"][role]["live"].as_str() == Some("script") {
+                assert!(
+                    managed_cursor_hook_entries(&std::env::temp_dir()
+                        .join("jawata-cursor-scripts-still-scripts"))
+                        .iter()
+                        .any(|(_, e)| e["command"].as_str().unwrap_or_default().ends_with(script)),
+                    "{role} is declared script-generation, so the Cursor deploy must \
+                     still write {script}"
+                );
+            }
         }
     }
 
@@ -10566,8 +10802,11 @@ mod tests {
                 .expect("hook-events.json must parse — it is a committed contract");
         let cursor = contract["cursor"].as_object().expect("the cursor section");
 
-        let deployed: Vec<&str> =
-            managed_cursor_hook_entries().into_iter().map(|(event, _)| event).collect();
+        let empty = std::env::temp_dir().join("jawata-cursor-events-contract");
+        let deployed: Vec<&str> = managed_cursor_hook_entries(&empty)
+            .into_iter()
+            .map(|(event, _)| event)
+            .collect();
         let mut expected: Vec<&str> =
             cursor.values().map(|v| v.as_str().expect("an event name")).collect();
         expected.sort_unstable();

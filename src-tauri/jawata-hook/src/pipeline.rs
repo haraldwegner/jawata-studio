@@ -63,6 +63,39 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
 /// explicit allow, which is the opposite of the default everywhere else in
 /// this binary — and is why it is written down here.
 fn guard(client: Client, payload: &str) -> Outcome {
+    // THE EDIT HALF, FIRST. Sprint 28's binary read only a shell command and
+    // never looked at which tool fired, so a front-door `Edit` of a `.java`
+    // file went through unblocked — caught by the 3.7.3 dogfood, and the reason
+    // this role was reverted to its script for months. A guard that enforces
+    // half its contract is the failure this whole sprint exists to end.
+    if let Some(tool) = tool_name_in(payload) {
+        // A Bash command declaring `jawata-author:` OPENS the window rather
+        // than being judged by it — authoring new code is not a refactor, and
+        // the declaration is the audit trail.
+        if tool.eq_ignore_ascii_case("Bash") && payload.contains(crate::guard::AUTHOR_DECLARATION) {
+            if let (Some(home), Some(session)) = (home_dir(), session_id_in(payload)) {
+                let reason = after_marker(payload, crate::guard::AUTHOR_DECLARATION);
+                crate::editgate::open_window(&home, &session, &reason);
+            }
+            return emit_permission(client, true, String::new());
+        }
+        if let Some(path) = edit_path_in(payload) {
+            let window_open = match (home_dir(), session_id_in(payload)) {
+                (Some(home), Some(session)) => crate::editgate::window_is_open(&home, &session),
+                _ => false,
+            };
+            let exists = std::path::Path::new(&path).exists();
+            match crate::editgate::judge_edit(&tool, &path, payload, window_open, exists) {
+                crate::editgate::EditVerdict::Denied(reason) => {
+                    return emit_permission(client, false, reason)
+                }
+                crate::editgate::EditVerdict::Allowed(_) => {
+                    return emit_permission(client, true, String::new())
+                }
+                crate::editgate::EditVerdict::NotApplicable => {}
+            }
+        }
+    }
     let command = command_in(payload).unwrap_or_default();
     let emission = match crate::guard::judge(&command) {
         crate::guard::Verdict::Allow => Emission::Permission {
@@ -75,6 +108,99 @@ fn guard(client: Client, payload: &str) -> Outcome {
         Some(rendered) => Outcome::Emitted(rendered),
         None => Outcome::Silent(SilenceReason::CannotInject),
     }
+}
+
+/// Render one permission decision. Shared by the edit half and the shell half
+/// so both speak the client's dialect through exactly one code path.
+fn emit_permission(client: Client, allowed: bool, reason: String) -> Outcome {
+    match emit::render(client, &Emission::Permission { allowed, reason }) {
+        Some(rendered) => Outcome::Emitted(rendered),
+        None => Outcome::Silent(SilenceReason::CannotInject),
+    }
+}
+
+/// Which tool fired, from either client's payload shape.
+fn tool_name_in(payload: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+    for key in ["tool_name", "toolName", "tool"] {
+        if let Some(s) = value.get(key).and_then(|v| v.as_str()) {
+            return Some(s.to_string());
+        }
+    }
+    None
+}
+
+/// The file an editing tool is about to write.
+fn edit_path_in(payload: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+    for path in [
+        &["tool_input", "file_path"][..], // Claude Code, Edit/Write/MultiEdit
+        &["tool_input", "path"][..],
+        &["file_path"][..], // Cursor
+        &["path"][..],
+    ] {
+        let mut cursor = &value;
+        let mut found = true;
+        for key in path {
+            match cursor.get(key) {
+                Some(next) => cursor = next,
+                None => {
+                    found = false;
+                    break;
+                }
+            }
+        }
+        if found {
+            if let Some(s) = cursor.as_str() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// The session this call belongs to — the authoring window's scope.
+fn session_id_in(payload: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+    for key in ["session_id", "sessionId", "conversation_id"] {
+        if let Some(s) = value.get(key).and_then(|v| v.as_str()) {
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// The user's home, for the authoring window's directory.
+///
+/// `USERPROFILE` is checked too: on Windows `HOME` is often unset, and this
+/// role now runs there natively rather than through a shell that would have
+/// supplied it.
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+}
+
+/// The text following a declaration marker, trimmed and capped.
+///
+/// Capped because it lands in a file and in the audit trail: an unbounded
+/// reason from a payload is an unbounded write.
+fn after_marker(payload: &str, marker: &str) -> String {
+    payload
+        .find(marker)
+        .map(|i| &payload[i + marker.len()..])
+        .map(|rest| {
+            rest.split(['"', '\\', '\n'])
+                .next()
+                .unwrap_or("")
+                .trim()
+                .chars()
+                .take(200)
+                .collect::<String>()
+        })
+        .unwrap_or_default()
 }
 
 /// The shell command, from either client's payload shape.
