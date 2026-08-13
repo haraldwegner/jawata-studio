@@ -4318,6 +4318,44 @@ fn legacy_sentinel(sentinel: &str) -> String {
     sentinel.replace("jawata", "goja")
 }
 
+/// Delete everything in OUR namespace inside a client's hooks directory that is
+/// not the live generation. Returns whether anything was removed.
+///
+/// We own the `jawata-` prefix there (and the legacy `goja-` one), so any file
+/// carrying it that is not a role's current invocation target is residue. Two
+/// kinds occur: a retired script, and — the reason this exists — a binary an
+/// EARLIER VERSION wrote under a name nothing resolves.
+///
+/// v3.7.9 did exactly that on every Windows install: four binaries named without
+/// `.exe`, which no client could invoke and no later deploy would have touched,
+/// because retirement only ever removed names the current code knows how to
+/// write. Enumerating what to keep, and removing the rest, covers every past and
+/// future misnaming instead of the specific ones someone remembered.
+///
+/// Files outside the namespace are never touched — `hook_config.json` and
+/// `hook_silence.log` do not carry the prefix, and a user's own hooks live under
+/// their own names.
+fn sweep_managed_hook_residue(hooks_dir: &Path, keep: &[String]) -> bool {
+    let Ok(entries) = fs::read_dir(hooks_dir) else {
+        return false;
+    };
+    let mut removed = false;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let ours = name.starts_with("jawata-") || name.starts_with("goja-");
+        if !ours || keep.iter().any(|k| k == &name) {
+            continue;
+        }
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        if fs::remove_file(entry.path()).is_ok() {
+            removed = true;
+        }
+    }
+    removed
+}
+
 /// EVERY prior generation of a managed sentinel, newest-legacy first.
 ///
 /// Sprint 28 (D-SHIM) — the third generation, and why one was not enough.
@@ -7095,17 +7133,19 @@ fn write_managed_cursor_hooks(
 
     // 3. Retire the script generation once the binary is live, so an install
     //    never carries two generations of one role.
-    for (i, (_, _role, script_file)) in CURSOR_ROLES.iter().enumerate() {
-        if !binary_live[i] {
-            continue;
-        }
-        for stale in [script_file.to_string(), legacy_sentinel(script_file)] {
-            let p = hooks_dir.join(&stale);
-            if p.exists() {
-                let _ = fs::remove_file(&p);
-                script_changed = true;
+    let live_files: Vec<String> = CURSOR_ROLES
+        .iter()
+        .enumerate()
+        .map(|(i, (_, role, script_file))| {
+            if binary_live[i] {
+                role_binary_file_name_on(platform, role)
+            } else {
+                (*script_file).to_string()
             }
-        }
+        })
+        .collect();
+    if sweep_managed_hook_residue(hooks_dir, &live_files) {
+        script_changed = true;
     }
 
     // 2. Merge the managed entries into hooks.json, preserving user hooks.
@@ -10972,6 +11012,69 @@ mod tests {
 
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// A deploy leaves the live generation and NOTHING ELSE of ours behind.
+    ///
+    /// Staged with the exact residue v3.7.9 left on a Windows machine: four role
+    /// binaries written WITHOUT `.exe`, which nothing can invoke and which no
+    /// retirement step would have removed — retirement only ever deleted names
+    /// the current code knows how to write, and those names were a bug nobody
+    /// had recorded. Reported from that machine as "you still deliver not only
+    /// exe in hooks".
+    ///
+    /// Files outside our prefix must survive untouched; the user's own hooks and
+    /// the config live in the same directory.
+    #[test]
+    fn a_deploy_removes_our_residue_and_leaves_everything_else_alone() {
+        let platform = HostPlatform::Windows;
+        let dir = std::env::temp_dir().join(format!("jawata-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+
+        // The residue, and two files that must NOT be touched.
+        for stale in [
+            "jawata-hook-guard",          // v3.7.9's misnamed binaries
+            "jawata-hook-primer",
+            "jawata-hook-observer",
+            "jawata-hook-userprompt",
+            "jawata-guard.sh",            // a retired script
+            "goja-session-primer.sh",     // a pre-rename script
+        ] {
+            std::fs::write(dir.join(stale), b"residue").expect("stage residue");
+        }
+        std::fs::write(dir.join("hook_config.json"), b"{}").expect("config");
+        std::fs::write(dir.join("my-own-hook.sh"), b"#!/bin/sh").expect("user hook");
+
+        let live: Vec<String> = CURSOR_ROLES
+            .iter()
+            .map(|(_, role, _)| role_binary_file_name_on(platform, role))
+            .collect();
+        for name in &live {
+            std::fs::write(dir.join(name), b"live").expect("stage the live generation");
+        }
+
+        assert!(sweep_managed_hook_residue(&dir, &live), "the sweep must report work done");
+
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .expect("read back")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+
+        let mut expected: Vec<String> = live.clone();
+        expected.push("hook_config.json".to_string());
+        expected.push("my-own-hook.sh".to_string());
+        expected.sort();
+
+        assert_eq!(
+            expected, left,
+            "a deploy must leave the live generation, the config and the user's own \
+             files — and none of our residue"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The claim `cursor_role_is_binary_live` makes in its doc comment, checked.
