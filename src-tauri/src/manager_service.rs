@@ -2192,7 +2192,7 @@ impl ManagerService {
                     // routinely.
                     match hook_binary_source() {
                         Some(source) => {
-                            match deploy_hook_binaries(&source, hooks_dir, BINARY_LIVE_ROLES, HostPlatform::host()) {
+                            match deploy_hook_binaries(&source, hooks_dir, BINARY_LIVE_ROLES, HostPlatform::host(), &[]) {
                                 Ok(written) if !written.is_empty() => {
                                     changed_sections.push("hook_binaries".into())
                                 }
@@ -5962,6 +5962,7 @@ fn deploy_hook_binaries(
     hooks_dir: &Path,
     roles: &[&str],
     platform: HostPlatform,
+    also_keep: &[String],
 ) -> Result<Vec<String>, String> {
     if !source.exists() {
         return Err(format!(
@@ -6013,6 +6014,23 @@ fn deploy_hook_binaries(
         }
         written.push((*role).to_string());
     }
+
+    // THE SWEEP LIVES HERE, not at the call sites. It was added to the Cursor
+    // deploy and not the Claude Code one, so one directory was cleaned and the
+    // other kept v3.7.9's misnamed binaries — the second time in this area that
+    // a fix landed in one client's lane and not the other's. A function that
+    // writes "the binaries in this directory" owns the claim that nothing else
+    // of ours is in it.
+    //
+    // `also_keep` is the lane's LIVE SCRIPTS, because the two lanes name scripts
+    // differently: Cursor's carry our prefix (`jawata-guard.sh`) and would
+    // otherwise be swept, while Claude Code's are named for their events
+    // (`pretooluse-guard.sh`) and never match at all.
+    let mut keep: Vec<String> =
+        roles.iter().map(|role| role_binary_file_name_on(platform, role)).collect();
+    keep.extend(also_keep.iter().cloned());
+    sweep_managed_hook_residue(hooks_dir, &keep);
+
     Ok(written)
 }
 
@@ -7105,8 +7123,21 @@ fn write_managed_cursor_hooks(
         .map(|(_, role, _)| *role)
         .collect();
     let platform = HostPlatform::host();
+    // The scripts this lane still runs, from the DECLARATION rather than from
+    // disk — the sweep inside the deploy must not delete a live one. Disk cannot
+    // answer it: the resolver only knows a role is on its binary AFTER that
+    // binary is written, which is the very call being made here.
+    //
+    // Empty today, since all four Cursor roles run as binaries. It is derived
+    // rather than hardcoded so that a role moved back to its script does not
+    // silently lose its file on the next deploy.
+    let live_scripts: Vec<String> = CURSOR_ROLES
+        .iter()
+        .filter(|(_, role, _)| !cursor_role_is_binary_live(role))
+        .map(|(_, _, script_file)| (*script_file).to_string())
+        .collect();
     let deployed = match hook_binary_source().filter(|s| s.exists()) {
-        Some(source) => deploy_hook_binaries(&source, hooks_dir, &roles, platform),
+        Some(source) => deploy_hook_binaries(&source, hooks_dir, &roles, platform, &live_scripts),
         None => Err("the bundle shipped no hook binary".to_string()),
     };
     if let Err(e) = deployed {
@@ -7209,9 +7240,9 @@ fn write_managed_cursor_hooks(
             }
         })
         .collect();
-    if sweep_managed_hook_residue(hooks_dir, &live_files) {
-        script_changed = true;
-    }
+    // The residue sweep happened inside deploy_hook_binaries, which owns the
+    // claim that this directory holds exactly our live generation.
+    let _ = &live_files;
 
     // 2. Merge the managed entries into hooks.json, preserving user hooks.
     let hooks_buf = PathBuf::from(hooks_json_path);
@@ -9943,7 +9974,7 @@ mod tests {
         }
 
         let roles = ["jawata-hook-primer"];
-        let written = deploy_hook_binaries(&source, &hooks, &roles, HostPlatform::host()).unwrap();
+        let written = deploy_hook_binaries(&source, &hooks, &roles, HostPlatform::host(), &[]).unwrap();
         assert_eq!(vec!["jawata-hook-primer".to_string()], written);
 
         // Start it, and hold it running across the redeploy.
@@ -9983,7 +10014,7 @@ mod tests {
         let mut bytes = std::fs::read(&source).unwrap();
         bytes.push(0);
         std::fs::write(&source, &bytes).unwrap();
-        let result = deploy_hook_binaries(&source, &hooks, &roles, HostPlatform::host());
+        let result = deploy_hook_binaries(&source, &hooks, &roles, HostPlatform::host(), &[]);
 
         let _ = child.kill();
         let _ = child.wait();
@@ -10008,8 +10039,8 @@ mod tests {
         // contradictory: the deploy unconditionally removes retired binaries
         // before writing, so it can never be byte-stable for one.
         let roles = ["jawata-hook-primer", "jawata-hook-recall"];
-        assert_eq!(2, deploy_hook_binaries(&source, &hooks, &roles, HostPlatform::host()).unwrap().len());
-        assert!(deploy_hook_binaries(&source, &hooks, &roles, HostPlatform::host()).unwrap().is_empty(),
+        assert_eq!(2, deploy_hook_binaries(&source, &hooks, &roles, HostPlatform::host(), &[]).unwrap().len());
+        assert!(deploy_hook_binaries(&source, &hooks, &roles, HostPlatform::host(), &[]).unwrap().is_empty(),
             "an unchanged redeploy must write nothing — otherwise every deploy churns \
              the files a hook may be executing");
 
@@ -10039,7 +10070,7 @@ mod tests {
         std::fs::write(hooks.join("jawata-hook-observer"), &binary_bytes).unwrap();
         std::fs::write(hooks.join("jawata-hook-guard"), &binary_bytes).unwrap();
 
-        deploy_hook_binaries(&source, &hooks, BINARY_LIVE_ROLES, HostPlatform::host()).unwrap();
+        deploy_hook_binaries(&source, &hooks, BINARY_LIVE_ROLES, HostPlatform::host(), &[]).unwrap();
 
         // The PRODUCTION writers, in the production order, with force_rewrite
         // (Regenerate mode) — the strongest clobber attempt. The first version
@@ -10250,7 +10281,7 @@ mod tests {
         // The bundle failing to ship the binary must not look like a successful
         // deploy — that is a hook install with no hook.
         let dir = unique_tempdir("bin-missing");
-        let err = deploy_hook_binaries(&dir.join("nope"), &dir.join("hooks"), &["jawata-hook-primer"], HostPlatform::host())
+        let err = deploy_hook_binaries(&dir.join("nope"), &dir.join("hooks"), &["jawata-hook-primer"], HostPlatform::host(), &[])
             .unwrap_err();
         assert!(err.contains("did not ship"), "the error must name the cause: {err}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -11009,7 +11040,7 @@ mod tests {
             std::fs::write(&source, b"binary bytes").expect("stage a source");
 
             let roles = ["jawata-hook-guard", "jawata-hook-primer"];
-            deploy_hook_binaries(&source, &dir, &roles, platform).expect("deploy");
+            deploy_hook_binaries(&source, &dir, &roles, platform, &[]).expect("deploy");
 
             for role in roles {
                 let expected = dir.join(role_binary_file_name_on(platform, role));
@@ -11052,7 +11083,7 @@ mod tests {
                 .filter(|(_, role, _)| cursor_role_is_binary_live(role))
                 .map(|(_, role, _)| *role)
                 .collect();
-            deploy_hook_binaries(&source, &dir, &roles, platform).expect("deploy");
+            deploy_hook_binaries(&source, &dir, &roles, platform, &[]).expect("deploy");
 
             for (event, entry) in managed_cursor_hook_entries_on(platform, &dir) {
                 let command = entry["command"].as_str().unwrap_or_default();
@@ -11111,15 +11142,19 @@ mod tests {
         std::fs::write(dir.join("hook_config.json"), b"{}").expect("config");
         std::fs::write(dir.join("my-own-hook.sh"), b"#!/bin/sh").expect("user hook");
 
+        // Driven through the DEPLOY, not the sweep helper. The sweep was once
+        // called from the Cursor lane only, so the Claude Code directory kept its
+        // residue while a helper-level test stayed green. Asserting the deploy
+        // makes the guarantee belong to every caller.
+        let source = dir.join("source-binary");
+        std::fs::write(&source, b"live").expect("stage a source");
+        let roles: Vec<&str> = CURSOR_ROLES.iter().map(|(_, role, _)| *role).collect();
+        deploy_hook_binaries(&source, &dir, &roles, platform, &[]).expect("deploy");
+
         let live: Vec<String> = CURSOR_ROLES
             .iter()
             .map(|(_, role, _)| role_binary_file_name_on(platform, role))
             .collect();
-        for name in &live {
-            std::fs::write(dir.join(name), b"live").expect("stage the live generation");
-        }
-
-        assert!(sweep_managed_hook_residue(&dir, &live), "the sweep must report work done");
 
         let mut left: Vec<String> = std::fs::read_dir(&dir)
             .expect("read back")
@@ -11131,6 +11166,7 @@ mod tests {
         let mut expected: Vec<String> = live.clone();
         expected.push("hook_config.json".to_string());
         expected.push("my-own-hook.sh".to_string());
+        expected.push("source-binary".to_string()); // the stand-in source, outside our prefix
         expected.sort();
 
         assert_eq!(
