@@ -4992,8 +4992,30 @@ fi
 /// unanchored regex: `Bash|Grep` (search gate), `Edit|Write|MultiEdit` (edit
 /// enforcement), and `mcp__jawata.*` (jawata-call logging for the try-first gate).
 /// Kept deterministic so the settings.json write is idempotent.
+/// A path rendered as a COMMAND the client's shell will actually execute.
+///
+/// Claude Code on Windows hands each hook command to bash (`/usr/bin/bash -c`).
+/// Bash consumes backslashes as escapes, so
+/// `C:\Users\harald\.claude\jawata-studio\jawata-hook-primer.exe` arrives as
+/// `C:Usersharald.claudejawata-studiojawata-hook-primer.exe` and every hook dies
+/// with "command not found". Observed live on Windows 11 for all four roles at
+/// once — and invisible for six releases because the Claude plugin inside Cursor
+/// does not surface hook errors, while the CLI prints them.
+///
+/// Forward slashes are accepted by Windows APIs and untouched by bash; the quotes
+/// cover spaces in a user profile path. Unix is left exactly as it was — its
+/// separator is not an escape character, and the shipped behaviour there is
+/// proven.
+fn hook_command_for(path: &Path, platform: HostPlatform) -> String {
+    let raw = display_path(path);
+    match platform {
+        HostPlatform::Unix => raw,
+        HostPlatform::Windows => format!("\"{}\"", raw.replace('\\', "/")),
+    }
+}
+
 fn build_managed_hook_entry(guard_path: &Path) -> serde_json::Value {
-    let command = display_path(guard_path);
+    let command = hook_command_for(guard_path, HostPlatform::host());
     serde_json::json!({
         "matcher": "Bash|Grep|Edit|Write|MultiEdit|mcp__jawata.*",
         "hooks": [
@@ -5621,7 +5643,7 @@ fn selftest_stop_hook_script(script: &Path) -> Result<(), String> {
 /// Read (ungrounded-read capture), the verify MCP tools, and search/edit tools (slip
 /// capture); the script no-ops on anything else.
 fn build_managed_posthook_entry(observer_path: &Path) -> serde_json::Value {
-    let command = display_path(observer_path);
+    let command = hook_command_for(observer_path, HostPlatform::host());
     serde_json::json!({
         "matcher": "Bash|Grep|Edit|Write|MultiEdit|Read|mcp__jawata.*",
         "hooks": [
@@ -6146,7 +6168,7 @@ const PRIMER_TIMEOUT_SECS: u64 = 15;
 
 fn build_managed_primer_entry(primer_path: &Path) -> serde_json::Value {
     serde_json::json!({
-        "hooks": [ { "type": "command", "command": display_path(primer_path),
+        "hooks": [ { "type": "command", "command": hook_command_for(primer_path, HostPlatform::host()),
                      "timeout": PRIMER_TIMEOUT_SECS } ]
     })
 }
@@ -6161,7 +6183,7 @@ fn build_managed_primer_entry(primer_path: &Path) -> serde_json::Value {
 fn build_managed_recall_entry(recall_path: &Path) -> serde_json::Value {
     serde_json::json!({
         "matcher": "Edit|Write|MultiEdit|mcp__jawata.*",
-        "hooks": [ { "type": "command", "timeout": HOOK_TIMEOUT_SECS, "command": display_path(recall_path) } ]
+        "hooks": [ { "type": "command", "timeout": HOOK_TIMEOUT_SECS, "command": hook_command_for(recall_path, HostPlatform::host()) } ]
     })
 }
 fn is_managed_userprompt_entry(entry: &serde_json::Value) -> bool {
@@ -6170,7 +6192,7 @@ fn is_managed_userprompt_entry(entry: &serde_json::Value) -> bool {
 /// UserPromptSubmit entry: no matcher (fires on every user prompt; the script gates itself).
 fn build_managed_userprompt_entry(script_path: &Path) -> serde_json::Value {
     serde_json::json!({
-        "hooks": [ { "type": "command", "timeout": HOOK_TIMEOUT_SECS, "command": display_path(script_path) } ]
+        "hooks": [ { "type": "command", "timeout": HOOK_TIMEOUT_SECS, "command": hook_command_for(script_path, HostPlatform::host()) } ]
     })
 }
 
@@ -6335,7 +6357,7 @@ fn is_managed_stop_entry(entry: &serde_json::Value) -> bool {
 
 fn build_managed_stop_entry(script: &Path) -> serde_json::Value {
     serde_json::json!({
-        "hooks": [ { "type": "command", "timeout": HOOK_TIMEOUT_SECS, "command": display_path(script) } ]
+        "hooks": [ { "type": "command", "timeout": HOOK_TIMEOUT_SECS, "command": hook_command_for(script, HostPlatform::host()) } ]
     })
 }
 
@@ -12207,5 +12229,57 @@ mod tests {
         // Empty error set is a no-op.
         merge_resolve_errors(&mut results, &[]);
         assert_eq!(results[0].validation_errors.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod hook_command_rendering_tests {
+    use super::*;
+
+    /// A hook command must survive the shell that runs it.
+    ///
+    /// Claude Code on Windows executes each hook through bash. Backslashes are
+    /// escapes there, so a raw Windows path collapses:
+    /// `C:\Users\harald\.claude\...\jawata-hook-primer.exe` arrives as
+    /// `C:Usersharald.claude...` and the hook dies "command not found". All four
+    /// roles failed that way at once on a live Windows 11 machine, for six
+    /// releases, unseen — the Claude plugin inside Cursor does not print hook
+    /// errors; the CLI does.
+    #[test]
+    fn a_windows_hook_command_survives_bash() {
+        let p = Path::new(r"C:\Users\harald\.claude\jawata-studio\jawata-hook-primer.exe");
+        let cmd = hook_command_for(p, HostPlatform::Windows);
+
+        assert!(
+            !cmd.contains('\\'),
+            "bash consumes backslashes as escapes, so none may reach the command: {cmd}"
+        );
+        assert!(
+            cmd.contains("C:/Users/harald/.claude/jawata-studio/jawata-hook-primer.exe"),
+            "the path must survive intact with forward separators: {cmd}"
+        );
+        assert!(
+            cmd.starts_with('"') && cmd.ends_with('"'),
+            "quote it — a user profile path may contain spaces: {cmd}"
+        );
+
+        // The exact collapse that was observed, as a regression anchor.
+        let collapsed = cmd.replace('\\', "");
+        assert!(
+            !collapsed.contains("C:Usersharald"),
+            "this is the shape that failed live: {collapsed}"
+        );
+    }
+
+    /// Unix is unchanged. Its separator is not an escape character, and the
+    /// shipped behaviour there is proven — a rendering change would be risk
+    /// taken for nothing.
+    #[test]
+    fn a_unix_hook_command_is_unchanged() {
+        let p = Path::new("/home/harald/.claude/jawata-studio/jawata-hook-primer");
+        assert_eq!(
+            "/home/harald/.claude/jawata-studio/jawata-hook-primer",
+            hook_command_for(p, HostPlatform::Unix)
+        );
     }
 }
