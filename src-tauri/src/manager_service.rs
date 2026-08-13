@@ -2192,7 +2192,7 @@ impl ManagerService {
                     // routinely.
                     match hook_binary_source() {
                         Some(source) => {
-                            match deploy_hook_binaries(&source, hooks_dir, BINARY_LIVE_ROLES) {
+                            match deploy_hook_binaries(&source, hooks_dir, BINARY_LIVE_ROLES, HostPlatform::host()) {
                                 Ok(written) if !written.is_empty() => {
                                     changed_sections.push("hook_binaries".into())
                                 }
@@ -4544,8 +4544,20 @@ fn invocation_path_in_when(
     script_file: &str,
     live_as_binary: bool,
 ) -> Option<PathBuf> {
+    invocation_path_on(HostPlatform::host(), dir, role, script_file, live_as_binary)
+}
+
+/// The resolver with the naming convention handed IN, so the Windows result is
+/// observable from a Linux test instead of only from a Windows install.
+fn invocation_path_on(
+    platform: HostPlatform,
+    dir: &Path,
+    role: &str,
+    script_file: &str,
+    live_as_binary: bool,
+) -> Option<PathBuf> {
     if live_as_binary {
-        let binary = dir.join(role_binary_file_name(role));
+        let binary = dir.join(role_binary_file_name_on(platform, role));
         if binary.exists() {
             return Some(binary);
         }
@@ -4586,7 +4598,57 @@ fn cursor_role_is_binary_live(role: &str) -> bool {
 
 /// The role binary's on-disk file name (`.exe` on Windows).
 fn role_binary_file_name(role: &str) -> String {
-    if cfg!(windows) { format!("{role}.exe") } else { role.to_string() }
+    role_binary_file_name_on(HostPlatform::host(), role)
+}
+
+/// Which filename convention a deploy is writing for.
+///
+/// This exists as a VALUE rather than a `cfg!(windows)` for one reason, and it
+/// is the reason five releases shipped a Windows-only defect: `cfg!` is fixed at
+/// compile time, so a test can only ever exercise the host's branch. On Linux
+/// the two spellings are identical, which made the writer/resolver mismatch
+/// literally unrepresentable in the suite — 468 passing tests could not have
+/// caught it, and did not. A parameter can be handed either value from any
+/// machine.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HostPlatform {
+    Windows,
+    Unix,
+}
+
+impl HostPlatform {
+    /// The platform this build actually runs on. The ONLY place `cfg!(windows)`
+    /// is consulted for hook filenames.
+    fn host() -> Self {
+        if cfg!(windows) { Self::Windows } else { Self::Unix }
+    }
+
+    fn exe_suffix(self) -> &'static str {
+        match self {
+            Self::Windows => ".exe",
+            Self::Unix => "",
+        }
+    }
+
+    /// Whether a deployed `.sh` can actually execute here.
+    ///
+    /// This is what makes the script generation a real fallback on Unix and a
+    /// lie on Windows. There is no shell there to run one: Cursor's attempt to
+    /// launch a `.sh` is what put a window on the user's screen at session
+    /// start, on every prompt and after every tool call — and under the guard's
+    /// `failClosed`, a hook that never answers BLOCKS the command.
+    ///
+    /// A fallback is only a fallback if it works. Where it does not, falling
+    /// back is a failure wearing a fallback's clothes, and the deploy must say
+    /// so instead of quietly producing a broken install.
+    fn can_run_shell_scripts(self) -> bool {
+        matches!(self, Self::Unix)
+    }
+}
+
+/// The one place a role's binary filename is spelled.
+fn role_binary_file_name_on(platform: HostPlatform, role: &str) -> String {
+    format!("{role}{}", platform.exe_suffix())
 }
 
 /// Whether a managed-hook invocation path names a deployed role BINARY rather
@@ -5818,6 +5880,7 @@ fn deploy_hook_binaries(
     source: &Path,
     hooks_dir: &Path,
     roles: &[&str],
+    platform: HostPlatform,
 ) -> Result<Vec<String>, String> {
     if !source.exists() {
         return Err(format!(
@@ -5834,7 +5897,7 @@ fn deploy_hook_binaries(
     // binary that exists, so a stale one from an earlier deploy is not inert —
     // it is the thing that flips the role away from its live script.
     for retired in BINARY_RETIRED_ROLES {
-        let stale = hooks_dir.join(role_binary_file_name(retired));
+        let stale = hooks_dir.join(role_binary_file_name_on(platform, retired));
         match fs::remove_file(&stale) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -5843,7 +5906,12 @@ fn deploy_hook_binaries(
     }
     let mut written = Vec::new();
     for role in roles {
-        let target = hooks_dir.join(role);
+        // Delegated, never spelled here. This line read `hooks_dir.join(role)`
+        // through five releases: correct on Unix by coincidence, wrong on
+        // Windows, and invisible to every test because the convention was a
+        // compile-time constant. The retirement loop above always delegated —
+        // one function, two conventions, which is the whole defect.
+        let target = hooks_dir.join(role_binary_file_name_on(platform, role));
         if fs::read(&target).map(|existing| existing == fresh).unwrap_or(false) {
             continue;   // byte-stable no-op
         }
@@ -6795,6 +6863,14 @@ const CURSOR_HOOK_SENTINEL: &str = "hooks/jawata-";
 /// `hook-events.json` — their binaries do not yet hold parity — and they are
 /// the observer's problem to finish, not the guard's.
 fn managed_cursor_hook_entries(hooks_dir: &Path) -> Vec<(&'static str, serde_json::Value)> {
+    managed_cursor_hook_entries_on(HostPlatform::host(), hooks_dir)
+}
+
+/// The entries Cursor's `hooks.json` receives, for a GIVEN naming convention.
+fn managed_cursor_hook_entries_on(
+    platform: HostPlatform,
+    hooks_dir: &Path,
+) -> Vec<(&'static str, serde_json::Value)> {
     // ONE resolver decides binary-or-script, and it is the one the Claude Code
     // side has run on since Sprint 28: `invocation_path_in`. This function used
     // to hand-roll the same rule, and a second copy of a rule is a second copy
@@ -6816,7 +6892,8 @@ fn managed_cursor_hook_entries(hooks_dir: &Path) -> Vec<(&'static str, serde_jso
     CURSOR_ROLES
         .iter()
         .map(|(event, role, script_file)| {
-            let command = invocation_path_in_when(
+            let command = invocation_path_on(
+                platform,
                 hooks_dir,
                 role,
                 script_file,
@@ -6923,20 +7000,32 @@ fn write_managed_cursor_hooks(
     // binary keeps the script generation instead of losing its guard. That
     // choice is expressed once, by `invocation_path_in` below — not repeated
     // here as a second opinion.
-    if let Some(source) = hook_binary_source() {
-        if source.exists() {
-            let roles: Vec<&str> = CURSOR_ROLES
-                .iter()
-                .filter(|(_, role, _)| cursor_role_is_binary_live(role))
-                .map(|(_, role, _)| *role)
-                .collect();
-            if let Err(e) = deploy_hook_binaries(&source, hooks_dir, &roles) {
-                eprintln!(
-                    "[jawata-studio] cursor hook binaries not deployed ({e}); \
-                     the script generation stands"
-                );
-            }
+    let roles: Vec<&str> = CURSOR_ROLES
+        .iter()
+        .filter(|(_, role, _)| cursor_role_is_binary_live(role))
+        .map(|(_, role, _)| *role)
+        .collect();
+    let platform = HostPlatform::host();
+    let deployed = match hook_binary_source().filter(|s| s.exists()) {
+        Some(source) => deploy_hook_binaries(&source, hooks_dir, &roles, platform),
+        None => Err("the bundle shipped no hook binary".to_string()),
+    };
+    if let Err(e) = deployed {
+        // Falling back to the script generation is a REAL fallback only where a
+        // script can run. Where it cannot, saying "the script generation stands"
+        // is how a broken install reports success — five releases did exactly
+        // that on Windows. The deploy fails instead, and the user is told.
+        if !platform.can_run_shell_scripts() {
+            return Err(format!(
+                "the Cursor hook binaries could not be deployed ({e}), and this platform \
+                 cannot run the .sh fallback — deploying it would leave hooks that hang \
+                 or block instead of running. Nothing was written."
+            ));
         }
+        eprintln!(
+            "[jawata-studio] cursor hook binaries not deployed ({e}); \
+             the script generation stands"
+        );
     }
 
     // 2. ASK THE RESOLVER — once — which generation is live for the guard, and
@@ -9753,7 +9842,7 @@ mod tests {
         }
 
         let roles = ["jawata-hook-primer"];
-        let written = deploy_hook_binaries(&source, &hooks, &roles).unwrap();
+        let written = deploy_hook_binaries(&source, &hooks, &roles, HostPlatform::host()).unwrap();
         assert_eq!(vec!["jawata-hook-primer".to_string()], written);
 
         // Start it, and hold it running across the redeploy.
@@ -9793,7 +9882,7 @@ mod tests {
         let mut bytes = std::fs::read(&source).unwrap();
         bytes.push(0);
         std::fs::write(&source, &bytes).unwrap();
-        let result = deploy_hook_binaries(&source, &hooks, &roles);
+        let result = deploy_hook_binaries(&source, &hooks, &roles, HostPlatform::host());
 
         let _ = child.kill();
         let _ = child.wait();
@@ -9818,8 +9907,8 @@ mod tests {
         // contradictory: the deploy unconditionally removes retired binaries
         // before writing, so it can never be byte-stable for one.
         let roles = ["jawata-hook-primer", "jawata-hook-recall"];
-        assert_eq!(2, deploy_hook_binaries(&source, &hooks, &roles).unwrap().len());
-        assert!(deploy_hook_binaries(&source, &hooks, &roles).unwrap().is_empty(),
+        assert_eq!(2, deploy_hook_binaries(&source, &hooks, &roles, HostPlatform::host()).unwrap().len());
+        assert!(deploy_hook_binaries(&source, &hooks, &roles, HostPlatform::host()).unwrap().is_empty(),
             "an unchanged redeploy must write nothing — otherwise every deploy churns \
              the files a hook may be executing");
 
@@ -9849,7 +9938,7 @@ mod tests {
         std::fs::write(hooks.join("jawata-hook-observer"), &binary_bytes).unwrap();
         std::fs::write(hooks.join("jawata-hook-guard"), &binary_bytes).unwrap();
 
-        deploy_hook_binaries(&source, &hooks, BINARY_LIVE_ROLES).unwrap();
+        deploy_hook_binaries(&source, &hooks, BINARY_LIVE_ROLES, HostPlatform::host()).unwrap();
 
         // The PRODUCTION writers, in the production order, with force_rewrite
         // (Regenerate mode) — the strongest clobber attempt. The first version
@@ -10060,7 +10149,7 @@ mod tests {
         // The bundle failing to ship the binary must not look like a successful
         // deploy — that is a hook install with no hook.
         let dir = unique_tempdir("bin-missing");
-        let err = deploy_hook_binaries(&dir.join("nope"), &dir.join("hooks"), &["jawata-hook-primer"])
+        let err = deploy_hook_binaries(&dir.join("nope"), &dir.join("hooks"), &["jawata-hook-primer"], HostPlatform::host())
             .unwrap_err();
         assert!(err.contains("did not ship"), "the error must name the cause: {err}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -10789,6 +10878,104 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// THE test this whole area was missing: what the deploy WRITES is what the
+    /// resolver LOOKS FOR — on both filename conventions, from any machine.
+    ///
+    /// Five consecutive releases shipped a Windows-only mismatch because the
+    /// writer spelled the file `jawata-hook-guard` and every reader spelled it
+    /// `jawata-hook-guard.exe`. No test could catch it: `cfg!(windows)` fixed the
+    /// convention at compile time, and on Linux the two spellings are the same
+    /// string, so the defect was unrepresentable in the suite. It was found by a
+    /// human looking at a directory listing on a Windows 11 machine.
+    ///
+    /// Every future naming change fails HERE first, on a developer's Linux box,
+    /// instead of on someone's Windows install.
+    #[test]
+    fn what_the_deploy_writes_is_what_the_resolver_looks_for() {
+        for platform in [HostPlatform::Unix, HostPlatform::Windows] {
+            let dir = std::env::temp_dir().join(format!(
+                "jawata-roundtrip-{}-{platform:?}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("scratch dir");
+
+            // A stand-in for the shipped binary; the bytes are irrelevant, the
+            // NAME is the entire subject of this test.
+            let source = dir.join("source-binary");
+            std::fs::write(&source, b"binary bytes").expect("stage a source");
+
+            let roles = ["jawata-hook-guard", "jawata-hook-primer"];
+            deploy_hook_binaries(&source, &dir, &roles, platform).expect("deploy");
+
+            for role in roles {
+                let expected = dir.join(role_binary_file_name_on(platform, role));
+                assert!(
+                    expected.exists(),
+                    "{platform:?}: the deploy must write {expected:?} — the name every \
+                     reader resolves. Present instead: {:?}",
+                    std::fs::read_dir(&dir)
+                        .map(|rd| rd.filter_map(|e| e.ok())
+                            .map(|e| e.file_name().to_string_lossy().into_owned())
+                            .collect::<Vec<_>>())
+                        .unwrap_or_default()
+                );
+            }
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// What a WINDOWS install actually ends up with, asserted from Linux.
+    ///
+    /// The end-to-end invariant, and the one nobody could state before the
+    /// naming convention became a value: after a deploy, every Cursor entry
+    /// names a file that EXISTS, and no entry names a `.sh` for a role that runs
+    /// as a binary. Both halves failed on Windows in v3.7.9 — four binaries were
+    /// written under names nothing resolved, and three entries kept naming
+    /// scripts that cannot execute there.
+    #[test]
+    fn a_windows_deploy_leaves_every_cursor_entry_naming_a_file_that_exists() {
+        for platform in [HostPlatform::Unix, HostPlatform::Windows] {
+            let dir = std::env::temp_dir()
+                .join(format!("jawata-e2e-{}-{platform:?}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("scratch dir");
+
+            let source = dir.join("source-binary");
+            std::fs::write(&source, b"binary bytes").expect("stage a source");
+            let roles: Vec<&str> = CURSOR_ROLES
+                .iter()
+                .filter(|(_, role, _)| cursor_role_is_binary_live(role))
+                .map(|(_, role, _)| *role)
+                .collect();
+            deploy_hook_binaries(&source, &dir, &roles, platform).expect("deploy");
+
+            for (event, entry) in managed_cursor_hook_entries_on(platform, &dir) {
+                let command = entry["command"].as_str().unwrap_or_default();
+                let file = command.rsplit('/').next().unwrap_or_default();
+
+                assert!(
+                    !file.ends_with(".sh"),
+                    "{platform:?} {event}: names the script {file:?}, but every Cursor role \
+                     runs as a binary — on Windows a .sh cannot execute at all"
+                );
+                assert!(
+                    dir.join(file).exists(),
+                    "{platform:?} {event}: names {file:?}, which the deploy did not write. \
+                     On disk: {:?}",
+                    std::fs::read_dir(&dir)
+                        .map(|rd| rd.filter_map(|e| e.ok())
+                            .map(|e| e.file_name().to_string_lossy().into_owned())
+                            .collect::<Vec<_>>())
+                        .unwrap_or_default()
+                );
+            }
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// The claim `cursor_role_is_binary_live` makes in its doc comment, checked.
