@@ -171,7 +171,9 @@
     },
     "observer": {
       "live": "script",
-      "until": "the binary ports outcome capture and the jawata-fallback audit trail"
+      "until": "the binary ports outcome capture and the jawata-fallback audit trail",
+      "cursor": "binary",
+      "why_cursor": "The 'until' above is a CLAUDE-CODE fact: that script captures tool outcomes and the jawata-fallback audit trail, so cutting it over would lose them. CURSOR's observer script loses nothing, because it does nothing — its whole body is `cat > /dev/null` then `printf '{}'`, and the role's Cursor row in roles.rs declares query, record and emit all false. Two generations that both do nothing are not a parity question. It stays REGISTERED rather than dropped because afterMCPExecution is Cursor's only post-tool injection point, so this entry is the seam the outcome-capture work will arrive through. Windows forced it: a .sh cannot execute there, and Cursor firing one on every tool call put a window on the user's screen every time — a no-op that costs nothing and interrupts constantly."
     },
     "stop": {
       "live": "binary"
