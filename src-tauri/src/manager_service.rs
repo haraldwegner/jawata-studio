@@ -7021,6 +7021,24 @@ fn write_managed_cursor_hooks(
     fs::create_dir_all(hooks_dir)
         .map_err(|e| format!("failed to create cursor hooks dir {}: {e}", hooks_dir.display()))?;
 
+    // 0. THE CONFIG, BESIDE THE BINARIES. A hook binary resolves its endpoint as
+    //    `<dir of the exe>/hook_config.json` (config::config_path_for), so it must
+    //    sit HERE, in Cursor's own hooks directory.
+    //
+    //    It did not. The only writer was the Claude Code deploy, which put the
+    //    file in ITS hooks directory — so every Cursor role binary loaded
+    //    NotConfigured and went silent: correctly named, correctly deployed, and
+    //    doing nothing at all. Found on a Windows install where all four .exe
+    //    were present and the guard still refused nothing.
+    //
+    //    The script generation had no such gap because each script carried the
+    //    URL and token baked into its text. The cutover to binaries moved the
+    //    configuration mechanism and left the configuration behind — the same
+    //    half-finished shape as the cutover itself.
+    if let Err(e) = write_hook_config(hooks_dir, mcp_url, token, "cursor") {
+        return Err(format!("failed writing the cursor hook config: {e}"));
+    }
+
     // 1. DEPLOY THE GUARD BINARY FIRST, so the single resolver below sees the
     //    truth rather than the state from before this deploy.
     //
@@ -11075,6 +11093,76 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Cursor deploy leaves the hooks CONFIGURED, not merely installed.
+    ///
+    /// A role binary resolves its endpoint as `<dir of the exe>/hook_config.json`.
+    /// The only writer of that file was the Claude Code deploy, which wrote it
+    /// into ITS OWN hooks directory — so every Cursor binary loaded
+    /// `NotConfigured` and went silent. On the Windows install that found this,
+    /// all four `.exe` were present, correctly named, and the guard refused
+    /// nothing: an installation that looks complete in every listing and does
+    /// nothing at all.
+    ///
+    /// The script generation could not have this bug, because each script
+    /// carried the URL and token in its own text. The cutover to binaries moved
+    /// the configuration mechanism and left the configuration behind.
+    ///
+    /// LIMIT, stated: this asserts the file's SHAPE, not that the hook crate
+    /// parses it. The two crates must not depend on each other (a forbidden edge
+    /// asserted by its own test), so the shared contract is the `seam_files`
+    /// row for `hook_config.json` in hook-events.json, and both sides assert
+    /// against that rather than against each other.
+    #[test]
+    fn a_cursor_deploy_writes_the_config_the_binaries_read() {
+        let dir = unique_tempdir("cursor-hook-config");
+        let cursor = dir.join(".cursor");
+        let hooks_json = cursor.join("hooks.json");
+        let hooks_dir = cursor.join("hooks");
+        std::fs::create_dir_all(&cursor).unwrap();
+
+        write_managed_cursor_hooks(
+            &hooks_json.to_string_lossy(),
+            &hooks_dir,
+            "http://127.0.0.1:8899/mcp",
+            "tok",
+            false,
+            false,
+        )
+        .expect("deploy");
+
+        // Beside the binaries — the directory the exe resolves against, which is
+        // the entire subject here.
+        let config = hooks_dir.join("hook_config.json");
+        assert!(
+            config.exists(),
+            "the deploy must write hook_config.json into Cursor's own hooks dir; \
+             without it every role binary loads NotConfigured and goes silent. \
+             Present: {:?}",
+            std::fs::read_dir(&hooks_dir)
+                .map(|rd| rd.filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>())
+                .unwrap_or_default()
+        );
+
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).expect("parses");
+        // The three the loader rejects an empty value for.
+        assert!(
+            v["url"].as_str().is_some_and(|u| !u.trim().is_empty()),
+            "an empty url is rejected by the loader as unreadable: {v}"
+        );
+        assert!(
+            v["token"].as_str().is_some_and(|t| !t.trim().is_empty()),
+            "an empty token is rejected by the loader as unreadable: {v}"
+        );
+        assert_eq!(
+            "cursor", v["client"],
+            "the config must name the CLIENT it was written for — the roles a \
+             binary may play differ per client"
+        );
     }
 
     /// The claim `cursor_role_is_binary_live` makes in its doc comment, checked.
