@@ -121,7 +121,7 @@ fn emit_permission(client: Client, allowed: bool, reason: String) -> Outcome {
 
 /// Which tool fired, from either client's payload shape.
 fn tool_name_in(payload: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let value: serde_json::Value = parse_payload(payload).ok()?;
     for key in ["tool_name", "toolName", "tool"] {
         if let Some(s) = value.get(key).and_then(|v| v.as_str()) {
             return Some(s.to_string());
@@ -132,7 +132,7 @@ fn tool_name_in(payload: &str) -> Option<String> {
 
 /// The file an editing tool is about to write.
 fn edit_path_in(payload: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let value: serde_json::Value = parse_payload(payload).ok()?;
     for path in [
         &["tool_input", "file_path"][..], // Claude Code, Edit/Write/MultiEdit
         &["tool_input", "path"][..],
@@ -161,7 +161,7 @@ fn edit_path_in(payload: &str) -> Option<String> {
 
 /// The session this call belongs to — the authoring window's scope.
 fn session_id_in(payload: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let value: serde_json::Value = parse_payload(payload).ok()?;
     for key in ["session_id", "sessionId", "conversation_id"] {
         if let Some(s) = value.get(key).and_then(|v| v.as_str()) {
             if !s.is_empty() {
@@ -205,7 +205,7 @@ fn after_marker(payload: &str, marker: &str) -> String {
 
 /// The shell command, from either client's payload shape.
 fn command_in(payload: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let value: serde_json::Value = parse_payload(payload).ok()?;
     for path in [
         &["tool_input", "command"][..],   // Claude Code, PreToolUse/Bash
         &["command"][..],                 // Cursor, beforeShellExecution
@@ -365,12 +365,40 @@ fn tool_cues(value: &serde_json::Value) -> Result<crate::cue::Cues, SilenceReaso
     ))
 }
 
+/// A leading byte-order mark, removed.
+///
+/// `str::trim` does NOT remove U+FEFF — it is categorised as format, not
+/// whitespace — so a BOM survives every emptiness check and then breaks
+/// `serde_json` at line 1 column 1. Windows tooling emits one routinely.
+fn strip_bom(payload: &str) -> &str {
+    payload.strip_prefix('\u{FEFF}').unwrap_or(payload)
+}
+
+/// The first bytes, in hex, for an error that must say what it actually saw.
+///
+/// "payload is not JSON" names a category and nothing else: a BOM, a stray log
+/// line and a truncated write are indistinguishable in it. Nine identical lines
+/// in a live silence log could not be diagnosed from the log alone, which is the
+/// same unfalsifiable-error shape this codebase keeps paying for.
+fn payload_prefix(payload: &str) -> String {
+    let hex: Vec<String> = payload.bytes().take(8).map(|b| format!("{b:02x}")).collect();
+    hex.join(" ")
+}
+
+/// THE payload parser. Every site goes through it, so tolerance and diagnostics
+/// are decided once rather than six times — four of the previous sites swallowed
+/// the failure with `.ok()?` and reported nothing at all.
 fn parse_payload(payload: &str) -> Result<serde_json::Value, SilenceReason> {
+    let payload = strip_bom(payload);
     if payload.trim().is_empty() {
         return Err(SilenceReason::PayloadUnreadable("the event payload was empty".into()));
     }
-    serde_json::from_str(payload)
-        .map_err(|e| SilenceReason::PayloadUnreadable(format!("payload is not JSON: {e}")))
+    serde_json::from_str(payload).map_err(|e| {
+        SilenceReason::PayloadUnreadable(format!(
+            "payload is not JSON: {e} (first bytes: {})",
+            payload_prefix(payload)
+        ))
+    })
 }
 
 /// The non-empty string at a key path, or `None` — an empty string is an
@@ -396,10 +424,9 @@ fn string_at(value: &serde_json::Value, path: &[&str]) -> Option<String> {
 fn stop_gate(client: Client, payload: &str, autonomy: crate::stop::Autonomy) -> Outcome {
     use crate::stop::{self, StopFacts, StopVerdict};
 
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) else {
-        return Outcome::Silent(SilenceReason::PayloadUnreadable(
-            "stop payload is not JSON".to_string(),
-        ));
+    let v = match parse_payload(payload) {
+        Ok(v) => v,
+        Err(reason) => return Outcome::Silent(reason),
     };
     let already_bounced = v
         .get("stop_hook_active")
@@ -1037,4 +1064,58 @@ mod tests {
         );
     }
 
+}
+
+#[cfg(test)]
+mod payload_parsing_tests {
+    use super::*;
+
+    /// A byte-order mark must not make a payload unreadable.
+    ///
+    /// Nine lines of a live Windows silence log said "payload is not JSON:
+    /// expected value at line 1 column 1" — every user-prompt and every stop
+    /// invocation, so recall and the stop gate were dead on that platform while
+    /// the install looked complete. Reproduced by prefixing a BOM: `str::trim`
+    /// does not remove U+FEFF (it is format, not whitespace), so it survives the
+    /// emptiness check and breaks serde at the first column.
+    #[test]
+    fn a_byte_order_mark_does_not_make_a_payload_unreadable() {
+        let plain = r#"{"prompt":"hello"}"#;
+        let with_bom = format!("\u{FEFF}{plain}");
+
+        let a = parse_payload(plain).expect("plain payload parses");
+        let b = parse_payload(&with_bom).expect("a BOM-prefixed payload must parse too");
+        assert_eq!(a, b, "the BOM must not change the parsed value");
+    }
+
+    /// An empty payload keeps its OWN diagnosis, rather than being reported as
+    /// malformed JSON. They have different causes and different fixes.
+    #[test]
+    fn an_empty_payload_is_still_reported_as_empty() {
+        for empty in ["", "   ", "\u{FEFF}", "\u{FEFF}  "] {
+            match parse_payload(empty) {
+                Err(SilenceReason::PayloadUnreadable(m)) => {
+                    assert!(m.contains("empty"), "{empty:?} should read as empty, got {m}")
+                }
+                other => panic!("{empty:?} must be unreadable-empty, got {other:?}"),
+            }
+        }
+    }
+
+    /// A genuinely malformed payload NAMES WHAT IT SAW.
+    ///
+    /// "payload is not JSON" alone is unfalsifiable: a BOM, a stray log line and
+    /// a truncated write all produce it, and a live log full of them could not
+    /// be diagnosed without reproducing the bug locally — which is exactly what
+    /// this codebase keeps paying for.
+    #[test]
+    fn a_malformed_payload_reports_the_bytes_it_saw() {
+        match parse_payload("not json at all") {
+            Err(SilenceReason::PayloadUnreadable(m)) => {
+                assert!(m.contains("first bytes:"), "must name the bytes: {m}");
+                assert!(m.contains("6e"), "'n' of \"not\" is 0x6e: {m}");
+            }
+            other => panic!("expected an unreadable payload, got {other:?}"),
+        }
+    }
 }
