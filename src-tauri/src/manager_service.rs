@@ -4597,10 +4597,6 @@ fn cursor_role_is_binary_live(role: &str) -> bool {
 }
 
 /// The role binary's on-disk file name (`.exe` on Windows).
-fn role_binary_file_name(role: &str) -> String {
-    role_binary_file_name_on(HostPlatform::host(), role)
-}
-
 /// Which filename convention a deploy is writing for.
 ///
 /// This exists as a VALUE rather than a `cfg!(windows)` for one reason, and it
@@ -8765,7 +8761,7 @@ mod tests {
         // Sprint 28a: exactly ONE generation of the guard is on disk. Which one
         // depends on whether the bundle shipped a binary; that both are never
         // present does not.
-        let binary = hooks_dir.join(role_binary_file_name("jawata-hook-guard")).exists();
+        let binary = hooks_dir.join(role_binary_file_name_on(HostPlatform::host(), "jawata-hook-guard")).exists();
         let script = hooks_dir.join("jawata-guard.sh").exists();
         assert!(binary ^ script,
             "exactly one guard generation must be on disk (binary={binary}, script={script}) \
@@ -9989,7 +9985,7 @@ mod tests {
             "the observer's live generation is the SCRIPT (role_generations)");
         // Sprint 28a: the guard resolves to whichever generation this deploy
         // actually produced, and the OTHER one must not be left behind.
-        let guard_binary = hooks.join(role_binary_file_name("jawata-hook-guard")).exists();
+        let guard_binary = hooks.join(role_binary_file_name_on(HostPlatform::host(), "jawata-hook-guard")).exists();
         let guard_script = hooks.join(GUARD_SCRIPT_FILE).exists();
         assert!(guard_binary || guard_script,
             "the guard must exist in one generation or the other");
@@ -10815,7 +10811,7 @@ mod tests {
         // past them and the test could not have seen a wrong cutover on any role
         // but the guard — which is precisely the blindness it exists to prevent.
         for (_, role, _) in CURSOR_ROLES {
-            std::fs::write(dir.join(role_binary_file_name(role)), b"x")
+            std::fs::write(dir.join(role_binary_file_name_on(HostPlatform::host(), role)), b"x")
                 .expect("stage the binary");
         }
 
