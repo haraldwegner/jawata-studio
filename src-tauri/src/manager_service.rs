@@ -2256,20 +2256,44 @@ impl ManagerService {
                 .first()
                 .map(|server| (server.url.clone(), server.token.clone()))
                 .unwrap_or_default();
-            match write_managed_posthook(
-                &settings_path,
-                &observer_path,
-                &observer_url,
-                &observer_token,
-                backup_before_write,
-                matches!(mode, DeployMode::Regenerate),
-            ) {
-                Ok(true) => changed_sections.push("posthook".into()),
-                Ok(false) => {}
-                Err(error) => errors.push(error),
-            }
-            if let Err(error) = selftest_hook_script(&observer_path) {
-                errors.push(error);
+            // A hook is registered only if the client can actually RUN it.
+            //
+            // The observer is the one role still on its script generation, by a
+            // deliberate decision: its binary is a stub, and cutting over would
+            // lose tool-outcome capture and the jawata-fallback audit trail. That
+            // trade-off was reasoned entirely on Unix. On Windows a `.sh` cannot
+            // execute — the client launches it, it waits for a payload nobody
+            // pipes in, and a console window sits on the user's screen after
+            // every tool call. Observed live: a window titled
+            // `/usr/bin/bash --login -i ...\posttooluse-observer.sh`.
+            //
+            // An absent hook loses outcome capture. A hanging hook loses outcome
+            // capture AND interrupts the user, so it is strictly worse. The entry
+            // is REMOVED rather than merely skipped, so an install that already
+            // carries one is repaired by the next deploy instead of keeping it
+            // forever.
+            if invocation_is_runnable(&observer_path) {
+                match write_managed_posthook(
+                    &settings_path,
+                    &observer_path,
+                    &observer_url,
+                    &observer_token,
+                    backup_before_write,
+                    matches!(mode, DeployMode::Regenerate),
+                ) {
+                    Ok(true) => changed_sections.push("posthook".into()),
+                    Ok(false) => {}
+                    Err(error) => errors.push(error),
+                }
+                if let Err(error) = selftest_hook_script(&observer_path) {
+                    errors.push(error);
+                }
+            } else {
+                match remove_managed_posthook(&settings_path, &observer_path, backup_before_write) {
+                    Ok(true) => changed_sections.push("posthook-unregistered".into()),
+                    Ok(false) => {}
+                    Err(error) => errors.push(error),
+                }
             }
         }
 
@@ -4335,6 +4359,29 @@ fn legacy_sentinel(sentinel: &str) -> String {
 /// Files outside the namespace are never touched — `hook_config.json` and
 /// `hook_silence.log` do not carry the prefix, and a user's own hooks live under
 /// their own names.
+/// Whether a resolved invocation path can actually be EXECUTED by a client here.
+///
+/// A role binary always can. A script cannot on Windows: the client launches it,
+/// it blocks reading a payload nobody pipes in, and a console window stays on the
+/// user's screen — after every tool call for the observer, and on a fail-closed
+/// event it blocks the command outright.
+///
+/// This is the same judgement `can_run_shell_scripts` encodes for the deploy,
+/// applied to REGISTRATION: a hook that cannot run must not be registered, because
+/// an unhooked event merely loses a capability while a hanging one loses the same
+/// capability and interrupts the user.
+fn invocation_is_runnable(path: &Path) -> bool {
+    invocation_is_runnable_on(HostPlatform::host(), path)
+}
+
+/// The same judgement for a GIVEN platform, so the Windows answer is observable
+/// from a Linux test. Every predicate in this area that consulted the host
+/// directly hid a Windows-only defect for five releases; this one does not get
+/// to repeat it.
+fn invocation_is_runnable_on(platform: HostPlatform, path: &Path) -> bool {
+    path_is_role_binary(path) || platform.can_run_shell_scripts()
+}
+
 fn sweep_managed_hook_residue(hooks_dir: &Path, keep: &[String]) -> bool {
     let Ok(entries) = fs::read_dir(hooks_dir) else {
         return false;
@@ -11162,6 +11209,37 @@ mod tests {
             "cursor", v["client"],
             "the config must name the CLIENT it was written for — the roles a \
              binary may play differ per client"
+        );
+    }
+
+    /// A hook is registered only where the client can actually run it.
+    ///
+    /// The observer stays on its script generation deliberately — its binary is a
+    /// stub, and cutting over would lose tool-outcome capture and the
+    /// jawata-fallback audit trail. That trade-off was reasoned on Unix only. On
+    /// Windows a `.sh` cannot execute: the client launches it, it blocks on a
+    /// payload nobody pipes in, and a console window sits on the screen after
+    /// EVERY tool call. Observed live, titled
+    /// `/usr/bin/bash --login -i ...\posttooluse-observer.sh`.
+    ///
+    /// An absent hook loses the capability. A hanging hook loses the capability
+    /// AND interrupts the user, so the absent one wins.
+    #[test]
+    fn a_script_hook_is_not_registered_where_a_script_cannot_run() {
+        let script = Path::new("/x/hooks/posttooluse-observer.sh");
+        let binary = Path::new("/x/hooks/jawata-hook-guard");
+        let binary_win = Path::new("/x/hooks/jawata-hook-guard.exe");
+
+        // Unix: both generations are runnable, so both may be registered.
+        assert!(invocation_is_runnable_on(HostPlatform::Unix, script));
+        assert!(invocation_is_runnable_on(HostPlatform::Unix, binary));
+
+        // Windows: the binary yes, the script NO.
+        assert!(invocation_is_runnable_on(HostPlatform::Windows, binary_win));
+        assert!(
+            !invocation_is_runnable_on(HostPlatform::Windows, script),
+            "registering a .sh on Windows puts a hung console window on the user's \
+             screen after every tool call — it must not be registered at all"
         );
     }
 
