@@ -43,6 +43,28 @@ pub fn judge(command: &str) -> Verdict {
     if !mentions_java_source(command) {
         return Verdict::Allow;
     }
+    // THE WRITE TRIPWIRE comes first: a shell-mediated WRITE to a .java file is
+    // strictly worse than a text search over one, and it happened — the agent
+    // developing this very gate rewrote .java call sites with a python3 heredoc
+    // from Bash on 2026-08-14, and this guard watched the command go by because
+    // it only knew the four search tools. Goodwill did not hold in the agent
+    // that built the gate; the pattern space cannot be enumerated, but the
+    // common spellings can be, and every denial teaches the tool that should
+    // have been called.
+    if let Some(writer) = write_route_in(command) {
+        return Verdict::Deny {
+            reason: format!(
+                "Shell-mediated WRITE to a .java file is blocked — `{writer}` edits text, \
+                 not the program: it cannot see the references, overloads and call sites the \
+                 compiler sees, which is how regressions ship. Use the JAWATA refactoring \
+                 tools instead — change_method_signature / rename_symbol / extract / \
+                 refactoring(action=plan), all addressable by symbol name — or the Edit tool \
+                 inside a declared authoring window. If this genuinely is authoring no tool \
+                 can do (new file content, fixtures), re-run with `{AUTHOR_DECLARATION} \
+                 <narrow reason>` in the command; the declaration is logged and audited."
+            ),
+        };
+    }
     let Some(tool) = text_tool_in(command) else {
         return Verdict::Allow;
     };
@@ -55,6 +77,74 @@ pub fn judge(command: &str) -> Verdict {
              logged."
         ),
     }
+}
+
+/// Write-capable programs in COMMAND POSITION: interpreters that can rewrite
+/// files handed a script, stream writers, editors, and patchers. Same
+/// command-position discipline as [`text_tool_in`] — `echo 'python Foo.java'`
+/// must not fire.
+const WRITE_TOOLS: &[&str] = &[
+    "python", "python3", "python2", "perl", "ruby", "node", "php",
+    "tee", "dd", "ex", "ed", "patch",
+    "mv", "cp", "ln", "install", "rsync", "truncate",
+];
+
+/// Shells that become writers when handed inline code.
+const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
+
+/// Which write route the command takes toward a `.java` file, if any.
+///
+/// Three shapes, all requiring `.java` in the command text (checked by the
+/// caller): a write-capable program in command position; a shell handed inline
+/// code (`-c`); or output redirection whose target is a `.java` path. Like
+/// [`text_tool_in`], deliberately not a shell parser — a miss on an exotic
+/// spelling is the accepted cost, and the layers above (artifact watch, ledger)
+/// exist because no enumeration closes this space.
+fn write_route_in(command: &str) -> Option<&'static str> {
+    for segment in command.split(['|', ';', '\n']) {
+        // Redirection into a .java target: `> Foo.java`, `>>Foo.java`.
+        let mut after_redirect = false;
+        for raw in segment.split_whitespace() {
+            if after_redirect {
+                if raw.trim_matches(['"', '\'']).ends_with(".java") {
+                    return Some(">");
+                }
+                after_redirect = false;
+            }
+            if raw == ">" || raw == ">>" {
+                after_redirect = true;
+            } else if let Some(target) = raw.strip_prefix(">>").or_else(|| raw.strip_prefix('>')) {
+                if target.trim_matches(['"', '\'']).ends_with(".java") {
+                    return Some(">");
+                }
+            }
+        }
+        // A writer or code-carrying shell in command position.
+        let mut words = segment
+            .split_whitespace()
+            .skip_while(|w| {
+                let bare = w.rsplit(['/', '\\']).next().unwrap_or(w);
+                PREFIXES.contains(&bare) || (w.contains('=') && !w.starts_with('-'))
+            });
+        if let Some(first) = words.next() {
+            let word = first.rsplit(['/', '\\']).next().unwrap_or(first);
+            if let Some(tool) = WRITE_TOOLS.iter().find(|t| **t == word) {
+                return Some(tool);
+            }
+            if SHELLS.contains(&word) && segment.contains(" -c") {
+                return Some("sh -c");
+            }
+            // `git apply` / `git checkout --` rewrite files too.
+            if word == "git" {
+                if let Some(sub) = words.next() {
+                    if sub == "apply" {
+                        return Some("git apply");
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Whether the command names Java sources. Deliberately narrow: `.java` as a
@@ -173,5 +263,77 @@ mod tests {
         for cmd in ["", "|||", ";;;", "&&", "/", "\\", ".java", "grep", "grep .java"] {
             let _ = judge(cmd);
         }
+    }
+}
+
+#[cfg(test)]
+mod write_tripwire_tests {
+    use super::*;
+
+    fn denied(cmd: &str) -> bool {
+        matches!(judge(cmd), Verdict::Deny { .. })
+    }
+
+    /// THE control: the exact shape that bypassed this guard live on
+    /// 2026-08-14 — a python3 heredoc rewriting .java call sites, watched by a
+    /// guard that only knew the four search tools. This command line is the
+    /// regression anchor; if it ever passes again, the tripwire is gone.
+    #[test]
+    fn the_live_bypass_command_is_now_denied() {
+        let bypass = "python3 - <<'PY'\np='org.jawata.core.tests/src/org/jawata/core/project/ProjectImporterTest.java'\ns=open(p).read()\nPY";
+        match judge(bypass) {
+            Verdict::Deny { reason } => {
+                assert!(reason.contains("change_method_signature"),
+                    "the denial must hand over the tool that should have been called: {reason}");
+                assert!(reason.contains(AUTHOR_DECLARATION),
+                    "the denial must name the authoring escape: {reason}");
+            }
+            Verdict::Allow => panic!("the live bypass shape passed the guard AGAIN"),
+        }
+    }
+
+    #[test]
+    fn every_write_route_over_java_is_denied() {
+        for cmd in [
+            "perl -i -pe 's/a/b/' src/Foo.java",
+            "ruby rewrite.rb Foo.java",
+            "node patch.js src/main/java/Foo.java",
+            "tee src/Foo.java",
+            "patch -p1 Foo.java.patch src/Foo.java",
+            "mv staged.txt src/main/java/Foo.java",
+            "cp fixed.txt src/Foo.java",
+            "echo 'class X {}' > src/Foo.java",
+            "cat fix.txt >> src/Foo.java",
+            "bash -c 'printf x > Foo.java'",
+            "git apply fix-Foo.java.patch",
+        ] {
+            assert!(denied(cmd), "write route slipped through: {cmd}");
+        }
+    }
+
+    /// Reads stay reads. A guard that denies looking at a file is a guard
+    /// people turn off — and under Cursor's failClosed, a false denial blocks
+    /// real work.
+    #[test]
+    fn reading_java_is_untouched() {
+        for cmd in [
+            "cat src/main/java/Foo.java",
+            "head -20 Foo.java",
+            "wc -l src/Foo.java",
+            "ls -la src/main/java/",
+            "git diff -- src/Foo.java",
+            "git log --oneline Foo.java",
+            "java Foo.java",
+            "javac src/main/java/Foo.java",
+            "echo 'please fix Foo.java with python'",
+            "python3 analyze_log.py build.log",
+        ] {
+            assert!(!denied(cmd), "a read/innocent command was denied: {cmd}");
+        }
+    }
+
+    #[test]
+    fn the_authoring_declaration_still_opens_the_narrow_door() {
+        assert!(!denied("jawata-author: writing a cmd fixture body no tool produces; tee src/Foo.java"));
     }
 }
