@@ -27,6 +27,32 @@ diagram; prose without the picture is an incomplete design. Name the pattern
 each seam uses and the smell it prevents. This artifact is the baseline the
 watch mode diffs against.
 
+Three requirements on every design report (Harald, 2026-08-14, after a
+design-mode run answered a diagnostic question well and the design question
+not at all):
+
+D-ONE. ONE COHERENT TARGET, NOT A PATTERN PER FINDING. "A couple of patterns
+is not an architecture." Patterns are named IN SERVICE of the single target —
+per seam, inside the picture. A report whose structure is finding→pattern,
+finding→pattern is watch mode wearing design mode's clothes; refuse the shape
+and restructure before emitting.
+
+D-TWO. THE MIGRATION IS EXECUTABLE STEPS, NOT AN EXHORTATION. "The architect
+leaves it open how to get there" is a failed design. Every design report ENDS
+with the migration path as ordered, parity-gated refactoring steps — the
+refactoring(action=plan) kind and its named target per step, each
+independently verifiable and reversible. "Left to the implementer" is the gap
+through which patches re-enter.
+
+D-THREE. THE END-STATE TEST SURFACE IS PART OF THE DESIGN. State what the
+architecture makes testable WHERE: which suites become environment-independent
+(run once, anywhere), which concern the boundary owns (tested per environment
+against the boundary's own contract), and what only reality can verify
+(named E2E smoke, not a suite). A design that does not derive its own
+verification story has left the job half done — the test surface is a
+CONSEQUENCE of the architecture, and deriving it is the designer's work, not
+the test-writer's guess.
+
 WATCH MODE (during execution — sweeps and checkpoint-diff reviews): read
 detector evidence and reviewed diffs, and argue for DESIGN-level fixes —
 judging every change against the target-architecture artifact when one
