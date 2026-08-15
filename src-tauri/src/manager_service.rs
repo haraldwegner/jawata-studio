@@ -1722,7 +1722,7 @@ impl ManagerService {
                     && target
                         .target_path
                         .as_deref()
-                        .map(path_has_managed_entries)
+                        .map(|path| path_has_managed_entries(target.id, path))
                         .unwrap_or(false)
             })
             .map(|target| target.id.to_string())
@@ -4087,15 +4087,37 @@ fn is_managed_mcp_key(key: &str) -> bool {
 /// Sprint 16 (bugs.md #14a): true when the client's MCP config file already
 /// carries at least one jawata-managed server entry — the marker that the
 /// user deployed there before, making it an auto-refresh target.
-fn path_has_managed_entries(path: &str) -> bool {
+///
+/// Sprint 28a: takes the `client`, because this used to assume JSON under
+/// `mcpServers` for everyone. That is false twice over now — VS Code's map
+/// hangs under `servers`, and Codex's file is TOML — so both would have
+/// answered `false` however many jawata entries they held, and
+/// `refresh_deployed_configs` would have left them out of every auto-refresh.
+/// Their entries would then go stale on the next workspace add or rename,
+/// silently, with the client still pointing at a workspace that no longer
+/// exists.
+fn path_has_managed_entries(client: &str, path: &str) -> bool {
     let Ok(contents) = fs::read_to_string(path) else {
         return false;
     };
+    let dialect = crate::client_dialect::dialect_for(client);
+
+    if let Some(table_name) = dialect.toml_table() {
+        let Ok(doc) = contents.parse::<toml_edit::DocumentMut>() else {
+            return false;
+        };
+        return doc
+            .get(table_name)
+            .and_then(|item| item.as_table())
+            .map(|table| table.iter().any(|(key, _)| is_managed_mcp_key(key)))
+            .unwrap_or(false);
+    }
+
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) else {
         return false;
     };
     value
-        .get("mcpServers")
+        .get(dialect.json_root_key().unwrap_or("mcpServers"))
         .and_then(|servers| servers.as_object())
         .map(|servers| servers.keys().any(|key| is_managed_mcp_key(key)))
         .unwrap_or(false)
@@ -12887,7 +12909,7 @@ mod tests {
             r#"{ "mcpServers": { "jawata-my-ws": { "url": "http://x" }, "other": {} } }"#,
         )
         .unwrap();
-        assert!(path_has_managed_entries(managed.to_str().unwrap()));
+        assert!(path_has_managed_entries("cursor", managed.to_str().unwrap()));
 
         // Legacy pre-rebrand keys (`jl-…` / `javalens-…`) are still recognised as managed,
         // so the manager can find and clean up deployments written before the JAWATA rebrand.
@@ -12897,7 +12919,7 @@ mod tests {
             r#"{ "mcpServers": { "jl-legacy-ws": { "url": "http://x" } } }"#,
         )
         .unwrap();
-        assert!(path_has_managed_entries(legacy.to_str().unwrap()));
+        assert!(path_has_managed_entries("cursor", legacy.to_str().unwrap()));
 
         let foreign = dir.join("foreign.json");
         std::fs::write(
@@ -12905,16 +12927,71 @@ mod tests {
             r#"{ "mcpServers": { "filesystem": { "command": "npx" } } }"#,
         )
         .unwrap();
-        assert!(!path_has_managed_entries(foreign.to_str().unwrap()));
+        assert!(!path_has_managed_entries("cursor", foreign.to_str().unwrap()));
 
         let empty = dir.join("empty.json");
         std::fs::write(&empty, r#"{ "somethingElse": true }"#).unwrap();
-        assert!(!path_has_managed_entries(empty.to_str().unwrap()));
+        assert!(!path_has_managed_entries("cursor", empty.to_str().unwrap()));
 
         assert!(
-            !path_has_managed_entries(dir.join("missing.json").to_str().unwrap()),
+            !path_has_managed_entries("cursor", dir.join("missing.json").to_str().unwrap()),
             "never-deployed clients (no file) are not refresh targets"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn refresh_targets_are_detected_in_every_clients_own_dialect() {
+        // Sprint 28a. This check assumed JSON under `mcpServers` for everyone,
+        // which is false twice over now: VS Code's map hangs under `servers`
+        // and Codex's file is TOML. Both would have answered "no managed
+        // entries here" however many they held, so `refresh_deployed_configs`
+        // would have skipped them — and their entries would go stale on the
+        // next workspace add or rename, still pointing at a workspace that no
+        // longer exists, silently.
+        let dir = unique_tempdir("refresh-dialects");
+
+        let vscode = dir.join("mcp.json");
+        std::fs::write(
+            &vscode,
+            r#"{ "servers": { "jawata-my-ws": { "url": "http://x" } }, "inputs": [] }"#,
+        )
+        .unwrap();
+        assert!(
+            path_has_managed_entries("vscode", vscode.to_str().unwrap()),
+            "vscode's servers map was not read"
+        );
+        assert!(
+            !path_has_managed_entries("cursor", vscode.to_str().unwrap()),
+            "reading it as cursor must NOT find it — that is the bug, and this \
+             clause is what fails if the dialect stops being consulted"
+        );
+
+        let codex = dir.join("config.toml");
+        std::fs::write(
+            &codex,
+            "# user comment\n[mcp_servers.jawata-my-ws]\nurl = \"http://x\"\n",
+        )
+        .unwrap();
+        assert!(
+            path_has_managed_entries("codex", codex.to_str().unwrap()),
+            "codex's TOML table was not read"
+        );
+
+        // A Codex file holding only the user's own servers is not a target.
+        let codex_foreign = dir.join("foreign.toml");
+        std::fs::write(&codex_foreign, "[mcp_servers.filesystem]\ncommand = \"npx\"\n").unwrap();
+        assert!(!path_has_managed_entries("codex", codex_foreign.to_str().unwrap()));
+
+        // Copilot CLI shares the majority dialect, so it keeps working.
+        let copilot = dir.join("mcp-config.json");
+        std::fs::write(
+            &copilot,
+            r#"{ "mcpServers": { "jawata-my-ws": { "url": "http://x" } } }"#,
+        )
+        .unwrap();
+        assert!(path_has_managed_entries("copilot_cli", copilot.to_str().unwrap()));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
