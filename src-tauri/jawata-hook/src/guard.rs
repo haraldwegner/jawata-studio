@@ -72,8 +72,15 @@ pub enum Verdict {
 
 /// Decide on one shell command.
 pub fn judge(command: &str) -> Verdict {
-    // A declared fallback proceeds — and the declaration IS the audit trail.
-    if command.contains(FALLBACK_DECLARATION) || command.contains(AUTHOR_DECLARATION) {
+    // The declarations are a LATTICE, and v3.8.1 shipped them as a flat pair.
+    // `jawata-author:` is the stronger claim (I am writing Java deliberately)
+    // and satisfies both gates. `jawata-fallback:` claims only a justified
+    // READ, and must not open a write — otherwise routing `sed -i` to the write
+    // gate bought nothing, because the weaker declaration granted everything the
+    // stronger one granted. Worse, the read gate's own denial message TEACHES
+    // `jawata-fallback:`, so an agent obeying the guard's instruction was handed
+    // the key to the write gate. Found by the architect, 2026-08-15.
+    if command.contains(AUTHOR_DECLARATION) {
         return Verdict::Allow;
     }
     if !mentions_java_source(command) {
@@ -100,6 +107,11 @@ pub fn judge(command: &str) -> Verdict {
                  <narrow reason>` in the command; the declaration is logged and audited."
             ),
         };
+    }
+    // Past the write gate, a declared fallback proceeds — the declaration IS
+    // the audit trail, and a READ is the lesser claim it was written for.
+    if command.contains(FALLBACK_DECLARATION) {
+        return Verdict::Allow;
     }
     let Some(tool) = text_tool_in(command) else {
         return Verdict::Allow;
@@ -138,21 +150,21 @@ const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
 /// exist because no enumeration closes this space.
 fn write_route_in(command: &str) -> Option<&'static str> {
     for segment in segments(command) {
-        // The .java target must be in THIS segment. Checking the whole command
-        // denied `git status Foo.java && python3 -c 'print(1)'`, where nothing
-        // writes Java at all — a false denial, and under Cursor's failClosed a
-        // false denial blocks real work.
+        // NO per-segment .java requirement on the WRITE gate. v3.8.1 added one
+        // to kill a false positive and paid in three false negatives: a path
+        // reaching the writer through a pipe (`echo Foo.java | xargs sed -i`),
+        // through a quoted separator inside a `-c` payload, or across a heredoc
+        // is invisible to the segment that does the writing. The scope was the
+        // precision knob on a text predicate whose precision and recall are
+        // COUPLED — tightening one loosened the other, three times.
         //
-        // EXCEPT for a heredoc: its body is part of the command that opened it,
-        // and the body is where the path lives. The original live bypass was
-        // exactly that shape — `python3 - <<'PY'` on one line, the .java path
-        // three lines down — so scoping it to the opening line alone would have
-        // re-opened the hole this guard exists to close. Its anchor test caught
-        // that within a minute of the change.
-        let scope = if segment.contains("<<") { command } else { segment };
-        if !mentions_java_source(scope) {
-            continue;
-        }
+        // The cost model decides which way to set it, and the two errors are
+        // NOT symmetric. A false denial costs seconds plus one audited
+        // `jawata-author:` declaration; it also teaches. A false pass is a
+        // silent text rewrite of Java — the exact harm this product exists to
+        // prevent — undetected until somebody dogfoods. So the write gate takes
+        // whole-command scope and accepts the over-denial; the READ gate keeps
+        // segment scope, where the harm is lower and the annoyance higher.
         // Redirection into a .java target: `> Foo.java`, `>>Foo.java`.
         let mut after_redirect = false;
         for raw in segment.split_whitespace() {
@@ -321,18 +333,58 @@ mod tests {
         assert!(denied("awk -i inplace '{print}' Foo.java"));
     }
 
-    /// The other half of the same root cause: the .java target must be in the
-    /// segment that carries the writer. Checking the whole command denied a
-    /// read of a Java file that merely shared a line with an unrelated
-    /// interpreter — and under Cursor's failClosed a false denial blocks work.
+    /// v3.8.2, and this test is INVERTED from v3.8.1 on purpose.
+    ///
+    /// v3.8.1 asserted these were allowed, because a writer in another segment
+    /// writes no Java. True — and the scoping that bought it let three real
+    /// bypasses through, because a path can reach a writer at RUNTIME from
+    /// anywhere in the line. The two errors are not symmetric: this denial
+    /// costs one audited declaration, the passes cost a silent rewrite of
+    /// Java. The write gate over-denies deliberately.
     #[test]
-    fn a_writer_in_another_segment_is_not_a_write_to_java() {
+    fn the_write_gate_over_denies_rather_than_guess_where_a_path_came_from() {
         for cmd in [
             "git status --porcelain Foo.java && python3 -c \"print('probe')\"",
             "cat Foo.java | wc -l && node -e \"console.log(1)\"",
         ] {
-            assert!(!denied(cmd), "false positive — nothing writes Java here: {cmd}");
+            assert!(
+                denied(cmd),
+                "accepted over-denial: the escape is one jawata-author declaration: {cmd}"
+            );
         }
+    }
+
+    /// The three shapes v3.8.1's segment scoping let through. A path can reach
+    /// the writer from another segment — through a pipe, through a quoted
+    /// separator inside a `-c` payload, or across a heredoc.
+    #[test]
+    fn a_path_reaching_the_writer_from_elsewhere_is_still_a_write() {
+        for cmd in [
+            // the canonical bulk rewrite — the most damaging shape there is
+            "grep -rl TODO --include=*.java . | xargs sed -i 's/TODO/DONE/'",
+            "echo Foo.java | xargs sed -i 's/a/b/'",
+            // a separator inside quotes is not a separator
+            "python3 -c \"print('a | b')\" Foo.java",
+            "python3 -c \"print('a && b')\" Foo.java",
+            "FILE=Foo.java; sed -i 's/a/b/' $FILE",
+        ] {
+            assert!(denied(cmd), "a path from elsewhere still reaches the file: {cmd}");
+        }
+    }
+
+    /// The declarations are a LATTICE. `jawata-author:` is the stronger claim
+    /// and opens both gates; `jawata-fallback:` claims a READ only and must not
+    /// open a write — otherwise the read gate's own message, which teaches
+    /// `jawata-fallback:`, hands out the key to the write gate.
+    #[test]
+    fn a_read_declaration_does_not_open_the_write_gate() {
+        assert!(
+            denied("jawata-fallback: bulk sweep; sed -i 's/a/b/' Foo.java"),
+            "the weaker declaration must not grant what the stronger one grants"
+        );
+        assert!(!denied("jawata-author: generating a fixture; sed -i 's/a/b/' Foo.java"));
+        // ...and it still does its own job: a justified READ proceeds.
+        assert!(!denied("jawata-fallback: no bindings in this fixture; grep Foo.java"));
     }
 
     #[test]
