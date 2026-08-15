@@ -49,7 +49,10 @@
     claude: true,
     claudeDesktop: true,
     antigravity: true,
-    intellij: true
+    intellij: true,
+    codex: true,
+    copilotCli: true,
+    vscode: true
   };
   export let deployBusy = false;
   export let deployError: string | undefined;
@@ -69,7 +72,20 @@
     { key: "claude", id: "claude", label: "Claude Code" },
     { key: "claudeDesktop", id: "claude_desktop", label: "Claude Desktop" },
     { key: "antigravity", id: "antigravity", label: "Antigravity" },
-    { key: "intellij", id: "intellij", label: "IntelliJ" }
+    { key: "intellij", id: "intellij", label: "IntelliJ" },
+    /* Sprint 28a (D1). This array is not a display convenience — it is the
+       ONLY thing that reaches the backend. runDeployWithTargets always sends
+       an explicit target list built from it, and the backend treats a present
+       list as authoritative, so a client missing here is a client that can
+       never be deployed no matter what the settings say. Adding the three
+       backend adapters without this line shipped exactly that: three clients
+       that took the "Skipped: not selected in this deploy run" branch on
+       every run. Found by the C2 adversarial audit; the claim it disproved
+       was that they "deploy through the backend defaults", which the default
+       is never consulted to make true. */
+    { key: "codex", id: "codex", label: "Codex" },
+    { key: "copilotCli", id: "copilot_cli", label: "Copilot CLI" },
+    { key: "vscode", id: "vscode", label: "VS Code" }
   ];
 
   let rowRefs: Record<string, HTMLElement> = {};

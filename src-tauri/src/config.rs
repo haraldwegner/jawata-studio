@@ -157,11 +157,18 @@ pub struct DeployTargetFlags {
     pub claude: bool,
     #[serde(default = "default_enabled_flag")]
     pub claude_desktop: bool,
-    /// Sprint 28a (D1): Antigravity is UNSUPPORTED, not deleted — its
-    /// command-line tool has no mechanism to connect jawata at all. The flag
-    /// survives so an existing install's setting round-trips, but the roster
-    /// marks it unsupported and the UI greys it out. A client that explains
-    /// its own absence beats one that silently vanishes (Harald, 2026-08-11).
+    /// Sprint 28a (D1): Antigravity is to be marked UNSUPPORTED, not deleted —
+    /// its command-line tool has no mechanism to connect jawata at all. A client
+    /// that explains its own absence beats one that silently vanishes (Harald,
+    /// 2026-08-11).
+    ///
+    /// SHIPPED SO FAR: the deploy writes it no workflow files and removes any a
+    /// previous version left (`client_still_receives_seat_commands`). NOT YET:
+    /// the roster does not mark it unsupported and the UI does not grey it out —
+    /// that is Stage 2b, and this comment is deliberately future-tense until
+    /// then. An earlier version stated the UI half in the present indicative,
+    /// which the C2 audit caught: a reader of this file would have believed a
+    /// behaviour that does not exist.
     #[serde(default = "default_enabled_flag")]
     pub antigravity: bool,
     #[serde(default = "default_enabled_flag")]
@@ -1564,23 +1571,65 @@ mod deploy_resolves_here {
         );
     }
 
+    /// EVERY roster client's resolved path, pinned by expected suffix.
+    ///
+    /// This replaces an `is_absolute()`-only loop that called itself "the
+    /// anti-vacuity clause" and was not one. The C2 audit proved it by
+    /// mutation: it replaced IntelliJ's candidate list with
+    /// `[".totally-wrong-dir", "nope.json"]`, re-ran the suite, and got **314
+    /// passed, 0 failed** — the whole module stayed green while a shipped
+    /// client pointed at a directory nothing will ever read. The named tests
+    /// above covered the four clients already known to be right and none of
+    /// the ones that might be wrong.
+    ///
+    /// A table pins BELIEF, which is the most a test can do here: it cannot
+    /// know where a client truly reads, but it makes a change to our answer
+    /// visible instead of silent. Where the belief is itself in doubt, the row
+    /// says so and names the issue rather than pretending.
     #[test]
-    fn every_roster_client_resolves_to_something_absolute() {
-        // The anti-vacuity clause. Each test above names one client; this one
-        // fails if a client is ever added to the roster without a resolution
-        // of its own, which is how a new client ships pointing at nothing.
+    fn every_roster_client_resolves_to_its_expected_shape() {
         let paths = detect_default_mcp_client_paths();
-        let all: [(&str, &McpClientPathEntry); 8] = [
-            ("cursor", &paths.cursor),
-            ("claude", &paths.claude),
-            ("claude_desktop", &paths.claude_desktop),
-            ("antigravity", &paths.antigravity),
-            ("intellij", &paths.intellij),
-            ("codex", &paths.codex),
-            ("copilot_cli", &paths.copilot_cli),
-            ("vscode", &paths.vscode),
+        let expected: [(&str, &McpClientPathEntry, &[&str]); 8] = [
+            ("cursor", &paths.cursor, &[".cursor", "mcp.json"]),
+            ("claude", &paths.claude, &[".claude.json"]),
+            (
+                "claude_desktop",
+                &paths.claude_desktop,
+                &["Claude", "claude_desktop_config.json"],
+            ),
+            (
+                "antigravity",
+                &paths.antigravity,
+                &[".gemini", "antigravity", "mcp_config.json"],
+            ),
+            // UNVERIFIED BELIEF, tracked as jawata-studio#9. Measured on this
+            // machine 2026-08-15: `~/.config/JetBrains/` holds VERSIONED
+            // product dirs (IntelliJIdea2024.3, …), and the unversioned
+            // `IntelliJIdea/` this path names contains nothing but the
+            // mcp.json we ourselves wrote. So IntelliJ most likely never reads
+            // it — consistent with Harald's report that MCP does not work
+            // there. This row pins what we currently write, NOT a path anyone
+            // has confirmed IntelliJ reads.
+            (
+                "intellij",
+                &paths.intellij,
+                &["JetBrains", "IntelliJIdea", "mcp.json"],
+            ),
+            ("codex", &paths.codex, &[".codex", "config.toml"]),
+            (
+                "copilot_cli",
+                &paths.copilot_cli,
+                &[".copilot", "mcp-config.json"],
+            ),
+            ("vscode", &paths.vscode, &["Code", "User", "mcp.json"]),
         ];
-        for (client, entry) in all {
+        assert_eq!(
+            expected.len(),
+            crate::manager_service::KNOWN_DEPLOY_CLIENT_IDS.len(),
+            "a client joined the deploy roster without a path expectation here — \
+             which is how one ships pointing at a directory nothing reads"
+        );
+        for (client, entry, segments) in expected {
             let path = entry
                 .effective_path
                 .as_deref()
@@ -1589,6 +1638,7 @@ mod deploy_resolves_here {
                 std::path::Path::new(path).is_absolute(),
                 "{client}: {path:?} is not absolute"
             );
+            assert_ends_with(path, segments, client);
         }
     }
 }

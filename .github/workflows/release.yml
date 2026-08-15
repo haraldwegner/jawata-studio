@@ -93,10 +93,26 @@ jobs:
       # Name-filtered rather than a whole-suite ungating: the studio suite's
       # ~300 tests have never run on Windows or macOS and clearing them is not
       # this sprint's job.
+      #
+      # The count check is not belt-and-braces. `cargo test <filter>` exits 0
+      # when the filter matches NOTHING, so a rename of the module would leave
+      # this step green while testing zero paths — the same "reports success,
+      # does nothing" shape the step exists to catch, one level up. Asserting
+      # the number means the step fails loudly if it ever stops selecting.
       - name: Deploy paths resolve correctly on this platform
         shell: bash
         working-directory: src-tauri
-        run: cargo test --release -p jawata-studio --lib deploy_resolves_here -- --nocapture
+        run: |
+          set -euo pipefail
+          cargo test --release -p jawata-studio --lib deploy_resolves_here \
+            -- --nocapture 2>&1 | tee /tmp/resolve.txt
+          EXPECTED=5
+          if ! grep -q "^test result: ok\. ${EXPECTED} passed" /tmp/resolve.txt; then
+            echo "::error::expected ${EXPECTED} deploy_resolves_here tests to pass on ${{ matrix.platform }}."
+            echo "A filter that matches nothing exits 0, so this step must count."
+            grep "^test result" /tmp/resolve.txt || echo "no test result line at all"
+            exit 1
+          fi
 
       # Sprint 28 "E2E means E2E", closed for real (outcome audit F10): the
       # in-crate seam test drives the hook against a MOCK store serving a

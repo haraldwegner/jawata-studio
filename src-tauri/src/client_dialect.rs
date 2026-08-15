@@ -10,8 +10,15 @@
 //!
 //! So the dialect becomes a VALUE, in one place, the same move
 //! `org.jawata.core.host` made for the operating system in 1b: ask
-//! [`dialect_for`] and the answer carries everything that varies. A new client
-//! is one arm here plus its path; nothing downstream branches on a client name.
+//! [`dialect_for`] and the answer carries everything that varies.
+//!
+//! **Scope, stated exactly** — an earlier version of this sentence claimed
+//! "nothing downstream branches on a client name", and the C2 audit measured
+//! that as false: `derive_rule_path`, `derive_seat_commands_dir`,
+//! `seat_artifact_paths` and eight more sites still do, and adding a client
+//! still needs a decision at the first two. What is true is narrower and is
+//! the whole claim: **nothing in the MCP-entry write path branches on a client
+//! name.** The rest of the roster's scatter is Stage 2b's target.
 //!
 //! **Every fact in the table below was measured by making the client's own
 //! tooling write a config**, in a sandboxed HOME, on 2026-08-15 — not recalled

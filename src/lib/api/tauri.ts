@@ -75,6 +75,10 @@ export interface McpClientPaths {
   claudeDesktop: McpClientPathEntry;
   antigravity: McpClientPathEntry;
   intellij: McpClientPathEntry;
+  /** Sprint 28a (D1). */
+  codex: McpClientPathEntry;
+  copilotCli: McpClientPathEntry;
+  vscode: McpClientPathEntry;
 }
 
 /** Flags indicating which MCP clients to deploy to. */
@@ -84,6 +88,10 @@ export interface DeployTargetFlags {
   claudeDesktop: boolean;
   antigravity: boolean;
   intellij: boolean;
+  /** Sprint 28a (D1). */
+  codex: boolean;
+  copilotCli: boolean;
+  vscode: boolean;
 }
 
 /** Source configuration for the JAWATA runtime. */

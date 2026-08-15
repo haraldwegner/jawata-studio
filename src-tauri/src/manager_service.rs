@@ -4068,7 +4068,7 @@ fn mcp_label_slug(name: &str, project_path: &str, max_chars: usize) -> String {
 /// generations `goja-…` (pre-22b rebrand) / `jl-…` / `javalens-…` recognised for
 /// cleanup/migration of pre-rebrand deploys (migration literals, exception class 3).
 ///
-/// Sprint 28a: the BARE names are managed too. With the gateway enabled,
+/// Sprint 28a: the two BARE gateway names are managed too. With the gateway enabled,
 /// `gateway_entry` writes ONE consolidated server keyed `jawata` — no hyphen,
 /// no workspace suffix — and every predicate here required the hyphen. So the
 /// gateway entry was not recognised as ours: an undeploy reported "nothing to
@@ -4077,7 +4077,7 @@ fn mcp_label_slug(name: &str, project_path: &str, max_chars: usize) -> String {
 /// Found while writing the Codex adapter's removal test, which used the bare
 /// id and failed for the same reason the product did.
 fn is_managed_mcp_key(key: &str) -> bool {
-    matches!(key, "jawata" | "goja" | "jl" | "javalens")
+    matches!(key, "jawata" | "goja")
         || key.starts_with("jawata-")
         || key.starts_with("goja-")
         || key.starts_with("jl-")
@@ -4155,10 +4155,30 @@ fn write_managed_json_block(
         .map_err(|error| format!("failed to create parent {}: {error}", parent.display()))?;
 
     let existing_contents = fs::read_to_string(&path_buf).ok();
-    let mut root_value = existing_contents
-        .as_deref()
-        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
+
+    // Sprint 28a (C2 audit F8): a non-empty file we cannot parse is REFUSED,
+    // not silently treated as empty and overwritten. The TOML writer below
+    // already worked this way and argued the case in its own test — clobbering
+    // "destroys a user's config in the one situation where they most need it
+    // back" — and that argument applies verbatim here. Two writers in the same
+    // codebase holding opposite policies on the same question is the drift;
+    // this closes it, and it matters more now that VS Code and Copilot CLI
+    // route through this path.
+    //
+    // An EMPTY or whitespace-only file is not an error: that is a freshly
+    // created settings file, and starting it is the correct behaviour.
+    let mut root_value = match existing_contents.as_deref() {
+        Some(text) if !text.trim().is_empty() => {
+            serde_json::from_str::<serde_json::Value>(text).map_err(|error| {
+                format!(
+                    "failed parsing {} as JSON: {error}. Refusing to overwrite a \
+                     file we cannot read — fix or move it and deploy again.",
+                    path_buf.display()
+                )
+            })?
+        }
+        _ => serde_json::json!({}),
+    };
     if !root_value.is_object() {
         root_value = serde_json::json!({});
     }
@@ -12399,6 +12419,58 @@ mod tests {
     }
 
     #[test]
+    fn the_ui_picker_can_reach_every_client_the_backend_knows() {
+        // THE WIRE, and the C2 audit is why it exists.
+        //
+        // Stage 2 added three clients to the backend and to nothing else. The
+        // dossier then said they "deploy through the backend defaults" — and
+        // that default is never consulted, because the only deploy call site
+        // (`runDeployWithTargets` in ProjectList.svelte) ALWAYS sends an
+        // explicit target list, and `deploy_to_agents` treats a present list
+        // as authoritative. So all three took the "Skipped: not selected in
+        // this deploy run" branch on every run: three adapters, fully tested,
+        // that no user could ever reach. Every backend test stayed green.
+        //
+        // That is the same sentence Claude Desktop produced in Sprint 28, from
+        // the same array, for a different reason. Reading the Svelte source as
+        // TEXT is crude, and it is the only thing that crosses the language
+        // boundary where the defect lives. Stage 2b replaces the array with a
+        // shared roster; this assertion should outlive that change unedited.
+        // Read at RUNTIME, not include_str!. Measured: with include_str! the
+        // file's contents are baked in at compile time and cargo did NOT
+        // rebuild when only the .svelte changed — so editing the picker and
+        // running `cargo test` returned a STALE GREEN. A gate that cannot see
+        // the file it guards is the defect it was written to catch.
+        let picker_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../src/lib/components/ProjectList.svelte");
+        let picker = std::fs::read_to_string(&picker_path).unwrap_or_else(|error| {
+            panic!(
+                "cannot read {}: {error} — this assertion did NOT run",
+                picker_path.display()
+            )
+        });
+        let picker = picker.as_str();
+        let options_start = picker
+            .find("const deployTargetOptions")
+            .expect("ProjectList.svelte no longer declares deployTargetOptions — if the \
+                     picker was restructured, re-point this assertion rather than deleting it");
+        let options_end = picker[options_start..]
+            .find("];")
+            .map(|offset| options_start + offset)
+            .expect("deployTargetOptions is not terminated");
+        let options = &picker[options_start..options_end];
+
+        for id in KNOWN_DEPLOY_CLIENT_IDS {
+            assert!(
+                options.contains(&format!("id: \"{id}\"")),
+                "the backend deploys to {id:?} but the UI picker cannot select it, so a \
+                 deploy always reports \"Skipped: not selected in this deploy run\" for it. \
+                 Add it to deployTargetOptions in ProjectList.svelte."
+            );
+        }
+    }
+
+    #[test]
     fn antigravity_gets_no_new_workflow_files_but_its_old_ones_are_still_reachable() {
         // D1: "Antigravity is marked unsupported rather than deleted … The
         // workflow files Studio writes for it are removed."
@@ -12466,13 +12538,90 @@ mod tests {
              recognise as ours — undeploy would leave it behind",
             entry.id
         );
-        // The legacy generations' bare names too, for the same reason.
-        for key in ["jawata", "goja", "jl", "javalens"] {
-            assert!(is_managed_mcp_key(key), "{key} must be recognised");
+        // `goja` too — history shows exactly two names were ever gateway ids:
+        // `goja` (introduced Sprint 16b/B, commit 7f51ba3) and `jawata` (the
+        // rebrand, 7750313). Verified with `git log -S`, not recalled.
+        assert!(is_managed_mcp_key("goja"), "the pre-rebrand gateway id");
+
+        // And NOT `jl` / `javalens`. An earlier version of this predicate
+        // included them; the C2 audit found no commit in which either was ever
+        // a gateway id, so they were speculative. That is not free: a bare
+        // managed name is DELETED on deploy and on undeploy, so a user whose
+        // own server is keyed `jl` would have lost it silently, with only the
+        // centralized backup as recourse. A prefix we never wrote must not
+        // claim a name a user might.
+        for key in ["jl", "javalens"] {
+            assert!(
+                !is_managed_mcp_key(key),
+                "{key} was never a gateway id, so claiming it can only delete a \
+                 user's own server"
+            );
         }
-        // And a user key that merely starts with the same letters must not be.
+        // A user key that merely starts with the same letters must not match.
         for key in ["jawatatools", "gojira", "jlint", "my-jawata"] {
             assert!(!is_managed_mcp_key(key), "{key} is the user's, not ours");
+        }
+    }
+
+    #[test]
+    fn an_unparseable_json_config_is_refused_not_overwritten_either() {
+        // C2 audit F8. The TOML writer refused; the JSON writer treated an
+        // unreadable file as empty and wrote over it. Same codebase, same
+        // question, opposite answers — and Stage 2 routed two NEW clients
+        // (VS Code, Copilot CLI) down the clobbering one.
+        for client in ["cursor", "vscode", "copilot_cli"] {
+            let dir = unique_tempdir(&format!("json-unparseable-{client}"));
+            let file = dir.join("config.json");
+            let path = file.to_string_lossy().to_string();
+            let broken = "{ \"mcpServers\": { oh no this is not json\n";
+            std::fs::write(&file, broken).unwrap();
+
+            let result = write_managed_json_block(
+                &path,
+                client,
+                &[url_server("jawata-ws", 8800, "tok", false)],
+                &McpMergeMode::SafeMerge,
+                false,
+                false,
+            );
+
+            assert!(result.is_err(), "{client}: an unparseable config must be refused");
+            assert_eq!(
+                std::fs::read_to_string(&file).unwrap(),
+                broken,
+                "{client}: the user's file must be exactly as it was"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn an_empty_config_file_is_started_not_refused() {
+        // The other side of F8's fix, and the reason it checks for emptiness
+        // rather than just parse failure: a freshly created (or touched)
+        // settings file is empty, and refusing THAT would break a first
+        // deploy on a clean machine. Measured on this machine: VS Code ships
+        // exactly this — `~/.config/Code/User/mcp.json` exists at 0 bytes.
+        for content in ["", "   \n\t\n"] {
+            let dir = unique_tempdir("json-empty");
+            let file = dir.join("mcp.json");
+            let path = file.to_string_lossy().to_string();
+            std::fs::write(&file, content).unwrap();
+
+            write_managed_json_block(
+                &path,
+                "vscode",
+                &[url_server("jawata-ws", 8800, "tok", false)],
+                &McpMergeMode::SafeMerge,
+                false,
+                false,
+            )
+            .expect("an empty file is a new file, not a corrupt one");
+
+            let after: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+            assert!(after["servers"]["jawata-ws"].is_object(), "{after}");
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 

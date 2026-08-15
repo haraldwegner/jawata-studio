@@ -124,14 +124,20 @@
     claude: true,
     claudeDesktop: true,
     antigravity: true,
-    intellij: true
+    intellij: true,
+    codex: true,
+    copilotCli: true,
+    vscode: true
   };
   let mcpClientPaths: McpClientPaths = {
     cursor: {},
     claude: {},
     claudeDesktop: {},
     antigravity: {},
-    intellij: {}
+    intellij: {},
+    codex: {},
+    copilotCli: {},
+    vscode: {}
   };
 
   let hasHydratedSettings = false;
@@ -197,7 +203,10 @@
       claude: normalizeMcpPathEntry(paths.claude),
       claudeDesktop: normalizeMcpPathEntry(paths.claudeDesktop),
       antigravity: normalizeMcpPathEntry(paths.antigravity),
-      intellij: normalizeMcpPathEntry(paths.intellij)
+      intellij: normalizeMcpPathEntry(paths.intellij),
+      codex: normalizeMcpPathEntry(paths.codex),
+      copilotCli: normalizeMcpPathEntry(paths.copilotCli),
+      vscode: normalizeMcpPathEntry(paths.vscode)
     };
   }
 
@@ -221,7 +230,10 @@
         claude: input.deployTargets.claude,
         claudeDesktop: input.deployTargets.claudeDesktop,
         antigravity: input.deployTargets.antigravity,
-        intellij: input.deployTargets.intellij
+        intellij: input.deployTargets.intellij,
+        codex: input.deployTargets.codex,
+        copilotCli: input.deployTargets.copilotCli,
+        vscode: input.deployTargets.vscode
       },
       releaseRepo: trimmedRepo && trimmedRepo.length > 0 ? trimmedRepo : null
     };
@@ -831,7 +843,10 @@
         ["claude", "Claude Code"],
         ["claudeDesktop", "Claude Desktop"],
         ["antigravity", "Antigravity"],
-        ["intellij", "IntelliJ"]
+        ["intellij", "IntelliJ"],
+        ["codex", "Codex"],
+        ["copilotCli", "Copilot CLI"],
+        ["vscode", "VS Code"]
       ] as [clientKey, clientLabel]}
         {@const key = clientKey as keyof McpClientPaths}
         {@const entry = mcpClientPaths[key]}
