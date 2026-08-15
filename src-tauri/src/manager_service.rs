@@ -13091,3 +13091,40 @@ mod hook_command_rendering_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod stage2_live_probe {
+    use super::*;
+    /// Not a gate — a one-off that dumps the writer's REAL output so it can be
+    /// fed to the actual client binary. Run explicitly:
+    ///   cargo test -p jawata-studio --lib stage2_live_probe -- --ignored
+    #[test]
+    #[ignore]
+    fn dump_codex_config() {
+        let out = std::env::var("JAWATA_PROBE_OUT").expect("JAWATA_PROBE_OUT");
+        let servers = vec![ManagedDeployServer {
+            id: "jawata-javata-dev".into(),
+            workspace_name: "javata-dev".into(),
+            project_names: vec!["P".into()],
+            project_paths: vec!["/p".into()],
+            url: "http://127.0.0.1:8800/mcp".into(),
+            token: "0123456789abcdef0123456789abcdef".into(),
+            disabled: false,
+        }];
+        let client = std::env::var("JAWATA_PROBE_CLIENT").unwrap_or_else(|_| "codex".into());
+        match crate::client_dialect::dialect_for(&client).toml_table() {
+            Some(table) => {
+                write_managed_toml_block(&out, &servers, table, false, false).unwrap()
+            }
+            None => write_managed_json_block(
+                &out,
+                &client,
+                &servers,
+                &McpMergeMode::SafeMerge,
+                false,
+                false,
+            )
+            .unwrap(),
+        }
+    }
+}
