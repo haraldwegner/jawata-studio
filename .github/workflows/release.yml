@@ -75,6 +75,29 @@ jobs:
         working-directory: src-tauri
         run: cargo test --release
 
+      # Sprint 28a (D1, R13a): the deploy-path resolution, on EVERY target.
+      #
+      # The step above is Linux-only and correctly so — deploy MERGE logic does
+      # not vary by platform. Path RESOLUTION does, and it is the half no test
+      # covered anywhere: the four no-clobber tests each client ships take the
+      # settings-file path as a parameter, so they prove a perfect merge into
+      # whatever directory they are handed and can never notice that the real
+      # deploy resolves somewhere no client reads.
+      #
+      # `dirs::config_dir()` is the specific hazard — ~/.config on Linux,
+      # ~/Library/Application Support on macOS, %APPDATA% on Windows. A client
+      # keyed off the home dir instead passes on Linux and is wrong on the
+      # other two, silently, forever. This is the first check of those paths
+      # anywhere but Linux.
+      #
+      # Name-filtered rather than a whole-suite ungating: the studio suite's
+      # ~300 tests have never run on Windows or macOS and clearing them is not
+      # this sprint's job.
+      - name: Deploy paths resolve correctly on this platform
+        shell: bash
+        working-directory: src-tauri
+        run: cargo test --release -p jawata-studio --lib deploy_resolves_here -- --nocapture
+
       # Sprint 28 "E2E means E2E", closed for real (outcome audit F10): the
       # in-crate seam test drives the hook against a MOCK store serving a
       # committed capture, so a producer-side move cannot fail it. This gate

@@ -30,6 +30,7 @@ tauri-plugin-dialog = "2.7.0"
 tauri-plugin-single-instance = "2"
 walkdir = "2.5.0"
 zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
+toml_edit = "0.25.13"
 
 # Sprint 28 (D-SHIM) — the workspace exists so `jawata-hook` can be a SIBLING
 # crate rather than a module of this one. That is the enforcement, not a

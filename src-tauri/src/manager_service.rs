@@ -1856,7 +1856,13 @@ impl ManagerService {
             let mut changed_sections = Vec::new();
             let mut errors = Vec::new();
 
-            match remove_managed_json_block(&path, backup_before_write) {
+            // Sprint 28a: TOML clients (Codex) get the format-preserving
+            // remover; everyone else the JSON one.
+            let removal = match crate::client_dialect::dialect_for(client).toml_table() {
+                Some(table) => remove_managed_toml_block(&path, table, backup_before_write),
+                None => remove_managed_json_block(&path, client, backup_before_write),
+            };
+            match removal {
                 Ok(changed) => {
                     if changed {
                         changed_sections.push("mcpConfig".into());
@@ -2020,14 +2026,26 @@ impl ManagerService {
         }
 
         let mut backup_path = None;
-        let mcp_write = write_managed_json_block(
-            &path,
-            client,
-            servers,
-            merge_mode,
-            backup_before_write,
-            matches!(mode, DeployMode::Regenerate),
-        );
+        // Sprint 28a: Codex's config is TOML, so it takes the format-preserving
+        // writer. Every other client is JSON, under the root key its dialect
+        // declares.
+        let mcp_write = match crate::client_dialect::dialect_for(client).toml_table() {
+            Some(table) => write_managed_toml_block(
+                &path,
+                servers,
+                table,
+                backup_before_write,
+                matches!(mode, DeployMode::Regenerate),
+            ),
+            None => write_managed_json_block(
+                &path,
+                client,
+                servers,
+                merge_mode,
+                backup_before_write,
+                matches!(mode, DeployMode::Regenerate),
+            ),
+        };
         let rule_write = write_managed_rule_block(
             &rule_path,
             &rule_body,
@@ -2122,7 +2140,33 @@ impl ManagerService {
                         ));
                     }
                     let force = matches!(mode, DeployMode::Regenerate);
-                    if let Some(commands_dir) = derive_seat_commands_dir(client, &path) {
+                    // Sprint 28a (D1): Antigravity is UNSUPPORTED — its
+                    // command-line tool has no mechanism to connect jawata at
+                    // all, so the workflow files we used to write for it steer
+                    // an agent toward tools it can never call. Stop writing
+                    // them, and REMOVE any a previous version left behind.
+                    //
+                    // `derive_seat_commands_dir` still answers for antigravity
+                    // on purpose: dropping the mapping would strand the
+                    // existing files forever, with nothing left that knows
+                    // where they are. Same shape as `remove_legacy_rule_sibling`.
+                    if !client_still_receives_seat_commands(client) {
+                        if let Some(commands_dir) = derive_seat_commands_dir(client, &path) {
+                            // Utility commands first: `remove_managed_seat_commands`
+                            // prunes `.agent/workflows` when it empties, and a
+                            // pruned dir would strand the utility files inside it.
+                            match remove_managed_utility_commands(client, &commands_dir) {
+                                Ok(true) => changed_sections.push("utilityCommands".into()),
+                                Ok(false) => {}
+                                Err(error) => errors.push(error),
+                            }
+                            match remove_managed_seat_commands(client, &commands_dir) {
+                                Ok(true) => changed_sections.push("seatCommands".into()),
+                                Ok(false) => {}
+                                Err(error) => errors.push(error),
+                            }
+                        }
+                    } else if let Some(commands_dir) = derive_seat_commands_dir(client, &path) {
                         match write_managed_seat_commands(client, &commands_dir, &seats, force) {
                             Ok(written) if !written.is_empty() => {
                                 changed_sections.push("seatCommands".into())
@@ -3240,12 +3284,20 @@ fn normalize_optional_path(value: String) -> Option<String> {
 /// ids; the settings API speaks camelCase `DeployTargetFlags` keys, and the
 /// two spellings differ for exactly one client (`claude_desktop` vs
 /// `claudeDesktop`). Callers must send the ids in this list.
-pub(crate) const KNOWN_DEPLOY_CLIENT_IDS: [&str; 5] = [
+pub(crate) const KNOWN_DEPLOY_CLIENT_IDS: [&str; 8] = [
     "cursor",
     "claude",
     "claude_desktop",
     "antigravity",
     "intellij",
+    // Sprint 28a (D1). `copilot_cli` is the second two-word client, so it is
+    // the second chance to repeat the `claudeDesktop` vs `claude_desktop`
+    // mismatch that made Claude Desktop silently undeployable. The frontend
+    // roster (Stage 2b) is what ends that bug class structurally; until then
+    // the refusal above is what makes a mismatch loud instead of silent.
+    "codex",
+    "copilot_cli",
+    "vscode",
 ];
 
 /// Normalise the caller's requested client ids, REFUSING any id we do not
@@ -3315,6 +3367,21 @@ fn deploy_targets_for_paths(
             id: "intellij",
             target_path: paths.intellij.effective_path.clone(),
             enabled_by_settings: flags.intellij,
+        },
+        DeployClientTarget {
+            id: "codex",
+            target_path: paths.codex.effective_path.clone(),
+            enabled_by_settings: flags.codex,
+        },
+        DeployClientTarget {
+            id: "copilot_cli",
+            target_path: paths.copilot_cli.effective_path.clone(),
+            enabled_by_settings: flags.copilot_cli,
+        },
+        DeployClientTarget {
+            id: "vscode",
+            target_path: paths.vscode.effective_path.clone(),
+            enabled_by_settings: flags.vscode,
         },
     ]
 }
@@ -3403,6 +3470,19 @@ fn derive_global_rule_path(client: &str) -> Option<String> {
 /// antigravity → `<base>/.agent/workflows/<cmd>.md` (verified format,
 /// C2). claude_desktop ships via the export zip; intellij via the
 /// rule-block phrase table — neither has a commands dir.
+/// Sprint 28a (D1) — whether a deploy still WRITES seat/utility command files
+/// for this client, as opposed to only knowing where its old ones live.
+///
+/// Antigravity is the one that answers `false`: it is unsupported (its
+/// command-line tool has no mechanism to connect jawata at all), so a workflow
+/// file steering an agent toward jawata's tools points at tools that client can
+/// never call. `derive_seat_commands_dir` keeps answering for it — dropping the
+/// mapping would strand the files a previous version wrote, with nothing left
+/// that knows where they are.
+fn client_still_receives_seat_commands(client: &str) -> bool {
+    client != "antigravity"
+}
+
 fn derive_seat_commands_dir(client: &str, mcp_target_path: &str) -> Option<PathBuf> {
     let parent = PathBuf::from(mcp_target_path)
         .parent()
@@ -3597,9 +3677,72 @@ fn validate_written_client_config(
 ) -> Result<(), String> {
     let contents = fs::read_to_string(path)
         .map_err(|error| format!("{client}: failed to read written config {path}: {error}"))?;
+    // Sprint 28a: Codex's config is TOML — parsing it as JSON would fail on
+    // every deploy and report a broken write that in fact succeeded.
+    if let Some(table) = crate::client_dialect::dialect_for(client).toml_table() {
+        return validate_written_toml_config(client, path, &contents, table, servers);
+    }
     let value: serde_json::Value = serde_json::from_str(&contents)
         .map_err(|error| format!("{client}: written config is invalid JSON in {path}: {error}"))?;
     validate_client_config_shape(client, &value, servers)
+}
+
+/// Sprint 28a (D1) — the post-write check for a TOML client (Codex).
+///
+/// It asserts the same three things the JSON validator does — the server is
+/// present, its URL is non-empty, its bearer header is there — against the
+/// file as it now sits on disk, because the point of a post-write validator is
+/// to catch a write that went somewhere other than where we think.
+fn validate_written_toml_config(
+    client: &str,
+    path: &str,
+    contents: &str,
+    table_name: &str,
+    servers: &[ManagedDeployServer],
+) -> Result<(), String> {
+    use toml_edit::DocumentMut;
+
+    let doc: DocumentMut = contents
+        .parse()
+        .map_err(|error| format!("{client}: written config is invalid TOML in {path}: {error}"))?;
+    let table = doc
+        .get(table_name)
+        .and_then(|item| item.as_table())
+        .ok_or_else(|| format!("{client}: missing or invalid {table_name} table after deploy"))?;
+
+    for server in servers {
+        let entry = table.get(&server.id).ok_or_else(|| {
+            format!(
+                "{client}: managed server '{}' missing in {table_name} after deploy",
+                server.id
+            )
+        })?;
+        let url_valid = entry
+            .get("url")
+            .and_then(|item| item.as_str())
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
+        if !url_valid {
+            return Err(format!(
+                "{client}: server '{}' missing non-empty url",
+                server.id
+            ));
+        }
+        let auth_valid = entry
+            .get("http_headers")
+            .and_then(|item| item.as_inline_table())
+            .and_then(|headers| headers.get("Authorization"))
+            .and_then(|value| value.as_str())
+            .map(|value| value.starts_with("Bearer ") && value.len() > "Bearer ".len())
+            .unwrap_or(false);
+        if !auth_valid {
+            return Err(format!(
+                "{client}: server '{}' missing a Bearer http_headers.Authorization",
+                server.id
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_client_config_shape(
@@ -3607,18 +3750,20 @@ fn validate_client_config_shape(
     value: &serde_json::Value,
     servers: &[ManagedDeployServer],
 ) -> Result<(), String> {
+    let dialect = crate::client_dialect::dialect_for(client);
+    let root_key = dialect.json_root_key().unwrap_or("mcpServers");
     let root = value
         .as_object()
         .ok_or_else(|| format!("{client}: config root is not an object"))?;
     let mcp_servers = root
-        .get("mcpServers")
+        .get(root_key)
         .and_then(|value| value.as_object())
-        .ok_or_else(|| format!("{client}: missing or invalid mcpServers object"))?;
+        .ok_or_else(|| format!("{client}: missing or invalid {root_key} object"))?;
 
     for server in servers {
         let server_value = mcp_servers.get(&server.id).ok_or_else(|| {
             format!(
-                "{client}: managed server '{}' missing in mcpServers after deploy",
+                "{client}: managed server '{}' missing in {root_key} after deploy",
                 server.id
             )
         })?;
@@ -3633,9 +3778,10 @@ fn validate_client_config_shape(
         // when entries had stdio `command` + `args`. URL entries don't
         // carry those — they have `url` + `headers.Authorization`.
         // Sprint 16 (bugs.md #10): the URL field name is per-client —
-        // antigravity reads `serverUrl`, everyone else `url` (see
-        // managed_server_entry for the schema table).
-        let url_field = if client == "antigravity" { "serverUrl" } else { "url" };
+        // antigravity reads `serverUrl`, everyone else `url`. Sprint 28a: that
+        // fact now lives in the dialect, so the validator and the writer read
+        // the SAME source and cannot drift apart.
+        let url_field = dialect.url_field;
         let url_valid = server_obj
             .get(url_field)
             .and_then(|value| value.as_str())
@@ -3921,8 +4067,18 @@ fn mcp_label_slug(name: &str, project_path: &str, max_chars: usize) -> String {
 /// Keys for MCP servers written by jawata-studio: `jawata-…`, plus the legacy
 /// generations `goja-…` (pre-22b rebrand) / `jl-…` / `javalens-…` recognised for
 /// cleanup/migration of pre-rebrand deploys (migration literals, exception class 3).
+///
+/// Sprint 28a: the BARE names are managed too. With the gateway enabled,
+/// `gateway_entry` writes ONE consolidated server keyed `jawata` — no hyphen,
+/// no workspace suffix — and every predicate here required the hyphen. So the
+/// gateway entry was not recognised as ours: an undeploy reported "nothing to
+/// remove" and left it pointing at a gateway that was no longer running, and
+/// `path_has_managed_entries` could not see a gateway-deployed client at all.
+/// Found while writing the Codex adapter's removal test, which used the bare
+/// id and failed for the same reason the product did.
 fn is_managed_mcp_key(key: &str) -> bool {
-    key.starts_with("jawata-")
+    matches!(key, "jawata" | "goja" | "jl" | "javalens")
+        || key.starts_with("jawata-")
         || key.starts_with("goja-")
         || key.starts_with("jl-")
         || key.starts_with("javalens-")
@@ -3987,11 +4143,17 @@ fn write_managed_json_block(
 
     let mut next_value = root_value;
 
+    // Sprint 28a: the server map's key is the client's, from the dialect —
+    // `mcpServers` for most, `servers` for VS Code.
+    let root_key = crate::client_dialect::dialect_for(client)
+        .json_root_key()
+        .unwrap_or("mcpServers");
+
     // Merge managed JAWATA servers into the client's real MCP schema.
-    // Clients load "mcpServers", not our internal jawataManager metadata.
+    // Clients load their server map, not our internal jawataManager metadata.
     if let Some(object) = next_value.as_object_mut() {
         let mut existing_servers = object
-            .get("mcpServers")
+            .get(root_key)
             .and_then(|value| value.as_object())
             .cloned()
             .unwrap_or_default();
@@ -4017,10 +4179,7 @@ fn write_managed_json_block(
             .retain(|key, _| !is_managed_mcp_key(key) || incoming_ids.contains(key));
         let _ = merge_mode; // merge modes still govern rule/hook block handling
 
-        object.insert(
-            "mcpServers".into(),
-            serde_json::Value::Object(existing_servers),
-        );
+        object.insert(root_key.into(), serde_json::Value::Object(existing_servers));
         // Remove legacy payload from earlier deploy versions.
         object.remove("jawataManager");
     }
@@ -4045,7 +4204,180 @@ fn write_managed_json_block(
         .map_err(|error| format!("failed writing MCP config {}: {error}", path_buf.display()))
 }
 
-fn remove_managed_json_block(path: &str, backup_before_write: bool) -> Result<bool, String> {
+/// Sprint 28a (D1) — merge the managed servers into Codex's `config.toml`.
+///
+/// The JSON writer above cannot serve this client: `serde_json` round-trips a
+/// JSON file losing nothing a client cares about, but round-tripping TOML
+/// through a plain serializer DESTROYS every comment and every hand-chosen
+/// layout in the user's file. Codex's own `codex mcp add` preserves them, so a
+/// jawata deploy that did not would be visibly worse than the tool it sits
+/// beside. `toml_edit` is the format-preserving editor cargo itself uses.
+///
+/// Three facts here were measured against the real Codex on 2026-08-15, by
+/// writing a config and reading it back with `codex mcp get`:
+///
+/// * the table is `[mcp_servers.<id>]` with a plain `url` key;
+/// * the auth header is `http_headers = { "Authorization" = "Bearer …" }` —
+///   `codex mcp get` echoed `http_headers: Authorization=*****` back;
+/// * **off is `enabled = false`, not `disabled = true`** — the opposite
+///   polarity from every JSON client on the roster. Writing `disabled = true`
+///   here would have left the server ENABLED while the deploy reported
+///   success.
+fn write_managed_toml_block(
+    path: &str,
+    servers: &[ManagedDeployServer],
+    table_name: &str,
+    backup_before_write: bool,
+    force_rewrite: bool,
+) -> Result<(), String> {
+    use toml_edit::{value, DocumentMut, InlineTable, Item, Table, Value};
+
+    let path_buf = PathBuf::from(path);
+    let parent = path_buf
+        .parent()
+        .ok_or_else(|| format!("target path has no parent: {}", path_buf.display()))?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("failed to create parent {}: {error}", parent.display()))?;
+
+    let existing_contents = fs::read_to_string(&path_buf).ok();
+    let mut doc: DocumentMut = existing_contents
+        .as_deref()
+        .unwrap_or("")
+        .parse()
+        .map_err(|error| {
+            format!(
+                "failed parsing {} as TOML: {error}. Refusing to overwrite a \
+                 file we cannot read — fix or move it and deploy again.",
+                path_buf.display()
+            )
+        })?;
+
+    // An implicit table renders as `[mcp_servers.<id>]` headers with no bare
+    // `[mcp_servers]` line of its own — which is the layout Codex writes.
+    if !doc.contains_key(table_name) {
+        let mut created = Table::new();
+        created.set_implicit(true);
+        doc.insert(table_name, Item::Table(created));
+    }
+    let servers_table = doc[table_name]
+        .as_table_mut()
+        .ok_or_else(|| format!("{table_name} in {} is not a table", path_buf.display()))?;
+
+    let incoming_ids: HashSet<String> = servers.iter().map(|server| server.id.clone()).collect();
+
+    for server in servers {
+        let mut entry = Table::new();
+        entry["url"] = value(server.url.clone());
+
+        let mut headers = InlineTable::new();
+        headers.insert(
+            "Authorization",
+            Value::from(format!("Bearer {}", server.token)),
+        );
+        entry["http_headers"] = value(Value::InlineTable(headers));
+
+        if server.disabled {
+            entry["enabled"] = value(false);
+        }
+        servers_table.insert(&server.id, Item::Table(entry));
+    }
+
+    // Same rule as the JSON writer: managed-namespace keys belong to the
+    // studio, so any not part of THIS deploy are stale generations. User keys
+    // are never touched.
+    let stale: Vec<String> = servers_table
+        .iter()
+        .map(|(key, _)| key.to_string())
+        .filter(|key| is_managed_mcp_key(key) && !incoming_ids.contains(key))
+        .collect();
+    for key in stale {
+        servers_table.remove(&key);
+    }
+
+    let next = doc.to_string();
+    if !force_rewrite {
+        if let Some(existing) = existing_contents.as_deref() {
+            if existing == next {
+                return Ok(());
+            }
+        }
+    }
+
+    if backup_before_write {
+        crate::backups::backup_before_write(&path_buf)
+            .map_err(|error| format!("failed creating centralized backup: {error}"))?;
+    }
+    fs::write(&path_buf, next)
+        .map_err(|error| format!("failed writing MCP config {}: {error}", path_buf.display()))
+}
+
+/// Sprint 28a (D1) — strip the managed servers from Codex's `config.toml`,
+/// leaving the user's own servers, comments and settings exactly as they were.
+fn remove_managed_toml_block(
+    path: &str,
+    table_name: &str,
+    backup_before_write: bool,
+) -> Result<bool, String> {
+    use toml_edit::DocumentMut;
+
+    let path_buf = PathBuf::from(path);
+    if !path_buf.exists() {
+        return Ok(false);
+    }
+    let existing = fs::read_to_string(&path_buf)
+        .map_err(|error| format!("failed to read MCP config {}: {error}", path_buf.display()))?;
+    let mut doc: DocumentMut = existing.parse().map_err(|error| {
+        format!(
+            "failed parsing MCP config {} as TOML: {error}",
+            path_buf.display()
+        )
+    })?;
+
+    let Some(servers_table) = doc.get_mut(table_name).and_then(|item| item.as_table_mut()) else {
+        return Ok(false);
+    };
+    let managed: Vec<String> = servers_table
+        .iter()
+        .map(|(key, _)| key.to_string())
+        .filter(|key| is_managed_mcp_key(key))
+        .collect();
+    if managed.is_empty() {
+        return Ok(false);
+    }
+    for key in managed {
+        servers_table.remove(&key);
+    }
+    // Leave no empty `[mcp_servers]` husk behind if we removed the last one.
+    let now_empty = doc
+        .get(table_name)
+        .and_then(|item| item.as_table())
+        .map(|table| table.is_empty())
+        .unwrap_or(false);
+    if now_empty {
+        doc.remove(table_name);
+    }
+
+    if backup_before_write {
+        crate::backups::backup_before_write(&path_buf)
+            .map_err(|error| format!("failed creating centralized backup: {error}"))?;
+    }
+    fs::write(&path_buf, doc.to_string())
+        .map_err(|error| format!("failed writing MCP config {}: {error}", path_buf.display()))?;
+    Ok(true)
+}
+
+/// Sprint 28a: takes the `client` so the server map is looked up under the
+/// key that client actually uses. Before this it hardcoded `mcpServers`, which
+/// on VS Code would have found nothing and reported "nothing to remove" —
+/// leaving our entry in place while telling the user it was gone.
+fn remove_managed_json_block(
+    path: &str,
+    client: &str,
+    backup_before_write: bool,
+) -> Result<bool, String> {
+    let root_key = crate::client_dialect::dialect_for(client)
+        .json_root_key()
+        .unwrap_or("mcpServers");
     let path_buf = PathBuf::from(path);
     if !path_buf.exists() {
         return Ok(false);
@@ -4067,17 +4399,14 @@ fn remove_managed_json_block(path: &str, backup_before_write: bool) -> Result<bo
     let mut changed = false;
     if let Some(object) = root_value.as_object_mut() {
         let mut existing_servers = object
-            .get("mcpServers")
+            .get(root_key)
             .and_then(|value| value.as_object())
             .cloned()
             .unwrap_or_default();
         let previous_len = existing_servers.len();
         existing_servers.retain(|key, _| !is_managed_mcp_key(key));
         changed |= existing_servers.len() != previous_len;
-        object.insert(
-            "mcpServers".into(),
-            serde_json::Value::Object(existing_servers),
-        );
+        object.insert(root_key.into(), serde_json::Value::Object(existing_servers));
         changed |= object.remove("jawataManager").is_some();
     }
 
@@ -4111,20 +4440,21 @@ fn remove_managed_json_block(path: &str, backup_before_write: bool) -> Result<bo
 /// |                   | falls through to its stdio parser without `type`) |
 ///
 /// `disabled: true` is accepted by all targets and stays client-agnostic.
+///
+/// Sprint 28a (Stage 2): the per-client branching moved into
+/// [`crate::client_dialect`], so this function no longer knows any client's
+/// name — it reads the dialect and emits what the dialect declares. Adding a
+/// client is one arm there, not an edit here.
 fn managed_server_entry(client: &str, server: &ManagedDeployServer) -> serde_json::Value {
+    let dialect = crate::client_dialect::dialect_for(client);
     let mut entry = serde_json::Map::new();
-    match client {
-        "antigravity" => {
-            entry.insert(
-                "serverUrl".into(),
-                serde_json::Value::String(server.url.clone()),
-            );
-        }
-        _ => {
-            entry.insert("type".into(), serde_json::Value::String("http".into()));
-            entry.insert("url".into(), serde_json::Value::String(server.url.clone()));
-        }
+    if dialect.emits_type {
+        entry.insert("type".into(), serde_json::Value::String("http".into()));
     }
+    entry.insert(
+        dialect.url_field.into(),
+        serde_json::Value::String(server.url.clone()),
+    );
     entry.insert(
         "headers".into(),
         serde_json::json!({
@@ -4137,8 +4467,17 @@ fn managed_server_entry(client: &str, server: &ManagedDeployServer) -> serde_jso
     // Cursor caps at 40 tools and Antigravity has no such flag, so this is
     // Claude-only; the universal levers are the collapse + the always-loaded
     // rule block (derive_global_rule_path).
-    if client == "claude" {
+    if dialect.emits_always_load {
         entry.insert("alwaysLoad".into(), serde_json::Value::Bool(true));
+    }
+    // Sprint 28a: Copilot CLI's own `copilot mcp add` writes a `tools` filter
+    // beside every server; emitting what the client writes for itself is what
+    // makes a deploy-undeploy-deploy round trip byte-stable there.
+    if dialect.emits_tools_filter {
+        entry.insert(
+            "tools".into(),
+            serde_json::Value::Array(vec![serde_json::Value::String("*".into())]),
+        );
     }
     if server.disabled {
         entry.insert("disabled".into(), serde_json::Value::Bool(true));
@@ -4152,9 +4491,14 @@ fn build_client_mcp_json(client: &str, servers: &[ManagedDeployServer]) -> serde
         .map(|server| (server.id.clone(), managed_server_entry(client, server)))
         .collect();
 
-    serde_json::json!({
-        "mcpServers": server_map
-    })
+    // Sprint 28a: the root key is the dialect's, not a literal — VS Code reads
+    // `servers` and would silently ignore anything written under `mcpServers`.
+    let root_key = crate::client_dialect::dialect_for(client)
+        .json_root_key()
+        .unwrap_or("mcpServers");
+    let mut root = serde_json::Map::new();
+    root.insert(root_key.into(), serde_json::Value::Object(server_map));
+    serde_json::Value::Object(root)
 }
 
 /// Sprint 16b/B: ensure the gateway has a persisted Bearer token, generating and
@@ -11760,6 +12104,378 @@ mod tests {
     }
 
     // ===== Sprint 16b/B: single-service gateway wiring =====
+
+    // ===================================================================
+    // Sprint 28a (D1) — the four no-clobber shapes, for every new adapter.
+    //
+    // D1 requires each new client to ship the same four tests the two
+    // original clients have: a merge-preserving write, a remove that strips
+    // ours and keeps the user's, a managed round-trip, and a
+    // deploy-undeploy-deploy that is byte-stable.
+    //
+    // The spec states two limits on what these prove, and they are repeated
+    // here so nobody reads a green run as more than it is: they run on
+    // LINUX ONLY, and they take the settings-file path as a PARAMETER — so
+    // they prove the merge and remove logic and say nothing about WHICH
+    // directory a deploy resolves to on a given operating system. That is
+    // the part that varies by platform and it is covered separately, by
+    // `deploy_resolves_here_*` below.
+    // ===================================================================
+
+    /// Drive the real deploy writer for a client, through the same dialect
+    /// dispatch production uses — never a per-format helper chosen by the
+    /// test, which would let a client be tested through a writer it does not
+    /// actually get.
+    fn nc_write(client: &str, path: &str, servers: &[ManagedDeployServer], force: bool) {
+        match crate::client_dialect::dialect_for(client).toml_table() {
+            Some(table) => write_managed_toml_block(path, servers, table, false, force).unwrap(),
+            None => write_managed_json_block(
+                path,
+                client,
+                servers,
+                &McpMergeMode::SafeMerge,
+                false,
+                force,
+            )
+            .unwrap(),
+        }
+    }
+
+    fn nc_remove(client: &str, path: &str) -> bool {
+        match crate::client_dialect::dialect_for(client).toml_table() {
+            Some(table) => remove_managed_toml_block(path, table, false).unwrap(),
+            None => remove_managed_json_block(path, client, false).unwrap(),
+        }
+    }
+
+    /// What a user's own pre-existing config looks like, per client — in the
+    /// client's own format, carrying a server we must never touch.
+    fn nc_user_config(client: &str) -> &'static str {
+        match client {
+            "codex" => concat!(
+                "# a comment the user wrote and expects to keep\n",
+                "model = \"gpt-5\"\n",
+                "\n",
+                "[mcp_servers.users-own-tool]\n",
+                "command = \"npx\"\n",
+            ),
+            "vscode" => concat!(
+                "{\n",
+                "  \"servers\": {\n",
+                "    \"users-own-tool\": { \"type\": \"stdio\", \"command\": \"npx\" }\n",
+                "  },\n",
+                "  \"inputs\": []\n",
+                "}\n",
+            ),
+            _ => concat!(
+                "{\n",
+                "  \"mcpServers\": {\n",
+                "    \"users-own-tool\": { \"type\": \"stdio\", \"command\": \"npx\" }\n",
+                "  }\n",
+                "}\n",
+            ),
+        }
+    }
+
+    /// The three clients Sprint 28a adds. IntelliJ was already on the roster.
+    const NEW_CLIENTS_28A: [&str; 3] = ["codex", "copilot_cli", "vscode"];
+
+    #[test]
+    fn new_adapters_merge_without_clobbering_the_users_own_entries() {
+        for client in NEW_CLIENTS_28A {
+            let dir = unique_tempdir(&format!("nc-merge-{client}"));
+            let file = dir.join("config");
+            let path = file.to_string_lossy().to_string();
+            std::fs::write(&file, nc_user_config(client)).unwrap();
+
+            nc_write(client, &path, &[url_server("jawata", 8800, "tok", false)], false);
+            let after = std::fs::read_to_string(&file).unwrap();
+
+            assert!(
+                after.contains("users-own-tool"),
+                "{client}: the user's own server did not survive the deploy:\n{after}"
+            );
+            assert!(
+                after.contains("jawata"),
+                "{client}: our own entry is missing after the deploy:\n{after}"
+            );
+            if client == "codex" {
+                assert!(
+                    after.contains("# a comment the user wrote"),
+                    "codex: TOML comments must survive — its own `codex mcp add` \
+                     preserves them, so a deploy that does not is visibly worse \
+                     than the tool it sits beside:\n{after}"
+                );
+                assert!(after.contains("model = \"gpt-5\""), "codex: user setting lost:\n{after}");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn new_adapters_remove_strips_ours_and_keeps_the_users() {
+        for client in NEW_CLIENTS_28A {
+            let dir = unique_tempdir(&format!("nc-remove-{client}"));
+            let file = dir.join("config");
+            let path = file.to_string_lossy().to_string();
+            std::fs::write(&file, nc_user_config(client)).unwrap();
+            nc_write(client, &path, &[url_server("jawata", 8800, "tok", false)], false);
+
+            assert!(nc_remove(client, &path), "{client}: remove reported no change");
+            let after = std::fs::read_to_string(&file).unwrap();
+
+            assert!(
+                !after.contains("jawata"),
+                "{client}: our entry survived the removal:\n{after}"
+            );
+            assert!(
+                after.contains("users-own-tool"),
+                "{client}: removing ours took the user's with it:\n{after}"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn new_adapters_round_trip_the_managed_entry_readably() {
+        // The round trip that matters is not ours — it is the CLIENT's. So
+        // this asserts the entry is spelled the way that client's own tooling
+        // spells it, each clause traceable to a measurement on 2026-08-15.
+        for client in NEW_CLIENTS_28A {
+            let dir = unique_tempdir(&format!("nc-trip-{client}"));
+            let file = dir.join("config");
+            let path = file.to_string_lossy().to_string();
+            nc_write(client, &path, &[url_server("jawata", 8800, "tok", false)], false);
+            let after = std::fs::read_to_string(&file).unwrap();
+
+            match client {
+                "codex" => {
+                    // `codex mcp add --url` wrote exactly this table header.
+                    assert!(after.contains("[mcp_servers.jawata]"), "{after}");
+                    assert!(after.contains("url = \"http://127.0.0.1:8800/mcp\""), "{after}");
+                    // `codex mcp get` echoed back `http_headers: Authorization=*****`.
+                    assert!(after.contains("http_headers"), "{after}");
+                    assert!(after.contains("Bearer tok"), "{after}");
+                }
+                "vscode" => {
+                    // `code --add-mcp` wrote {"servers": …}. Writing under
+                    // mcpServers would land in a key VS Code never reads — a
+                    // deploy that reports success and does nothing.
+                    let v: serde_json::Value = serde_json::from_str(&after).unwrap();
+                    assert!(v["servers"]["jawata"].is_object(), "{after}");
+                    assert!(v.get("mcpServers").is_none(), "vscode must not use mcpServers: {after}");
+                    assert_eq!(v["servers"]["jawata"]["type"], "http", "{after}");
+                }
+                "copilot_cli" => {
+                    // `copilot mcp add` wrote mcpServers + a "tools" filter.
+                    let v: serde_json::Value = serde_json::from_str(&after).unwrap();
+                    assert_eq!(v["mcpServers"]["jawata"]["type"], "http", "{after}");
+                    assert_eq!(
+                        v["mcpServers"]["jawata"]["tools"],
+                        serde_json::json!(["*"]),
+                        "copilot writes a tools filter for its own servers; matching it \
+                         is what keeps a round trip byte-stable: {after}"
+                    );
+                }
+                other => panic!("no round-trip assertion written for {other}"),
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn new_adapters_deploy_undeploy_deploy_is_byte_stable() {
+        // Compared as BYTES, not as parsed values: key order and formatting
+        // are part of what a user diffing their own config file sees. The
+        // baseline is the file after ONE FULL CYCLE, not the hand-written one,
+        // because our writers normalise formatting on first touch and
+        // comparing against the input would measure that instead of residue.
+        for client in NEW_CLIENTS_28A {
+            let dir = unique_tempdir(&format!("nc-stable-{client}"));
+            let file = dir.join("config");
+            let path = file.to_string_lossy().to_string();
+            std::fs::write(&file, nc_user_config(client)).unwrap();
+            let servers = vec![url_server("jawata", 8800, "tok", false)];
+
+            nc_write(client, &path, &servers, false);
+            let after_first = std::fs::read_to_string(&file).unwrap();
+            nc_remove(client, &path);
+            let settled = std::fs::read_to_string(&file).unwrap();
+
+            nc_write(client, &path, &servers, false);
+            assert_eq!(
+                after_first,
+                std::fs::read_to_string(&file).unwrap(),
+                "{client}: the second deploy did not reproduce the first's bytes"
+            );
+
+            nc_write(client, &path, &servers, false);
+            assert_eq!(
+                after_first,
+                std::fs::read_to_string(&file).unwrap(),
+                "{client}: an unchanged redeploy changed the file"
+            );
+
+            nc_remove(client, &path);
+            assert_eq!(
+                settled,
+                std::fs::read_to_string(&file).unwrap(),
+                "{client}: the cycle is not closed — undeploy left different bytes"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn codex_writes_enabled_false_not_disabled_true() {
+        // Measured 2026-08-15: a sandboxed Codex read `enabled = false` and
+        // reported "jawata-probe (disabled)". Codex has NO `disabled` key, so
+        // the JSON clients' `disabled: true` would have left the server ON
+        // while the deploy reported success — the failure mode this project
+        // calls its deepest: a wrong answer handed back as an ordinary one.
+        let dir = unique_tempdir("codex-disabled");
+        let file = dir.join("config.toml");
+        let path = file.to_string_lossy().to_string();
+
+        nc_write("codex", &path, &[url_server("jawata", 8800, "tok", true)], false);
+        let after = std::fs::read_to_string(&file).unwrap();
+
+        assert!(after.contains("enabled = false"), "codex spells off this way: {after}");
+        assert!(
+            !after.contains("disabled"),
+            "a `disabled` key is silently ignored by Codex: {after}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_toml_file_we_cannot_parse_is_refused_not_overwritten() {
+        // The alternative to refusing is to treat an unreadable file as empty
+        // and write a fresh one over it, which destroys a user's config in the
+        // one situation where they most need it back.
+        let dir = unique_tempdir("codex-unparseable");
+        let file = dir.join("config.toml");
+        let path = file.to_string_lossy().to_string();
+        let broken = "this is [not valid = toml\n";
+        std::fs::write(&file, broken).unwrap();
+
+        let result = write_managed_toml_block(
+            &path,
+            &[url_server("jawata", 8800, "tok", false)],
+            "mcp_servers",
+            false,
+            false,
+        );
+
+        assert!(result.is_err(), "an unparseable config must be refused");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            broken,
+            "the user's file must be exactly as it was"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn antigravity_gets_no_new_workflow_files_but_its_old_ones_are_still_reachable() {
+        // D1: "Antigravity is marked unsupported rather than deleted … The
+        // workflow files Studio writes for it are removed."
+        assert!(
+            !client_still_receives_seat_commands("antigravity"),
+            "a workflow file steering an agent to jawata's tools, on a client \
+             that cannot call them, is worse than no file at all"
+        );
+        // But the location must stay known, or a previous version's files are
+        // stranded with nothing left that can find them.
+        let cfg = "/tmp/x/.gemini/antigravity/mcp_config.json";
+        assert!(
+            derive_seat_commands_dir("antigravity", cfg).is_some(),
+            "dropping the mapping strands every file a previous deploy wrote"
+        );
+        // And the supported clients are untouched by the same predicate.
+        for client in ["claude", "cursor", "codex", "copilot_cli", "vscode", "intellij"] {
+            assert!(
+                client_still_receives_seat_commands(client),
+                "{client} must still receive its command artifacts"
+            );
+        }
+    }
+
+    #[test]
+    fn removing_antigravity_artifacts_takes_the_utility_files_too() {
+        // Ordering matters and the test says why: remove_managed_seat_commands
+        // prunes `.agent/workflows` when it empties, so a utility file removed
+        // AFTER it would be stranded inside a directory that no longer exists
+        // in any mapping. The deploy path removes utilities first.
+        let dir = unique_tempdir("ag-artifacts");
+        let commands = dir.join(".agent").join("workflows");
+        std::fs::create_dir_all(&commands).unwrap();
+        for (_, path) in seat_artifact_paths("antigravity", &commands) {
+            std::fs::write(&path, "old").unwrap();
+        }
+        for (_, path) in utility_artifact_paths("antigravity", &commands) {
+            std::fs::write(&path, "old").unwrap();
+        }
+
+        assert!(remove_managed_utility_commands("antigravity", &commands).unwrap());
+        assert!(remove_managed_seat_commands("antigravity", &commands).unwrap());
+
+        for (_, path) in seat_artifact_paths("antigravity", &commands) {
+            assert!(!path.exists(), "seat artifact survived: {}", path.display());
+        }
+        for (_, path) in utility_artifact_paths("antigravity", &commands) {
+            assert!(!path.exists(), "utility artifact survived: {}", path.display());
+        }
+        assert!(!commands.exists(), "the emptied workflows dir was left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_gateways_bare_jawata_key_is_recognised_as_ours() {
+        // Sprint 28a. `gateway_entry` writes ONE server keyed `jawata` when
+        // the gateway is enabled, and every branch of is_managed_mcp_key
+        // required a hyphen — so an undeploy left it in place and said
+        // "nothing to remove". Asserted against the PRODUCTION constructor,
+        // not a literal, so renaming the entry cannot quietly re-open it.
+        let entry = gateway_entry(8790, "gtok", false);
+        assert!(
+            is_managed_mcp_key(&entry.id),
+            "the gateway writes id {:?}, which the removal predicate does not \
+             recognise as ours — undeploy would leave it behind",
+            entry.id
+        );
+        // The legacy generations' bare names too, for the same reason.
+        for key in ["jawata", "goja", "jl", "javalens"] {
+            assert!(is_managed_mcp_key(key), "{key} must be recognised");
+        }
+        // And a user key that merely starts with the same letters must not be.
+        for key in ["jawatatools", "gojira", "jlint", "my-jawata"] {
+            assert!(!is_managed_mcp_key(key), "{key} is the user's, not ours");
+        }
+    }
+
+    #[test]
+    fn stale_managed_entries_are_pruned_from_toml_too() {
+        // Same rule the JSON writer follows: managed-namespace keys belong to
+        // the studio, so a pre-rebrand goja-* entry is a stale generation and
+        // goes; a user key with a similar name stays.
+        let dir = unique_tempdir("codex-prune");
+        let file = dir.join("config.toml");
+        let path = file.to_string_lossy().to_string();
+        std::fs::write(
+            &file,
+            "[mcp_servers.goja-old-workspace]\nurl = \"http://old\"\n\n\
+             [mcp_servers.my-goja-notes]\ncommand = \"npx\"\n",
+        )
+        .unwrap();
+
+        nc_write("codex", &path, &[url_server("jawata", 8800, "tok", false)], false);
+        let after = std::fs::read_to_string(&file).unwrap();
+
+        assert!(!after.contains("goja-old-workspace"), "stale generation kept: {after}");
+        assert!(after.contains("my-goja-notes"), "a user key was pruned: {after}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn ws_server(id: &str, ws: &str, port: u16, token: &str, paths: &[&str]) -> ManagedDeployServer {
         ManagedDeployServer {

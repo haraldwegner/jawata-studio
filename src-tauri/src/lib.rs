@@ -1,4 +1,5 @@
 mod backups;
+mod client_dialect;
 mod commands;
 mod config;
 mod gateway;

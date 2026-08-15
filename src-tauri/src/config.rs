@@ -130,6 +130,21 @@ pub struct McpClientPaths {
     pub antigravity: McpClientPathEntry,
     #[serde(default)]
     pub intellij: McpClientPathEntry,
+    /// Sprint 28a (D1): OpenAI Codex — `~/.codex/config.toml`. ONE file serves
+    /// all four Codex surfaces (CLI, VS Code extension, Desktop, Cloud), which
+    /// makes it the cheapest client on the roster. TOML, not JSON.
+    #[serde(default)]
+    pub codex: McpClientPathEntry,
+    /// Sprint 28a (D1): GitHub Copilot CLI — `~/.copilot/mcp-config.json`.
+    /// The path is the tool's own: `copilot mcp --help` names it as the User
+    /// source.
+    #[serde(default)]
+    pub copilot_cli: McpClientPathEntry,
+    /// Sprint 28a (D1): VS Code — `<config-dir>/Code/User/mcp.json`. Like
+    /// Claude Desktop this lives under the OS config dir, not the home dir.
+    /// Its server map hangs under `servers`, not `mcpServers`.
+    #[serde(default)]
+    pub vscode: McpClientPathEntry,
 }
 
 /// Flags indicating which MCP clients should receive deployments.
@@ -142,10 +157,21 @@ pub struct DeployTargetFlags {
     pub claude: bool,
     #[serde(default = "default_enabled_flag")]
     pub claude_desktop: bool,
+    /// Sprint 28a (D1): Antigravity is UNSUPPORTED, not deleted — its
+    /// command-line tool has no mechanism to connect jawata at all. The flag
+    /// survives so an existing install's setting round-trips, but the roster
+    /// marks it unsupported and the UI greys it out. A client that explains
+    /// its own absence beats one that silently vanishes (Harald, 2026-08-11).
     #[serde(default = "default_enabled_flag")]
     pub antigravity: bool,
     #[serde(default = "default_enabled_flag")]
     pub intellij: bool,
+    #[serde(default = "default_enabled_flag")]
+    pub codex: bool,
+    #[serde(default = "default_enabled_flag")]
+    pub copilot_cli: bool,
+    #[serde(default = "default_enabled_flag")]
+    pub vscode: bool,
 }
 
 fn default_enabled_flag() -> bool {
@@ -160,6 +186,9 @@ impl Default for DeployTargetFlags {
             claude_desktop: true,
             antigravity: true,
             intellij: true,
+            codex: true,
+            copilot_cli: true,
+            vscode: true,
         }
     }
 }
@@ -1296,6 +1325,34 @@ fn detect_default_mcp_client_paths() -> McpClientPaths {
     .filter_map(|parts| build(parts))
     .collect();
 
+    // Sprint 28a (D1). Each of the three paths below was MEASURED on
+    // 2026-08-15 by making the client's own tooling write a config in a
+    // sandboxed HOME, never recalled:
+    //
+    //   codex        `codex mcp add --url …`  -> ~/.codex/config.toml
+    //   copilot_cli  `copilot mcp --help`     -> ~/.copilot/mcp-config.json
+    //   vscode       `code --add-mcp …`       -> <user-data>/User/mcp.json
+    //
+    // Codex and Copilot key off the HOME dir on every platform. VS Code keys
+    // off the OS CONFIG dir — `~/.config` on Linux, `~/Library/Application
+    // Support` on macOS, `%APPDATA%` on Windows — which is exactly what
+    // `dirs::config_dir()` returns, so `build_config` is right on all three
+    // and a home-relative path would have been wrong on two of them.
+    let codex_candidates: Vec<PathBuf> = [[".codex", "config.toml"].as_slice()]
+        .iter()
+        .filter_map(|parts| build(parts))
+        .collect();
+
+    let copilot_cli_candidates: Vec<PathBuf> = [[".copilot", "mcp-config.json"].as_slice()]
+        .iter()
+        .filter_map(|parts| build(parts))
+        .collect();
+
+    let vscode_candidates: Vec<PathBuf> = [["Code", "User", "mcp.json"].as_slice()]
+        .iter()
+        .filter_map(|parts| build_config(parts))
+        .collect();
+
     let make_entry = |candidates: &[PathBuf]| McpClientPathEntry {
         auto_detected_path: detect(candidates),
         manual_override_path: None,
@@ -1308,6 +1365,9 @@ fn detect_default_mcp_client_paths() -> McpClientPaths {
         claude_desktop: make_entry(&claude_desktop_candidates),
         antigravity: make_entry(&antigravity_candidates),
         intellij: make_entry(&intellij_candidates),
+        codex: make_entry(&codex_candidates),
+        copilot_cli: make_entry(&copilot_cli_candidates),
+        vscode: make_entry(&vscode_candidates),
     }
 }
 
@@ -1319,6 +1379,9 @@ fn merge_detected_mcp_paths(paths: McpClientPaths) -> McpClientPaths {
         claude_desktop: merge_mcp_path_entry(paths.claude_desktop, defaults.claude_desktop),
         antigravity: merge_mcp_path_entry(paths.antigravity, defaults.antigravity),
         intellij: merge_mcp_path_entry(paths.intellij, defaults.intellij),
+        codex: merge_mcp_path_entry(paths.codex, defaults.codex),
+        copilot_cli: merge_mcp_path_entry(paths.copilot_cli, defaults.copilot_cli),
+        vscode: merge_mcp_path_entry(paths.vscode, defaults.vscode),
     }
 }
 
@@ -1398,6 +1461,135 @@ fn slugify(value: &str) -> String {
         "project".into()
     } else {
         slug.into()
+    }
+}
+
+/// Sprint 28a (D1, R13a) — **deploy-resolves-here.**
+///
+/// The four no-clobber tests each client ships take the settings-file path as
+/// a PARAMETER. That makes them portable and it makes them blind: they prove
+/// the merge and remove logic and say nothing about *which directory a deploy
+/// resolves to*, which is the only part that varies by operating system and is
+/// exactly where a clobber bug lives — a path that resolves somewhere wrong
+/// writes a perfectly-merged file into a folder no client reads.
+///
+/// So these run the REAL resolver, [`detect_default_mcp_client_paths`], and
+/// assert the shape it produces for the operating system the test is running
+/// on. They are worth little on one machine and a great deal across five: the
+/// filtered step in `release.yml` runs exactly this module on all five release
+/// targets, which is the first time any of these paths is checked anywhere but
+/// Linux.
+#[cfg(test)]
+mod deploy_resolves_here {
+    use super::*;
+
+    /// The resolved path for a client, as the deploy would use it.
+    fn resolved(pick: fn(&McpClientPaths) -> &McpClientPathEntry) -> String {
+        let paths = detect_default_mcp_client_paths();
+        pick(&paths)
+            .effective_path
+            .clone()
+            .unwrap_or_else(|| panic!("no path resolved — this assertion did not run"))
+    }
+
+    /// Assert a resolved path ends with the platform-correct segments, joined
+    /// with THIS platform's separator. Comparing segment-wise rather than by
+    /// substring is deliberate: a hardcoded `/` would pass on Linux and macOS
+    /// and quietly never match on Windows, which is the platform the check
+    /// exists for.
+    fn assert_ends_with(actual: &str, segments: &[&str], client: &str) {
+        let expected = segments.join(std::path::MAIN_SEPARATOR_STR);
+        assert!(
+            actual.ends_with(&expected),
+            "{client}: deploy resolves to {actual:?}, which does not end with \
+             {expected:?} on {}. A merge-perfect write into the wrong directory \
+             is a deploy that reports success and changes nothing.",
+            std::env::consts::OS
+        );
+    }
+
+    /// Codex and Copilot key off the HOME dir on every platform, so their
+    /// expectation is the same everywhere and the check is that they are
+    /// ABSOLUTE and correctly suffixed.
+    #[test]
+    fn codex_resolves_to_the_codex_home_toml() {
+        let path = resolved(|p| &p.codex);
+        assert_ends_with(&path, &[".codex", "config.toml"], "codex");
+        assert!(
+            std::path::Path::new(&path).is_absolute(),
+            "codex: {path:?} is not absolute — a relative deploy target lands \
+             wherever the process happens to be running"
+        );
+    }
+
+    #[test]
+    fn copilot_cli_resolves_to_the_path_its_own_cli_names() {
+        // `copilot mcp --help` names `~/.copilot/mcp-config.json` as the User
+        // configuration source. Measured 2026-08-15.
+        let path = resolved(|p| &p.copilot_cli);
+        assert_ends_with(&path, &[".copilot", "mcp-config.json"], "copilot_cli");
+        assert!(std::path::Path::new(&path).is_absolute(), "{path:?}");
+    }
+
+    /// VS Code is the one that genuinely differs by platform, so it gets a
+    /// per-platform expectation rather than a shared suffix. `dirs::config_dir`
+    /// returns `~/.config` on Linux, `~/Library/Application Support` on macOS
+    /// and `%APPDATA%` on Windows — which is why this uses the config dir and
+    /// not the home dir, and why getting it wrong would be invisible here.
+    #[test]
+    fn vscode_resolves_under_this_platforms_config_dir() {
+        let path = resolved(|p| &p.vscode);
+        assert_ends_with(&path, &["Code", "User", "mcp.json"], "vscode");
+
+        let config_dir = dirs::config_dir().expect("no config dir on this platform");
+        assert!(
+            path.starts_with(&display_path(&config_dir)),
+            "vscode: {path:?} is not under this platform's config dir \
+             ({}). On macOS that is ~/Library/Application Support and on \
+             Windows %APPDATA% — a home-relative path would be wrong on both.",
+            display_path(&config_dir)
+        );
+    }
+
+    #[test]
+    fn claude_desktop_still_resolves_under_the_config_dir() {
+        // Not new in 28a, but it is the client this check was invented for:
+        // it lives under the config dir for the same reason VS Code does, and
+        // no per-OS assertion existed for it either.
+        let path = resolved(|p| &p.claude_desktop);
+        assert_ends_with(
+            &path,
+            &["Claude", "claude_desktop_config.json"],
+            "claude_desktop",
+        );
+    }
+
+    #[test]
+    fn every_roster_client_resolves_to_something_absolute() {
+        // The anti-vacuity clause. Each test above names one client; this one
+        // fails if a client is ever added to the roster without a resolution
+        // of its own, which is how a new client ships pointing at nothing.
+        let paths = detect_default_mcp_client_paths();
+        let all: [(&str, &McpClientPathEntry); 8] = [
+            ("cursor", &paths.cursor),
+            ("claude", &paths.claude),
+            ("claude_desktop", &paths.claude_desktop),
+            ("antigravity", &paths.antigravity),
+            ("intellij", &paths.intellij),
+            ("codex", &paths.codex),
+            ("copilot_cli", &paths.copilot_cli),
+            ("vscode", &paths.vscode),
+        ];
+        for (client, entry) in all {
+            let path = entry
+                .effective_path
+                .as_deref()
+                .unwrap_or_else(|| panic!("{client}: resolves to nothing at all"));
+            assert!(
+                std::path::Path::new(path).is_absolute(),
+                "{client}: {path:?} is not absolute"
+            );
+        }
     }
 }
 
