@@ -1324,13 +1324,29 @@ fn detect_default_mcp_client_paths() -> McpClientPaths {
     .filter_map(|parts| build(parts))
     .collect();
 
-    let intellij_candidates: Vec<PathBuf> = [
-        [".config", "JetBrains", "IntelliJIdea", "mcp.json"].as_slice(),
-        [".IntelliJIdea", "config", "options", "mcp.json"].as_slice(),
-    ]
-    .iter()
-    .filter_map(|parts| build(parts))
-    .collect();
+    // Sprint 28a (D1, jawata-studio#9). MEASURED 2026-08-15 from IntelliJ's own
+    // "New MCP Server" dialog, which states in the dialog itself:
+    //
+    //     Configuration will be saved in '~/.ai/mcp/mcp.json'
+    //
+    // That path is UNVERSIONED and PRODUCT-INDEPENDENT — one file for every
+    // JetBrains IDE, which is why it does not need the newest-of-six version
+    // resolution the per-product config dirs would have forced. It is ordinary
+    // JSON under `mcpServers`, so it needs no new dialect either.
+    //
+    // What it replaces was never read by anything: `~/.config/JetBrains/
+    // IntelliJIdea/mcp.json`, an unversioned directory studio created and then
+    // wrote into alone, while the real product config dirs are versioned
+    // (IntelliJIdea2026.2, …). The deploy reported success the whole time.
+    //
+    // This is the channel JetBrains' OWN assistants read — Junie and the one
+    // branded "AI Assistant". Agents that IntelliJ merely hosts (Claude Code,
+    // Cursor, Copilot) bring their own settings file and already had jawata
+    // through those adapters; this is what they never covered.
+    let intellij_candidates: Vec<PathBuf> = [[".ai", "mcp", "mcp.json"].as_slice()]
+        .iter()
+        .filter_map(|parts| build(parts))
+        .collect();
 
     // Sprint 28a (D1). Each of the three paths below was MEASURED on
     // 2026-08-15 by making the client's own tooling write a config in a
@@ -1602,19 +1618,11 @@ mod deploy_resolves_here {
                 &paths.antigravity,
                 &[".gemini", "antigravity", "mcp_config.json"],
             ),
-            // UNVERIFIED BELIEF, tracked as jawata-studio#9. Measured on this
-            // machine 2026-08-15: `~/.config/JetBrains/` holds VERSIONED
-            // product dirs (IntelliJIdea2024.3, …), and the unversioned
-            // `IntelliJIdea/` this path names contains nothing but the
-            // mcp.json we ourselves wrote. So IntelliJ most likely never reads
-            // it — consistent with Harald's report that MCP does not work
-            // there. This row pins what we currently write, NOT a path anyone
-            // has confirmed IntelliJ reads.
-            (
-                "intellij",
-                &paths.intellij,
-                &["JetBrains", "IntelliJIdea", "mcp.json"],
-            ),
+            // Named by IntelliJ's own "New MCP Server" dialog, which prints
+            // "Configuration will be saved in '~/.ai/mcp/mcp.json'". Product-
+            // independent and unversioned, so unlike the per-product config
+            // dirs it needs no newest-of-six resolution.
+            ("intellij", &paths.intellij, &[".ai", "mcp", "mcp.json"]),
             ("codex", &paths.codex, &[".codex", "config.toml"]),
             (
                 "copilot_cli",

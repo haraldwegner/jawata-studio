@@ -13251,15 +13251,28 @@ mod stage2_live_probe {
     #[ignore]
     fn dump_codex_config() {
         let out = std::env::var("JAWATA_PROBE_OUT").expect("JAWATA_PROBE_OUT");
-        let servers = vec![ManagedDeployServer {
-            id: "jawata-javata-dev".into(),
-            workspace_name: "javata-dev".into(),
+        let mk = |id: &str, port: u16, token: &str| ManagedDeployServer {
+            id: id.into(),
+            workspace_name: id.into(),
             project_names: vec!["P".into()],
             project_paths: vec!["/p".into()],
-            url: "http://127.0.0.1:8800/mcp".into(),
-            token: "0123456789abcdef0123456789abcdef".into(),
+            url: format!("http://127.0.0.1:{port}/mcp"),
+            token: token.into(),
             disabled: false,
-        }];
+        };
+        let servers = match std::env::var("JAWATA_PROBE_SERVERS") {
+            Ok(spec) => spec
+                .split(';')
+                .filter(|s| !s.is_empty())
+                .map(|row| {
+                    let mut it = row.split(',');
+                    let id = it.next().unwrap();
+                    let port: u16 = it.next().unwrap().parse().unwrap();
+                    mk(id, port, it.next().unwrap())
+                })
+                .collect(),
+            Err(_) => vec![mk("jawata-javata-dev", 8800, "0123456789abcdef0123456789abcdef")],
+        };
         let client = std::env::var("JAWATA_PROBE_CLIENT").unwrap_or_else(|_| "codex".into());
         match crate::client_dialect::dialect_for(&client).toml_table() {
             Some(table) => {
