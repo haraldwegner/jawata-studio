@@ -27,6 +27,42 @@ pub const AUTHOR_DECLARATION: &str = "jawata-author:";
 /// Text-search tools whose use over Java sources is what we redirect.
 const TEXT_TOOLS: &[&str] = &["grep", "rg", "sed", "awk", "ack", "ag"];
 
+/// Text tools that BECOME writers when handed an in-place flag. `sed` reads;
+/// `sed -i` rewrites the file. The distinction decides which gate applies and
+/// therefore which declaration lets it through — a read needs
+/// `jawata-fallback:`, a write needs `jawata-author:`.
+const IN_PLACE_TOOLS: &[&str] = &["sed", "awk", "gawk", "perl", "ruby"];
+
+/// Split a command into the segments that can each hold their own command in
+/// COMMAND POSITION.
+///
+/// `&&` and `||` belong here and their absence was a hole, not a nuance: with
+/// only `| ; \n` as separators, `cd repo && python3 -c '…' Foo.java` puts `cd`
+/// in command position, and BOTH gates look at `cd` and shrug. The v3.8.0
+/// tripwire was therefore defeated by the most ordinary prefix an agent writes
+/// — measured live on 2026-08-15, one day after it shipped, by the agent that
+/// wrote it, using `cd … && sed -i` on a real source file.
+fn segments(command: &str) -> impl Iterator<Item = &str> {
+    command
+        .split(['|', ';', '\n', '&'])
+        .filter(|s| !s.trim().is_empty())
+}
+
+/// Whether THIS segment carries an in-place flag for a tool that only writes
+/// with one. Conservative on `awk`, which needs gawk's `-i inplace` extension:
+/// a bare `-i` there is an include, not a rewrite.
+fn has_in_place_flag(segment: &str, tool: &str) -> bool {
+    let words: Vec<&str> = segment.split_whitespace().collect();
+    if tool == "awk" || tool == "gawk" {
+        return words.iter().any(|w| *w == "inplace" || *w == "-iinplace");
+    }
+    words.iter().any(|w| {
+        *w == "--in-place"
+            || w.starts_with("--in-place=")
+            || (w.starts_with("-i") && !w.starts_with("--"))
+    })
+}
+
 /// The verdict, with the reason the model is shown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
@@ -101,7 +137,22 @@ const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
 /// spelling is the accepted cost, and the layers above (artifact watch, ledger)
 /// exist because no enumeration closes this space.
 fn write_route_in(command: &str) -> Option<&'static str> {
-    for segment in command.split(['|', ';', '\n']) {
+    for segment in segments(command) {
+        // The .java target must be in THIS segment. Checking the whole command
+        // denied `git status Foo.java && python3 -c 'print(1)'`, where nothing
+        // writes Java at all — a false denial, and under Cursor's failClosed a
+        // false denial blocks real work.
+        //
+        // EXCEPT for a heredoc: its body is part of the command that opened it,
+        // and the body is where the path lives. The original live bypass was
+        // exactly that shape — `python3 - <<'PY'` on one line, the .java path
+        // three lines down — so scoping it to the opening line alone would have
+        // re-opened the hole this guard exists to close. Its anchor test caught
+        // that within a minute of the change.
+        let scope = if segment.contains("<<") { command } else { segment };
+        if !mentions_java_source(scope) {
+            continue;
+        }
         // Redirection into a .java target: `> Foo.java`, `>>Foo.java`.
         let mut after_redirect = false;
         for raw in segment.split_whitespace() {
@@ -130,6 +181,12 @@ fn write_route_in(command: &str) -> Option<&'static str> {
             let word = first.rsplit(['/', '\\']).next().unwrap_or(first);
             if let Some(tool) = WRITE_TOOLS.iter().find(|t| **t == word) {
                 return Some(tool);
+            }
+            // A reader that was handed an in-place flag is a writer.
+            if let Some(tool) = IN_PLACE_TOOLS.iter().find(|t| **t == word) {
+                if has_in_place_flag(segment, tool) {
+                    return Some(tool);
+                }
             }
             if SHELLS.contains(&word) && segment.contains(" -c") {
                 return Some("sh -c");
@@ -170,7 +227,10 @@ const PREFIXES: &[&str] = &["sudo", "env", "time", "nice", "command", "xargs", "
 /// the safe direction: the model is steered, not policed, and the real
 /// enforcement is that JAWATA answers better.
 fn text_tool_in(command: &str) -> Option<&'static str> {
-    for segment in command.split(['|', ';', '\n']) {
+    for segment in segments(command) {
+        if !mentions_java_source(segment) {
+            continue;
+        }
         let mut words = segment
             .split_whitespace()
             .skip_while(|w| {
@@ -215,6 +275,63 @@ mod tests {
                 denied(&format!("cat x | /usr/bin/{tool} -n 'x' Foo.java")),
                 "{tool} slipped through when path-qualified or piped"
             );
+        }
+    }
+
+    /// v3.8.1. The v3.8.0 tripwire shipped with `&&` missing from the segment
+    /// separators, so `cd repo && <writer> Foo.java` put `cd` in command
+    /// position and BOTH gates shrugged. Measured live one day after release,
+    /// by the agent that wrote the gate, on a real source file. These are the
+    /// exact commands that got through.
+    #[test]
+    fn a_cd_prefix_does_not_smuggle_a_writer_past_the_tripwire() {
+        for cmd in [
+            // the live bypass, verbatim
+            "cd /home/harald/CursorProjects/jawata-mcp && sed -i 's/a/b/' \
+             org.jawata.core/src/org/jawata/core/host/HostOS.java",
+            "cd repo && python3 -c \"print('rewrites Foo.java')\"",
+            "cd repo && tee Foo.java",
+            "cd a && cd b && perl -pi -e 's/x/y/' Foo.java",
+            "cd repo || python3 write.py Foo.java",
+        ] {
+            assert!(denied(cmd), "a cd prefix must not smuggle a writer: {cmd}");
+        }
+    }
+
+    /// `sed` reads; `sed -i` rewrites. The flag decides the GATE, and therefore
+    /// which declaration lets it through: a read needs jawata-fallback, a write
+    /// needs jawata-author.
+    #[test]
+    fn an_in_place_flag_turns_a_reader_into_a_writer() {
+        match judge("sed -i 's/a/b/' Foo.java") {
+            Verdict::Deny { reason } => assert!(
+                reason.contains("WRITE"),
+                "sed -i must be judged a WRITE, not a text search: {reason}"
+            ),
+            Verdict::Allow => panic!("sed -i on a .java file must be denied"),
+        }
+        match judge("sed -n '1,5p' Foo.java") {
+            Verdict::Deny { reason } => assert!(
+                reason.contains("text search"),
+                "plain sed is a READ and must be judged as one: {reason}"
+            ),
+            Verdict::Allow => panic!("a text search over .java is still denied"),
+        }
+        // gawk needs the `inplace` extension; a bare -i there is an include.
+        assert!(denied("awk -i inplace '{print}' Foo.java"));
+    }
+
+    /// The other half of the same root cause: the .java target must be in the
+    /// segment that carries the writer. Checking the whole command denied a
+    /// read of a Java file that merely shared a line with an unrelated
+    /// interpreter — and under Cursor's failClosed a false denial blocks work.
+    #[test]
+    fn a_writer_in_another_segment_is_not_a_write_to_java() {
+        for cmd in [
+            "git status --porcelain Foo.java && python3 -c \"print('probe')\"",
+            "cat Foo.java | wc -l && node -e \"console.log(1)\"",
+        ] {
+            assert!(!denied(cmd), "false positive — nothing writes Java here: {cmd}");
         }
     }
 
