@@ -1,6 +1,6 @@
 # jawata-studio Help
 
-**jawata-studio** is the desktop control plane for **JAWATA** — it lets you create **named workspaces** of one-or-more Java projects, runs a single shared JAWATA MCP service per workspace, and **deploys** the connection details into your AI tools (Cursor, Claude Desktop, Antigravity, IntelliJ-style configs).
+**jawata-studio** is the desktop control plane for **JAWATA** — it lets you create **named workspaces** of one-or-more Java projects, runs a single shared JAWATA MCP service per workspace, and **deploys** the connection details into your AI tools (Cursor, Claude Code, Claude Desktop, Codex, GitHub Copilot CLI, VS Code).
 
 The point: it gives your AI agents the same IDE-grade understanding of a Java codebase that a human developer gets in Eclipse or IntelliJ — call hierarchies, type hierarchies, references, refactorings, build classpath, JDK semantics. **Java agents on steroids.**
 
@@ -31,7 +31,7 @@ A **workspace** is a named group of Java projects loaded into one JAWATA process
 - **One workspace per cohesive task.** A bundle/multi-module application (e.g. an Eclipse RCP product with 12 OSGi bundles), a monorepo, or a single project that you want isolated — each gets its own workspace.
 - **Live updates.** Add or remove a project from a workspace and the running JAWATA picks it up within ~1 second through a `workspace.json` file watcher. No MCP-client restart, no agent-session reload.
 - **No ports.** Workspaces are identified by name. There is no port range, no per-project port allocation, no port conflicts.
-- **Tool budget.** Each workspace contributes ~40 tools toward the agent's tool registration cap (Antigravity caps around 100), so roughly two active workspaces fit per Antigravity session; Cursor and Claude Code tolerate more.
+- **Tool budget.** Each workspace contributes **45 tools** toward whatever cap your agent applies, so two active workspaces is already 90 before the client's own tools are counted. Cursor rejects past **40**; an IDE-hosted agent may arrive with dozens of its own. If tools go missing, this is the first thing to suspect.
 
 ---
 
@@ -106,18 +106,18 @@ If the row you grab is part of an active selection, the **whole selection** move
 
 The **Agent deploy** strip contains **Deploy to Agents**, **Dry run**, **Regenerate**, and **Delete**. These actions do **not** start or stop JAWATA — they rebuild MCP entries from your workspaces and read or write **MCP client config files** on disk (see Settings → MCP Config Locations).
 
-- **Deploy to Agents** — Writes manager-owned MCP server entries (one per workspace, keyed `jawata-<workspace-name>`) into the selected clients' configs, plus the rule blocks the manager maintains. Each client receives the entry shape its parser accepts: Antigravity gets `{ "serverUrl": …, "headers": … }`; Cursor / Claude Code / IntelliJ get `{ "type": "http", "url": …, "headers": … }`. Workspace add / rename / delete automatically refresh clients you have already deployed to (never-deployed clients stay untouched), and any workspace that cannot be resolved at deploy time is reported in the result instead of being silently omitted.
+- **Deploy to Agents** — Writes manager-owned MCP server entries (one per workspace, keyed `jawata-<workspace-name>`) into the selected clients' configs, plus the rule blocks the manager maintains. Each client receives the entry shape its own tooling writes, which is not the same for any two of them: **Cursor / Claude Code / Claude Desktop / Copilot CLI** take `{ "type": "http", "url": …, "headers": … }` under `mcpServers`; **VS Code** uses the same entry but under **`servers`**, not `mcpServers`; **Codex** is **TOML**, not JSON — `[mcp_servers.<id>]` with `url` and `http_headers`, and it spells "off" as `enabled = false` rather than `disabled = true`. Comments and settings already in a Codex or VS Code file survive a deploy, and a file that cannot be parsed is refused rather than overwritten. Workspace add / rename / delete automatically refresh clients you have already deployed to (never-deployed clients stay untouched), and any workspace that cannot be resolved at deploy time is reported in the result instead of being silently omitted.
 - **Dry run** — Same validation and diff output as Deploy, but no files are written.
 - **Regenerate** — Force-rewrites the manager-managed sections, even if nothing has changed since the last write. Useful after manual edits.
 - **Delete** — Removes only the manager-injected MCP servers and rule blocks from the selected clients. It does not uninstall JAWATA or remove your projects.
 
-Each of these opens a **target picker**: check Cursor / Claude / Antigravity / IntelliJ for that run only. Defaults come from each client's **Deploy** toggle under Settings → MCP Config Locations.
+Each of these opens a **target picker**: tick the clients you want for that run only. Defaults come from each client's **Deploy** toggle under Settings → MCP Config Locations.
 
-**Cursor (length limit):** Cursor rejects tools when `serverName + ":" + toolName` exceeds about **59–60** characters. The manager keeps the generated `jawata-` ids short so the longest JAWATA tool names still fit. **Antigravity** instead caps the total *number* of MCP tools registered across all servers (around 100 in current builds) — that is a separate constraint, and the main reason to keep concurrent workspaces small.
+**Cursor (length limit):** Cursor rejects tools when `serverName + ":" + toolName` exceeds about **59–60** characters. The manager keeps the generated `jawata-` ids short so the longest JAWATA tool names still fit. Other clients cap the total *number* of tools instead, which is a different constraint and the main reason to keep concurrent workspaces small. A client that truncates a tool list keeps the first N, so a workspace that looks connected can still be missing the tools you want.
 
 ### How JAWATA works — a compiler-grounded loop, not a bag of tools
 
-JAWATA is one **Java vertical over your whole workspace**, not a per-project add-on sitting beside ten per-language shims. Its ~40 tools are **parametric front doors** — a `kind`/`action` parameter folds what would otherwise be a hundred narrow tools into a handful, which keeps a multi-workspace setup under Antigravity's ~100-tool cap. But the point isn't the list; it's the **loop the tools compose into**:
+JAWATA is one **Java vertical over your whole workspace**, not a per-project add-on sitting beside ten per-language shims. Its 45 tools are **parametric front doors** — a `kind`/`action` parameter folds what would otherwise be a hundred narrow tools into a handful, which is what keeps a multi-workspace setup inside a client's tool cap at all. But the point isn't the list; it's the **loop the tools compose into**:
 
 - **Detect** — `find_quality_issue` / `find_modernization` surface Fowler smells, SOLID and Kerievsky violations, and modernization candidates — all compiler-resolved, so no regex false positives.
 - **Goal** — `refactor_to_pattern` names the target state: a design pattern to move *toward* (state / command / template method / visitor / compose method) or *away from* (inline singleton).
@@ -265,13 +265,26 @@ If a probe fails, fix connectivity or runtime issues before relying on **Deploy 
 
 ### MCP Config Locations
 
-For each supported client (**Cursor**, **Claude**, **Antigravity**, **IntelliJ**):
+For each supported client (**Cursor**, **Claude Code**, **Claude Desktop**, **Codex**, **Copilot CLI**, **VS Code**):
 
 - **Deploy** — When checked, the client is included in the *default* set of the deploy target picker. Override per run if you need to.
 - **Current** — Effective path the manager will use (auto-detected, or your manual override).
 - **Manual override path** — Use when the config file lives somewhere non-standard.
 
-**Redetect defaults** re-runs auto-detection. **Antigravity (Google / Gemini):** the manager looks in several common locations including `~/.gemini/antigravity/mcp_config.json`. Antigravity caps total registered MCP tools (≈100), so keep concurrent workspaces small.
+**Redetect defaults** re-runs auto-detection. Where each client keeps its configuration:
+
+| Client | File |
+|---|---|
+| Cursor | `~/.cursor/mcp.json` |
+| Claude Code | `~/.claude.json` |
+| Claude Desktop | `<config dir>/Claude/claude_desktop_config.json` |
+| Codex | `~/.codex/config.toml` — one file serves the command line, the VS Code extension, Desktop and Cloud |
+| Copilot CLI | `~/.copilot/mcp-config.json` |
+| VS Code | `<config dir>/Code/User/mcp.json` |
+
+`<config dir>` is `~/.config` on Linux, `~/Library/Application Support` on macOS and `%APPDATA%` on Windows.
+
+**IntelliJ is not a deploy target, and does not need to be.** It hosts Claude Code, Cursor, Codex and Copilot as agents that read the files above, so deploying those already reaches it. **Antigravity** is listed but **not supported**: its command-line tool has no mechanism to connect jawata at all.
 
 **Merge mode**:
 - **Safe merge** — inserts or updates only the manager-owned blocks, preserving unrelated entries.
@@ -290,7 +303,7 @@ For each supported client (**Cursor**, **Claude**, **Antigravity**, **IntelliJ**
 | Move a project to another workspace | Right-click row → *Move to workspace…* OR drag the row onto a workspace |
 | Bulk-move projects | Tick checkboxes → *Move to workspace ▾* |
 | Start/stop a workspace's JAWATA | Workspace header in Managed Projects |
-| Push MCP entries into Cursor / Claude / etc. | Dashboard → **Agent deploy** |
+| Push MCP entries into your agent tools | Dashboard → **Agent deploy** |
 | Change data root or system-tray behavior | Settings → **Machine Runtime Controls** |
 | Point deploy at custom MCP config paths | Settings → **MCP Config Locations** |
 | Verify JAWATA exposes MCP tools | Settings → **Exposed Services** → **Test Services** |

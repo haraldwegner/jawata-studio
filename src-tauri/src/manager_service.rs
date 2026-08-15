@@ -12436,6 +12436,32 @@ mod tests {
     }
 
     #[test]
+    fn the_help_file_names_every_supported_client() {
+        // The help file described a four-client roster — Cursor, Claude
+        // Desktop, Antigravity, IntelliJ — through two sprints that changed it,
+        // because nothing held documentation to the code. It also still quoted
+        // a 40-tool count against a 45-tool surface.
+        //
+        // Deliberately loose: it asserts the client is MENTIONED, not how. Prose
+        // has to stay writable, and a test that pins sentences gets deleted the
+        // first time someone rewords a paragraph. Mentioned-or-not is the part
+        // that actually went wrong.
+        let help_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../src/assets/help.md");
+        let help = std::fs::read_to_string(&help_path).unwrap_or_else(|error| {
+            panic!("cannot read {}: {error} — this assertion did NOT run", help_path.display())
+        });
+        for client in crate::client_dialect::CLIENTS.iter().filter(|c| c.supported) {
+            assert!(
+                help.contains(client.label),
+                "help.md never mentions {:?}, which the product deploys to. A user \
+                 reading the help would not know it is supported.",
+                client.label
+            );
+        }
+    }
+
+    #[test]
     fn sending_a_settings_key_instead_of_an_id_is_refused_by_name() {
         // The refusal existed; it just said "unknown id", which sent the reader
         // looking in the wrong place. That ambiguity is what let the
