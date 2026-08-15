@@ -297,10 +297,14 @@ export function createAppStore() {
   }
 
   async function deployToAgents(mode: DeployMode, targetClients?: string[]) {
+    // Sprint 28a Stage 2b: the PREVIOUS run's summary is retired the moment a
+    // new one starts. It used to survive, so a spinner ran above a summary
+    // describing a different deploy.
     update((state) => ({
       ...state,
       deployBusy: true,
-      deployError: undefined
+      deployError: undefined,
+      lastDeployResult: undefined
     }));
     try {
       const result = await deployToAgentsApi({
@@ -314,6 +318,10 @@ export function createAppStore() {
         lastDeployResult: result
       }));
     } catch (error) {
+      // No `lastDeployResult` here on purpose — it was already cleared when
+      // this run started. Before that, a failure left the previous run's
+      // SUCCESS in place, and dismissing the error revealed it again as though
+      // it described what had just happened.
       update((state) => ({
         ...state,
         deployBusy: false,
@@ -587,6 +595,16 @@ export function createAppStore() {
     }));
   }
 
+  /** Dismiss the deploy summary. It had no dismiss at all and survived the
+   * session, so a result from an hour ago sat under the button as if it were
+   * the current state. */
+  function clearDeployResult() {
+    update((state) => ({
+      ...state,
+      lastDeployResult: undefined
+    }));
+  }
+
   return {
     subscribe,
     load,
@@ -616,6 +634,7 @@ export function createAppStore() {
     probeServices,
     deployToAgents,
     clearServiceProbeError,
-    clearDeployError
+    clearDeployError,
+    clearDeployResult
   };
 }

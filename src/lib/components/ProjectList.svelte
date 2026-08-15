@@ -56,6 +56,9 @@
   export let deployBusy = false;
   export let deployError: string | undefined;
   export let lastDeployResult: DeployToAgentsResult | undefined;
+  /** Clears the summary above. Optional so a caller that never shows one need
+   * not supply it. */
+  export let onDismissDeployResult: (() => void) | undefined = undefined;
 
   /** Sprint 28 (v3.6.0): each option carries BOTH names on purpose. `key`
    * indexes the camelCase `DeployTargetFlags` the settings API speaks; `id`
@@ -749,7 +752,11 @@
   {#if deployError}
     <p class="project-error">{deployError}</p>
   {:else if lastDeployResult}
+    <!-- Sprint 28a Stage 2b: the summary now has a way out. It had none and
+         survived the whole session, so a result from an hour ago sat under the
+         button reading like the current state. -->
     <p class="hint">{deploySummary(lastDeployResult)}</p>
+    <button type="button" on:click={() => onDismissDeployResult?.()}>Dismiss</button>
     {#if deployFailureDetails(lastDeployResult).length > 0}
       {#each deployFailureDetails(lastDeployResult) as failure}
         <p class="project-error">{failure}</p>

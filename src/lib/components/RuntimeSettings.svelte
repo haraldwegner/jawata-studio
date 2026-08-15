@@ -33,6 +33,12 @@
   export let projects: ProjectRecord[] = [];
   export let runtimeStatuses: Record<string, RuntimeStatusRecord> = {};
 
+  /** The data root cleanup ACTUALLY targets: the persisted setting, falling
+   * back to the OS default only when nothing is set. Read from `settings`
+   * rather than the `dataRoot` binding, because that binding tracks the input
+   * box and would show an unsaved edit as if it were live. */
+  $: effectiveDataRoot = settings?.dataRoot?.trim() || bootstrap?.defaultDataRoot || "";
+
   $: workspaceStats = (() => {
     const byName = new Map<string, { count: number; running: number }>();
     for (const p of projects) {
@@ -754,9 +760,20 @@
               <span class="label">State</span>
               <strong>{bootstrap?.stateDir ?? "-"}</strong>
             </div>
-            <div>
+            <!-- Sprint 28a Stage 2b: this showed `defaultDataRoot`, the OS
+                 default, while "Clean workspaces" empties the EFFECTIVE root.
+                 Anyone who had ever changed the root was reading the name of a
+                 folder nothing would touch — a diagnostics row that lies is
+                 worse than no row, because it is consulted precisely when
+                 something has gone wrong. -->
+            <div title={effectiveDataRoot !== (bootstrap?.defaultDataRoot ?? "")
+              ? `Overridden. The OS default is ${bootstrap?.defaultDataRoot ?? "-"}`
+              : "The OS default for this platform"}>
               <span class="label">Data root</span>
-              <strong>{bootstrap?.defaultDataRoot ?? "-"}</strong>
+              <strong>{effectiveDataRoot || "-"}</strong>
+              {#if effectiveDataRoot && effectiveDataRoot !== (bootstrap?.defaultDataRoot ?? "")}
+                <span class="hint">(overridden)</span>
+              {/if}
             </div>
             <div title="Number of workspaces (and how many have at least one running runtime)">
               <span class="label">Workspaces</span>

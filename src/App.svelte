@@ -563,6 +563,7 @@
               deployBusy={$appStore.deployBusy ?? false}
               deployError={$appStore.deployError}
               lastDeployResult={$appStore.lastDeployResult}
+              onDismissDeployResult={() => appStore.clearDeployResult()}
               projects={$appStore.projects ?? []}
               projectErrors={$appStore.projectErrors ?? {}}
               runtimeStatuses={$appStore.runtimeStatuses ?? {}}
