@@ -74,7 +74,6 @@ export interface McpClientPaths {
   claude: McpClientPathEntry;
   claudeDesktop: McpClientPathEntry;
   antigravity: McpClientPathEntry;
-  intellij: McpClientPathEntry;
   /** Sprint 28a (D1). */
   codex: McpClientPathEntry;
   copilotCli: McpClientPathEntry;
@@ -87,7 +86,6 @@ export interface DeployTargetFlags {
   claude: boolean;
   claudeDesktop: boolean;
   antigravity: boolean;
-  intellij: boolean;
   /** Sprint 28a (D1). */
   codex: boolean;
   copilotCli: boolean;

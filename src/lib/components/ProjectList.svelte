@@ -49,7 +49,6 @@
     claude: true,
     claudeDesktop: true,
     antigravity: true,
-    intellij: true,
     codex: true,
     copilotCli: true,
     vscode: true
@@ -72,7 +71,6 @@
     { key: "claude", id: "claude", label: "Claude Code" },
     { key: "claudeDesktop", id: "claude_desktop", label: "Claude Desktop" },
     { key: "antigravity", id: "antigravity", label: "Antigravity" },
-    { key: "intellij", id: "intellij", label: "IntelliJ" },
     /* Sprint 28a (D1). This array is not a display convenience — it is the
        ONLY thing that reaches the backend. runDeployWithTargets always sends
        an explicit target list built from it, and the backend treats a present

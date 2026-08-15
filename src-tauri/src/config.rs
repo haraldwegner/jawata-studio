@@ -128,8 +128,6 @@ pub struct McpClientPaths {
     pub claude_desktop: McpClientPathEntry,
     #[serde(default)]
     pub antigravity: McpClientPathEntry,
-    #[serde(default)]
-    pub intellij: McpClientPathEntry,
     /// Sprint 28a (D1): OpenAI Codex — `~/.codex/config.toml`. ONE file serves
     /// all four Codex surfaces (CLI, VS Code extension, Desktop, Cloud), which
     /// makes it the cheapest client on the roster. TOML, not JSON.
@@ -172,8 +170,6 @@ pub struct DeployTargetFlags {
     #[serde(default = "default_enabled_flag")]
     pub antigravity: bool,
     #[serde(default = "default_enabled_flag")]
-    pub intellij: bool,
-    #[serde(default = "default_enabled_flag")]
     pub codex: bool,
     #[serde(default = "default_enabled_flag")]
     pub copilot_cli: bool,
@@ -192,7 +188,6 @@ impl Default for DeployTargetFlags {
             claude: true,
             claude_desktop: true,
             antigravity: true,
-            intellij: true,
             codex: true,
             copilot_cli: true,
             vscode: true,
@@ -1343,10 +1338,6 @@ fn detect_default_mcp_client_paths() -> McpClientPaths {
     // branded "AI Assistant". Agents that IntelliJ merely hosts (Claude Code,
     // Cursor, Copilot) bring their own settings file and already had jawata
     // through those adapters; this is what they never covered.
-    let intellij_candidates: Vec<PathBuf> = [[".ai", "mcp", "mcp.json"].as_slice()]
-        .iter()
-        .filter_map(|parts| build(parts))
-        .collect();
 
     // Sprint 28a (D1). Each of the three paths below was MEASURED on
     // 2026-08-15 by making the client's own tooling write a config in a
@@ -1387,7 +1378,6 @@ fn detect_default_mcp_client_paths() -> McpClientPaths {
         claude: make_entry(&claude_candidates),
         claude_desktop: make_entry(&claude_desktop_candidates),
         antigravity: make_entry(&antigravity_candidates),
-        intellij: make_entry(&intellij_candidates),
         codex: make_entry(&codex_candidates),
         copilot_cli: make_entry(&copilot_cli_candidates),
         vscode: make_entry(&vscode_candidates),
@@ -1401,7 +1391,6 @@ fn merge_detected_mcp_paths(paths: McpClientPaths) -> McpClientPaths {
         claude: merge_mcp_path_entry(paths.claude, defaults.claude),
         claude_desktop: merge_mcp_path_entry(paths.claude_desktop, defaults.claude_desktop),
         antigravity: merge_mcp_path_entry(paths.antigravity, defaults.antigravity),
-        intellij: merge_mcp_path_entry(paths.intellij, defaults.intellij),
         codex: merge_mcp_path_entry(paths.codex, defaults.codex),
         copilot_cli: merge_mcp_path_entry(paths.copilot_cli, defaults.copilot_cli),
         vscode: merge_mcp_path_entry(paths.vscode, defaults.vscode),
@@ -1605,7 +1594,7 @@ mod deploy_resolves_here {
     #[test]
     fn every_roster_client_resolves_to_its_expected_shape() {
         let paths = detect_default_mcp_client_paths();
-        let expected: [(&str, &McpClientPathEntry, &[&str]); 8] = [
+        let expected: [(&str, &McpClientPathEntry, &[&str]); 7] = [
             ("cursor", &paths.cursor, &[".cursor", "mcp.json"]),
             ("claude", &paths.claude, &[".claude.json"]),
             (
@@ -1618,11 +1607,6 @@ mod deploy_resolves_here {
                 &paths.antigravity,
                 &[".gemini", "antigravity", "mcp_config.json"],
             ),
-            // Named by IntelliJ's own "New MCP Server" dialog, which prints
-            // "Configuration will be saved in '~/.ai/mcp/mcp.json'". Product-
-            // independent and unversioned, so unlike the per-product config
-            // dirs it needs no newest-of-six resolution.
-            ("intellij", &paths.intellij, &[".ai", "mcp", "mcp.json"]),
             ("codex", &paths.codex, &[".codex", "config.toml"]),
             (
                 "copilot_cli",

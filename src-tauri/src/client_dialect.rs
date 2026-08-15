@@ -62,6 +62,17 @@ pub struct Client {
 }
 
 /// Every client the deploy knows, in display order.
+///
+/// **IntelliJ is deliberately absent** (Harald, 2026-08-16). It is not
+/// unsupported the way Antigravity is — it is REDUNDANT. IntelliJ hosts Claude
+/// Code, Cursor, Codex and Copilot as agents that read their own config files,
+/// so deploying those four already covers it; measured live, with the Claude
+/// agent driving jawata inside IntelliJ through `~/.claude.json`. A dedicated
+/// target added only JetBrains' own Junie, which could not reach our tools
+/// across three explicit attempts while the Claude agent beside it could.
+///
+/// So IntelliJ's coverage is INHERITED, and the parity matrix must say that
+/// rather than claim it as a driven client.
 pub const CLIENTS: &[Client] = &[
     Client { id: "cursor", settings_key: "cursor", label: "Cursor", supported: true },
     Client { id: "claude", settings_key: "claude", label: "Claude Code", supported: true },
@@ -77,7 +88,6 @@ pub const CLIENTS: &[Client] = &[
         label: "Antigravity",
         supported: false,
     },
-    Client { id: "intellij", settings_key: "intellij", label: "IntelliJ", supported: true },
     Client { id: "codex", settings_key: "codex", label: "Codex", supported: true },
     Client {
         id: "copilot_cli",

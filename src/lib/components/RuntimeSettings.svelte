@@ -124,7 +124,6 @@
     claude: true,
     claudeDesktop: true,
     antigravity: true,
-    intellij: true,
     codex: true,
     copilotCli: true,
     vscode: true
@@ -134,7 +133,6 @@
     claude: {},
     claudeDesktop: {},
     antigravity: {},
-    intellij: {},
     codex: {},
     copilotCli: {},
     vscode: {}
@@ -203,7 +201,6 @@
       claude: normalizeMcpPathEntry(paths.claude),
       claudeDesktop: normalizeMcpPathEntry(paths.claudeDesktop),
       antigravity: normalizeMcpPathEntry(paths.antigravity),
-      intellij: normalizeMcpPathEntry(paths.intellij),
       codex: normalizeMcpPathEntry(paths.codex),
       copilotCli: normalizeMcpPathEntry(paths.copilotCli),
       vscode: normalizeMcpPathEntry(paths.vscode)
@@ -230,7 +227,6 @@
         claude: input.deployTargets.claude,
         claudeDesktop: input.deployTargets.claudeDesktop,
         antigravity: input.deployTargets.antigravity,
-        intellij: input.deployTargets.intellij,
         codex: input.deployTargets.codex,
         copilotCli: input.deployTargets.copilotCli,
         vscode: input.deployTargets.vscode
@@ -843,7 +839,6 @@
         ["claude", "Claude Code"],
         ["claudeDesktop", "Claude Desktop"],
         ["antigravity", "Antigravity"],
-        ["intellij", "IntelliJ"],
         ["codex", "Codex"],
         ["copilotCli", "Copilot CLI"],
         ["vscode", "VS Code"]

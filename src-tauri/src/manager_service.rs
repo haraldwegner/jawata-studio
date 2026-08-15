@@ -1858,9 +1858,15 @@ impl ManagerService {
 
             // Sprint 28a: TOML clients (Codex) get the format-preserving
             // remover; everyone else the JSON one.
-            let removal = match crate::client_dialect::dialect_for(client).toml_table() {
-                Some(table) => remove_managed_toml_block(&path, table, backup_before_write),
-                None => remove_managed_json_block(&path, client, backup_before_write),
+            let dialect = crate::client_dialect::dialect_for(client);
+            let removal = if dialect.is_toml() {
+                remove_managed_toml_block(
+                    &path,
+                    dialect.toml_table().expect("a TOML dialect names its table"),
+                    backup_before_write,
+                )
+            } else {
+                remove_managed_json_block(&path, client, backup_before_write)
             };
             match removal {
                 Ok(changed) => {
@@ -3321,11 +3327,31 @@ fn normalize_requested_deploy_targets(
         .filter(|target| !known.contains(target))
         .collect();
     if !unknown.is_empty() {
-        return Err(format!(
+        // Name the LIKELY MISTAKE, not just the valid set. This refusal exists
+        // because the UI once sent the camelCase settings key `claudeDesktop`
+        // where the backend wanted `claude_desktop`, and the run then reported
+        // "Skipped: not selected in this deploy run" for a box the user had
+        // ticked. If an unknown id matches a roster row's settings key, say so
+        // — otherwise the caller reads "unknown id" and starts looking in the
+        // wrong place, which is what cost that bug its whole lifetime.
+        let hint: Vec<String> = unknown
+            .iter()
+            .filter_map(|bad| {
+                crate::client_dialect::CLIENTS
+                    .iter()
+                    .find(|c| c.settings_key.eq_ignore_ascii_case(bad))
+                    .map(|c| format!("{bad:?} is the settings key for {} — send {:?}", c.label, c.id))
+            })
+            .collect();
+        let mut message = format!(
             "deploy requested unknown client id(s): {}. Known ids: {}.",
             unknown.join(", "),
             known.join(", ")
-        ));
+        );
+        if !hint.is_empty() {
+            message.push_str(&format!(" {}.", hint.join("; ")));
+        }
+        return Err(message);
     }
     Ok(Some(normalized.into_iter().collect()))
 }
@@ -3354,11 +3380,6 @@ fn deploy_targets_for_paths(
             id: "antigravity",
             target_path: paths.antigravity.effective_path.clone(),
             enabled_by_settings: flags.antigravity,
-        },
-        DeployClientTarget {
-            id: "intellij",
-            target_path: paths.intellij.effective_path.clone(),
-            enabled_by_settings: flags.intellij,
         },
         DeployClientTarget {
             id: "codex",
@@ -3429,7 +3450,6 @@ fn derive_rule_path(client: &str, mcp_target_path: &str) -> String {
         "cursor" => display_path(&parent.join("rules").join("jawata-studio.mdc")),
         "claude" => display_path(&parent.join("CLAUDE.md")),
         "antigravity" => display_path(&parent.join("AGENTS.md")),
-        "intellij" => display_path(&parent.join("jawata-studio-rules.md")),
         _ => display_path(&parent.join("jawata-studio-rules.md")),
     }
 }
@@ -3472,7 +3492,12 @@ fn derive_global_rule_path(client: &str) -> Option<String> {
 /// mapping would strand the files a previous version wrote, with nothing left
 /// that knows where they are.
 fn client_still_receives_seat_commands(client: &str) -> bool {
-    client != "antigravity"
+    // Reads the roster rather than repeating its decision. The hollow-wiring
+    // gate is what forced this: `supported` was a field only tests read, which
+    // means the roster was a fixture and this was still the real authority.
+    crate::client_dialect::client(client)
+        .map(|c| c.supported)
+        .unwrap_or(true)
 }
 
 fn derive_seat_commands_dir(client: &str, mcp_target_path: &str) -> Option<PathBuf> {
@@ -12408,6 +12433,31 @@ mod tests {
             "the user's file must be exactly as it was"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sending_a_settings_key_instead_of_an_id_is_refused_by_name() {
+        // The refusal existed; it just said "unknown id", which sent the reader
+        // looking in the wrong place. That ambiguity is what let the
+        // claudeDesktop/claude_desktop mismatch live a whole feature lifetime
+        // while reporting "Skipped: not selected in this deploy run".
+        let err = normalize_requested_deploy_targets(Some(&vec!["claudeDesktop".to_string()]))
+            .expect_err("a settings key is not a client id");
+        assert!(err.contains("Claude Desktop"), "{err}");
+        assert!(err.contains("claude_desktop"), "must name the id to send: {err}");
+
+        // Same for the two-word clients Sprint 28a added — there are three now.
+        for (sent, want) in [("copilotCli", "copilot_cli")] {
+            let err = normalize_requested_deploy_targets(Some(&vec![sent.to_string()]))
+                .expect_err("a settings key is not a client id");
+            assert!(err.contains(want), "{sent}: {err}");
+        }
+
+        // A genuinely unknown name gets the plain refusal, with no invented hint.
+        let err = normalize_requested_deploy_targets(Some(&vec!["notaclient".to_string()]))
+            .expect_err("unknown ids are refused");
+        assert!(err.contains("notaclient"), "{err}");
+        assert!(!err.contains("settings key for"), "no hint should be fabricated: {err}");
     }
 
     #[test]
