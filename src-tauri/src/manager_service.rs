@@ -3707,11 +3707,13 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
             .to_string(),
         String::new(),
         "**Try-first, or justify — the deployed hook ENFORCES this.** A `grep`/`rg` over a \
-         `.java` file, or a hand-edit of a `.java` file, is BLOCKED unless you tried jawata first \
-         (a search) or use a jawata tool (an edit) — OR you declare \
-         `jawata-fallback: <why jawata is inadequate for THIS case>` in the command (it is logged). \
-         It is meant to be inconvenient NOT to use jawata; you are never stuck — the justified \
-         fallback always proceeds."
+         `.java` file is BLOCKED unless you tried jawata first (a search) — OR you declare \
+         `jawata-fallback: <why jawata is inadequate for THIS case>`. A WRITE to a `.java` file \
+         from the shell (`sed -i`, an interpreter, a redirection) is blocked outright, and the \
+         READ declaration does NOT open it: declare `jawata-author: <narrow reason>` instead. \
+         The two are a lattice — `jawata-author:` is the stronger claim and opens both; \
+         `jawata-fallback:` claims a read only. Both are logged. It is meant to be inconvenient \
+         NOT to use jawata; you are never stuck — the justified declaration always proceeds."
             .to_string(),
         String::new(),
         "Editing a `.java` file by hand is blocked — use the tool:".to_string(),
@@ -7792,6 +7794,19 @@ mod tests {
         let block = build_rule_block("claude", &vec![url_server("jawata-ws-a", 8800, "tok", false)]);
         assert!(block.contains("Try-first, or justify"), "states the enforcement contract");
         assert!(block.contains("jawata-fallback:"), "names the declared-fallback escape");
+        // v3.8.2 made the declarations a LATTICE, and the rule block did not follow.
+        // An agent obeying the documented convention declared jawata-fallback: on a
+        // WRITE, was blocked a second time, and learned the right token only from the
+        // refusal text — found by dogfooding the guard on Windows. The block must name
+        // the write declaration and say the read one does not open a write.
+        assert!(
+            block.contains("jawata-author:"),
+            "names the AUTHORING escape, which is the only one that opens a write"
+        );
+        assert!(
+            block.contains("does NOT open it"),
+            "states that the read declaration does not open the write gate"
+        );
         assert!(
             block.to_lowercase().contains("inconvenient") && block.contains("never stuck"),
             "inconvenient-not-to-use, but never stuck"
