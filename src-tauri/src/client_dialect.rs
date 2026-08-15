@@ -31,6 +31,68 @@
 //! | vscode         | `<user-data>/User/mcp.json`     | `code --add-mcp …`         |
 //! | cursor/claude… | `~/.cursor/mcp.json` etc.       | shipped since Sprint 15    |
 
+/// One client, as one row.
+///
+/// Sprint 28a Stage 2b, from the C2 architect pass: a client was described in
+/// **13 separate places** in the backend, and Stage 2 collapsed three of them
+/// while adding a fourteenth. Stage 2b's brief was "one shared roster
+/// constant" — on the FRONTEND. Building it on one side only does not remove
+/// the bug class; it creates a second authority that has to agree with the
+/// first, and the two drift. That drift already shipped once, as
+/// `claudeDesktop` versus `claude_desktop`, which made Claude Desktop
+/// undeployable while reporting "Skipped: not selected in this deploy run".
+///
+/// So the roster is here, and the tests below hold every other description
+/// against it: the settings structs, the deploy target list, and the UI
+/// picker's own source. A client added to one and missed in another fails the
+/// run instead of shipping.
+pub struct Client {
+    /// The snake_case id the deploy backend matches on.
+    pub id: &'static str,
+    /// The camelCase key the settings API speaks. Differs from `id` for every
+    /// two-word client — there are now three, where there used to be one.
+    pub settings_key: &'static str,
+    /// What the user sees.
+    pub label: &'static str,
+    /// Whether the product can carry jawata here at all. The USER cannot
+    /// change this — it is a fact about the client. Antigravity is the one
+    /// `false`: its command-line tool has no mechanism to connect jawata, so
+    /// it stays visible and greyed rather than silently vanishing.
+    pub supported: bool,
+}
+
+/// Every client the deploy knows, in display order.
+pub const CLIENTS: &[Client] = &[
+    Client { id: "cursor", settings_key: "cursor", label: "Cursor", supported: true },
+    Client { id: "claude", settings_key: "claude", label: "Claude Code", supported: true },
+    Client {
+        id: "claude_desktop",
+        settings_key: "claudeDesktop",
+        label: "Claude Desktop",
+        supported: true,
+    },
+    Client {
+        id: "antigravity",
+        settings_key: "antigravity",
+        label: "Antigravity",
+        supported: false,
+    },
+    Client { id: "intellij", settings_key: "intellij", label: "IntelliJ", supported: true },
+    Client { id: "codex", settings_key: "codex", label: "Codex", supported: true },
+    Client {
+        id: "copilot_cli",
+        settings_key: "copilotCli",
+        label: "Copilot CLI",
+        supported: true,
+    },
+    Client { id: "vscode", settings_key: "vscode", label: "VS Code", supported: true },
+];
+
+/// The roster row for a client id, or `None` for an id we do not know.
+pub fn client(id: &str) -> Option<&'static Client> {
+    CLIENTS.iter().find(|c| c.id == id)
+}
+
 /// The file format a client's MCP configuration is written in, and the key its
 /// server map hangs under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

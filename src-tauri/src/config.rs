@@ -1633,7 +1633,7 @@ mod deploy_resolves_here {
         ];
         assert_eq!(
             expected.len(),
-            crate::manager_service::KNOWN_DEPLOY_CLIENT_IDS.len(),
+            crate::client_dialect::CLIENTS.len(),
             "a client joined the deploy roster without a path expectation here — \
              which is how one ships pointing at a directory nothing reads"
         );

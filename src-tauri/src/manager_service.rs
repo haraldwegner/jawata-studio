@@ -3284,21 +3284,12 @@ fn normalize_optional_path(value: String) -> Option<String> {
 /// ids; the settings API speaks camelCase `DeployTargetFlags` keys, and the
 /// two spellings differ for exactly one client (`claude_desktop` vs
 /// `claudeDesktop`). Callers must send the ids in this list.
-pub(crate) const KNOWN_DEPLOY_CLIENT_IDS: [&str; 8] = [
-    "cursor",
-    "claude",
-    "claude_desktop",
-    "antigravity",
-    "intellij",
-    // Sprint 28a (D1). `copilot_cli` is the second two-word client, so it is
-    // the second chance to repeat the `claudeDesktop` vs `claude_desktop`
-    // mismatch that made Claude Desktop silently undeployable. The frontend
-    // roster (Stage 2b) is what ends that bug class structurally; until then
-    // the refusal above is what makes a mismatch loud instead of silent.
-    "codex",
-    "copilot_cli",
-    "vscode",
-];
+/// Sprint 28a Stage 2b: DERIVED from the roster, not written beside it. This
+/// was a hand-maintained array; adding a client meant remembering to edit it,
+/// and the roster exists so that memory is not load-bearing.
+pub(crate) fn known_deploy_client_ids() -> Vec<&'static str> {
+    crate::client_dialect::CLIENTS.iter().map(|c| c.id).collect()
+}
 
 /// Normalise the caller's requested client ids, REFUSING any id we do not
 /// know instead of quietly dropping it.
@@ -3319,6 +3310,7 @@ fn normalize_requested_deploy_targets(
     let Some(targets) = targets else {
         return Ok(None);
     };
+    let known = known_deploy_client_ids();
     let normalized: Vec<String> = targets
         .iter()
         .map(|target| target.trim().to_ascii_lowercase())
@@ -3326,13 +3318,13 @@ fn normalize_requested_deploy_targets(
     let unknown: Vec<&str> = normalized
         .iter()
         .map(String::as_str)
-        .filter(|target| !KNOWN_DEPLOY_CLIENT_IDS.contains(target))
+        .filter(|target| !known.contains(target))
         .collect();
     if !unknown.is_empty() {
         return Err(format!(
             "deploy requested unknown client id(s): {}. Known ids: {}.",
             unknown.join(", "),
-            KNOWN_DEPLOY_CLIENT_IDS.join(", ")
+            known.join(", ")
         ));
     }
     Ok(Some(normalized.into_iter().collect()))
@@ -12419,6 +12411,90 @@ mod tests {
     }
 
     #[test]
+    fn every_description_of_a_client_agrees_with_the_roster() {
+        // Sprint 28a Stage 2b, closing the C2 architect pass's ranked finding.
+        // A client was described in 13 backend places; a roster that only some
+        // of them derive from is a second authority, not a cure. These are the
+        // holdouts that CANNOT derive from it — `McpClientPaths` and
+        // `DeployTargetFlags` are the serde contract with settings files
+        // already on disk, so turning them into maps is a migration rather
+        // than a refactor, and `deploy_targets_for_paths` needs real field
+        // access. So they stay hand-written and are ASSERTED instead: a client
+        // in the roster and missing from one of them fails this run rather
+        // than shipping.
+        let roster_ids: Vec<&str> = crate::client_dialect::CLIENTS.iter().map(|c| c.id).collect();
+
+        // 1. The deploy target list.
+        let targets = deploy_targets_for_paths(
+            &DeployTargetFlags::default(),
+            &crate::config::McpClientPaths::default(),
+        );
+        let target_ids: Vec<&str> = targets.iter().map(|t| t.id).collect();
+        assert_eq!(
+            roster_ids, target_ids,
+            "deploy_targets_for_paths and the roster disagree — a client in the \
+             roster but missing here can never be deployed, and one here but not \
+             in the roster is refused by id validation"
+        );
+
+        // 2. The settings structs, checked through serde, which is what the
+        //    settings file actually speaks. The camelCase key is the half that
+        //    made Claude Desktop undeployable, so it is checked by round trip
+        //    rather than by eye.
+        let flags = serde_json::to_value(DeployTargetFlags::default()).unwrap();
+        let paths = serde_json::to_value(crate::config::McpClientPaths::default()).unwrap();
+        for client in crate::client_dialect::CLIENTS {
+            assert!(
+                flags.get(client.settings_key).is_some(),
+                "DeployTargetFlags has no field serialising as {:?} — the roster \
+                 says client {:?} exists, so its flag cannot round-trip",
+                client.settings_key,
+                client.id
+            );
+            assert!(
+                paths.get(client.settings_key).is_some(),
+                "McpClientPaths has no field serialising as {:?} (client {:?})",
+                client.settings_key,
+                client.id
+            );
+        }
+        // And nothing EXTRA: a struct field with no roster row is a client the
+        // settings file carries and the deploy will never touch.
+        for key in flags.as_object().unwrap().keys() {
+            assert!(
+                crate::client_dialect::CLIENTS
+                    .iter()
+                    .any(|c| c.settings_key == key),
+                "DeployTargetFlags carries {key:?}, which is in no roster row"
+            );
+        }
+    }
+
+    #[test]
+    fn antigravity_is_the_only_unsupported_client_and_gets_no_commands() {
+        // The two halves of "unsupported" that exist today, tied together so
+        // they cannot drift: the roster's fact, and the behaviour that follows
+        // from it. The USER-facing half (greyed, not toggleable, says why) is
+        // still Stage 2b work and is deliberately not asserted here.
+        let unsupported: Vec<&str> = crate::client_dialect::CLIENTS
+            .iter()
+            .filter(|c| !c.supported)
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(unsupported, vec!["antigravity"]);
+
+        for client in crate::client_dialect::CLIENTS {
+            assert_eq!(
+                client_still_receives_seat_commands(client.id),
+                client.supported,
+                "{}: whether it receives command artifacts must follow from the \
+                 roster's `supported`, not from a second copy of the decision",
+                client.id
+            );
+        }
+    }
+
+    #[test]
     fn the_ui_picker_can_reach_every_client_the_backend_knows() {
         // THE WIRE, and the C2 audit is why it exists.
         //
@@ -12460,12 +12536,29 @@ mod tests {
             .expect("deployTargetOptions is not terminated");
         let options = &picker[options_start..options_end];
 
-        for id in KNOWN_DEPLOY_CLIENT_IDS {
+        for id in known_deploy_client_ids() {
+            let row = crate::client_dialect::client(id).expect("every id has a roster row");
             assert!(
                 options.contains(&format!("id: \"{id}\"")),
                 "the backend deploys to {id:?} but the UI picker cannot select it, so a \
                  deploy always reports \"Skipped: not selected in this deploy run\" for it. \
                  Add it to deployTargetOptions in ProjectList.svelte."
+            );
+            // The camelCase settings key too — this is the exact pairing that
+            // made Claude Desktop undeployable, and there are three two-word
+            // clients now where there was one.
+            assert!(
+                options.contains(&format!("key: \"{}\"", row.settings_key)),
+                "the picker's key for {id:?} does not match the roster's {:?}; the backend \
+                 lowercases and refuses what it does not recognise, so the box the user \
+                 ticks is skipped and told it was not selected",
+                row.settings_key
+            );
+            assert!(
+                options.contains(&format!("label: \"{}\"", row.label)),
+                "the picker labels {id:?} differently from the roster ({:?}); the label the \
+                 user reads should have one home too",
+                row.label
             );
         }
     }
@@ -12761,14 +12854,14 @@ mod tests {
         // The regression: "claude_desktop" must survive normalization. It is
         // the ONLY multi-word client id, so it is the only one the
         // camelCase/snake_case confusion can drop.
-        let requested: Vec<String> = KNOWN_DEPLOY_CLIENT_IDS
+        let requested: Vec<String> = known_deploy_client_ids()
             .iter()
             .map(|id| (*id).to_string())
             .collect();
         let resolved = normalize_requested_deploy_targets(Some(&requested))
             .expect("every known client id must be accepted")
             .expect("an explicit selection must produce a set");
-        for id in KNOWN_DEPLOY_CLIENT_IDS {
+        for id in known_deploy_client_ids() {
             assert!(resolved.contains(id), "{id} must survive normalization");
         }
     }
