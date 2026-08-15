@@ -1,7 +1,7 @@
 {
   "name": "jawata-studio",
   "private": true,
-  "version": "3.7.16",
+  "version": "3.8.0",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
