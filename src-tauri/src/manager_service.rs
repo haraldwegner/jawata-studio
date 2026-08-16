@@ -1809,10 +1809,17 @@ impl ManagerService {
             .as_ref()
             .map(|g| format!("\n\nGlobal rule target: {g}"))
             .unwrap_or_default();
-        let preview_content = Some(format!(
-            "MCP config target: {path}\n\n{}\n\nRule target: {}{}\n\n{}",
-            mcp_json, rule_path, global_rule_preview, rule_body
-        ));
+        let preview_content = Some(match rule_path.as_deref() {
+            Some(rp) => format!(
+                "MCP config target: {path}\n\n{}\n\nRule target: {}{}\n\n{}",
+                mcp_json, rp, global_rule_preview, rule_body
+            ),
+            None => format!(
+                "MCP config target: {path}\n\n{}\n\nRule target: none — this client's \
+                 steering travels in-band (MCP instructions){}",
+                mcp_json, global_rule_preview
+            ),
+        });
 
         if !validation_errors.is_empty() {
             return DeployClientResult {
@@ -1894,9 +1901,17 @@ impl ManagerService {
             }
 
             let mut rules_changed = false;
-            match remove_managed_rule_block(&rule_path, client, backup_before_write) {
-                Ok(changed) => rules_changed |= changed,
-                Err(error) => errors.push(error),
+            match rule_path.as_deref() {
+                Some(rp) => match remove_managed_rule_block(rp, client, backup_before_write) {
+                    Ok(changed) => rules_changed |= changed,
+                    Err(error) => errors.push(error),
+                },
+                // Sprint 28a (D10): rule-less client — clean up the inert file an
+                // older deploy wrote beside its config.
+                None => match remove_inert_rule_file(&path) {
+                    Ok(changed) => rules_changed |= changed,
+                    Err(error) => errors.push(error),
+                },
             }
             if let Some(global) = global_rule_path.as_ref() {
                 match remove_managed_rule_block(global, client, backup_before_write) {
@@ -2058,12 +2073,19 @@ impl ManagerService {
                 matches!(mode, DeployMode::Regenerate),
             ),
         };
-        let rule_write = write_managed_rule_block(
-            &rule_path,
-            &rule_body,
-            backup_before_write,
-            matches!(mode, DeployMode::Regenerate),
-        );
+        // Sprint 28a (D10): a client with a real steering file gets the managed
+        // block; a rule-less client instead gets the inert file an older deploy
+        // wrote cleaned up — its steering travels in-band.
+        let rule_write: Result<bool, String> = match rule_path.as_deref() {
+            Some(rp) => write_managed_rule_block(
+                rp,
+                &rule_body,
+                backup_before_write,
+                matches!(mode, DeployMode::Regenerate),
+            )
+            .map(|_| true),
+            None => remove_inert_rule_file(&path),
+        };
         // Sprint 16b/C: mirror the block into the client's always-loaded global file.
         let global_rule_write = global_rule_path.as_ref().map(|global| {
             write_managed_rule_block(
@@ -2077,7 +2099,7 @@ impl ManagerService {
         // the new one (e.g. .cursor/rules/goja-studio.mdc) — both would steer the
         // agent. Remove the legacy sibling (centralized backup first); no-op for
         // shared files like CLAUDE.md, whose old block the marker logic replaces.
-        for rp in std::iter::once(rule_path.as_str()).chain(global_rule_path.as_deref()) {
+        for rp in rule_path.as_deref().into_iter().chain(global_rule_path.as_deref()) {
             if let Err(error) = remove_legacy_rule_sibling(rp) {
                 eprintln!("[jawata-studio] WARN: {error}");
             }
@@ -2100,7 +2122,7 @@ impl ManagerService {
 
         let mut rules_changed = false;
         match rule_write {
-            Ok(()) => rules_changed = true,
+            Ok(changed) => rules_changed = changed,
             Err(error) => errors.push(error),
         }
         if let Some(result) = global_rule_write {
@@ -3422,17 +3444,22 @@ fn validate_parent_directory(path: &str) -> Option<String> {
     }
 }
 
-fn derive_rule_path(client: &str, mcp_target_path: &str) -> String {
+/// The client's config-sibling steering file, or `None` when steering travels
+/// in-band instead (Sprint 28a D10): Codex carries jawata's guidance with every
+/// tool answer, and every client receives the MCP initialize `instructions`
+/// block with the connection itself. The old `_` arm wrote a
+/// `jawata-studio-rules.md` no client reads — litter, not steering (the 28a
+/// Stage-2 architect finding); `remove_inert_rule_file` cleans those up.
+fn derive_rule_path(client: &str, mcp_target_path: &str) -> Option<String> {
     let mcp_path = PathBuf::from(mcp_target_path);
     let parent = mcp_path
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
     match client {
-        "cursor" => display_path(&parent.join("rules").join("jawata-studio.mdc")),
-        "claude" => display_path(&parent.join("CLAUDE.md")),
-        "antigravity" => display_path(&parent.join("AGENTS.md")),
-        _ => display_path(&parent.join("jawata-studio-rules.md")),
+        "cursor" => Some(display_path(&parent.join("rules").join("jawata-studio.mdc"))),
+        "claude" => Some(display_path(&parent.join("CLAUDE.md"))),
+        _ => None,
     }
 }
 
@@ -4930,6 +4957,28 @@ fn remove_legacy_rule_sibling(rule_path: &str) -> Result<bool, String> {
             .map_err(|e| format!("failed backing up legacy rule file {}: {e}", legacy.display()))?;
         fs::remove_file(&legacy)
             .map_err(|e| format!("failed removing legacy rule file {}: {e}", legacy.display()))?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Sprint 28a (D10): deploys before this version wrote an inert
+/// `jawata-studio-rules.md` beside every rule-less client's config — a file no
+/// client reads (the 28a Stage-2 architect finding). Steering for those clients
+/// is in-band (Codex: with every tool answer; all of them: the MCP initialize
+/// instructions). Remove the stale file on the next deploy or delete, backup
+/// first — same precedent as the goja→jawata rule-file migration.
+fn remove_inert_rule_file(mcp_target_path: &str) -> Result<bool, String> {
+    let Some(parent) = PathBuf::from(mcp_target_path).parent().map(Path::to_path_buf) else {
+        return Ok(false);
+    };
+    let inert = parent.join("jawata-studio-rules.md");
+    if inert.exists() {
+        crate::backups::backup_before_write(&inert).map_err(|e| {
+            format!("failed backing up inert rule file {}: {e}", inert.display())
+        })?;
+        fs::remove_file(&inert)
+            .map_err(|e| format!("failed removing inert rule file {}: {e}", inert.display()))?;
         return Ok(true);
     }
     Ok(false)
@@ -9432,6 +9481,44 @@ mod tests {
                 "{client} must have no global rule path (sibling covers it / unconfirmed)"
             );
         }
+    }
+
+    // ===== Sprint 28a (D10): steering is in-band for rule-less clients =====
+
+    /// A rule file exists only where a client actually reads one. The old `_`
+    /// arm wrote `jawata-studio-rules.md` beside every other client's config —
+    /// a file nothing reads is litter pretending to be a steering channel.
+    #[test]
+    fn rule_path_exists_only_where_a_client_reads_it() {
+        let cfg = "/home/u/.client/config.json";
+        assert!(derive_rule_path("cursor", cfg).is_some(), "cursor reads .mdc rules");
+        assert!(derive_rule_path("claude", cfg).is_some(), "claude reads CLAUDE.md");
+        for client in ["codex", "copilot_cli", "vscode", "grok", "antigravity", "unknown"] {
+            assert!(
+                derive_rule_path(client, cfg).is_none(),
+                "{client} reads no config-sibling rule file — its steering is in-band \
+                 (MCP initialize instructions; Codex also per tool answer)"
+            );
+        }
+    }
+
+    /// An inert `jawata-studio-rules.md` a pre-28a deploy wrote beside a
+    /// rule-less client's config is removed on the next pass — and the removal
+    /// is idempotent, so a clean install reports nothing changed.
+    #[test]
+    fn inert_rule_file_from_an_older_deploy_is_removed() {
+        let dir = unique_tempdir("inert-rule");
+        let cfg = dir.join("config.toml");
+        std::fs::write(&cfg, "").unwrap();
+        let inert = dir.join("jawata-studio-rules.md");
+        std::fs::write(&inert, "old inert steering nothing ever read").unwrap();
+
+        assert!(remove_inert_rule_file(cfg.to_str().unwrap()).unwrap(), "reports the removal");
+        assert!(!inert.exists(), "the inert file is gone");
+        assert!(
+            !remove_inert_rule_file(cfg.to_str().unwrap()).unwrap(),
+            "second pass is a no-op — 'rules' must not report changed on every deploy"
+        );
     }
 
     #[test]
