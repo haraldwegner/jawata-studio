@@ -3359,11 +3359,6 @@ fn deploy_targets_for_paths(
             enabled_by_settings: flags.claude,
         },
         DeployClientTarget {
-            id: "antigravity",
-            target_path: paths.antigravity.effective_path.clone(),
-            enabled_by_settings: flags.antigravity,
-        },
-        DeployClientTarget {
             id: "codex",
             target_path: paths.codex.effective_path.clone(),
             enabled_by_settings: flags.codex,
@@ -4194,7 +4189,20 @@ fn write_managed_json_block(
         // Sprint 16 (bugs.md #10): the entry shape is per-client — see
         // managed_server_entry for the schema table.
         for server in servers {
-            existing_servers.insert(server.id.clone(), managed_server_entry(client, server));
+            let mut entry = managed_server_entry(client, server);
+            // jawata-studio#12: carry over user sub-keys the generator did not
+            // produce — see the TOML writer for the case that found this.
+            if let (Some(new_obj), Some(old_obj)) = (
+                entry.as_object_mut(),
+                existing_servers.get(&server.id).and_then(|v| v.as_object()),
+            ) {
+                for (key, value) in old_obj {
+                    if !new_obj.contains_key(key) {
+                        new_obj.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+            existing_servers.insert(server.id.clone(), entry);
         }
 
         // Managed-namespace keys (jawata-/goja-/jl-/javalens-) belong to the
@@ -4322,6 +4330,22 @@ fn write_managed_toml_block(
         // redeploy byte-stable against a file the user edited with it.
         if server.disabled || dialect.toml_always_writes_enabled {
             entry["enabled"] = value(!server.disabled);
+        }
+        // jawata-studio#12: the entry is OURS, but a user may nest their own
+        // policy under it — the case that found this was a hand-added
+        // `[mcp_servers.jawata-javata-dev.tools.experience] approval_mode`
+        // in Codex, deleted by every redeploy. Keys the generator produced
+        // are authoritative (url, headers, enabled…); keys it did NOT
+        // produce are the user's and are carried over.
+        if let Some(existing) = servers_table.get(&server.id).and_then(|item| item.as_table()) {
+            let carried: Vec<(String, Item)> = existing
+                .iter()
+                .filter(|(key, _)| !entry.contains_key(key))
+                .map(|(key, item)| (key.to_string(), item.clone()))
+                .collect();
+            for (key, item) in carried {
+                entry.insert(&key, item);
+            }
         }
         servers_table.insert(&server.id, Item::Table(entry));
     }
@@ -12383,6 +12407,44 @@ mod tests {
     }
 
     #[test]
+    fn user_subkeys_under_a_managed_entry_survive_a_redeploy() {
+        // jawata-studio#12, found in the v3.9.1 dogfood: Harald's hand-added
+        // Codex approval rule lived INSIDE our managed entry and every
+        // redeploy deleted it. Generator keys are authoritative; keys the
+        // generator did not produce are the user's.
+        let dir = unique_tempdir("subkey-keep");
+
+        // TOML (the case that found it — verbatim shape).
+        let toml_file = dir.join("config.toml");
+        let toml_path = toml_file.to_string_lossy().to_string();
+        std::fs::write(
+            &toml_file,
+            "[mcp_servers.jawata-ws]\nurl = \"http://old\"\n\n\
+             [mcp_servers.jawata-ws.tools.experience]\napproval_mode = \"approve\"\n",
+        )
+        .unwrap();
+        nc_write("codex", &toml_path, &[url_server("jawata-ws", 8800, "fresh", false)], false);
+        let after = std::fs::read_to_string(&toml_file).unwrap();
+        assert!(after.contains("approval_mode = \"approve\""), "user rule deleted: {after}");
+        assert!(after.contains("Bearer fresh"), "generator keys must still win: {after}");
+
+        // JSON: same contract.
+        let json_file = dir.join("mcp.json");
+        let json_path = json_file.to_string_lossy().to_string();
+        std::fs::write(
+            &json_file,
+            r#"{ "mcpServers": { "jawata-ws": { "url": "http://old", "myPolicy": {"ask": true} } } }"#,
+        )
+        .unwrap();
+        nc_write("cursor", &json_path, &[url_server("jawata-ws", 8800, "fresh", false)], false);
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&json_file).unwrap()).unwrap();
+        assert_eq!(v["mcpServers"]["jawata-ws"]["myPolicy"]["ask"], true, "user sub-key deleted");
+        assert_eq!(v["mcpServers"]["jawata-ws"]["url"], "http://127.0.0.1:8800/mcp");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn codex_writes_enabled_false_not_disabled_true() {
         // Measured 2026-08-15: a sandboxed Codex read `enabled = false` and
         // reported "jawata-probe (disabled)". Codex has NO `disabled` key, so
@@ -12541,24 +12603,17 @@ mod tests {
     }
 
     #[test]
-    fn antigravity_is_the_only_unsupported_client_and_gets_no_commands() {
-        // The two halves of "unsupported" that exist today, tied together so
-        // they cannot drift: the roster's fact, and the behaviour that follows
-        // from it. The USER-facing half (greyed, not toggleable, says why) is
-        // still Stage 2b work and is deliberately not asserted here.
-        let unsupported: Vec<&str> = crate::client_dialect::CLIENTS
-            .iter()
-            .filter(|c| !c.supported)
-            .map(|c| c.id)
-            .collect();
-        assert_eq!(unsupported, vec!["antigravity"]);
-
+    fn every_roster_client_is_supported_and_receives_commands() {
+        // Antigravity left the roster on 2026-08-16 (the four-client ruling
+        // finished the job the "unsupported" state started), so the roster
+        // currently has NO unsupported row. The MECHANISM stays: `supported`
+        // still gates seat-command generation and the deploy loop's honest
+        // skip, so a future unsupported client costs one roster field.
         for client in crate::client_dialect::CLIENTS {
-            assert_eq!(
+            assert!(client.supported, "{}: unexpected unsupported row", client.id);
+            assert!(
                 client_still_receives_seat_commands(client.id),
-                client.supported,
-                "{}: whether it receives command artifacts must follow from the \
-                 roster's `supported`, not from a second copy of the decision",
+                "{}: a supported client must receive command artifacts",
                 client.id
             );
         }
@@ -12633,30 +12688,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn antigravity_gets_no_new_workflow_files_but_its_old_ones_are_still_reachable() {
-        // D1: "Antigravity is marked unsupported rather than deleted … The
-        // workflow files Studio writes for it are removed."
-        assert!(
-            !client_still_receives_seat_commands("antigravity"),
-            "a workflow file steering an agent to jawata's tools, on a client \
-             that cannot call them, is worse than no file at all"
-        );
-        // But the location must stay known, or a previous version's files are
-        // stranded with nothing left that can find them.
-        let cfg = "/tmp/x/.gemini/antigravity/mcp_config.json";
-        assert!(
-            derive_seat_commands_dir("antigravity", cfg).is_some(),
-            "dropping the mapping strands every file a previous deploy wrote"
-        );
-        // And the supported clients are untouched by the same predicate.
-        for client in ["claude", "cursor", "codex", "copilot_cli", "vscode", "intellij"] {
-            assert!(
-                client_still_receives_seat_commands(client),
-                "{client} must still receive its command artifacts"
-            );
-        }
-    }
 
     #[test]
     fn removing_antigravity_artifacts_takes_the_utility_files_too() {

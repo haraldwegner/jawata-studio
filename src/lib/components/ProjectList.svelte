@@ -47,7 +47,6 @@
   export let deployTargetDefaults: DeployTargetFlags = {
     cursor: true,
     claude: true,
-    antigravity: true,
     codex: true,
     copilotCli: true,
     vscode: true,
@@ -56,9 +55,6 @@
   export let deployBusy = false;
   export let deployError: string | undefined;
   export let lastDeployResult: DeployToAgentsResult | undefined;
-  /** Clears the summary above. Optional so a caller that never shows one need
-   * not supply it. */
-  export let onDismissDeployResult: (() => void) | undefined = undefined;
 
   /** Sprint 28 (v3.6.0): each option carries BOTH names on purpose. `key`
    * indexes the camelCase `DeployTargetFlags` the settings API speaks; `id`
@@ -72,7 +68,6 @@
   const deployTargetOptions: Array<{ key: keyof DeployTargetFlags; id: string; label: string }> = [
     { key: "cursor", id: "cursor", label: "Cursor" },
     { key: "claude", id: "claude", label: "Claude Code" },
-    { key: "antigravity", id: "antigravity", label: "Antigravity" },
     /* Sprint 28a (D1). This array is not a display convenience — it is the
        ONLY thing that reaches the backend. runDeployWithTargets always sends
        an explicit target list built from it, and the backend treats a present
@@ -373,19 +368,15 @@
     return `${result.mode}: ${actionLabel} ${succeeded}/${total} clients (${succeeded} success, ${failed} failed, ${skipped} skipped)`;
   }
 
-  function deployFailureDetails(result: DeployToAgentsResult): string[] {
-    return result.clients
+  function deployStatusLine(result: DeployToAgentsResult): { text: string; failed: boolean } {
+    const failedNames = result.clients
       .filter((entry) => entry.status === "failed")
-      .flatMap((entry) => {
-        const validationErrors = entry.validationErrors?.length ? entry.validationErrors : [entry.message];
-        return validationErrors.map((detail) => `${entry.client}: ${detail}`);
-      });
-  }
-
-  function deploySkippedDetails(result: DeployToAgentsResult): string[] {
-    return result.clients
-      .filter((entry) => entry.status === "skipped")
-      .map((entry) => `${entry.client}: ${entry.message}`);
+      .map((entry) => entry.client);
+    const base = deploySummary(result);
+    return {
+      text: failedNames.length ? `${base} — failed: ${failedNames.join(", ")}` : base,
+      failed: failedNames.length > 0
+    };
   }
 
   function openDeployTargetPicker(mode: DeployMode) {
@@ -722,7 +713,7 @@
     <div class="deploy-target-picker">
       <p class="hint"><strong>Targets for {pendingDeployMode}</strong></p>
       <div class="deploy-target-grid">
-        {#each deployTargetOptions as option}
+        {#each deployTargetOptions.filter((option) => deployTargetDefaults[option.key]) as option}
           <label class="checkbox-row compact">
             <input
               bind:checked={deployTargetsDraft[option.key]}
@@ -752,21 +743,14 @@
   {#if deployError}
     <p class="project-error">{deployError}</p>
   {:else if lastDeployResult}
-    <!-- Sprint 28a Stage 2b: the summary now has a way out. It had none and
-         survived the whole session, so a result from an hour ago sat under the
-         button reading like the current state. -->
-    <p class="hint">{deploySummary(lastDeployResult)}</p>
-    <button type="button" on:click={() => onDismissDeployResult?.()}>Dismiss</button>
-    {#if deployFailureDetails(lastDeployResult).length > 0}
-      {#each deployFailureDetails(lastDeployResult) as failure}
-        <p class="project-error">{failure}</p>
-      {/each}
-    {/if}
-    {#if deploySkippedDetails(lastDeployResult).length > 0}
-      {#each deploySkippedDetails(lastDeployResult) as skipped}
-        <p class="hint">{skipped}</p>
-      {/each}
-    {/if}
+    <!-- Sprint 28a 2b (Harald's ruling): ONE status line, and it STAYS — the
+         status is informative (is it deployed or not). No dismiss, no line per
+         agent; failures are named inline because a failure is the one thing
+         worth more than a count. Staleness is handled at the source: starting
+         a new run clears the previous result in the store. -->
+    <p class={deployStatusLine(lastDeployResult).failed ? "project-error" : "hint"}>
+      {deployStatusLine(lastDeployResult).text}
+    </p>
   {/if}
 
   {#if selectionCount > 0}

@@ -128,7 +128,6 @@
   let deployTargets: DeployTargetFlags = {
     cursor: true,
     claude: true,
-    antigravity: true,
     codex: true,
     copilotCli: true,
     vscode: true,
@@ -137,7 +136,6 @@
   let mcpClientPaths: McpClientPaths = {
     cursor: {},
     claude: {},
-    antigravity: {},
     codex: {},
     copilotCli: {},
     vscode: {},
@@ -205,7 +203,6 @@
     return {
       cursor: normalizeMcpPathEntry(paths.cursor),
       claude: normalizeMcpPathEntry(paths.claude),
-      antigravity: normalizeMcpPathEntry(paths.antigravity),
       codex: normalizeMcpPathEntry(paths.codex),
       copilotCli: normalizeMcpPathEntry(paths.copilotCli),
       vscode: normalizeMcpPathEntry(paths.vscode),
@@ -231,7 +228,6 @@
       deployTargets: {
         cursor: input.deployTargets.cursor,
         claude: input.deployTargets.claude,
-        antigravity: input.deployTargets.antigravity,
         codex: input.deployTargets.codex,
         copilotCli: input.deployTargets.copilotCli,
         vscode: input.deployTargets.vscode,
@@ -817,10 +813,10 @@
                   "Start from scratch by deleting generated logs + workspaces? Stop running runtimes first.",
                   "cleanGeneratedData"
                 )}
-              title="Delete logs and workspace caches in one step. Stop runtimes first."
+              title="Deletes generated logs and workspace caches only — settings and registered projects survive. Stop runtimes first."
               type="button"
             >
-              Start from scratch
+              Clean logs & workspaces
             </button>
           </div>
 
@@ -854,7 +850,6 @@
       {#each [
         ["cursor", "Cursor"],
         ["claude", "Claude Code"],
-        ["antigravity", "Antigravity"],
         ["codex", "Codex"],
         ["copilotCli", "Copilot CLI"],
         ["vscode", "VS Code"],
@@ -862,19 +857,29 @@
       ] as [clientKey, clientLabel]}
         {@const key = clientKey as keyof McpClientPaths}
         {@const entry = mcpClientPaths[key]}
-        <div class="stack mcp-client-card compact">
+        <!-- Sprint 28a 2b (Harald's design): ONE switch per agent. Checked =
+             in play (appears in the dashboard picker, pre-ticked). Unchecked =
+             complete skip — greyed here, absent from the picker entirely. The
+             picker stays the per-run override for agents in play. -->
+        <div
+          class="stack mcp-client-card compact"
+          class:mcp-client-off={!deployTargets[key as keyof DeployTargetFlags]}
+        >
           <div class="mcp-client-heading">
             <div class="mcp-client-title-row">
               <strong>{clientLabel}</strong>
               <div class="mcp-client-title-controls">
-                <label class="checkbox-row compact mcp-deploy-checkbox" title="Include in deploy default">
+                <label
+                  class="checkbox-row compact mcp-deploy-checkbox"
+                  title="Checked: offered in the dashboard deploy picker, pre-ticked. Unchecked: skipped entirely."
+                >
                   <input
                     bind:checked={deployTargets[key as keyof DeployTargetFlags]}
                     disabled={interactionDisabled}
                     on:change={handleBoundEdit}
                     type="checkbox"
                   />
-                  <span>Deploy</span>
+                  <span>Include in deploys</span>
                 </label>
                 <span class={`mcp-source-badge ${mcpPathSource(entry)}`}>{mcpPathSourceLabel(entry)}</span>
               </div>
@@ -911,6 +916,26 @@
           </div>
         </div>
       {/each}
+        <!-- Not a client the backend knows: a static explanatory row. The
+             general grey-when-unchecked mechanism carries it for free, and the
+             WHY lives in the mouseover (Harald's placement) with a fuller
+             paragraph in Help. -->
+        <div class="stack mcp-client-card compact mcp-client-off">
+          <div class="mcp-client-heading">
+            <div class="mcp-client-title-row">
+              <strong>Antigravity</strong>
+              <div class="mcp-client-title-controls">
+                <label
+                  class="checkbox-row compact mcp-deploy-checkbox"
+                  title="Not supported: Antigravity's CLI has no mechanism to connect jawata (see Help)."
+                >
+                  <input checked={false} disabled type="checkbox" />
+                  <span>Include in deploys</span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <label class="field">

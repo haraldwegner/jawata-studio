@@ -595,15 +595,6 @@ export function createAppStore() {
     }));
   }
 
-  /** Dismiss the deploy summary. It had no dismiss at all and survived the
-   * session, so a result from an hour ago sat under the button as if it were
-   * the current state. */
-  function clearDeployResult() {
-    update((state) => ({
-      ...state,
-      lastDeployResult: undefined
-    }));
-  }
 
   return {
     subscribe,
@@ -634,7 +625,6 @@ export function createAppStore() {
     probeServices,
     deployToAgents,
     clearServiceProbeError,
-    clearDeployError,
-    clearDeployResult
+    clearDeployError
   };
 }

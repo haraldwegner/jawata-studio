@@ -654,6 +654,11 @@ button {
   background: rgba(15, 23, 42, 0.45);
 }
 
+/* Sprint 28a 2b: an agent switched out of deploys reads as switched off. */
+.mcp-client-card.mcp-client-off {
+  opacity: 0.55;
+}
+
 .mcp-client-card.compact {
   gap: 0.35rem;
 }

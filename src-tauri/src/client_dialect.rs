@@ -76,12 +76,6 @@ pub struct Client {
 pub const CLIENTS: &[Client] = &[
     Client { id: "cursor", settings_key: "cursor", label: "Cursor", supported: true },
     Client { id: "claude", settings_key: "claude", label: "Claude Code", supported: true },
-    Client {
-        id: "antigravity",
-        settings_key: "antigravity",
-        label: "Antigravity",
-        supported: false,
-    },
     Client { id: "codex", settings_key: "codex", label: "Codex", supported: true },
     Client {
         id: "copilot_cli",

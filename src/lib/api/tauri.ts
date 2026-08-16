@@ -72,7 +72,6 @@ export interface McpClientPathEntry {
 export interface McpClientPaths {
   cursor: McpClientPathEntry;
   claude: McpClientPathEntry;
-  antigravity: McpClientPathEntry;
   /** Sprint 28a (D1). */
   codex: McpClientPathEntry;
   copilotCli: McpClientPathEntry;
@@ -84,7 +83,6 @@ export interface McpClientPaths {
 export interface DeployTargetFlags {
   cursor: boolean;
   claude: boolean;
-  antigravity: boolean;
   /** Sprint 28a (D1). */
   codex: boolean;
   copilotCli: boolean;

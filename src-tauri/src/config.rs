@@ -121,8 +121,6 @@ pub struct McpClientPaths {
     /// Claude Code (CLI) — `~/.claude.json`.
     #[serde(default)]
     pub claude: McpClientPathEntry,
-    #[serde(default)]
-    pub antigravity: McpClientPathEntry,
     /// Sprint 28a (D1): OpenAI Codex — `~/.codex/config.toml`. ONE file serves
     /// all four Codex surfaces (CLI, VS Code extension, Desktop, Cloud), which
     /// makes it the cheapest client on the roster. TOML, not JSON.
@@ -153,20 +151,6 @@ pub struct DeployTargetFlags {
     pub cursor: bool,
     #[serde(default = "default_enabled_flag")]
     pub claude: bool,
-    /// Sprint 28a (D1): Antigravity is to be marked UNSUPPORTED, not deleted —
-    /// its command-line tool has no mechanism to connect jawata at all. A client
-    /// that explains its own absence beats one that silently vanishes (Harald,
-    /// 2026-08-11).
-    ///
-    /// SHIPPED SO FAR: the deploy writes it no workflow files and removes any a
-    /// previous version left (`client_still_receives_seat_commands`). NOT YET:
-    /// the roster does not mark it unsupported and the UI does not grey it out —
-    /// that is Stage 2b, and this comment is deliberately future-tense until
-    /// then. An earlier version stated the UI half in the present indicative,
-    /// which the C2 audit caught: a reader of this file would have believed a
-    /// behaviour that does not exist.
-    #[serde(default = "default_enabled_flag")]
-    pub antigravity: bool,
     #[serde(default = "default_enabled_flag")]
     pub codex: bool,
     #[serde(default = "default_enabled_flag")]
@@ -186,7 +170,6 @@ impl Default for DeployTargetFlags {
         Self {
             cursor: true,
             claude: true,
-            antigravity: true,
             codex: true,
             copilot_cli: true,
             vscode: true,
@@ -1303,16 +1286,6 @@ fn detect_default_mcp_client_paths() -> McpClientPaths {
     .filter_map(|parts| build(parts))
     .collect();
 
-    let antigravity_candidates: Vec<PathBuf> = [
-        [".gemini", "antigravity", "mcp_config.json"].as_slice(),
-        [".config", "Antigravity", "User", "mcp.json"].as_slice(),
-        [".antigravity", "mcp.json"].as_slice(),
-        [".config", "antigravity", "mcp.json"].as_slice(),
-    ]
-    .iter()
-    .filter_map(|parts| build(parts))
-    .collect();
-
     // Sprint 28a (D1, jawata-studio#9). MEASURED 2026-08-15 from IntelliJ's own
     // "New MCP Server" dialog, which states in the dialog itself:
     //
@@ -1378,7 +1351,6 @@ fn detect_default_mcp_client_paths() -> McpClientPaths {
     McpClientPaths {
         cursor: make_entry(&cursor_candidates),
         claude: make_entry(&claude_candidates),
-        antigravity: make_entry(&antigravity_candidates),
         codex: make_entry(&codex_candidates),
         copilot_cli: make_entry(&copilot_cli_candidates),
         vscode: make_entry(&vscode_candidates),
@@ -1391,7 +1363,6 @@ fn merge_detected_mcp_paths(paths: McpClientPaths) -> McpClientPaths {
     McpClientPaths {
         cursor: merge_mcp_path_entry(paths.cursor, defaults.cursor),
         claude: merge_mcp_path_entry(paths.claude, defaults.claude),
-        antigravity: merge_mcp_path_entry(paths.antigravity, defaults.antigravity),
         codex: merge_mcp_path_entry(paths.codex, defaults.codex),
         copilot_cli: merge_mcp_path_entry(paths.copilot_cli, defaults.copilot_cli),
         vscode: merge_mcp_path_entry(paths.vscode, defaults.vscode),
@@ -1587,14 +1558,9 @@ mod deploy_resolves_here {
     #[test]
     fn every_roster_client_resolves_to_its_expected_shape() {
         let paths = detect_default_mcp_client_paths();
-        let expected: [(&str, &McpClientPathEntry, &[&str]); 7] = [
+        let expected: [(&str, &McpClientPathEntry, &[&str]); 6] = [
             ("cursor", &paths.cursor, &[".cursor", "mcp.json"]),
             ("claude", &paths.claude, &[".claude.json"]),
-            (
-                "antigravity",
-                &paths.antigravity,
-                &[".gemini", "antigravity", "mcp_config.json"],
-            ),
             ("codex", &paths.codex, &[".codex", "config.toml"]),
             (
                 "copilot_cli",
