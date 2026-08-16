@@ -745,6 +745,22 @@ impl ManagerService {
                 ));
                 continue;
             }
+            // Sprint 28a, the four-client ruling (2026-08-16): an UNSUPPORTED
+            // client is never written to — it stays visible and explains
+            // itself instead of silently vanishing. Delete stays allowed on
+            // purpose: an install that received our entries before the ruling
+            // must still be able to clean them out.
+            let unsupported = crate::client_dialect::client(target.id)
+                .map(|c| !c.supported)
+                .unwrap_or(false);
+            if unsupported && !matches!(input.mode, DeployMode::Delete) {
+                results.push(skipped_client_result(
+                    target.id,
+                    target.target_path.clone(),
+                    "Skipped: not supported — this client has no mechanism to connect jawata.",
+                ));
+                continue;
+            }
             let result = self.deploy_to_client(
                 target.id,
                 target.target_path.clone(),
@@ -1821,9 +1837,6 @@ impl ManagerService {
         if derive_seat_commands_dir(client, &path).is_some() {
             planned_sections.push("seatCommands".into());
         }
-        if client == "claude_desktop" {
-            planned_sections.push("seatSkillExport".into());
-        }
 
         if matches!(mode, DeployMode::Preview) {
             return DeployClientResult {
@@ -1984,14 +1997,6 @@ impl ManagerService {
                     Err(error) => errors.push(error),
                 }
             }
-            if client == "claude_desktop" {
-                let export_dir = self.config_store.paths().config_dir.join("exports");
-                match remove_managed_seat_export(&export_dir) {
-                    Ok(true) => changed_sections.push("seatSkillExport".into()),
-                    Ok(false) => {}
-                    Err(error) => errors.push(error),
-                }
-            }
 
             if !errors.is_empty() {
                 return DeployClientResult {
@@ -2112,7 +2117,6 @@ impl ManagerService {
         // Seats are materialized-if-absent into <config>/seats/ (config wins —
         // a user-edited seat regenerates every channel); parse errors are LOUD
         // in the deploy result, never silently skipped.
-        let mut seat_export_note = None;
         {
             let seats_dir = self.config_store.paths().config_dir.join("seats");
             match crate::conductor::materialize_seats(&seats_dir) {
@@ -2187,18 +2191,6 @@ impl ManagerService {
                                 changed_sections.push("utilityCommands".into())
                             }
                             Ok(_) => {}
-                            Err(error) => errors.push(error),
-                        }
-                    }
-                    if client == "claude_desktop" {
-                        let export_dir = self.config_store.paths().config_dir.join("exports");
-                        match write_managed_seat_export(&export_dir, &seats, force) {
-                            Ok((zip_path, changed)) => {
-                                if changed {
-                                    changed_sections.push("seatSkillExport".into());
-                                }
-                                seat_export_note = Some(zip_path);
-                            }
                             Err(error) => errors.push(error),
                         }
                     }
@@ -2462,13 +2454,7 @@ impl ManagerService {
         }
 
         if errors.is_empty() {
-            let message = match &seat_export_note {
-                Some(zip_path) => format!(
-                    "Deploy successful. Seat skill exported to {zip_path} — upload it once \
-                     in claude.ai Settings."
-                ),
-                None => "Deploy successful.".to_string(),
-            };
+            let message = "Deploy successful.".to_string();
             DeployClientResult {
                 client: client.to_string(),
                 target_path: path,
@@ -3373,11 +3359,6 @@ fn deploy_targets_for_paths(
             enabled_by_settings: flags.claude,
         },
         DeployClientTarget {
-            id: "claude_desktop",
-            target_path: paths.claude_desktop.effective_path.clone(),
-            enabled_by_settings: flags.claude_desktop,
-        },
-        DeployClientTarget {
             id: "antigravity",
             target_path: paths.antigravity.effective_path.clone(),
             enabled_by_settings: flags.antigravity,
@@ -3658,41 +3639,6 @@ fn remove_managed_utility_commands(client: &str, commands_dir: &Path) -> Result<
     Ok(removed)
 }
 
-fn seat_export_zip_path(export_dir: &Path) -> PathBuf {
-    export_dir.join("jawata-seats-skill.zip")
-}
-
-/// The claude.ai / Claude Desktop skill archive, written into the studio
-/// export dir (the user uploads it once). Deterministic zip bytes (C2), so
-/// the change-detected write makes redeploy a no-op.
-fn write_managed_seat_export(
-    export_dir: &Path,
-    seats: &[crate::runner::SeatDefinition],
-    force_rewrite: bool,
-) -> Result<(String, bool), String> {
-    let bytes = crate::conductor::render_claudeai_skill_zip(seats)?;
-    fs::create_dir_all(export_dir)
-        .map_err(|e| format!("cannot create export dir {}: {e}", export_dir.display()))?;
-    let path = seat_export_zip_path(export_dir);
-    let changed = fs::read(&path).map(|existing| existing != bytes).unwrap_or(true);
-    if changed || force_rewrite {
-        fs::write(&path, &bytes)
-            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-        return Ok((display_path(&path), true));
-    }
-    Ok((display_path(&path), false))
-}
-
-fn remove_managed_seat_export(export_dir: &Path) -> Result<bool, String> {
-    let path = seat_export_zip_path(export_dir);
-    let existed = path.exists();
-    if existed {
-        fs::remove_file(&path).map_err(|e| format!("cannot remove {}: {e}", path.display()))?;
-    }
-    let _ = fs::remove_dir(export_dir); // only if empty
-    Ok(existed)
-}
-
 fn validate_written_client_config(
     client: &str,
     path: &str,
@@ -3751,16 +3697,34 @@ fn validate_written_toml_config(
                 server.id
             ));
         }
-        let auth_valid = entry
-            .get("http_headers")
-            .and_then(|item| item.as_inline_table())
-            .and_then(|headers| headers.get("Authorization"))
-            .and_then(|value| value.as_str())
+        // Sprint 28a hotfix (dogfood, first Deploy click of v3.9.0): the
+        // header KEY AND SHAPE come from the dialect, exactly as the writer's
+        // do. This clause was written for Codex (`http_headers`, inline) and
+        // never updated when Grok arrived (`headers`, sub-table) — so the
+        // deploy wrote a config Grok's own doctor accepts, then OUR validator
+        // reported it failed: a gate lying red about a correct write. The C2
+        // architect pass had named this drift below the fold ("one validator
+        // driven by the dialect"); shipping the writer half without the
+        // validator half is how it surfaced.
+        let dialect = crate::client_dialect::dialect_for(client);
+        let auth_value = dialect.toml_headers.and_then(|headers| {
+            let item = entry.get(headers.key)?;
+            if headers.inline {
+                item.as_inline_table()?.get("Authorization")?.as_str()
+            } else {
+                item.as_table()?.get("Authorization")?.as_str()
+            }
+        });
+        let auth_valid = auth_value
             .map(|value| value.starts_with("Bearer ") && value.len() > "Bearer ".len())
             .unwrap_or(false);
         if !auth_valid {
+            let key = dialect
+                .toml_headers
+                .map(|headers| headers.key)
+                .unwrap_or("http_headers");
             return Err(format!(
-                "{client}: server '{}' missing a Bearer http_headers.Authorization",
+                "{client}: server '{}' missing a Bearer {key}.Authorization",
                 server.id
             ));
         }
@@ -9119,20 +9083,6 @@ mod tests {
     }
 
     #[test]
-    fn seat_export_roundtrip_and_idempotency() {
-        let (_, seats) = loaded_seats("seat-export");
-        let export_dir = unique_tempdir("export-rt").join("exports");
-        let (_, changed) = write_managed_seat_export(&export_dir, &seats, false).unwrap();
-        assert!(changed, "first export writes");
-        assert!(seat_export_zip_path(&export_dir).exists());
-        let (_, changed2) = write_managed_seat_export(&export_dir, &seats, false).unwrap();
-        assert!(!changed2, "second export is a no-op (deterministic zip bytes)");
-        assert!(remove_managed_seat_export(&export_dir).unwrap());
-        assert!(!seat_export_zip_path(&export_dir).exists());
-        assert!(!export_dir.exists(), "export dir pruned");
-    }
-
-    #[test]
     fn edited_seat_propagates_to_every_channel_on_redeploy() {
         // The spec's Approach sentence, proven: "a seat edit followed by a
         // redeploy updates every channel."
@@ -9166,17 +9116,6 @@ mod tests {
                 "{client}: the edited stance reached the artifact"
             );
         }
-        // The archive channel too.
-        let bytes = crate::conductor::render_claudeai_skill_zip(&reloaded).unwrap();
-        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
-        use std::io::Read;
-        let mut reference = String::new();
-        archive
-            .by_name("jawata-seats/references/javadocs.md")
-            .unwrap()
-            .read_to_string(&mut reference)
-            .unwrap();
-        assert!(reference.contains("EDIT-MARKER"), "zip reference updated");
     }
 
     #[test]
@@ -12415,6 +12354,35 @@ mod tests {
     }
 
     #[test]
+    fn the_validator_accepts_what_the_writer_writes_for_every_toml_client() {
+        // The v3.9.0 dogfood defect, pinned. The writer learned Grok's header
+        // spelling (`headers` sub-table) while the validator kept asserting
+        // Codex's (`http_headers` inline) — so the first real Deploy reported
+        // "missing a Bearer http_headers.Authorization" about a config Grok's
+        // own doctor accepts. Writer and validator must read the SAME dialect;
+        // this drives both, per TOML client, so the pair cannot drift again.
+        for client in ["codex", "grok"] {
+            let dialect = crate::client_dialect::dialect_for(client);
+            let table = dialect.toml_table().expect("toml client");
+            let dir = unique_tempdir(&format!("wv-pin-{client}"));
+            let file = dir.join("config.toml");
+            let path = file.to_string_lossy().to_string();
+            let servers = vec![url_server("jawata-ws", 8800, "tok", false)];
+
+            write_managed_toml_block(&path, &servers, table, dialect, false, false).unwrap();
+            let contents = std::fs::read_to_string(&file).unwrap();
+            validate_written_toml_config(client, &path, &contents, table, &servers)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{client}: the validator rejected the writer's own output — \
+                         the deploy would report failure about a correct write: {error}"
+                    )
+                });
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
     fn codex_writes_enabled_false_not_disabled_true() {
         // Measured 2026-08-15: a sandboxed Codex read `enabled = false` and
         // reported "jawata-probe (disabled)". Codex has NO `disabled` key, so
@@ -12497,17 +12465,13 @@ mod tests {
         // looking in the wrong place. That ambiguity is what let the
         // claudeDesktop/claude_desktop mismatch live a whole feature lifetime
         // while reporting "Skipped: not selected in this deploy run".
-        let err = normalize_requested_deploy_targets(Some(&vec!["claudeDesktop".to_string()]))
+        // claude_desktop — the client the original bug lived on — left the
+        // roster on 2026-08-16, so the exemplar is now Copilot CLI, the
+        // surviving two-word client with the same camelCase/snake_case split.
+        let err = normalize_requested_deploy_targets(Some(&vec!["copilotCli".to_string()]))
             .expect_err("a settings key is not a client id");
-        assert!(err.contains("Claude Desktop"), "{err}");
-        assert!(err.contains("claude_desktop"), "must name the id to send: {err}");
-
-        // Same for the two-word clients Sprint 28a added — there are three now.
-        for (sent, want) in [("copilotCli", "copilot_cli")] {
-            let err = normalize_requested_deploy_targets(Some(&vec![sent.to_string()]))
-                .expect_err("a settings key is not a client id");
-            assert!(err.contains(want), "{sent}: {err}");
-        }
+        assert!(err.contains("Copilot CLI"), "{err}");
+        assert!(err.contains("copilot_cli"), "must name the id to send: {err}");
 
         // A genuinely unknown name gets the plain refusal, with no invented hint.
         let err = normalize_requested_deploy_targets(Some(&vec!["notaclient".to_string()]))
@@ -12977,26 +12941,26 @@ mod tests {
         // v3.5.1 and earlier SILENTLY dropped this and then reported
         // "Skipped: not selected in this deploy run" — the lie that hid the
         // bug. It must now fail loudly and name the offending id.
-        let requested = vec!["cursor".to_string(), "claudeDesktop".to_string()];
+        let requested = vec!["cursor".to_string(), "copilotCli".to_string()];
         let error = normalize_requested_deploy_targets(Some(&requested))
             .expect_err("an unknown client id must refuse the deploy, not vanish");
         assert!(
-            error.contains("claudedesktop"),
+            error.contains("copilotcli"),
             "the refusal must name the offending id, got: {error}"
         );
         assert!(
-            error.contains("claude_desktop"),
+            error.contains("copilot_cli"),
             "the refusal must teach the correct id, got: {error}"
         );
     }
 
     #[test]
     fn deploy_target_ids_are_case_and_whitespace_tolerant() {
-        let requested = vec!["  Claude_Desktop  ".to_string()];
+        let requested = vec!["  Copilot_CLI  ".to_string()];
         let resolved = normalize_requested_deploy_targets(Some(&requested))
             .expect("trimmed/cased known ids stay accepted")
             .expect("an explicit selection must produce a set");
-        assert!(resolved.contains("claude_desktop"));
+        assert!(resolved.contains("copilot_cli"));
     }
 
     #[test]

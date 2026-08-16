@@ -1,6 +1,6 @@
 # jawata-studio Help
 
-**jawata-studio** is the desktop control plane for **JAWATA** — it lets you create **named workspaces** of one-or-more Java projects, runs a single shared JAWATA MCP service per workspace, and **deploys** the connection details into your AI tools (Cursor, Claude Code, Claude Desktop, Codex, GitHub Copilot CLI, VS Code, Grok).
+**jawata-studio** is the desktop control plane for **JAWATA** — it lets you create **named workspaces** of one-or-more Java projects, runs a single shared JAWATA MCP service per workspace, and **deploys** the connection details into your AI tools (Cursor, Claude Code, Codex, GitHub Copilot CLI, VS Code, Grok).
 
 The point: it gives your AI agents the same IDE-grade understanding of a Java codebase that a human developer gets in Eclipse or IntelliJ — call hierarchies, type hierarchies, references, refactorings, build classpath, JDK semantics. **Java agents on steroids.**
 
@@ -106,7 +106,7 @@ If the row you grab is part of an active selection, the **whole selection** move
 
 The **Agent deploy** strip contains **Deploy to Agents**, **Dry run**, **Regenerate**, and **Delete**. These actions do **not** start or stop JAWATA — they rebuild MCP entries from your workspaces and read or write **MCP client config files** on disk (see Settings → MCP Config Locations).
 
-- **Deploy to Agents** — Writes manager-owned MCP server entries (one per workspace, keyed `jawata-<workspace-name>`) into the selected clients' configs, plus the rule blocks the manager maintains. Each client receives the entry shape its own tooling writes, which is not the same for any two of them: **Cursor / Claude Code / Claude Desktop / Copilot CLI** take `{ "type": "http", "url": …, "headers": … }` under `mcpServers`; **VS Code** uses the same entry but under **`servers`**, not `mcpServers`; **Codex** and **Grok** are **TOML**, not JSON — `[mcp_servers.<id>]` with `url`, and "off" spelled `enabled = false` rather than `disabled = true`. Even those two differ from each other: Codex keeps the bearer token in an inline `http_headers` table, Grok in a `headers` sub-table. Comments and settings already in a Codex or VS Code file survive a deploy, and a file that cannot be parsed is refused rather than overwritten. Workspace add / rename / delete automatically refresh clients you have already deployed to (never-deployed clients stay untouched), and any workspace that cannot be resolved at deploy time is reported in the result instead of being silently omitted.
+- **Deploy to Agents** — Writes manager-owned MCP server entries (one per workspace, keyed `jawata-<workspace-name>`) into the selected clients' configs, plus the rule blocks the manager maintains. Each client receives the entry shape its own tooling writes, which is not the same for any two of them: **Cursor / Claude Code / Copilot CLI** take `{ "type": "http", "url": …, "headers": … }` under `mcpServers`; **VS Code** uses the same entry but under **`servers`**, not `mcpServers`; **Codex** and **Grok** are **TOML**, not JSON — `[mcp_servers.<id>]` with `url`, and "off" spelled `enabled = false` rather than `disabled = true`. Even those two differ from each other: Codex keeps the bearer token in an inline `http_headers` table, Grok in a `headers` sub-table. Comments and settings already in a Codex or VS Code file survive a deploy, and a file that cannot be parsed is refused rather than overwritten. Workspace add / rename / delete automatically refresh clients you have already deployed to (never-deployed clients stay untouched), and any workspace that cannot be resolved at deploy time is reported in the result instead of being silently omitted.
 - **Dry run** — Same validation and diff output as Deploy, but no files are written.
 - **Regenerate** — Force-rewrites the manager-managed sections, even if nothing has changed since the last write. Useful after manual edits.
 - **Delete** — Removes only the manager-injected MCP servers and rule blocks from the selected clients. It does not uninstall JAWATA or remove your projects.
@@ -265,7 +265,7 @@ If a probe fails, fix connectivity or runtime issues before relying on **Deploy 
 
 ### MCP Config Locations
 
-For each supported client (**Cursor**, **Claude Code**, **Claude Desktop**, **Codex**, **Copilot CLI**, **VS Code**, **Grok**):
+For each supported client (**Cursor**, **Claude Code**, **Codex**, **Copilot CLI**, **VS Code**, **Grok**):
 
 - **Deploy** — When checked, the client is included in the *default* set of the deploy target picker. Override per run if you need to.
 - **Current** — Effective path the manager will use (auto-detected, or your manual override).
@@ -277,7 +277,6 @@ For each supported client (**Cursor**, **Claude Code**, **Claude Desktop**, **Co
 |---|---|
 | Cursor | `~/.cursor/mcp.json` |
 | Claude Code | `~/.claude.json` |
-| Claude Desktop | `<config dir>/Claude/claude_desktop_config.json` |
 | Codex | `~/.codex/config.toml` — one file serves the command line, the VS Code extension, Desktop and Cloud |
 | Copilot CLI | `~/.copilot/mcp-config.json` |
 | VS Code | `<config dir>/Code/User/mcp.json` |

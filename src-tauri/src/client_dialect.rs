@@ -77,12 +77,6 @@ pub const CLIENTS: &[Client] = &[
     Client { id: "cursor", settings_key: "cursor", label: "Cursor", supported: true },
     Client { id: "claude", settings_key: "claude", label: "Claude Code", supported: true },
     Client {
-        id: "claude_desktop",
-        settings_key: "claudeDesktop",
-        label: "Claude Desktop",
-        supported: true,
-    },
-    Client {
         id: "antigravity",
         settings_key: "antigravity",
         label: "Antigravity",

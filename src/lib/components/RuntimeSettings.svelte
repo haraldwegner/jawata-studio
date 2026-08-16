@@ -128,7 +128,6 @@
   let deployTargets: DeployTargetFlags = {
     cursor: true,
     claude: true,
-    claudeDesktop: true,
     antigravity: true,
     codex: true,
     copilotCli: true,
@@ -138,7 +137,6 @@
   let mcpClientPaths: McpClientPaths = {
     cursor: {},
     claude: {},
-    claudeDesktop: {},
     antigravity: {},
     codex: {},
     copilotCli: {},
@@ -207,7 +205,6 @@
     return {
       cursor: normalizeMcpPathEntry(paths.cursor),
       claude: normalizeMcpPathEntry(paths.claude),
-      claudeDesktop: normalizeMcpPathEntry(paths.claudeDesktop),
       antigravity: normalizeMcpPathEntry(paths.antigravity),
       codex: normalizeMcpPathEntry(paths.codex),
       copilotCli: normalizeMcpPathEntry(paths.copilotCli),
@@ -234,7 +231,6 @@
       deployTargets: {
         cursor: input.deployTargets.cursor,
         claude: input.deployTargets.claude,
-        claudeDesktop: input.deployTargets.claudeDesktop,
         antigravity: input.deployTargets.antigravity,
         codex: input.deployTargets.codex,
         copilotCli: input.deployTargets.copilotCli,
@@ -858,7 +854,6 @@
       {#each [
         ["cursor", "Cursor"],
         ["claude", "Claude Code"],
-        ["claudeDesktop", "Claude Desktop"],
         ["antigravity", "Antigravity"],
         ["codex", "Codex"],
         ["copilotCli", "Copilot CLI"],

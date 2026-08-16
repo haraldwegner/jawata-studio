@@ -47,7 +47,6 @@
   export let deployTargetDefaults: DeployTargetFlags = {
     cursor: true,
     claude: true,
-    claudeDesktop: true,
     antigravity: true,
     codex: true,
     copilotCli: true,
@@ -73,7 +72,6 @@
   const deployTargetOptions: Array<{ key: keyof DeployTargetFlags; id: string; label: string }> = [
     { key: "cursor", id: "cursor", label: "Cursor" },
     { key: "claude", id: "claude", label: "Claude Code" },
-    { key: "claudeDesktop", id: "claude_desktop", label: "Claude Desktop" },
     { key: "antigravity", id: "antigravity", label: "Antigravity" },
     /* Sprint 28a (D1). This array is not a display convenience — it is the
        ONLY thing that reaches the backend. runDeployWithTargets always sends
