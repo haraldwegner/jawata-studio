@@ -222,6 +222,42 @@ jobs:
           echo "--- spctl (informational; the runner is not the user's machine) ---"
           spctl -a -vvv -t install "$DMG" || true
 
+      # Sprint 28a (D6): the portable archive — the Scoop route's payload.
+      # Same adjacency law the .deb post-bake enforces: the studio resolves
+      # its hook sidecar relative to current_exe() (hook_source_candidates
+      # expects `jawata-hook.exe` beside the app), so the zip carries the exe
+      # and the sidecar side by side and the step FAILS when either is absent
+      # — a zip without the sidecar deploys no hooks while reporting success.
+      # Note the trade-off the installers don't have: the portable exe does
+      # not bootstrap WebView2 (Windows 11 ships it; the MSI/NSIS routes
+      # install it on Windows 10). The Scoop bucket README states this.
+      - name: Portable zip (windows only)
+        if: startsWith(matrix.platform, 'windows-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          REL=src-tauri/target/release
+          TRIPLE=$(rustc -vV | awk '/^host:/ {print $2}')
+          test -f "$REL/jawata-studio.exe" || { echo "::error::jawata-studio.exe not built"; exit 1; }
+          SIDECAR="src-tauri/binaries/jawata-hook-${TRIPLE}.exe"
+          test -f "$SIDECAR" || { echo "::error::hook sidecar ${SIDECAR} not built"; exit 1; }
+          case "$TRIPLE" in
+            aarch64-*) ARCH=arm64 ;;
+            *)         ARCH=x64 ;;
+          esac
+          OUT="jawata-studio-portable-windows-${ARCH}.zip"
+          STAGE=portable/jawata-studio
+          mkdir -p "$STAGE"
+          cp "$REL/jawata-studio.exe" "$STAGE/"
+          cp "$SIDECAR" "$STAGE/jawata-hook.exe"
+          (cd portable && 7z a "../$OUT" jawata-studio >/dev/null)
+          # Assert the archive CONTENT, not the copy commands: list and match,
+          # the same capture-then-grep shape as the sidecar containment check.
+          LISTING=$(7z l "$OUT")
+          echo "$LISTING" | grep -q "jawata-studio.exe" || { echo "::error::zip lacks the app exe"; exit 1; }
+          echo "$LISTING" | grep -Eq "jawata[-_]hook" || { echo "::error::zip lacks the hook sidecar"; exit 1; }
+          echo "portable archive built: $OUT"
+
       # Sprint 28 (D-UNWIRED), the Rust half of the same gate jawata-mcp runs
       # on its release. Linux only — the answer is a property of the source,
       # identical on every target.
@@ -461,6 +497,7 @@ jobs:
             src-tauri/target/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/nsis/*.exe
+            jawata-studio-portable-windows-*.zip
 
       # Sprint 16: workflow_dispatch validation runs surface the bundles as
       # workflow artifacts instead of touching any release.
@@ -475,6 +512,7 @@ jobs:
             src-tauri/target/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/nsis/*.exe
+            jawata-studio-portable-windows-*.zip
           if-no-files-found: warn
 
   # Sprint 26 (v3.2.1, finding #6): the matrix above uploads every
