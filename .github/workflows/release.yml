@@ -119,7 +119,11 @@ jobs:
           set -euo pipefail
           cargo test --release -p jawata-studio --lib deploy_resolves_here \
             -- --nocapture 2>&1 | tee /tmp/resolve.txt
-          EXPECTED=5
+          # 4 since v3.9.1: claude_desktop left the roster and took its
+          # path test with it. This number is MEASURED (cargo test --lib
+          # deploy_resolves_here), and this very check is what caught the
+          # removal — the count must move with the roster, in the same commit.
+          EXPECTED=4
           if ! grep -q "^test result: ok\. ${EXPECTED} passed" /tmp/resolve.txt; then
             echo "::error::expected ${EXPECTED} deploy_resolves_here tests to pass on ${{ matrix.platform }}."
             echo "A filter that matches nothing exits 0, so this step must count."
