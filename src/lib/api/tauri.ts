@@ -78,6 +78,7 @@ export interface McpClientPaths {
   codex: McpClientPathEntry;
   copilotCli: McpClientPathEntry;
   vscode: McpClientPathEntry;
+  grok: McpClientPathEntry;
 }
 
 /** Flags indicating which MCP clients to deploy to. */
@@ -90,6 +91,7 @@ export interface DeployTargetFlags {
   codex: boolean;
   copilotCli: boolean;
   vscode: boolean;
+  grok: boolean;
 }
 
 /** Source configuration for the JAWATA runtime. */

@@ -143,6 +143,11 @@ pub struct McpClientPaths {
     /// Its server map hangs under `servers`, not `mcpServers`.
     #[serde(default)]
     pub vscode: McpClientPathEntry,
+    /// Sprint 28a (D1): Grok Build — `~/.grok/config.toml`, named by
+    /// `grok mcp add --scope user`. TOML like Codex, and the same file that
+    /// already holds its `[cli]` / `[ui]` sections.
+    #[serde(default)]
+    pub grok: McpClientPathEntry,
 }
 
 /// Flags indicating which MCP clients should receive deployments.
@@ -175,6 +180,8 @@ pub struct DeployTargetFlags {
     pub copilot_cli: bool,
     #[serde(default = "default_enabled_flag")]
     pub vscode: bool,
+    #[serde(default = "default_enabled_flag")]
+    pub grok: bool,
 }
 
 fn default_enabled_flag() -> bool {
@@ -191,6 +198,7 @@ impl Default for DeployTargetFlags {
             codex: true,
             copilot_cli: true,
             vscode: true,
+            grok: true,
         }
     }
 }
@@ -1367,6 +1375,14 @@ fn detect_default_mcp_client_paths() -> McpClientPaths {
         .filter_map(|parts| build_config(parts))
         .collect();
 
+    // Grok keys off HOME, and `grok mcp add --scope user` names this file
+    // explicitly in its own --help. It is shared with Grok's other settings,
+    // which is why the writer must preserve what it does not own.
+    let grok_candidates: Vec<PathBuf> = [[".grok", "config.toml"].as_slice()]
+        .iter()
+        .filter_map(|parts| build(parts))
+        .collect();
+
     let make_entry = |candidates: &[PathBuf]| McpClientPathEntry {
         auto_detected_path: detect(candidates),
         manual_override_path: None,
@@ -1381,6 +1397,7 @@ fn detect_default_mcp_client_paths() -> McpClientPaths {
         codex: make_entry(&codex_candidates),
         copilot_cli: make_entry(&copilot_cli_candidates),
         vscode: make_entry(&vscode_candidates),
+        grok: make_entry(&grok_candidates),
     }
 }
 
@@ -1394,6 +1411,7 @@ fn merge_detected_mcp_paths(paths: McpClientPaths) -> McpClientPaths {
         codex: merge_mcp_path_entry(paths.codex, defaults.codex),
         copilot_cli: merge_mcp_path_entry(paths.copilot_cli, defaults.copilot_cli),
         vscode: merge_mcp_path_entry(paths.vscode, defaults.vscode),
+        grok: merge_mcp_path_entry(paths.grok, defaults.grok),
     }
 }
 
@@ -1594,7 +1612,7 @@ mod deploy_resolves_here {
     #[test]
     fn every_roster_client_resolves_to_its_expected_shape() {
         let paths = detect_default_mcp_client_paths();
-        let expected: [(&str, &McpClientPathEntry, &[&str]); 7] = [
+        let expected: [(&str, &McpClientPathEntry, &[&str]); 8] = [
             ("cursor", &paths.cursor, &[".cursor", "mcp.json"]),
             ("claude", &paths.claude, &[".claude.json"]),
             (
@@ -1614,6 +1632,7 @@ mod deploy_resolves_here {
                 &[".copilot", "mcp-config.json"],
             ),
             ("vscode", &paths.vscode, &["Code", "User", "mcp.json"]),
+            ("grok", &paths.grok, &[".grok", "config.toml"]),
         ];
         assert_eq!(
             expected.len(),

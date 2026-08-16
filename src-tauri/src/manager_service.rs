@@ -2040,6 +2040,7 @@ impl ManagerService {
                 &path,
                 servers,
                 table,
+                crate::client_dialect::dialect_for(client),
                 backup_before_write,
                 matches!(mode, DeployMode::Regenerate),
             ),
@@ -3396,6 +3397,11 @@ fn deploy_targets_for_paths(
             target_path: paths.vscode.effective_path.clone(),
             enabled_by_settings: flags.vscode,
         },
+        DeployClientTarget {
+            id: "grok",
+            target_path: paths.grok.effective_path.clone(),
+            enabled_by_settings: flags.grok,
+        },
     ]
 }
 
@@ -4286,6 +4292,7 @@ fn write_managed_toml_block(
     path: &str,
     servers: &[ManagedDeployServer],
     table_name: &str,
+    dialect: crate::client_dialect::ClientDialect,
     backup_before_write: bool,
     force_rewrite: bool,
 ) -> Result<(), String> {
@@ -4328,15 +4335,29 @@ fn write_managed_toml_block(
         let mut entry = Table::new();
         entry["url"] = value(server.url.clone());
 
-        let mut headers = InlineTable::new();
-        headers.insert(
-            "Authorization",
-            Value::from(format!("Bearer {}", server.token)),
-        );
-        entry["http_headers"] = value(Value::InlineTable(headers));
+        // The header block's key AND shape are the client's, from the dialect.
+        // Codex reads an inline `http_headers`; Grok reads a `headers`
+        // SUB-TABLE. Same file format, same table header — and a bearer token
+        // written in the other one's spelling produces a server the client
+        // lists and cannot authenticate to.
+        let auth = format!("Bearer {}", server.token);
+        if let Some(headers) = dialect.toml_headers {
+            if headers.inline {
+                let mut inline = InlineTable::new();
+                inline.insert("Authorization", Value::from(auth));
+                entry[headers.key] = value(Value::InlineTable(inline));
+            } else {
+                let mut sub = Table::new();
+                sub["Authorization"] = value(auth);
+                entry[headers.key] = Item::Table(sub);
+            }
+        }
 
-        if server.disabled {
-            entry["enabled"] = value(false);
+        // `grok mcp add` writes `enabled` either way; `codex mcp add` writes it
+        // only to disable. Matching each tool's own output is what keeps a
+        // redeploy byte-stable against a file the user edited with it.
+        if server.disabled || dialect.toml_always_writes_enabled {
+            entry["enabled"] = value(!server.disabled);
         }
         servers_table.insert(&server.id, Item::Table(entry));
     }
@@ -12187,7 +12208,15 @@ mod tests {
     /// actually get.
     fn nc_write(client: &str, path: &str, servers: &[ManagedDeployServer], force: bool) {
         match crate::client_dialect::dialect_for(client).toml_table() {
-            Some(table) => write_managed_toml_block(path, servers, table, false, force).unwrap(),
+            Some(table) => write_managed_toml_block(
+                path,
+                servers,
+                table,
+                crate::client_dialect::dialect_for(client),
+                false,
+                force,
+            )
+            .unwrap(),
             None => write_managed_json_block(
                 path,
                 client,
@@ -12422,6 +12451,7 @@ mod tests {
             &path,
             &[url_server("jawata", 8800, "tok", false)],
             "mcp_servers",
+            crate::client_dialect::dialect_for("codex"),
             false,
             false,
         );
@@ -13445,7 +13475,15 @@ mod stage2_live_probe {
         let client = std::env::var("JAWATA_PROBE_CLIENT").unwrap_or_else(|_| "codex".into());
         match crate::client_dialect::dialect_for(&client).toml_table() {
             Some(table) => {
-                write_managed_toml_block(&out, &servers, table, false, false).unwrap()
+                write_managed_toml_block(
+                    &out,
+                    &servers,
+                    table,
+                    crate::client_dialect::dialect_for(&client),
+                    false,
+                    false,
+                )
+                .unwrap()
             }
             None => write_managed_json_block(
                 &out,

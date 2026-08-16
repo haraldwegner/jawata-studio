@@ -96,6 +96,7 @@ pub const CLIENTS: &[Client] = &[
         supported: true,
     },
     Client { id: "vscode", settings_key: "vscode", label: "VS Code", supported: true },
+    Client { id: "grok", settings_key: "grok", label: "Grok", supported: true },
 ];
 
 /// The roster row for a client id, or `None` for an id we do not know.
@@ -136,6 +137,29 @@ pub struct ClientDialect {
     /// `copilot mcp add` emits `"tools": ["*"]`, and matching what the client
     /// writes for itself is what keeps a round-trip byte-stable.
     pub emits_tools_filter: bool,
+    /// TOML only — what this client calls the auth header block, and how it
+    /// shapes it. Codex writes an INLINE table keyed `http_headers`; Grok
+    /// writes a SUB-TABLE keyed `headers`. Same file format, same
+    /// `[mcp_servers.<id>]` header, different spelling for the one field that
+    /// carries the bearer token — so getting it wrong produces a server the
+    /// client sees and cannot authenticate to.
+    pub toml_headers: Option<TomlHeaders>,
+    /// TOML only — whether the client's own tooling writes `enabled` even when
+    /// the server IS enabled. `grok mcp add` does; `codex mcp add` omits it and
+    /// writes `enabled = false` only to disable. Matching each tool's own
+    /// output is what keeps a redeploy byte-stable against a file the user may
+    /// have edited with that tool.
+    pub toml_always_writes_enabled: bool,
+}
+
+/// How a TOML client spells its auth headers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TomlHeaders {
+    /// The key the block hangs under (`http_headers` / `headers`).
+    pub key: &'static str,
+    /// `true` for `key = { "Authorization" = … }`; `false` for a
+    /// `[mcp_servers.<id>.key]` sub-table.
+    pub inline: bool,
 }
 
 impl ClientDialect {
@@ -172,6 +196,9 @@ pub fn dialect_for(client: &str) -> ClientDialect {
         // Codex: `[mcp_servers.<id>]` with `url` and `http_headers`. Confirmed
         // by `codex mcp get`, which reports `http_headers: Authorization=*****`
         // back from a file carrying exactly that key.
+        // Codex: `[mcp_servers.<id>]` with `url` and an INLINE `http_headers`
+        // table. Confirmed by `codex mcp get`, which reports
+        // `http_headers: Authorization=*****` back from a file carrying it.
         "codex" => ClientDialect {
             format: ConfigFormat::Toml {
                 table: "mcp_servers",
@@ -180,6 +207,33 @@ pub fn dialect_for(client: &str) -> ClientDialect {
             emits_type: false,
             emits_always_load: false,
             emits_tools_filter: false,
+            toml_headers: Some(TomlHeaders { key: "http_headers", inline: true }),
+            toml_always_writes_enabled: false,
+        },
+
+        // Grok Build: the SAME TOML family as Codex — `[mcp_servers.<id>]`,
+        // `url` — and different in exactly two ways, both measured on
+        // 2026-08-16 by running `grok mcp add --transport http … --header
+        // "Authorization: Bearer …"` in a sandboxed HOME and reading the file
+        // back: the headers are a SUB-TABLE keyed `headers`, and `enabled` is
+        // written even when true.
+        //
+        // Scope, decided by Harald: TOOLS ONLY. Grok's terms restrict sending
+        // it an automation prompt, which is a question about driving it and not
+        // about connecting it — a config a human then uses interactively is not
+        // automation. The GUARD is not claimed: this CLI exposes no hook
+        // mechanism in its help or its bundled manifest, and the hook target on
+        // record belongs to Grok's editor extension, a surface not checked yet.
+        "grok" => ClientDialect {
+            format: ConfigFormat::Toml {
+                table: "mcp_servers",
+            },
+            url_field: "url",
+            emits_type: false,
+            emits_always_load: false,
+            emits_tools_filter: false,
+            toml_headers: Some(TomlHeaders { key: "headers", inline: false }),
+            toml_always_writes_enabled: true,
         },
         // VS Code: `servers`, NOT `mcpServers` — the one client that differs.
         "vscode" => ClientDialect {
@@ -190,6 +244,8 @@ pub fn dialect_for(client: &str) -> ClientDialect {
             emits_type: true,
             emits_always_load: false,
             emits_tools_filter: false,
+            toml_headers: None,
+            toml_always_writes_enabled: false,
         },
         // Copilot CLI: `mcpServers` with the standard http entry plus a tools
         // filter, exactly as `copilot mcp add` writes it.
@@ -201,6 +257,8 @@ pub fn dialect_for(client: &str) -> ClientDialect {
             emits_type: true,
             emits_always_load: false,
             emits_tools_filter: true,
+            toml_headers: None,
+            toml_always_writes_enabled: false,
         },
         // Antigravity (Windsurf lineage): `serverUrl`, and no `type`.
         "antigravity" => ClientDialect {
@@ -211,6 +269,8 @@ pub fn dialect_for(client: &str) -> ClientDialect {
             emits_type: false,
             emits_always_load: false,
             emits_tools_filter: false,
+            toml_headers: None,
+            toml_always_writes_enabled: false,
         },
         "claude" => ClientDialect {
             format: ConfigFormat::Json {
@@ -220,6 +280,8 @@ pub fn dialect_for(client: &str) -> ClientDialect {
             emits_type: true,
             emits_always_load: true,
             emits_tools_filter: false,
+            toml_headers: None,
+            toml_always_writes_enabled: false,
         },
         // cursor, claude_desktop, intellij and anything else.
         _ => ClientDialect {
@@ -230,6 +292,8 @@ pub fn dialect_for(client: &str) -> ClientDialect {
             emits_type: true,
             emits_always_load: false,
             emits_tools_filter: false,
+            toml_headers: None,
+            toml_always_writes_enabled: false,
         },
     }
 }

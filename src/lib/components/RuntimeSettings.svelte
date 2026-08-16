@@ -132,7 +132,8 @@
     antigravity: true,
     codex: true,
     copilotCli: true,
-    vscode: true
+    vscode: true,
+    grok: true
   };
   let mcpClientPaths: McpClientPaths = {
     cursor: {},
@@ -141,7 +142,8 @@
     antigravity: {},
     codex: {},
     copilotCli: {},
-    vscode: {}
+    vscode: {},
+    grok: {}
   };
 
   let hasHydratedSettings = false;
@@ -209,7 +211,8 @@
       antigravity: normalizeMcpPathEntry(paths.antigravity),
       codex: normalizeMcpPathEntry(paths.codex),
       copilotCli: normalizeMcpPathEntry(paths.copilotCli),
-      vscode: normalizeMcpPathEntry(paths.vscode)
+      vscode: normalizeMcpPathEntry(paths.vscode),
+      grok: normalizeMcpPathEntry(paths.grok)
     };
   }
 
@@ -235,7 +238,8 @@
         antigravity: input.deployTargets.antigravity,
         codex: input.deployTargets.codex,
         copilotCli: input.deployTargets.copilotCli,
-        vscode: input.deployTargets.vscode
+        vscode: input.deployTargets.vscode,
+        grok: input.deployTargets.grok
       },
       releaseRepo: trimmedRepo && trimmedRepo.length > 0 ? trimmedRepo : null
     };
@@ -858,7 +862,8 @@
         ["antigravity", "Antigravity"],
         ["codex", "Codex"],
         ["copilotCli", "Copilot CLI"],
-        ["vscode", "VS Code"]
+        ["vscode", "VS Code"],
+        ["grok", "Grok"]
       ] as [clientKey, clientLabel]}
         {@const key = clientKey as keyof McpClientPaths}
         {@const entry = mcpClientPaths[key]}

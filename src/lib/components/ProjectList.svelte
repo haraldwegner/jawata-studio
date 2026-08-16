@@ -51,7 +51,8 @@
     antigravity: true,
     codex: true,
     copilotCli: true,
-    vscode: true
+    vscode: true,
+    grok: true
   };
   export let deployBusy = false;
   export let deployError: string | undefined;
@@ -86,7 +87,8 @@
        is never consulted to make true. */
     { key: "codex", id: "codex", label: "Codex" },
     { key: "copilotCli", id: "copilot_cli", label: "Copilot CLI" },
-    { key: "vscode", id: "vscode", label: "VS Code" }
+    { key: "vscode", id: "vscode", label: "VS Code" },
+    { key: "grok", id: "grok", label: "Grok" }
   ];
 
   let rowRefs: Record<string, HTMLElement> = {};
