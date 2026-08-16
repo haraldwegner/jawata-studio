@@ -99,7 +99,20 @@ jobs:
       # this step green while testing zero paths — the same "reports success,
       # does nothing" shape the step exists to catch, one level up. Asserting
       # the number means the step fails loudly if it ever stops selecting.
+      #
+      # NOT on Windows, and the reason is a real gap rather than a preference:
+      # the studio crate's TEST target does not compile there. Its fixtures use
+      # `std::os::unix::fs::PermissionsExt`, `set_mode` and `#!/bin/sh` scripts
+      # in a dozen places, because "Test the studio crate" above is Linux-only
+      # and nothing had ever built that target on Windows. This step was the
+      # first thing to ask, and it failed to compile before it could check a
+      # single path (v3.9.0's first release run). Tracked as jawata-studio#10.
+      #
+      # macOS still runs it, and that is not a consolation prize: macOS is where
+      # `dirs::config_dir()` returns ~/Library/Application Support rather than
+      # ~/.config, which is half of the exact hazard this step exists to catch.
       - name: Deploy paths resolve correctly on this platform
+        if: "!startsWith(matrix.platform, 'windows-')"
         shell: bash
         working-directory: src-tauri
         run: |

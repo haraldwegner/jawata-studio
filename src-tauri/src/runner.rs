@@ -2412,6 +2412,10 @@ pub fn due_seats<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Unix-only: the seat fixtures below are `#!/bin/sh` scripts, which Windows
+    // cannot execute at all, so the tests that use them are gated rather than
+    // ported. See the note on `write_echo_script`.
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn unique_tempdir(label: &str) -> PathBuf {
@@ -2610,6 +2614,18 @@ You are the echo seat. You document what you are told to document.
     /// Writes the echo-seat driver script: DETECT answers WORK once (via a
     /// state file so iteration 2 would answer NOTHING), PROPOSE emits the
     /// canned diff.
+    /// Sprint 28a: `#[cfg(unix)]` because this writes a `#!/bin/sh` script and
+    /// marks it executable — neither of which means anything on Windows. The
+    /// four tests that drive a seat through it are gated the same way.
+    ///
+    /// This was invisible until the release workflow started building the
+    /// studio crate's TESTS on Windows: the "Test the studio crate" step is
+    /// Linux-only, so nothing had ever compiled this target there, and the
+    /// whole lib-test build failed on two Unix-only lines. An honest per-OS
+    /// skip is the right answer for a shell-script fixture; porting it to a
+    /// cross-platform fake belongs with the seat runner's own Windows story,
+    /// not with a path check that happens to have exposed it.
+    #[cfg(unix)]
     fn write_echo_script(dir: &Path, diff_file: &Path, out_of_scope: bool) -> PathBuf {
         let diff = if out_of_scope {
             DIFF.replace("src/main/java/com/example/Foo.java", "build/pom.xml")
@@ -2654,6 +2670,7 @@ You are the echo seat. You document what you are told to document.
 
     #[cfg(unix)]
     #[test]
+    #[cfg(unix)]
     fn echo_seat_full_loop_proposes_and_never_applies() {
         let dir = unique_tempdir("e2e-propose");
         let target = fixture_with_target(&dir);
@@ -2700,6 +2717,7 @@ You are the echo seat. You document what you are told to document.
 
     #[cfg(unix)]
     #[test]
+    #[cfg(unix)]
     fn gate_failing_proposal_is_refused_with_the_reason() {
         let dir = unique_tempdir("e2e-refuse");
         fixture_with_target(&dir);
@@ -2736,6 +2754,7 @@ You are the echo seat. You document what you are told to document.
 
     #[cfg(unix)]
     #[test]
+    #[cfg(unix)]
     fn out_of_scope_diff_is_refused_by_purity() {
         let dir = unique_tempdir("e2e-purity");
         fixture_with_target(&dir);
@@ -2847,6 +2866,7 @@ You are the echo seat. You document what you are told to document.
 
     #[cfg(unix)]
     #[test]
+    #[cfg(unix)]
     fn max_iterations_ceiling_stops_a_looping_seat() {
         let dir = unique_tempdir("e2e-iters");
         fixture_with_target(&dir);
