@@ -175,8 +175,14 @@ any control for its prompt phrase.
 ### Memory from Cursor (and other clients)
 
 This store is your **cross-client memory**: the same entries answer in Cursor, Claude
-Code, and any MCP client. The tools and the **guard are identical on every client** —
-what differs is memory *delivery*. **Claude Code: full auto-push** (session primer,
+Code, and any MCP client. The tools are identical on every client; the **enforcement
+guard runs on Claude Code and Cursor** (the clients with a hook surface — see the
+client table above). Every other client holds jawata's guidance **in-band**: the MCP
+connection itself carries the instructions (naming which workspace each server
+serves), and every tool result carries steering — no rule file is written for them,
+and jawata never writes guidance into your own repository; adding an `AGENTS.md` or
+Copilot-instructions entry there is a choice you make yourself. What differs beyond
+that is memory *delivery*. **Claude Code: full auto-push** (session primer,
 prompt-boundary recall, recall on edits and before refactor tools). **Cursor:
 best-effort push** — the deploy writes Cursor's hooks too, but Cursor's hook surface
 cannot inject context at every seam (it may drop the session primer), so there the
