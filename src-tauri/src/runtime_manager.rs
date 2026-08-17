@@ -275,6 +275,14 @@ pub struct RuntimeReference {
     /// manager-deployed MCP-config writes into client `Authorization`
     /// headers (Stage 11). Allocated alongside `resident_port`.
     pub resident_token: String,
+    /// The engine's own version, when it is known — a managed runtime carries
+    /// one, a hand-built local jar does not (studio#14).
+    ///
+    /// It decides HOW the token reaches the resident: an engine that reads a
+    /// token file gets a 0600 file, an older one still gets `-token` on argv,
+    /// because an engine that ignores the file would generate its own token and
+    /// 401 every client the manager just configured.
+    pub engine_version: Option<String>,
 }
 
 /// Launch request for one jawata spawn. Manager_service has already
@@ -514,9 +522,14 @@ impl RuntimeManager {
                     };
                     let reader = BufReader::new(stdout);
                     for line in reader.lines().map_while(Result::ok) {
-                        let _ = writeln!(log_file, "{}", line);
+                        // studio#14: the log file OUTLIVES the process, so a
+                        // token echoed here is a credential at rest. An engine
+                        // new enough to read a token file already prints
+                        // `token-file=<path>`; an older one still prints the
+                        // secret, and this is where that copy is stopped.
+                        let _ = writeln!(log_file, "{}", redact_token(&line));
                         // The fork emits exactly one READY line of the form
-                        // `READY url=http://<bind>:<port> token=<token>`
+                        // `READY url=http://<bind>:<port> <token field>`
                         // when its HTTP listener is bound. First occurrence
                         // wins; subsequent matches are no-ops.
                         if line.starts_with("READY url=") {
@@ -782,6 +795,31 @@ impl RuntimeManager {
         write_runtime_state(&self.paths.runtime_state_file, &snapshots)
     }
 
+    /// The engine release that made `-token-file` a READ channel (studio#14).
+    ///
+    /// Before it, the flag parsed and was ignored: an engine given only
+    /// `-token-file` would generate its OWN token, and every client the manager
+    /// deployed would get 401 with no explanation. So the argv token stays for
+    /// anything older — the exposure is the lesser fault, and it is named in
+    /// the issue rather than silently accepted.
+    ///
+    /// MUST match the engine version that ships `ResolvedToken`.
+    const MIN_TOKEN_FILE_ENGINE: &'static str = "3.10.0";
+
+    /// Whether this engine reads the token from a file.
+    ///
+    /// `None` (a hand-built local jar) answers NO deliberately: the version is
+    /// unknowable, and guessing wrong breaks authentication for every client.
+    fn engine_reads_token_file(engine_version: Option<&str>) -> bool {
+        match engine_version {
+            Some(version) => !matches!(
+                crate::release_manager::compare_version_strings(version, Self::MIN_TOKEN_FILE_ENGINE),
+                std::cmp::Ordering::Less
+            ),
+            None => false,
+        }
+    }
+
     pub fn command_spec_for(&self, launch_request: &RuntimeLaunchRequest) -> CommandSpec {
         let log_path = self.default_log_path(&launch_request.reference.workspace_name);
         let reference = &launch_request.reference;
@@ -837,9 +875,33 @@ impl RuntimeManager {
             reference.workspace_dir.clone(),
             "-port".into(),
             reference.resident_port.to_string(),
-            "-token".into(),
-            reference.resident_token.clone(),
         ]);
+
+        // studio#14: the credential leaves argv. `/proc/<pid>/cmdline` is
+        // world-readable on Linux and `ps aux` shows the same on macOS — on
+        // 2026-08-17 a foreign agent read both residents' tokens that way and
+        // began calling the endpoints. The token now travels in a 0600 file
+        // that only this user can read.
+        //
+        // The old flag survives for an older engine, which would otherwise
+        // generate its own token and 401 every deployed client.
+        let token_file = if Self::engine_reads_token_file(reference.engine_version.as_deref()) {
+            // Only write the file an engine will actually read — a credential
+            // at rest that nothing consumes is exposure without a purpose.
+            write_resident_token_file(&reference.workspace_dir, &reference.resident_token)
+        } else {
+            None
+        };
+        match token_file {
+            Some(token_file) => {
+                args.push("-token-file".into());
+                args.push(token_file);
+            }
+            None => {
+                args.push("-token".into());
+                args.push(reference.resident_token.clone());
+            }
+        }
 
         CommandSpec {
             command: "java".into(),
@@ -1178,6 +1240,67 @@ fn vector_module_available() -> bool {
     })
 }
 
+/// The file inside a workspace directory that holds the resident's token.
+pub(crate) const RESIDENT_TOKEN_FILE: &str = "resident.token";
+
+/// Write the resident's Bearer token into its workspace, readable only by this
+/// user, and return the path for `-token-file` (studio#14).
+///
+/// Returns `None` when the file cannot be written: the caller then falls back
+/// to `-token` on argv, which is the exposure this exists to remove but is
+/// strictly better than a resident that cannot start. The failure is not
+/// silent — it is the caller's fallback branch, and the argv form is visible in
+/// `ps` for anyone who looks.
+fn write_resident_token_file(workspace_dir: &str, token: &str) -> Option<String> {
+    let path = Path::new(workspace_dir).join(RESIDENT_TOKEN_FILE);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok()?;
+    }
+    // Create the file BEFORE the secret goes in, with owner-only permissions:
+    // a write-then-chmod leaves a window in which anyone can read it.
+    let _ = fs::remove_file(&path);
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path).ok()?;
+    file.write_all(token.as_bytes()).ok()?;
+    file.write_all(b"\n").ok()?;
+    #[cfg(not(unix))]
+    {
+        // Windows has no mode bits; the ACL a user's own AppData carries is the
+        // boundary here. Recorded rather than pretended: this is a weaker
+        // guarantee than 0600, and it is still strictly better than argv,
+        // which every process on the machine can read.
+        let _ = &file;
+    }
+    Some(path.to_string_lossy().to_string())
+}
+
+/// Strip a Bearer token out of one captured stdout line (studio#14).
+///
+/// The workspace log file outlives the process, so a token teed into it is a
+/// credential at rest. An engine new enough to read a token file prints
+/// `token-file=<path>` and this leaves the line untouched; an older one prints
+/// the secret and this is where that copy stops.
+fn redact_token(line: &str) -> String {
+    match line.find("token=") {
+        None => line.to_string(),
+        Some(at) => {
+            let value_start = at + "token=".len();
+            let rest = &line[value_start..];
+            let value_end = rest
+                .find(char::is_whitespace)
+                .map(|i| value_start + i)
+                .unwrap_or(line.len());
+            format!("{}<redacted>{}", &line[..value_start], &line[value_end..])
+        }
+    }
+}
+
 fn read_runtime_state(path: &Path) -> Result<HashMap<String, RuntimeStatusRecord>, String> {
     if !path.exists() {
         return Ok(HashMap::new());
@@ -1271,8 +1394,20 @@ mod tests {
                 jvm_properties: vec!["-Djawata.experience.store=shared".into()],
                 resident_port: 8800,
                 resident_token: "test-token".into(),
+                // Deliberately an OLD engine: this request drives the
+                // argv-token path, which stays supported (studio#14).
+                engine_version: Some("1.4.0".into()),
             },
         }
+    }
+
+    /// A launch request whose engine reads the token from a file, in a real
+    /// temp workspace so the file can actually be written (studio#14).
+    fn token_file_launch_request(workspace_dir: &Path) -> RuntimeLaunchRequest {
+        let mut request = fake_launch_request();
+        request.reference.workspace_dir = workspace_dir.to_string_lossy().to_string();
+        request.reference.engine_version = Some(RuntimeManager::MIN_TOKEN_FILE_ENGINE.to_string());
+        request
     }
 
     #[test]
@@ -1307,6 +1442,8 @@ mod tests {
         // Sprint 15 Stage 10: -port + -token added so the fork v1.8.5
         // HTTP listener binds where the URL-emitting MCP writer expects.
         // Sprint 21a (item F): knowledge-store system properties precede -jar.
+        // studio#14: this reference names an OLD engine, so the token still
+        // travels on argv — see the token-file tests below for the current path.
         assert_eq!(
             args,
             vec![
@@ -1325,6 +1462,103 @@ mod tests {
         // project loading inside jawata.
         assert!(spec.env.is_empty());
         assert!(spec.log_path.ends_with("test-ws.log"));
+    }
+
+    // ---- studio#14: the token leaves argv ----
+    //
+    // Found in anger on 2026-08-17: a foreign agent on the same machine ran
+    // `ps aux`, read both residents' urls and bearer tokens out of their
+    // command lines, and started calling the endpoints. Any local process can
+    // read another same-user process's arguments — on Linux
+    // /proc/<pid>/cmdline is world-readable — so argv is not a place for a
+    // credential.
+
+    #[test]
+    fn a_current_engine_gets_the_token_in_a_file_never_on_argv() {
+        let dir = unique_tempdir("token-file");
+        let workspace = dir.join("ws");
+        let manager = RuntimeManager::new(fake_paths());
+
+        let spec = manager.command_spec_for(&token_file_launch_request(&workspace));
+
+        let joined = spec.args.join(" ");
+        // A token is always a whole argv element, so compare per argument —
+        // a substring check over the joined line also matches the temp
+        // directory's own name and fails for the wrong reason.
+        assert!(
+            !spec.args.iter().any(|a| a == "test-token"),
+            "the token must not appear anywhere in argv — `ps aux` shows all of it: {joined}"
+        );
+        assert!(
+            !spec.args.iter().any(|a| a == "-token"),
+            "the argv flag must be gone for an engine that reads the file: {joined}"
+        );
+        let token_file = workspace.join(RESIDENT_TOKEN_FILE);
+        assert!(
+            spec.args
+                .windows(2)
+                .any(|pair| pair[0] == "-token-file"
+                    && pair[1] == token_file.to_string_lossy()),
+            "the spawn must point the engine at the token's file: {joined}"
+        );
+        assert_eq!(
+            "test-token",
+            std::fs::read_to_string(&token_file).unwrap().trim(),
+            "the file must hold exactly the token the deployed clients were given — \
+             a mismatch here is a 401 on every client with no explanation"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&token_file).unwrap().permissions().mode() & 0o777;
+            assert_eq!(
+                0o600, mode,
+                "a credential file other users can read is the argv defect in a new place"
+            );
+        }
+    }
+
+    #[test]
+    fn an_older_engine_keeps_the_argv_token_because_it_would_ignore_the_file() {
+        // An engine before MIN_TOKEN_FILE_ENGINE parses -token-file and does
+        // nothing with it: given only the file it would generate its OWN token
+        // and every client the manager configured would get 401. The exposure
+        // is the lesser fault, and it is named in the issue.
+        assert!(!RuntimeManager::engine_reads_token_file(Some("3.9.0")));
+        assert!(!RuntimeManager::engine_reads_token_file(Some("1.4.0")));
+        assert!(RuntimeManager::engine_reads_token_file(Some(
+            RuntimeManager::MIN_TOKEN_FILE_ENGINE
+        )));
+        assert!(RuntimeManager::engine_reads_token_file(Some("4.0.0")));
+    }
+
+    #[test]
+    fn an_unknown_engine_version_keeps_the_argv_token() {
+        // A hand-built local jar: guessing "new" would break authentication
+        // outright, so the known-working path wins.
+        assert!(!RuntimeManager::engine_reads_token_file(None));
+    }
+
+    #[test]
+    fn the_ready_line_is_redacted_before_it_reaches_the_log_file() {
+        // The workspace log OUTLIVES the process, so a token teed into it is a
+        // credential at rest. An old engine still prints the secret; this is
+        // where that copy stops.
+        assert_eq!(
+            "READY url=http://127.0.0.1:8800 token=<redacted>",
+            redact_token("READY url=http://127.0.0.1:8800 token=deadbeefcafe")
+        );
+        assert_eq!(
+            "READY url=http://127.0.0.1:8800 token=<redacted> extra=1",
+            redact_token("READY url=http://127.0.0.1:8800 token=deadbeefcafe extra=1")
+        );
+        // A current engine names the FILE — nothing to redact, and the line
+        // must survive intact so it stays readable as diagnostics.
+        let with_file = "READY url=http://127.0.0.1:8800 token-file=/ws/resident.token";
+        assert_eq!(with_file, redact_token(with_file));
+        let ordinary = "loading project foo";
+        assert_eq!(ordinary, redact_token(ordinary));
     }
 
     #[test]
@@ -1411,6 +1645,9 @@ mod tests {
             jvm_properties: vec![],
             resident_port: 8800,
             resident_token: "test-token".into(),
+            // These lifecycle tests never spawn a real engine, so the token
+            // channel is irrelevant to them; None keeps them off the file path.
+            engine_version: None,
         }
     }
 

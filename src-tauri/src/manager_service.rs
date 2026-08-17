@@ -1561,6 +1561,9 @@ impl ManagerService {
                     jvm_properties: knowledge_jvm_properties(settings),
                     resident_port: workspace_state.resident_port,
                     resident_token: workspace_state.resident_token,
+                    // studio#14: a managed runtime knows its version, so the
+                    // spawn can choose the token file over argv.
+                    engine_version: Some(runtime.version.clone()),
                 })
             }
             RuntimeSource::LocalJar { jar_path } => Ok(RuntimeReference {
@@ -1572,6 +1575,10 @@ impl ManagerService {
                 jvm_properties: knowledge_jvm_properties(settings),
                 resident_port: workspace_state.resident_port,
                 resident_token: workspace_state.resident_token,
+                // A hand-built jar's version is unknowable, so the token stays
+                // on argv rather than risk an engine that ignores the file and
+                // generates its own (401 for every deployed client).
+                engine_version: None,
             }),
         }
     }
@@ -6607,11 +6614,34 @@ fn write_hook_config(
     let tmp = hooks_dir.join(format!("hook_config.json.{}.tmp", std::process::id()));
     fs::write(&tmp, &body)
         .map_err(|e| format!("failed staging {}: {e}", tmp.display()))?;
+    // studio#14: this file holds the resident's bearer token, so it is written
+    // owner-only. Set on the TEMP file, before the rename publishes it — the
+    // permission then arrives with the content rather than after it.
+    restrict_to_owner(&tmp);
     fs::rename(&tmp, &target).map_err(|e| {
         let _ = fs::remove_file(&tmp);
         format!("failed publishing {}: {e}", target.display())
     })?;
     Ok(true)
+}
+
+/// Make a file readable and writable by its owner only — best effort.
+///
+/// studio#14: a credential the studio itself creates gets owner-only
+/// permissions where the platform has them. Best effort by design: a deploy
+/// must not fail because a filesystem cannot express the mode, and a file whose
+/// mode could not be set is no worse off than it was before.
+fn restrict_to_owner(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows has no mode bits; the user's own AppData ACL is the boundary.
+        let _ = path;
+    }
 }
 
 /// Sprint 28 (C6 clause 6): every entry we write carries an EXPLICIT timeout.
