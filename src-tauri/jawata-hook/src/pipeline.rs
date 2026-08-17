@@ -608,6 +608,38 @@ mod tests {
     }
 
     #[test]
+    fn a_contract_mismatch_is_its_own_reason_never_query_failed() {
+        // Sprint 28b D7 (C2 audit F1): the recall path — deleting the
+        // ContractMismatch arm folds this into QueryFailed and turns it red.
+        let store = Stub(Err(QueryError::ContractMismatch { ours: 1, theirs: "2".into() }));
+        let out = run(
+            Role::UserPrompt,
+            &config("claude-code"),
+            r#"{"prompt":"importer classifier regression"}"#,
+            &store,
+        );
+        match out {
+            Outcome::Silent(SilenceReason::ContractMismatch(detail)) => {
+                assert!(detail.contains("ours=1") && detail.contains("theirs=2"), "{detail}");
+            }
+            other => panic!("a mismatch must be its own typed reason, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_contract_mismatch_on_the_primer_path_is_typed_too() {
+        // The finish() arm (primer goes through finish, not the cue loop).
+        let store = Stub(Err(QueryError::ContractMismatch { ours: 1, theirs: "3".into() }));
+        let out = run(Role::Primer, &config("claude-code"), "{}", &store);
+        match out {
+            Outcome::Silent(SilenceReason::ContractMismatch(detail)) => {
+                assert!(detail.contains("theirs=3"), "{detail}");
+            }
+            other => panic!("expected the typed mismatch on the primer path, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn an_observed_absence_says_so_and_is_not_a_failure() {
         let store = Stub(Ok(Answer::Nothing));
         let out = run(

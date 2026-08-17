@@ -1,14 +1,49 @@
 {
-  "comment": "Stage-0 fixture (c): the deterministic dead-channel condition — the store answered N>0 while the channel emitted 0. Stage-2 test folds these counters and asserts the condition FIRES for userPromptRecall and does NOT fire for the healthy or legitimately-quiet channels.",
+  "comment": "Stage-0 fixture (c): the deterministic dead-channel condition - the store answered N>0 while the channel emitted 0. The SHAPE is transcribed in tag terms by field.rs::fixture_log() (C2 audit F3: this file is the expectation spec, the Rust test carries the executable transcription).",
   "counters": [
-    { "channel": "userPromptRecall",  "fired": 412, "answered": 412, "emitted": 0,   "suppressed": 412, "reason": "MULTI_ANSWER_SKIP" },
-    { "channel": "preToolUseRecall",  "fired": 300, "answered": 180, "emitted": 180, "suppressed": 0,   "reason": null },
-    { "channel": "sessionStartPrimer","fired": 12,  "answered": 12,  "emitted": 12,  "suppressed": 0,   "reason": null },
-    { "channel": "guard",             "fired": 55,  "answered": 0,   "emitted": 0,   "suppressed": 0,   "reason": null }
+    {
+      "channel": "userPromptRecall",
+      "fired": 412,
+      "answered": 412,
+      "emitted": 0,
+      "suppressed": 412,
+      "reason": "MULTI_ANSWER_SKIP"
+    },
+    {
+      "channel": "preToolUseRecall",
+      "fired": 300,
+      "answered": 180,
+      "emitted": 180,
+      "suppressed": 0,
+      "reason": null
+    },
+    {
+      "channel": "sessionStartPrimer",
+      "fired": 12,
+      "answered": 12,
+      "emitted": 12,
+      "suppressed": 0,
+      "reason": null
+    },
+    {
+      "channel": "guard",
+      "fired": 55,
+      "answered": 0,
+      "emitted": 0,
+      "suppressed": 0,
+      "reason": null
+    }
   ],
   "expect": {
-    "dead": [ "userPromptRecall" ],
-    "alive": [ "preToolUseRecall", "sessionStartPrimer" ],
-    "legitimatelyQuiet": [ "guard" ]
+    "dead": [
+      "userPromptRecall"
+    ],
+    "alive": [
+      "preToolUseRecall",
+      "sessionStartPrimer"
+    ],
+    "legitimatelyQuiet": [
+      "guard"
+    ]
   }
 }

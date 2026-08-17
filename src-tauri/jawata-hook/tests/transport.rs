@@ -91,6 +91,52 @@ fn a_real_answer_travels_the_whole_path() {
     );
     assert!(request.contains(r#""method":"tools/call""#), "wrong JSON-RPC method:\n{request}");
     assert!(request.contains(r#""name":"experience""#), "wrong tool name:\n{request}");
+    // Sprint 28b D7: the contract version travels with every store request.
+    assert!(
+        request.contains("x-jawata-contract: 1") || request.contains("X-Jawata-Contract: 1"),
+        "the contract version must be sent:\n{request}"
+    );
+}
+
+#[test]
+fn a_different_contract_echo_is_a_typed_mismatch_never_silence() {
+    // Sprint 28b D7 (C2 audit F1): a store that echoes a DIFFERENT contract
+    // version must produce the typed mismatch — deleting the echo check or
+    // the header turns this red.
+    let inner = serde_json::json!({ "success": true, "data": "[lesson] a real line" }).to_string();
+    let envelope =
+        serde_json::json!({ "result": { "content": [ { "type": "text", "text": inner } ] } })
+            .to_string();
+    let body = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Jawata-Contract: 2\r\nContent-Length: {}\r\n\r\n{}",
+        envelope.len(),
+        envelope
+    );
+    let (url, _rx) = serve_once(Box::leak(body.into_boxed_str()));
+    match ask(&endpoint(url), serde_json::json!({ "kind": "primer" })) {
+        Err(QueryError::ContractMismatch { ours: 1, theirs }) => {
+            assert_eq!("2", theirs);
+        }
+        other => panic!("a mismatched echo must be typed, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_matching_contract_echo_proceeds() {
+    let inner = serde_json::json!({ "success": true, "data": "[lesson] ok" }).to_string();
+    let envelope =
+        serde_json::json!({ "result": { "content": [ { "type": "text", "text": inner } ] } })
+            .to_string();
+    let body = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Jawata-Contract: 1\r\nContent-Length: {}\r\n\r\n{}",
+        envelope.len(),
+        envelope
+    );
+    let (url, _rx) = serve_once(Box::leak(body.into_boxed_str()));
+    assert_eq!(
+        Ok(Answer::Text("[lesson] ok".into())),
+        ask(&endpoint(url), serde_json::json!({ "kind": "primer" }))
+    );
 }
 
 #[test]
