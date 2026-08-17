@@ -30,7 +30,7 @@ const ANSWERED_BUT_SUPPRESSED: &[&str] =
     &["cannot-inject", "contract-mismatch", "answer-unusable"];
 
 /// Tags that mean "quiet was the correct outcome".
-const LEGITIMATELY_QUIET: &[&str] = &[
+pub const LEGITIMATELY_QUIET: &[&str] = &[
     "store-had-nothing", "no-cues", "stop-allowed", "role-absent-on-client",
     "recorded-not-injected", "nothing-to-observe",
 ];
@@ -239,6 +239,28 @@ mod tests {
         assert!(!folded["guard"].dead(), "absence is often legitimate");
         assert!(folded["guard"].legitimately_quiet());
         assert!(!folded["tool-recall"].dead(), "it emitted");
+    }
+
+    /// C2 audit, NO CONTROL #2: the by-design quiet tags must never make a
+    /// channel dead — that misclassification is what marked every Cursor
+    /// machine's observer and prompt channels permanently broken.
+    #[test]
+    fn by_design_quiet_never_reads_as_dead() {
+        let log = "1\tobserver\tnothing-to-observe\t\n\
+                   1\tobserver\trecorded-not-injected\t\n\
+                   1\tuser-prompt\trecorded-not-injected\t\n";
+        let folded = fold_lines(log.lines());
+        assert!(dead_channels(&folded).is_empty(), "quiet by design is not dead");
+        assert!(folded["observer"].legitimately_quiet());
+        assert!(folded["user-prompt"].legitimately_quiet());
+    }
+
+    /// C2 audit F1: an ANSWERED-but-unusable reply IS the dead-channel
+    /// numerator — it is the two-week outage's own mechanism.
+    #[test]
+    fn an_unusable_answer_counts_toward_dead() {
+        let folded = fold_lines("1\tuser-prompt\tanswer-unusable\tShapeChanged\n".lines());
+        assert_eq!(dead_channels(&folded), vec!["user-prompt".to_string()]);
     }
 
     #[test]

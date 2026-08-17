@@ -122,7 +122,7 @@ fn emit_permission(client: Client, allowed: bool, reason: String) -> Outcome {
 }
 
 /// Which tool fired, from either client's payload shape.
-fn tool_name_in(payload: &str) -> Option<String> {
+pub(crate) fn tool_name_in(payload: &str) -> Option<String> {
     let value: serde_json::Value = parse_payload(payload).ok()?;
     for key in ["tool_name", "toolName", "tool"] {
         if let Some(s) = value.get(key).and_then(|v| v.as_str()) {
@@ -133,7 +133,7 @@ fn tool_name_in(payload: &str) -> Option<String> {
 }
 
 /// The file an editing tool is about to write.
-fn edit_path_in(payload: &str) -> Option<String> {
+pub(crate) fn edit_path_in(payload: &str) -> Option<String> {
     let value: serde_json::Value = parse_payload(payload).ok()?;
     for path in [
         &["tool_input", "file_path"][..], // Claude Code, Edit/Write/MultiEdit
@@ -162,7 +162,7 @@ fn edit_path_in(payload: &str) -> Option<String> {
 }
 
 /// The session this call belongs to — the authoring window's scope.
-fn session_id_in(payload: &str) -> Option<String> {
+pub(crate) fn session_id_in(payload: &str) -> Option<String> {
     let value: serde_json::Value = parse_payload(payload).ok()?;
     for key in ["session_id", "sessionId", "conversation_id"] {
         if let Some(s) = value.get(key).and_then(|v| v.as_str()) {
@@ -282,7 +282,7 @@ fn recall(role: Role, client: Client, payload: &str, store: &dyn Store) -> Outco
         Some(crate::query::QueryError::ContractMismatch { ours, theirs }) => Outcome::Silent(
             SilenceReason::ContractMismatch(format!("ours={ours} theirs={theirs}")),
         ),
-        Some(e) => Outcome::Silent(SilenceReason::QueryFailed(format!("{e:?}"))),
+        Some(e) => Outcome::Silent(unusable_or_failed(e)),
         None => Outcome::Silent(SilenceReason::StoreHadNothing),
     }
 }
@@ -297,10 +297,10 @@ fn finish(
         Ok(Answer::Text(text)) => {
             let body = format!("{heading}\n{text}");
             match emit::context_for(role, client, body) {
-                Emission::Silent => Outcome::Silent(SilenceReason::CannotInject),
+                Emission::Silent => Outcome::Silent(by_design_or_failed(role, client)),
                 other => match emit::render(client, &other) {
                     Some(rendered) => Outcome::Emitted(rendered),
-                    None => Outcome::Silent(SilenceReason::CannotInject),
+                    None => Outcome::Silent(by_design_or_failed(role, client)),
                 },
             }
         }
@@ -308,7 +308,37 @@ fn finish(
         Err(crate::query::QueryError::ContractMismatch { ours, theirs }) => Outcome::Silent(
             SilenceReason::ContractMismatch(format!("ours={ours} theirs={theirs}")),
         ),
-        Err(e) => Outcome::Silent(SilenceReason::QueryFailed(format!("{e:?}"))),
+        Err(e) => Outcome::Silent(unusable_or_failed(e)),
+    }
+}
+
+/// Why this role emitted nothing when the store HAD something to say.
+///
+/// The role table is the authority: a cell whose client cannot inject this
+/// event is quiet BY DESIGN (Cursor's user-prompt and observer), and folding
+/// that as `cannot-inject` marked every Cursor machine's channel permanently
+/// dead — a built-in false alarm (C2 audit F2). A render that fails on a cell
+/// which CAN inject is the real defect and keeps the old name.
+fn by_design_or_failed(role: Role, client: Client) -> SilenceReason {
+    match crate::roles::spec(role, client) {
+        Some(spec) if !spec.can_inject => SilenceReason::RecordedNotInjected,
+        _ => SilenceReason::CannotInject,
+    }
+}
+
+/// The store ANSWERED — a 200 with a body — and the answer was unusable.
+///
+/// That is a different fact from never reaching the store, and it is the
+/// historic two-week outage's own mechanism (a shape that drifted, read as an
+/// absence). It counts toward the dead-channel condition; `query-failed` does
+/// not, because nothing answered at all.
+fn unusable_or_failed(e: QueryError) -> SilenceReason {
+    match e {
+        QueryError::ShapeChanged(_) => SilenceReason::AnswerUnusable("ShapeChanged".into()),
+        QueryError::ToolRefused { code, .. } => {
+            SilenceReason::AnswerUnusable(format!("ToolRefused:{code}"))
+        }
+        other => SilenceReason::QueryFailed(format!("{other:?}")),
     }
 }
 
@@ -654,6 +684,10 @@ mod tests {
         assert_eq!(Outcome::Silent(SilenceReason::StoreHadNothing), out);
     }
 
+    /// Cursor's prompt hook cannot inject context — the role table says so.
+    /// That is quiet BY DESIGN, and it must not read as a dead channel: with
+    /// `cannot-inject` here, every Cursor machine's user-prompt channel folded
+    /// as permanently dead — a built-in false alarm (C2 audit F2).
     #[test]
     fn cursor_queries_the_prompt_hook_but_emits_nothing() {
         let store = Stub(Ok(Answer::Text("[lesson] a line".into())));
@@ -663,7 +697,48 @@ mod tests {
             r#"{"prompt":"importer classifier regression"}"#,
             &store,
         );
-        assert_eq!(Outcome::Silent(SilenceReason::CannotInject), out);
+        assert_eq!(Outcome::Silent(SilenceReason::RecordedNotInjected), out);
+        assert!(
+            crate::field::LEGITIMATELY_QUIET.contains(&"recorded-not-injected"),
+            "and the fold must classify it as quiet, not dead"
+        );
+    }
+
+    /// C2 audit F1: the store ANSWERED and the answer was unusable — the
+    /// historic two-week outage's own mechanism. It is its own reason and
+    /// counts toward the dead-channel condition; `query-failed` (nothing
+    /// answered at all) does not.
+    #[test]
+    fn an_answered_but_unusable_reply_is_not_query_failed() {
+        for (error, expected) in [
+            (QueryError::ShapeChanged("data was null".into()), "ShapeChanged"),
+            (
+                QueryError::ToolRefused { code: "BAD".into(), message: "m".into() },
+                "ToolRefused:BAD",
+            ),
+        ] {
+            match run(
+                Role::UserPrompt,
+                &config("claude-code"),
+                r#"{"prompt":"importer classifier regression"}"#,
+                &Stub(Err(error)),
+            ) {
+                Outcome::Silent(SilenceReason::AnswerUnusable(detail)) => {
+                    assert_eq!(expected, detail)
+                }
+                other => panic!("an answered-but-unusable reply must be typed: {other:?}"),
+            }
+        }
+        // …while never reaching the store keeps its own name.
+        match run(
+            Role::UserPrompt,
+            &config("claude-code"),
+            r#"{"prompt":"importer classifier regression"}"#,
+            &Stub(Err(QueryError::Unreachable("refused".into()))),
+        ) {
+            Outcome::Silent(SilenceReason::QueryFailed(_)) => {}
+            other => panic!("an unreachable store is not an unusable answer: {other:?}"),
+        }
     }
 
     #[test]

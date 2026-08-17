@@ -53,8 +53,14 @@ pub fn observe_in(
         // must not disturb the session it watches.
         return Outcome::Silent(SilenceReason::PayloadUnreadable("observer payload".into()));
     };
-    let tool = doc["tool_name"].as_str().unwrap_or("");
-    let session = doc["session_id"].as_str().unwrap_or("");
+    // BOTH clients' payload shapes (C2 audit F4): Cursor keys these
+    // `toolName` / `conversation_id`, and the role table now declares this
+    // capability live on Cursor too — a second copy of the key list is a
+    // second copy that can disagree, so route through the crate's one.
+    let tool = crate::pipeline::tool_name_in(payload).unwrap_or_default();
+    let tool = tool.as_str();
+    let session = crate::pipeline::session_id_in(payload).unwrap_or_default();
+    let session = session.as_str();
     // THE REQUEST, without the response: the slip/read judgements run on this.
     let request_only = {
         let mut d = doc.clone();
@@ -64,9 +70,9 @@ pub fn observe_in(
     let dir = home.join(".claude").join("jawata-studio");
 
     if tool == "Read" {
-        if let Some(path) = doc["tool_input"]["file_path"].as_str() {
-            if path.ends_with(".java") && !read_is_grounded(&dir, session, path) {
-                emit(&dir, "read-ungrounded", path);
+        if let Some(path) = crate::pipeline::edit_path_in(payload) {
+            if is_java(&path) && !read_is_grounded(&dir, session, &path) {
+                emit(&dir, "read-ungrounded", &path);
             }
         }
         return Outcome::Silent(SilenceReason::NothingToObserve);
@@ -87,8 +93,8 @@ pub fn observe_in(
         return Outcome::Silent(SilenceReason::NothingToObserve);
     }
     if matches!(tool, "Edit" | "Write" | "MultiEdit") {
-        let path = doc["tool_input"]["file_path"].as_str().unwrap_or("");
-        if path.ends_with(".java") {
+        let path = crate::pipeline::edit_path_in(payload).unwrap_or_default();
+        if is_java(&path) {
             editfeed_hold(&dir, session, &doc);
             if request_only.to_lowercase().contains("jawata-fallback:") {
                 return slip(&dir, client, tool, &request_only, config);
@@ -97,11 +103,11 @@ pub fn observe_in(
         return Outcome::Silent(SilenceReason::NothingToObserve);
     }
     if matches!(tool, "Bash" | "Grep") {
-        let flat = request_only.replace("\\n", " ").replace("\\t", " ");
-        let is_search = tool == "Grep"
-            || ["grep", "egrep", "fgrep", "rg", "ripgrep", " ag ", " ack "]
-                .iter()
-                .any(|t| flat.contains(t));
+        let flat = request_only
+            .replace("\\n", " ")
+            .replace("\\r", " ")
+            .replace("\\t", " ");
+        let is_search = tool == "Grep" || names_a_search_tool(&flat);
         if is_search
             && flat.to_lowercase().contains(".java")
             && flat.to_lowercase().contains("jawata-fallback:")
@@ -189,6 +195,26 @@ fn reason_after_marker(request: &str) -> String {
 
 fn ends_with_any(tool: &str, suffixes: &[&str]) -> bool {
     suffixes.iter().any(|s| tool.ends_with(s))
+}
+
+/// One spelling of "this is a Java source file", so the three call sites
+/// cannot drift apart.
+fn is_java(path: &str) -> bool {
+    path.to_lowercase().ends_with(".java")
+}
+
+/// Whether the command actually INVOKES a content-search tool.
+///
+/// WHOLE TOKENS, never a substring (C2 audit F3). The script this ports used a
+/// word-bounded regex; a plain `contains("rg")` matched every path holding
+/// "org" or "target", so a declared fallback on an ordinary `cat` logged a
+/// slip, injected the steering and wrote a failure_mode candidate into the
+/// store — a manufactured finding, which is worse than a missed one.
+fn names_a_search_tool(command: &str) -> bool {
+    const SEARCH_TOOLS: &[&str] = &["grep", "egrep", "fgrep", "rg", "ripgrep", "ag", "ack"];
+    command
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|token| SEARCH_TOOLS.contains(&token))
 }
 
 /// One outcomes.log line; errors swallowed — observing must never disturb.
@@ -430,6 +456,63 @@ mod tests {
             observe_in(&home, Client::ClaudeCode, &no_marker, None),
             Outcome::Silent(SilenceReason::NothingToObserve)
         ));
+    }
+
+    /// C2 audit F3: the search-tool test is WHOLE TOKENS. `contains("rg")`
+    /// matched every path holding "org" or "target", so a declared fallback on
+    /// an ordinary command logged a slip, injected the steering AND wrote a
+    /// store candidate — a manufactured finding.
+    #[test]
+    fn a_declared_fallback_on_a_non_search_command_is_not_a_slip() {
+        let home = scratch("nonsearch");
+        for command in [
+            "cat /home/u/org/jawata/Thing.txt # jawata-fallback: reading one file",
+            "mvn -q -f target/pom.xml install # jawata-fallback: a build, not a search",
+            "ls storage/ # jawata-fallback: listing",
+        ] {
+            let p = payload("Bash", serde_json::json!({ "command": command }));
+            assert!(
+                matches!(
+                    observe_in(&home, Client::ClaudeCode, &p, None),
+                    Outcome::Silent(SilenceReason::NothingToObserve)
+                ),
+                "not a search tool, so not a slip: {command}"
+            );
+        }
+        assert!(
+            !dir(&home).join("outcomes.log").exists(),
+            "and nothing was written to the trail"
+        );
+        // The real thing still counts.
+        let real = payload("Bash", serde_json::json!({
+            "command": "rg -n Foo src/Thing.java # jawata-fallback: a genuine reason"
+        }));
+        assert!(matches!(observe_in(&home, Client::ClaudeCode, &real, None), Outcome::Emitted(_)));
+    }
+
+    /// C2 audit F4: the role table declares this live on Cursor, so a
+    /// Cursor-shaped payload must actually be observed — its keys are
+    /// `toolName` / `conversation_id`, not Claude Code's.
+    #[test]
+    fn a_cursor_shaped_payload_is_observed_too() {
+        let home = scratch("cursorkeys");
+        let p = serde_json::json!({
+            "toolName": "Edit",
+            "conversation_id": "c1",
+            "tool_input": {
+                "file_path": "/w/src/A.java",
+                "old_string": "x",
+                "new_string": "y // jawata-fallback: cursor reason"
+            }
+        })
+        .to_string();
+        let out = observe_in(&home, Client::Cursor, &p, None);
+        assert!(
+            matches!(out, Outcome::Silent(SilenceReason::RecordedNotInjected)),
+            "Cursor records but cannot inject: {out:?}"
+        );
+        let log = std::fs::read_to_string(dir(&home).join("outcomes.log")).unwrap();
+        assert!(log.contains("\tslip\tEdit\tcursor reason"), "{log}");
     }
 
     #[test]
