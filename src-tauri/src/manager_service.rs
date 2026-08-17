@@ -6988,6 +6988,31 @@ try:
     asking = (any(p in U for p in phrases)
               or any(l.endswith('?') for l in tail_lines)
               or len(text) > 2200)
+    # studio#11: A REPLY IS NOT AN ASK. The 2026-08-07 ruling puts direct
+    # replies outside this gate — gating conversation triples his waiting time
+    # for a failure mode it barely has — and the detector had no notion of who
+    # asked first, so a reply that quoted his question was held as an ask and
+    # cost a full communicator round trip. If the human's own message opened
+    # this window with a question (or an imperative ask), the ask gate stands
+    # down; the LENGTH trigger below does not, because a wall of text is noise
+    # whoever asked for it.
+    imperatives = ('DISCUSS','EXPLAIN','TELL ME','WHAT ABOUT','ANALYSE','ANALYZE',
+                   'WHY ','HOW ','WHICH ','WHAT ','GIVE ME','SHOW ME','CHECK ',
+                   'COMPARE','OPINION','ADVISE','ADVICE','THOUGHTS')
+    user_asked = False
+    try:
+        last_user = ''
+        for ln in tail.splitlines():
+            if '"type":"user"' in ln and '"toolUseResult"' not in ln \
+               and '"tool_result"' not in ln:
+                last_user = ln
+        if last_user:
+            uu = last_user.upper()
+            user_asked = ('?' in last_user) or any(p in uu for p in imperatives)
+    except Exception:
+        user_asked = False
+    if asking and user_asked and len(text) <= 2200:
+        asking = False
     if asking:
         # Scope to the window since the last human turn: a communicator run
         # three hours ago does not judge THIS message.

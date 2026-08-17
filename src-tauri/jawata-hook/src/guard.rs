@@ -104,7 +104,13 @@ pub fn judge(command: &str) -> Verdict {
                  refactoring(action=plan), all addressable by symbol name — or the Edit tool \
                  inside a declared authoring window. If this genuinely is authoring no tool \
                  can do (new file content, fixtures), re-run with `{AUTHOR_DECLARATION} \
-                 <narrow reason>` in the command; the declaration is logged and audited."
+                 <narrow reason>` in the command; the declaration is logged and audited. \
+                 WRITING ONLY NON-JAVA FILES and this fired because the command MENTIONS a \
+                 .java path? That over-denial is deliberate (studio#11): whether an opaque \
+                 interpreter body writes the path it mentions is not decidable from the \
+                 command text, and the narrow version of this check reopened three bypasses. \
+                 Use the Edit/Write tool for the non-Java file, or declare \
+                 `{AUTHOR_DECLARATION} <reason>` — both proceed."
             ),
         };
     }
@@ -351,6 +357,39 @@ mod tests {
                 denied(cmd),
                 "accepted over-denial: the escape is one jawata-author declaration: {cmd}"
             );
+        }
+    }
+
+    /// studio#11's FIRST half, recorded as an accepted cost rather than fixed.
+    ///
+    /// The live false positive: a `python3` heredoc editing a **`.md` plan
+    /// file** was denied, because the command text happened to mention a
+    /// `.java` path. It shares its whole text signature with the bypass in
+    /// `a_path_reaching_the_writer_from_elsewhere_is_still_a_write` below — an
+    /// opaque interpreter body may or may not write the path it mentions, and
+    /// the command text does not say which. v3.8.1 tried per-segment scoping
+    /// and reopened three bypasses.
+    ///
+    /// So the residual stays, and what changed is HONESTY: the denial now names
+    /// both legitimate routes (the Edit/Write tool for the non-Java file, or a
+    /// declaration). Removing the residual is a shell-parser project, not a
+    /// calibration.
+    #[test]
+    fn writing_a_markdown_file_from_an_interpreter_is_still_denied_and_says_why() {
+        let cmd = "python3 - <<'PY'\nopen('plan.md','a').write('see Foo.java')\nPY";
+        let verdict = judge(cmd);
+        match verdict {
+            Verdict::Deny { reason } => {
+                assert!(
+                    reason.contains("WRITING ONLY NON-JAVA FILES"),
+                    "the denial must name the non-Java case and its two routes: {reason}"
+                );
+                assert!(
+                    reason.contains(AUTHOR_DECLARATION),
+                    "and the declaration that proceeds: {reason}"
+                );
+            }
+            other => panic!("the over-denial is deliberate — narrowing it reopens bypasses: {other:?}"),
         }
     }
 

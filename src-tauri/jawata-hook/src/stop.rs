@@ -129,6 +129,16 @@ pub struct Turn {
     pub refusals_emitted: usize,
     /// Whether the final message asks the human for a word, ruling or decision.
     pub asks_the_human: bool,
+    /// Whether the human's own message OPENED this window with a question.
+    ///
+    /// studio#11: the 2026-08-07 ruling puts direct replies outside this gate —
+    /// "replies to the user's OWN questions are DIRECT, fast, bottom-line-first,
+    /// never routed through the communicator", because gating conversation
+    /// triples his waiting time for a failure mode it barely has. The detector
+    /// had no notion of who asked, so a reply that quoted his question or ended
+    /// on a clarifying line was held as an UNJUDGED ASK and cost a full
+    /// communicator round trip on a message the ruling exempts.
+    pub user_asked: bool,
     /// Seat commands invoked in this window (/refactor, /cover, ...).
     pub seats_invoked: Vec<String>,
     /// Whether a verification gate ran after them.
@@ -193,8 +203,10 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
         };
     }
 
-    // The unjudged ask. Independent of autonomy: an ask is an ask.
-    if facts.turn.asks_the_human && !facts.turn.communicator_ran() {
+    // The unjudged ask. Independent of autonomy: an ask is an ask — EXCEPT when
+    // the human asked first, because then this is a reply and the 2026-08-07
+    // ruling puts it outside the gate (studio#11).
+    if facts.turn.asks_the_human && !facts.turn.user_asked && !facts.turn.communicator_ran() {
         return StopVerdict::Block {
             reason: "UNJUDGED ASK: this message asks for a word, a ruling or a \
                      decision, and no communicator subagent ran since the human's \
@@ -299,6 +311,10 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
             // happened since the human last spoke.
             Some("user") if !is_tool_result(&v) => {
                 turn = Turn::default();
+                // studio#11: remember whether the human ASKED. Everything after
+                // this line is a REPLY, and a reply is out of the ask gate's
+                // scope by the 2026-08-07 ruling.
+                turn.user_asked = user_asked(&user_text(&v));
             }
             Some("assistant") => {
                 let content = v
@@ -374,6 +390,48 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
 /// message says. That requires the autonomy signal the hook cannot yet read —
 /// which makes the Studio autonomy file the difference between a rule that
 /// leaks and a rule that holds.
+/// The human's message text, whichever shape the client wrote it in.
+///
+/// Claude Code writes `message.content` as a string for a typed prompt and as
+/// an array of blocks when the prompt carries attachments; Cursor writes the
+/// string form. Both are read here, because a missed user message would silently
+/// turn every reply back into a gated ask.
+fn user_text(entry: &serde_json::Value) -> String {
+    let content = entry.get("message").and_then(|m| m.get("content"));
+    match content {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// Did the human ASK for something in this message (studio#11)?
+///
+/// A question mark is the reliable half. The imperatives cover the asks he
+/// writes without one — "Discuss!", "Explain", "Tell me what the problem is" —
+/// which are requests for an answer just as much as a question is, and a reply
+/// to them is equally out of the gate's scope.
+///
+/// Deliberately NARROW. Over-matching here would exempt real self-initiated asks
+/// (the gate's whole purpose), so anything not recognised keeps the gate ON: the
+/// failure direction is a needless communicator run, never a silent bypass.
+fn user_asked(text: &str) -> bool {
+    if text.contains('?') {
+        return true;
+    }
+    let u = text.to_uppercase();
+    const IMPERATIVES: &[&str] = &[
+        "DISCUSS", "EXPLAIN", "TELL ME", "WHAT ABOUT", "ANALYSE", "ANALYZE",
+        "WHY ", "HOW ", "WHICH ", "WHAT ", "GIVE ME", "SHOW ME", "CHECK ",
+        "COMPARE", "OPINION", "ADVISE", "ADVICE", "THOUGHTS",
+    ];
+    IMPERATIVES.iter().any(|p| u.contains(p))
+}
+
 fn asks_the_human(text: &str) -> bool {
     let u = text.to_uppercase();
     // Explicit requests for a ruling.
@@ -425,7 +483,7 @@ mod tests {
     fn facts(autonomy: Autonomy, launches: Vec<ToolUse>) -> StopFacts {
         StopFacts {
             already_bounced: false,
-            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, seats_invoked: vec![], gate_ran: true },
+            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, user_asked: false, seats_invoked: vec![], gate_ran: true },
             autonomy,
         }
     }
@@ -634,6 +692,82 @@ mod tests {
                 "must not be read as an ask: {plain:?}"
             );
         }
+    }
+
+    // ---- studio#11: a REPLY is not an ask ----
+    //
+    // Live false positive (2026-08-16): a reply to Harald's own question —
+    // market-share numbers plus a confirmation of the position he had just
+    // stated — was held as an UNJUDGED ASK. The communicator then judged it
+    // PASS, "confirmation of his conclusion is not a decision ask". The
+    // 2026-08-07 ruling already exempts direct replies; the detector simply had
+    // no notion of who asked first.
+
+    /// One transcript: the human speaks, then the agent answers.
+    ///
+    /// Each line is built with its own single-line format string ON PURPOSE. A
+    /// `\`-continued multi-line string desynchronises the brace lexer in
+    /// `no_panics_at_fire_time.rs`, which reads sources line by line and carries
+    /// no across-line string state — it then stops examining the rest of this
+    /// file, silently. Its self-check caught exactly that here.
+    fn exchange(user: &str, agent: &str) -> String {
+        let human = format!("{{\"type\":\"user\",\"message\":{{\"content\":\"{user}\"}}}}");
+        let reply = format!("{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{agent}\"}}]}}}}");
+        format!("{human}\n{reply}\n")
+    }
+
+    #[test]
+    fn a_reply_to_his_own_question_is_not_a_gated_ask() {
+        let turn = read_turn(&exchange(
+            "Zed might be competition. What about their ACP protocol?",
+            "Zed created it and it is genuinely open. Should we adopt it? On the evidence, yes.",
+        ))
+        .expect("parses");
+
+        assert!(turn.user_asked, "the human's message carries a question mark");
+        let verdict = judge(&StopFacts {
+            already_bounced: false,
+            turn,
+            autonomy: Autonomy::Unknown,
+        });
+        assert_eq!(
+            StopVerdict::Allow,
+            verdict,
+            "a reply is out of this gate's scope by the 2026-08-07 ruling — gating it cost a \
+             full communicator round trip on a message the ruling exempts"
+        );
+    }
+
+    #[test]
+    fn an_imperative_ask_also_opens_a_reply_window() {
+        // He asks without a question mark as often as with one.
+        for prompt in ["Discuss!", "Explain the tradeoff", "Tell me what the problem is"] {
+            let turn = read_turn(&exchange(prompt, "Here is the tradeoff. Which way do you lean?"))
+                .expect("parses");
+            assert!(turn.user_asked, "must open a reply window: {prompt:?}");
+        }
+    }
+
+    #[test]
+    fn a_self_initiated_ask_after_a_plain_instruction_still_blocks() {
+        // The gate's whole purpose: an ask the AGENT raises on its own. The
+        // human's message here instructs and asks nothing, so the exemption
+        // must not apply.
+        let turn = read_turn(&exchange(
+            "Implement stage 3 and commit it.",
+            "Stage 3 is committed. Shall I push it?",
+        ))
+        .expect("parses");
+
+        assert!(!turn.user_asked, "an instruction is not a question");
+        assert!(turn.asks_the_human);
+        assert!(
+            matches!(
+                judge(&StopFacts { already_bounced: false, turn, autonomy: Autonomy::Unknown }),
+                StopVerdict::Block { .. }
+            ),
+            "a self-initiated ask must still be judged before it is sent"
+        );
     }
 
     /// The three ported checks, each fired without autonomy.
