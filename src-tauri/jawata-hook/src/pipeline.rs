@@ -567,6 +567,7 @@ mod tests {
             token: "t".into(),
             client: client.into(),
             timeout_ms: Some(50),
+            field_dir: None,
         }
     }
 

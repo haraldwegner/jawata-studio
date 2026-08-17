@@ -268,6 +268,12 @@ pub(crate) struct ManagedDeployServer {
     url: String,
     /// Bearer token the client sends in `Authorization` headers.
     token: String,
+    /// Sprint 28b (D4): the resident's `<workspace>/field` directory — the hook
+    /// reads the sanitized pile and the two switches there to decide whether a
+    /// recurring failure has earned its one-line pointer at `/report`. Carried
+    /// here rather than recomputed, because the resident's workspace dir is the
+    /// runtime reference's fact and a second derivation would drift from it.
+    field_dir: String,
     /// When true, the writer emits `"disabled": true` in the client
     /// config. Used by the `Disable` writer mode (Sprint 15 Stage 11)
     /// when `autostart_on_boot` is off — entry stays visible but inert.
@@ -1723,6 +1729,10 @@ impl ManagerService {
                     project_paths,
                     url,
                     token: reference.resident_token.clone(),
+                    field_dir: std::path::Path::new(&reference.workspace_dir)
+                        .join("field")
+                        .to_string_lossy()
+                        .to_string(),
                     disabled,
                 })
             })
@@ -2251,7 +2261,8 @@ impl ManagerService {
                     } else {
                         "claude-code"
                     };
-                    match write_hook_config(hooks_dir, &server.url, &server.token, client_key) {
+                    match write_hook_config(hooks_dir, &server.url, &server.token, client_key,
+                        Some(server.field_dir.as_str()).filter(|d| !d.is_empty())) {
                         Ok(true) => changed_sections.push("hook_config".into()),
                         Ok(false) => {}
                         Err(error) => errors.push(error),
@@ -2487,6 +2498,7 @@ impl ManagerService {
                 &hooks_dir,
                 &server.url,
                 &server.token,
+                Some(server.field_dir.as_str()).filter(|d| !d.is_empty()),
                 backup_before_write,
                 matches!(mode, DeployMode::Regenerate),
             ) {
@@ -4655,6 +4667,11 @@ fn gateway_entry(port: u16, token: &str, disabled: bool) -> ManagedDeployServer 
         project_paths: Vec::new(),
         url: format!("http://127.0.0.1:{port}/mcp"),
         token: token.to_string(),
+        // The gateway fronts every workspace, so there is no single field
+        // directory to name — and naming one would point the hook at another
+        // workspace's recording. Empty means the deploy writes no field_dir,
+        // which the hook reads as "no nudge here" (never a guessed path).
+        field_dir: String::new(),
         disabled,
     }
 }
@@ -6659,6 +6676,7 @@ fn write_hook_config(
     mcp_url: &str,
     token: &str,
     client: &str,
+    field_dir: Option<&str>,
 ) -> Result<bool, String> {
     fs::create_dir_all(hooks_dir)
         .map_err(|e| format!("failed to create hooks dir {}: {e}", hooks_dir.display()))?;
@@ -6667,11 +6685,15 @@ fn write_hook_config(
     // path below — which is exactly when the manager is already standing in
     // this directory. The hook itself never rotates; see rotate_silence_log.
     rotate_silence_log(hooks_dir);
-    let body = serde_json::json!({
-        "url": mcp_url,
-        "token": token,
-        "client": client,
-    })
+    // Sprint 28b (D4): `field_dir` travels with the endpoint, because the hook
+    // must READ the resident's pile to nudge and has no other way to find it.
+    // Absent means no nudge — never a guessed path.
+    let body = match field_dir {
+        Some(dir) => serde_json::json!({
+            "url": mcp_url, "token": token, "client": client, "field_dir": dir,
+        }),
+        None => serde_json::json!({ "url": mcp_url, "token": token, "client": client }),
+    }
     .to_string();
 
     let target = hooks_dir.join("hook_config.json");
@@ -7685,6 +7707,7 @@ fn write_managed_cursor_hooks(
     hooks_dir: &Path,
     mcp_url: &str,
     token: &str,
+    field_dir: Option<&str>,
     backup_before_write: bool,
     force_rewrite: bool,
 ) -> Result<bool, String> {
@@ -7705,7 +7728,7 @@ fn write_managed_cursor_hooks(
     //    URL and token baked into its text. The cutover to binaries moved the
     //    configuration mechanism and left the configuration behind — the same
     //    half-finished shape as the cutover itself.
-    if let Err(e) = write_hook_config(hooks_dir, mcp_url, token, "cursor") {
+    if let Err(e) = write_hook_config(hooks_dir, mcp_url, token, "cursor", field_dir) {
         return Err(format!("failed writing the cursor hook config: {e}"));
     }
 
@@ -8336,6 +8359,7 @@ mod tests {
             project_paths: vec!["/p".into()],
             url: format!("http://127.0.0.1:{port}/mcp"),
             token: token.into(),
+            field_dir: String::new(),
             disabled,
         }
     }
@@ -9481,6 +9505,7 @@ mod tests {
             &hooks_dir,
             "http://127.0.0.1:8800/mcp",
             "tok",
+            None,
             false,
             false,
         )
@@ -9950,6 +9975,7 @@ mod tests {
             project_paths: vec![],
             url: url.into(),
             token: token.into(),
+            field_dir: String::new(),
             disabled: false,
         }
     }
@@ -10138,7 +10164,7 @@ mod tests {
         .unwrap();
 
         assert!(write_managed_cursor_hooks(
-            &hooks_path, &hooks_dir, "http://127.0.0.1:8899/mcp", "tok", false, false
+            &hooks_path, &hooks_dir, "http://127.0.0.1:8899/mcp", "tok", None, false, false
         )
         .unwrap());
 
@@ -10202,7 +10228,7 @@ mod tests {
 
         // IDEMPOTENT: unchanged re-deploy is a byte-stable no-op.
         assert!(
-            !write_managed_cursor_hooks(&hooks_path, &hooks_dir, "http://127.0.0.1:8899/mcp", "tok", false, false).unwrap(),
+            !write_managed_cursor_hooks(&hooks_path, &hooks_dir, "http://127.0.0.1:8899/mcp", "tok", None, false, false).unwrap(),
             "re-deploy is a no-op"
         );
 
@@ -10223,7 +10249,7 @@ mod tests {
         )
         .unwrap();
 
-        write_managed_cursor_hooks(&hooks_path, &hooks_dir, "http://u/mcp", "t", false, false).unwrap();
+        write_managed_cursor_hooks(&hooks_path, &hooks_dir, "http://u/mcp", "t", None, false, false).unwrap();
         assert!(remove_managed_cursor_hooks(&hooks_path, &hooks_dir, false).unwrap());
 
         // File kept (user content remains); our entries + scripts gone; managed-only event pruned.
@@ -10251,7 +10277,7 @@ mod tests {
         let hooks_dir = cursor.join("hooks");
 
         // Deploy into a virgin ~/.cursor (jawata created the file).
-        write_managed_cursor_hooks(&hooks_path, &hooks_dir, "http://u/mcp", "t", false, false).unwrap();
+        write_managed_cursor_hooks(&hooks_path, &hooks_dir, "http://u/mcp", "t", None, false, false).unwrap();
         assert!(hooks_json.exists());
         assert!(remove_managed_cursor_hooks(&hooks_path, &hooks_dir, false).unwrap());
         assert!(!hooks_json.exists(), "file removed when nothing but ours remained");
@@ -10266,7 +10292,7 @@ mod tests {
         let dir = unique_tempdir("cursor-scripts-exec");
         let hooks_dir = dir.join("hooks");
         let hooks_path = dir.join("hooks.json").to_string_lossy().to_string();
-        write_managed_cursor_hooks(&hooks_path, &hooks_dir, "http://127.0.0.1:1/mcp", "t", false, false).unwrap();
+        write_managed_cursor_hooks(&hooks_path, &hooks_dir, "http://127.0.0.1:1/mcp", "t", None, false, false).unwrap();
 
         use std::process::{Command, Stdio};
         // The GUARD is no longer a script here (Sprint 28a) — its equivalent
@@ -11011,7 +11037,7 @@ mod tests {
         }
         fs::write(&live, &body).unwrap();
 
-        write_hook_config(&dir, "http://u/mcp", "tw", "claude-code").unwrap();
+        write_hook_config(&dir, "http://u/mcp", "tw", "claude-code", None).unwrap();
 
         assert!(!live.exists(), "the deploy pass must have rotated the oversized log");
         assert_eq!(
@@ -11019,6 +11045,30 @@ mod tests {
             fs::read_to_string(dir.join("hook_silence.log.1")).unwrap(),
             "moved whole, never truncated"
         );
+    }
+
+    /// Sprint 28b (D4): the hook cannot find the resident's field recording on
+    /// its own, so the deploy must NAME it. Without this line the nudge is a
+    /// capability nothing can ever reach — the shape this sprint exists to end.
+    #[test]
+    fn the_hook_config_carries_the_field_directory_when_the_deploy_knows_it() {
+        let dir = std::env::temp_dir().join(format!("jawata-mgr-fielddir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        write_hook_config(&dir, "http://u/mcp", "t", "claude-code", Some("/w/ws/field")).unwrap();
+        let written = fs::read_to_string(dir.join("hook_config.json")).unwrap();
+        assert!(written.contains("\"field_dir\":\"/w/ws/field\""),
+            "the hook reads the pile from this path; without it no nudge can ever fire: {written}");
+
+        // And absent stays ABSENT — a gateway deploy fronts every workspace, so
+        // naming one would point the hook at another workspace's recording.
+        let bare = std::env::temp_dir().join(format!("jawata-mgr-nofield-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&bare);
+        fs::create_dir_all(&bare).unwrap();
+        write_hook_config(&bare, "http://u/mcp", "t", "claude-code", None).unwrap();
+        assert!(!fs::read_to_string(bare.join("hook_config.json")).unwrap().contains("field_dir"),
+            "no field dir must mean no key — never a guessed path");
     }
 
     #[test]
@@ -11057,7 +11107,7 @@ mod tests {
         // DEPLOY. This makes that state unreachable.
         let dir = unique_tempdir("hookcfg-race");
         let hooks = dir.join("hooks");
-        write_hook_config(&hooks, "http://u/mcp", "t0", "claude-code").unwrap();
+        write_hook_config(&hooks, "http://u/mcp", "t0", "claude-code", None).unwrap();
         let target = hooks.join("hook_config.json");
 
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -11089,7 +11139,7 @@ mod tests {
         });
 
         for i in 0..300 {
-            write_hook_config(&hooks, "http://u/mcp", &format!("token-{i}"), "claude-code")
+            write_hook_config(&hooks, "http://u/mcp", &format!("token-{i}"), "claude-code", None)
                 .unwrap();
         }
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -11122,7 +11172,7 @@ mod tests {
         assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
 
         // Byte-stable: rewriting the same content changes nothing.
-        assert!(!write_hook_config(&hooks, "http://u/mcp", "token-299", "claude-code").unwrap(),
+        assert!(!write_hook_config(&hooks, "http://u/mcp", "token-299", "claude-code", None).unwrap(),
             "an unchanged rewrite must be a no-op");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -11855,6 +11905,7 @@ mod tests {
             &hooks_dir,
             "http://127.0.0.1:8899/mcp",
             "tok",
+            None,
             false,
             false,
         )
@@ -12166,7 +12217,7 @@ mod tests {
         let hooks_json = cursor.join("hooks.json");
         let hooks_path = hooks_json.to_string_lossy().to_string();
         let hooks_dir = cursor.join("hooks");
-        write_managed_cursor_hooks(&hooks_path, &hooks_dir, "http://u/mcp", "t", false, false).unwrap();
+        write_managed_cursor_hooks(&hooks_path, &hooks_dir, "http://u/mcp", "t", None, false, false).unwrap();
 
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&hooks_json).unwrap()).unwrap();
@@ -13090,6 +13141,7 @@ mod tests {
             project_paths: paths.iter().map(|p| p.to_string()).collect(),
             url: format!("http://127.0.0.1:{port}/mcp"),
             token: token.into(),
+            field_dir: String::new(),
             disabled: false,
         }
     }
@@ -13692,6 +13744,7 @@ mod stage2_live_probe {
             project_paths: vec!["/p".into()],
             url: format!("http://127.0.0.1:{port}/mcp"),
             token: token.into(),
+            field_dir: String::new(),
             disabled: false,
         };
         let servers = match std::env::var("JAWATA_PROBE_SERVERS") {

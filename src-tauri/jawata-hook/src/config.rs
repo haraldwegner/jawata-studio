@@ -38,6 +38,13 @@ pub struct HookConfig {
     /// Optional override; the default is the safety module's budget.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// Sprint 28b (D4): the workspace's `field/` directory — where the resident
+    /// writes the sanitized pile and the two switches. The hook READS it to
+    /// decide whether a recurring failure deserves its one-line pointer at
+    /// `/report`. Absent (an older deploy, or a client with no workspace) means
+    /// no nudge, never a guessed path.
+    #[serde(default)]
+    pub field_dir: Option<String>,
 }
 
 impl HookConfig {
@@ -200,7 +207,7 @@ mod tests {
             other => panic!("an unknown client must not resolve: {other:?}"),
         }
         assert_eq!(Ok(crate::roles::Client::Cursor),
-            HookConfig { url: "u".into(), token: "t".into(), client: "cursor".into(), timeout_ms: None }.client());
+            HookConfig { url: "u".into(), token: "t".into(), client: "cursor".into(), timeout_ms: None, field_dir: None }.client());
     }
 
     #[test]

@@ -109,7 +109,38 @@ pub fn observe_in(
             return slip(&dir, client, tool, &request_only, config);
         }
     }
-    Outcome::Silent(SilenceReason::NothingToObserve)
+    nudge(client, config)
+}
+
+/// D4: the one-line pointer at `/report`, at the Nth recurrence of a shape.
+///
+/// It INFORMS — no question, no repeat for the same shape, and ignoring it
+/// forever is supported. Four conditions gate it (switch on, threshold met,
+/// not posted, not already nudged); all live in files the resident and studio
+/// own, so this decides and records nothing else.
+fn nudge(client: Client, config: Option<&HookConfig>) -> Outcome {
+    let Some(field_dir) = config.and_then(|c| c.field_dir.as_ref()) else {
+        return Outcome::Silent(SilenceReason::NothingToObserve);
+    };
+    let field_dir = Path::new(field_dir);
+    let Some((shape, count)) = crate::field::nudge_due(field_dir) else {
+        return Outcome::Silent(SilenceReason::NothingToObserve);
+    };
+    let emission = crate::emit::context_for(
+        crate::roles::Role::Observer,
+        client,
+        crate::field::nudge_line(&shape, count),
+    );
+    match crate::emit::render(client, &emission) {
+        Some(rendered) => {
+            // Recorded ONLY on a real emission: a nudge the client never saw
+            // must still be owed (the manufactured-absence discipline).
+            crate::field::record_nudged(field_dir, &shape);
+            Outcome::Emitted(rendered)
+        }
+        // Cursor cannot inject here — by design, not a dead channel.
+        None => Outcome::Silent(SilenceReason::RecordedNotInjected),
+    }
 }
 
 /// A slip: log it, bridge it to the store (fail-safe), answer the steering.
