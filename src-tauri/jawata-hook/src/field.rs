@@ -184,6 +184,122 @@ pub fn record_nudged(field_dir: &Path, shape: &str) {
     }
 }
 
+// ---- D9: the periodic reminder (Sprint 28b) ----
+
+/// At most one reminder a week, and only when there is something new to say.
+pub const REMINDER_INTERVAL_MILLIS: u64 = 7 * 24 * 60 * 60 * 1000;
+
+/// From this strike onward the reminder carries the go-silent question.
+pub const STRIKES_BEFORE_ASKING: usize = 2;
+
+/// What the agent says, and whether it carries the question.
+///
+/// It INFORMS: the user who never opens studio must still learn that jawata is
+/// failing for him, or he decides it is not worth using while jawata knew all
+/// along. It never lists the shapes — those live in the dashboard.
+pub fn reminder_line(shapes: usize, failures: u64, carries_question: bool) -> String {
+    let mut line = format!(
+        "jawata has recorded {failures} failed tool calls here across {shapes} recurring \
+         failure shapes. Running /report turns one into a bug report you review and post \
+         from your own GitHub account — shapes only, no code or paths."
+    );
+    if carries_question {
+        line.push_str(
+            " You have not acted on this before; should jawata go silent about failures? \
+             The checkbox on the /report tile in jawata-studio decides, or just say so here.",
+        );
+    }
+    line
+}
+
+/// Whether a reminder is due, and whether it carries the question.
+///
+/// Four gates, in order: not silenced · something new since the last reminder ·
+/// at least a week since the last one · something to report at all. Everything
+/// is read from files the resident and studio own; the caller records the fact
+/// through [`record_reminded`].
+pub fn reminder_due(field_dir: &Path, now_millis: u64) -> Option<(String, bool)> {
+    let state = std::fs::read_to_string(field_dir.join("state.json")).unwrap_or_default();
+    if state.contains("\"silenced\":true") {
+        return None;
+    }
+    let posted = quoted_items(&state, "\"posted\":[");
+
+    let mut shapes: BTreeMap<String, u64> = BTreeMap::new();
+    let mut failures = 0u64;
+    let pile = std::fs::read_to_string(field_dir.join("pile.jsonl")).ok()?;
+    for line in pile.lines() {
+        if !line.starts_with("{\"t\":") || line.contains("\"ok\":true") {
+            continue;
+        }
+        let (Some(tool), Some(kind), Some(code)) = (
+            between(line, "\"tool\":\"", '"'),
+            between(line, "\"kind\":\"", '"'),
+            between(line, "\"code\":\"", '"'),
+        ) else {
+            continue;
+        };
+        let shape = format!("{tool}/{kind}/{code}");
+        if posted.contains(&shape) {
+            continue; // already reported: not news, and not a reason to nag
+        }
+        failures += 1;
+        *shapes.entry(shape).or_insert(0) += 1;
+    }
+    if shapes.is_empty() {
+        return None; // nothing to say: an absence is an answer
+    }
+
+    let (last_shown, strikes) = reminder_ledger(field_dir);
+    if last_shown > 0 && now_millis.saturating_sub(last_shown) < REMINDER_INTERVAL_MILLIS {
+        return None; // too soon — "now and then", never a nag
+    }
+    Some((
+        reminder_line(shapes.len(), failures, strikes >= STRIKES_BEFORE_ASKING),
+        strikes >= STRIKES_BEFORE_ASKING,
+    ))
+}
+
+/// The append-only reminder ledger: `<millis>\tshown` from the hook,
+/// `<millis>\treset` from the resident when `/report` is used. Append-only for
+/// the same reason the pile is — three processes touch this lane, and a
+/// read-modify-write from any of them would lose another's record.
+pub fn reminder_ledger(field_dir: &Path) -> (u64, usize) {
+    let Ok(content) = std::fs::read_to_string(field_dir.join("reminded.log")) else {
+        return (0, 0);
+    };
+    let mut last_shown = 0u64;
+    let mut strikes = 0usize;
+    for line in content.lines() {
+        let mut parts = line.splitn(2, '\t');
+        let (Some(at), Some(kind)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        match kind.trim() {
+            "shown" => {
+                last_shown = at.trim().parse().unwrap_or(last_shown);
+                strikes += 1;
+            }
+            "reset" => strikes = 0,
+            _ => {}
+        }
+    }
+    (last_shown, strikes)
+}
+
+/// Records that a reminder was shown.
+pub fn record_reminded(field_dir: &Path, now_millis: u64) {
+    use std::io::Write as _;
+    let _ = std::fs::create_dir_all(field_dir);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(field_dir.join("reminded.log"))
+    {
+        let _ = f.write_all(format!("{now_millis}\tshown\n").as_bytes());
+    }
+}
+
 fn between(line: &str, key: &str, end: char) -> Option<String> {
     let from = line.find(key)? + key.len();
     let to = line[from..].find(end)? + from;
@@ -373,5 +489,110 @@ mod tests {
     #[test]
     fn no_pile_means_nothing_owed() {
         assert_eq!(None, nudge_due(&field_scratch("nopile")));
+    }
+
+    // ---- D9: the reminder's cadence, its question, and its two off-switches ----
+
+    const WEEK: u64 = REMINDER_INTERVAL_MILLIS;
+
+    #[test]
+    fn the_reminder_is_due_first_time_then_waits_a_week() {
+        let dir = field_scratch("cadence");
+        seed_pile(&dir, 3);
+        let (line, question) = reminder_due(&dir, 10 * WEEK).expect("first time is due");
+        assert!(!question, "the first two are plain");
+        assert!(line.contains("/report"), "{line}");
+        assert!(!line.contains("RUNNER_TIMEOUT"), "the shapes stay in the dashboard: {line}");
+        record_reminded(&dir, 10 * WEEK);
+
+        assert_eq!(None, reminder_due(&dir, 10 * WEEK + WEEK / 2), "too soon");
+        assert!(reminder_due(&dir, 11 * WEEK + 1).is_some(), "a week later, due again");
+    }
+
+    #[test]
+    fn the_third_reminder_carries_the_question_and_keeps_carrying_it() {
+        let dir = field_scratch("question");
+        seed_pile(&dir, 4);
+        record_reminded(&dir, WEEK);
+        record_reminded(&dir, 2 * WEEK);
+        let (line, question) = reminder_due(&dir, 3 * WEEK).expect("due");
+        assert!(question, "the third asks");
+        assert!(line.contains("go silent"), "{line}");
+        // Ignoring the question changes nothing: it keeps being asked, and the
+        // checkbox stays one click away.
+        record_reminded(&dir, 3 * WEEK);
+        let (_, still_asking) = reminder_due(&dir, 4 * WEEK).expect("due");
+        assert!(still_asking, "an ignored question is not an answer either way");
+    }
+
+    #[test]
+    fn using_report_resets_the_strikes_and_silences_that_shape() {
+        let dir = field_scratch("reset");
+        seed_pile(&dir, 4);
+        record_reminded(&dir, WEEK);
+        record_reminded(&dir, 2 * WEEK);
+        // The resident appends this marker when /report is used.
+        std::fs::write(dir.join("reminded.log"),
+            format!("{}\tshown\n{}\tshown\n{}\treset\n", WEEK, 2 * WEEK, 2 * WEEK + 1)).unwrap();
+        let (_, question) = reminder_due(&dir, 4 * WEEK).expect("due");
+        assert!(!question, "a /report use resets the count — it is plain again");
+        assert_eq!((2 * WEEK, 0), reminder_ledger(&dir));
+    }
+
+    #[test]
+    fn both_silence_routes_stop_the_reminder() {
+        let dir = field_scratch("silenced");
+        seed_pile(&dir, 5);
+        // Route 1: the checkbox / the agent writing the state.
+        std::fs::write(dir.join("state.json"),
+            "{\"nudges\":true,\"silenced\":true,\"remindedAt\":0,\"strikes\":0,\"posted\":[]}")
+            .unwrap();
+        assert_eq!(None, reminder_due(&dir, 99 * WEEK));
+        // Route 2: every shape reported — nothing left to remind about.
+        std::fs::write(dir.join("state.json"),
+            "{\"nudges\":true,\"silenced\":false,\"remindedAt\":0,\"strikes\":0,\
+             \"posted\":[\"run_tests/run/RUNNER_TIMEOUT\",\"inspect/source/TYPE_NOT_FOUND\"]}")
+            .unwrap();
+        assert_eq!(None, reminder_due(&dir, 99 * WEEK));
+        // And the nudge switch does NOT silence reminders — they are distinct.
+        std::fs::write(dir.join("state.json"),
+            "{\"nudges\":false,\"silenced\":false,\"remindedAt\":0,\"strikes\":0,\"posted\":[]}")
+            .unwrap();
+        assert!(reminder_due(&dir, 99 * WEEK).is_some());
+    }
+
+    /// The user's ruling: "No annoying pop-ups. The main agent should tell the
+    /// user!" This asserts the ABSENCE of any notification path in the crate —
+    /// a rule stated only in prose is a rule the next change breaks.
+    #[test]
+    fn the_user_is_never_interrupted_by_a_popping_surface() {
+        // The needles are ASSEMBLED, never written whole: a scan whose own
+        // source contains its needles flags itself, and the obvious cure —
+        // skipping this file — would blind it to the module it guards most.
+        let banned: Vec<String> = [
+            ("noti", "fy_rust"), ("notifi", "cation"), ("Message", "Box"),
+            ("toa", "st"), ("dia", "log"), ("popu", "p"),
+        ]
+        .iter()
+        .map(|(a, b)| format!("{a}{b}").to_lowercase())
+        .collect();
+
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let body = std::fs::read_to_string(&path).unwrap();
+            for (n, line) in body.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("").to_lowercase();
+                for needle in &banned {
+                    if code.contains(needle.as_str()) {
+                        offenders.push(format!("{}:{} {needle}", path.display(), n + 1));
+                    }
+                }
+            }
+        }
+        assert!(offenders.is_empty(), "the reminders speak through the agent: {offenders:?}");
     }
 }

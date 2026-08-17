@@ -48,7 +48,7 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
         // resident is down, and a guard that asked and failed open would leak
         // exactly the calls it exists to deny.
         Role::Guard => guard(client, payload),
-        Role::Primer => primer(client, store),
+        Role::Primer => primer(client, config, store),
         Role::UserPrompt | Role::ToolRecall => recall(role, client, payload, store),
         Role::Stop => stop_gate(client, payload, crate::stop::Autonomy::Unknown),
         // Sprint 28b D8: the ported observer arm (outcome capture, slip trail,
@@ -232,11 +232,27 @@ fn command_in(payload: &str) -> Option<String> {
     None
 }
 
-fn primer(client: Client, store: &dyn Store) -> Outcome {
+fn primer(client: Client, config: &HookConfig, store: &dyn Store) -> Outcome {
     let answer = store.ask(serde_json::json!({
         "kind": "primer", "format": "text", "limit": 12
     }));
-    finish(client, Role::Primer, answer, "JAWATA domain primer (what this codebase is about):")
+    let mut heading =
+        String::from("JAWATA domain primer (what this codebase is about):");
+    // Sprint 28b D9: the periodic failure reminder rides the primer — the
+    // session's own opening, spoken by the agent. NO pop-up exists anywhere in
+    // this sprint: the user's ruling was that the main agent tells him.
+    if let Some(field_dir) = config.field_dir.as_ref() {
+        let dir = std::path::Path::new(field_dir);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        if let Some((line, _carries_question)) = crate::field::reminder_due(dir, now) {
+            crate::field::record_reminded(dir, now);
+            heading = format!("{line}\n\n{heading}");
+        }
+    }
+    finish(client, Role::Primer, answer, &heading)
 }
 
 fn recall(role: Role, client: Client, payload: &str, store: &dyn Store) -> Outcome {
