@@ -37,3 +37,4 @@ reqwest = { version = "0.12.24", default-features = false, features = ["blocking
 # on — the exact shape this sprint exists to remove. The setting lives in the
 # workspace root, src-tauri/Cargo.toml, and Stage 5's test asserts the
 # EFFECTIVE value at runtime rather than the presence of a line in a file.
+

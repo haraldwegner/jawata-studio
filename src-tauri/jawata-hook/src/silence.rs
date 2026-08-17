@@ -226,7 +226,8 @@ mod tests {
             "unknown-role", "role-absent-on-client", "not-configured",
             "stdin-timed-out", "payload-unreadable", "no-cues",
             "store-had-nothing", "query-failed", "contract-mismatch",
-            "cannot-inject", "watchdog-fired", "no-transcript",
+            "cannot-inject", "recorded-not-injected", "nothing-to-observe",
+            "answer-unusable", "watchdog-fired", "no-transcript",
             "autonomy-unknown", "stop-allowed", "panicked",
         ];
         assert_eq!(expected.len(), lines.len(), "one record per reason");

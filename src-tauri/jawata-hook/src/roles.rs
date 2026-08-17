@@ -131,16 +131,14 @@ pub const ROLES: &[RoleSpec] = &[
         role: Role::Observer,
         client: Client::ClaudeCode,
         availability: Availability::Handled { event: "PostToolUse" },
-        // QUERY IS FALSE, deliberately. This row previously declared `true`
-        // while `pipeline::run` returned silence without ever asking the store
-        // — the table and the code stated opposite facts, and a test pinned the
-        // contradiction. An observer that feeds tool outcomes back to the store
-        // is a real capability and a good idea; it is NOT built. Declaring it
-        // here made the product claim something it does not do, which is the
-        // defect this whole sprint exists to end. Set it back to `true` in the
-        // same change that implements the ask, not before.
-        concerns: c(false, false, false),
-        can_inject: false,
+        // Sprint 28b D8: the observer's binary arm is BUILT (`observer.rs`) —
+        // it records outcomes, bridges slips to the store (the query), and
+        // answers a slip with the steering context (the emit). No cue: it
+        // judges the payload directly. This row was deliberately all-false
+        // while the arm was a stub; per its own note, it flips in the same
+        // change that implements the ask.
+        concerns: c(false, true, true),
+        can_inject: true,
         binary_name: "jawata-hook-observer",
     },
     RoleSpec {
@@ -181,8 +179,10 @@ pub const ROLES: &[RoleSpec] = &[
         role: Role::Observer,
         client: Client::Cursor,
         availability: Availability::Handled { event: "afterMCPExecution" },
-        // Query false for the reason given on the Claude Observer row above.
-        concerns: c(false, false, false),
+        // Sprint 28b D8: records and bridges like the Claude row, but Cursor's
+        // afterMCPExecution cannot inject context — a slip is RECORDED, not
+        // injected (SilenceReason::RecordedNotInjected, quiet by design).
+        concerns: c(false, true, false),
         can_inject: false,
         binary_name: "jawata-hook-observer",
     },

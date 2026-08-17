@@ -26,11 +26,14 @@ pub const HOOK_CONTRACT: u32 = 1;
 /// Tags that mean "the store answered, and the channel still delivered
 /// nothing" — the dead-channel numerator. Extended, not edited, when a new
 /// answered-class suppression appears.
-const ANSWERED_BUT_SUPPRESSED: &[&str] = &["cannot-inject", "contract-mismatch"];
+const ANSWERED_BUT_SUPPRESSED: &[&str] =
+    &["cannot-inject", "contract-mismatch", "answer-unusable"];
 
 /// Tags that mean "quiet was the correct outcome".
-const LEGITIMATELY_QUIET: &[&str] =
-    &["store-had-nothing", "no-cues", "stop-allowed", "role-absent-on-client"];
+const LEGITIMATELY_QUIET: &[&str] = &[
+    "store-had-nothing", "no-cues", "stop-allowed", "role-absent-on-client",
+    "recorded-not-injected", "nothing-to-observe",
+];
 
 /// One channel's folded counters.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

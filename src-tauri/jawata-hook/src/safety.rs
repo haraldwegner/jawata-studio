@@ -130,6 +130,21 @@ silence_reasons! {
     ContractMismatch(String) => "contract-mismatch", SilenceReason::ContractMismatch("ours=1 theirs=2".into());
     /// This role cannot inject on this client.
     CannotInject => "cannot-inject", SilenceReason::CannotInject;
+
+    /// Sprint 28b D8/F2: the role RECORDED what it saw and its client cannot
+    /// inject BY DESIGN (Cursor's observer/user-prompt cells) — quiet is the
+    /// correct outcome, never the dead-channel numerator.
+    RecordedNotInjected => "recorded-not-injected", SilenceReason::RecordedNotInjected;
+
+    /// Sprint 28b D8: the observer watched a call that carries none of its
+    /// signals — the ordinary, healthy outcome of most tool calls.
+    NothingToObserve => "nothing-to-observe", SilenceReason::NothingToObserve;
+
+    /// Sprint 28b F2: the store ANSWERED (a 200 with a body) and the answer
+    /// was unusable — shape drift or a tool refusal. The historic two-week
+    /// outage's own mechanism; counted toward the dead-channel condition,
+    /// unlike query-failed (which never got an answer).
+    AnswerUnusable(String) => "answer-unusable", SilenceReason::AnswerUnusable("ShapeChanged".into());
     /// The body ran past the deadline; the watchdog ended it and said so.
     WatchdogFired => "watchdog-fired", SilenceReason::WatchdogFired;
     /// The stop gate had no transcript it could read.

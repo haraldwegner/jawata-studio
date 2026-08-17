@@ -51,7 +51,9 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
         Role::Primer => primer(client, store),
         Role::UserPrompt | Role::ToolRecall => recall(role, client, payload, store),
         Role::Stop => stop_gate(client, payload, crate::stop::Autonomy::Unknown),
-        Role::Observer => Outcome::Silent(SilenceReason::CannotInject),
+        // Sprint 28b D8: the ported observer arm (outcome capture, slip trail,
+        // edit feed) — no longer the stub that read as a dead channel.
+        Role::Observer => crate::observer::observe(client, payload, Some(config)),
     }
 }
 
@@ -177,7 +179,7 @@ fn session_id_in(payload: &str) -> Option<String> {
 /// `USERPROFILE` is checked too: on Windows `HOME` is often unset, and this
 /// role now runs there natively rather than through a shell that would have
 /// supplied it.
-fn home_dir() -> Option<std::path::PathBuf> {
+pub(crate) fn home_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(std::path::PathBuf::from)
@@ -945,14 +947,19 @@ mod tests {
         }
     }
 
-    /// The observer emits nothing BY DESIGN — but until now nothing said so,
-    /// and an arm whose body is the same as the default is indistinguishable
-    /// from an arm nobody wrote.
+    /// Sprint 28b D8: the observer arm is PORTED — an uneventful payload is
+    /// quiet with its own honest reason (nothing-to-observe, legitimately
+    /// quiet in the reach fold), never the stub's cannot-inject that read as
+    /// a permanently dead channel (C2 audit F2).
     #[test]
     fn the_observer_stays_silent_through_run_and_says_why() {
+        let payload = serde_json::json!({
+            "tool_name": "search_symbols", "session_id": "s", "tool_input": {}
+        })
+        .to_string();
         assert_eq!(
-            Outcome::Silent(SilenceReason::CannotInject),
-            run(Role::Observer, &config("claude-code"), "{}", &Stub(Ok(Answer::Nothing)))
+            Outcome::Silent(SilenceReason::NothingToObserve),
+            run(Role::Observer, &config("claude-code"), &payload, &Stub(Ok(Answer::Nothing)))
         );
     }
 
@@ -1086,22 +1093,26 @@ mod tests {
         );
     }
 
-    /// F4: the Observer table and the code must not drift apart again. Both
-    /// rows previously declared a store query the pipeline never made, and the
-    /// "test that pinned the contradiction" I claimed did not exist.
+    /// F4 (re-pinned at 28b D8): the Observer table and the code must not
+    /// drift apart. The rows now declare the PORTED capability — a store
+    /// query (the slip bridge + edit-feed posts) on both clients, an emission
+    /// only where the client can inject (Claude Code's PostToolUse; Cursor's
+    /// afterMCPExecution cannot) — and the pipeline actually makes them: a
+    /// slip payload emits the steering on Claude Code and is recorded-not-
+    /// injected on Cursor.
     #[test]
     fn the_observer_table_matches_what_the_pipeline_does() {
         for client in [Client::ClaudeCode, Client::Cursor] {
-            if let Some(spec) = crate::roles::spec(Role::Observer, client) {
-                assert!(
-                    !spec.concerns.query,
-                    "the Observer row claims a store query the pipeline does not make"
-                );
-            }
+            let spec = crate::roles::spec(Role::Observer, client).expect("observer row");
+            assert!(spec.concerns.query, "the port bridges slips to the store");
         }
+        assert!(crate::roles::spec(Role::Observer, Client::ClaudeCode).unwrap().can_inject);
+        assert!(!crate::roles::spec(Role::Observer, Client::Cursor).unwrap().can_inject);
+        // An unreadable payload is quiet with its own reason — never a crash,
+        // never the dead-channel numerator.
         assert_eq!(
-            Outcome::Silent(SilenceReason::CannotInject),
-            run(Role::Observer, &config("claude-code"), "{}", &Stub(Ok(Answer::Nothing)))
+            Outcome::Silent(SilenceReason::PayloadUnreadable("observer payload".into())),
+            run(Role::Observer, &config("claude-code"), "", &Stub(Ok(Answer::Nothing)))
         );
     }
 
