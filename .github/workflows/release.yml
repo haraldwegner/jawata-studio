@@ -562,6 +562,31 @@ jobs:
           make_latest: true
           prerelease: false
 
+      # studio#15: the step above hands the notes to the release action, which
+      # then REUSES the release the matrix jobs already created ("Using release
+      # N instead of duplicate draft M") and keeps that release's body. The
+      # notes were dropped silently, with the step green, for every release from
+      # v3.9.0 to v3.10.0 — so the body is now set EXPLICITLY, after the release
+      # exists, and then read back.
+      - name: Attach the release notes to the published release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          NOTES="docs/release-notes/${GITHUB_REF_NAME}.md"
+          [ -f "$NOTES" ] || { echo "no notes file for ${GITHUB_REF_NAME}; leaving the body as published"; exit 0; }
+          id=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" -q .id)
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/${id}" -F body=@"$NOTES" >/dev/null
+          # READ IT BACK. The defect this replaces was a step that reported
+          # success while achieving nothing, so success here means the published
+          # body matches the file — not that a request was accepted.
+          published=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${id}" -q .body)
+          if [ "$published" != "$(cat "$NOTES")" ]; then
+            echo "::error::the published body does not match ${NOTES} — the notes did not land"
+            exit 1
+          fi
+          echo "notes attached: $(wc -c < "$NOTES") bytes, verified against the published body"
+
       - name: Verify the latest pointer advanced
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
