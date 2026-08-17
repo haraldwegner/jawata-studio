@@ -155,7 +155,7 @@
       "Proven by a front-door Edit of a .java file that went through unblocked.",
       "The guard reverts to its script (which carries both halves) until the port."
     ],
-    "_scope": "claude-code, and — since Sprint 28a — the GUARD row governs Cursor too. Before that, Cursor was all script-generation by construction and a studio test pinned that no Cursor entry named a role binary. That test now checks the weaker, truer thing: a Cursor entry may name a role binary only where a row here declares that role live as a binary. The other three Cursor roles remain scripts, governed by the same rows.",
+    "_scope": "claude-code, and — since Sprint 28a — the rows govern Cursor too. Before that, Cursor was all script-generation by construction and a studio test pinned that no Cursor entry named a role binary. That test now checks the weaker, truer thing: a Cursor entry may name a role binary only where a row here declares that role live as a binary (a `cursor` key on a row may override `live` where the two clients legitimately diverge, as the observer's did from v3.7.9 until 28b D8; no row carries one today).",
     "primer": {
       "live": "binary"
     },
@@ -170,10 +170,8 @@
       "ported": "Sprint 28a (2026-08-12). The .java hand-edit gate moved into the binary: tool_name extraction, Edit/Write/MultiEdit denial, the session-scoped jawata-author window (TTL-bounded, so it cannot become a standing bypass), and the new-file allowance. BOTH halves are pinned by tests that SPAWN THE REAL BINARY — edit_gate_runs_the_real_binary.rs — including a regression asserting the shell half still denies a java grep, because the two previous cutovers each shipped one half. Windows forced the timing: a .sh cannot execute there, Cursor runs this role failClosed, and a hook that never returns BLOCKS the command — observed live on 2026-08-12 as an interactive bash window hung on cat."
     },
     "observer": {
-      "live": "script",
-      "until": "the binary ports outcome capture and the jawata-fallback audit trail",
-      "cursor": "binary",
-      "why_cursor": "The 'until' above is a CLAUDE-CODE fact: that script captures tool outcomes and the jawata-fallback audit trail, so cutting it over would lose them. CURSOR's observer script loses nothing, because it does nothing — its whole body is `cat > /dev/null` then `printf '{}'`, and the role's Cursor row in roles.rs declares query, record and emit all false. Two generations that both do nothing are not a parity question. It stays REGISTERED rather than dropped because afterMCPExecution is Cursor's only post-tool injection point, so this entry is the seam the outcome-capture work will arrive through. Windows forced it: a .sh cannot execute there, and Cursor firing one on every tool call put a window on the user's screen every time — a no-op that costs nothing and interrupts constantly."
+      "live": "binary",
+      "ported": "Sprint 28b D8 (2026-08-17). Both script halves are in the binary (observer.rs): outcome capture — the outcomes.log signals (slip, read-ungrounded, verify) — and the jawata-fallback audit trail — the slip store bridge plus the steering answer — with the C7 edit feed alongside. Pinned by the observer tests that drive the real module. Live on BOTH clients from this one row: Cursor has run the observer binary since v3.7.9 (its script did nothing, so there was no parity to lose — a cursor override on this row recorded that while the clients diverged), and Claude Code flips here, closing the 3.7.2 revert (outcomes.log froze the moment the entry pointed at the stub) the way 28a closed the guard's 3.7.3 revert."
     },
     "stop": {
       "live": "binary"

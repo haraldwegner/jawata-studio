@@ -2265,10 +2265,22 @@ impl ManagerService {
                     match hook_binary_source() {
                         Some(source) => {
                             match deploy_hook_binaries(&source, hooks_dir, BINARY_LIVE_ROLES, HostPlatform::host(), &[]) {
-                                Ok(written) if !written.is_empty() => {
-                                    changed_sections.push("hook_binaries".into())
+                                Ok(written) => {
+                                    if !written.is_empty() {
+                                        changed_sections.push("hook_binaries".into());
+                                    }
+                                    // Sprint 28b (D8): with the binaries on
+                                    // disk, the generation-2 scripts they
+                                    // replace come OFF it — the residue sweep
+                                    // cannot see Claude Code's event-named
+                                    // scripts (see the helper), and a stale
+                                    // `posttooluse-observer.sh` beside a live
+                                    // observer binary is the two-generations
+                                    // install the Cursor lane already forbids.
+                                    if retire_claude_script_generation(hooks_dir, HostPlatform::host()) {
+                                        changed_sections.push("hook_scripts_retired".into());
+                                    }
                                 }
-                                Ok(_) => {}
                                 Err(error) => errors.push(error),
                             }
                         }
@@ -2330,13 +2342,15 @@ impl ManagerService {
                 .unwrap_or_default();
             // A hook is registered only if the client can actually RUN it.
             //
-            // The observer is the one role still on its script generation, by a
-            // deliberate decision: its binary is a stub, and cutting over would
-            // lose tool-outcome capture and the jawata-fallback audit trail. That
-            // trade-off was reasoned entirely on Unix. On Windows a `.sh` cannot
-            // execute — the client launches it, it waits for a payload nobody
-            // pipes in, and a console window sits on the user's screen after
-            // every tool call. Observed live: a window titled
+            // Since Sprint 28b (D8) the observer resolves to its BINARY like
+            // every other role — `observer.rs` carries both script halves
+            // (outcome capture + the jawata-fallback audit trail), which is
+            // the parity `role_generations` required. This check stays for
+            // the FALLBACK: where no binary shipped, the resolver falls back
+            // to the script, and on Windows a `.sh` cannot execute — the
+            // client launches it, it waits for a payload nobody pipes in, and
+            // a console window sits on the user's screen after every tool
+            // call. Observed live: a window titled
             // `/usr/bin/bash --login -i ...\posttooluse-observer.sh`.
             //
             // An absent hook loses outcome capture. A hanging hook loses outcome
@@ -5136,19 +5150,23 @@ const CURSOR_ROLES: &[(&str, &str, &str)] = &[
 
 /// Whether a role runs as its BINARY when Cursor is the client.
 ///
-/// All four do. Three are binary-live everywhere ([`BINARY_LIVE_ROLES`]); the
-/// observer is Cursor-only, declared in `hook-events.json` as
-/// `role_generations.observer.cursor` with its reasoning, and asserted against
-/// this function by `the_cursor_observer_generation_matches_the_declaration`.
+/// All four do — and since Sprint 28b (D8) that is no longer a special case:
+/// every Cursor role is in [`BINARY_LIVE_ROLES`], so this delegates outright.
+/// The observer's Cursor-only override lived here from v3.7.9 (its Cursor
+/// script did nothing, so cutting it over lost nothing) until the Claude Code
+/// generation caught up. The function stays as the NAMED SEAM where a
+/// per-client divergence would be declared — mirrored by the optional `cursor`
+/// key on a `role_generations` row — and is asserted against the contract by
+/// `the_observer_generation_matches_the_declaration_on_both_clients`.
 ///
-/// Windows is why this matters at all. A `.sh` cannot execute there, so every
-/// script-generation Cursor hook was dead — and worse than dead: Cursor tried
-/// to open each one, putting a window on the user's screen at session start, on
-/// every prompt submitted, and after every tool call. Reported live on 2026-08-13
-/// with the whole point stated plainly: "it does not work on windows because it
-/// still tries bash".
+/// Windows is why the Cursor side could never wait for parity. A `.sh` cannot
+/// execute there, so every script-generation Cursor hook was dead — and worse
+/// than dead: Cursor tried to open each one, putting a window on the user's
+/// screen at session start, on every prompt submitted, and after every tool
+/// call. Reported live on 2026-08-13 with the whole point stated plainly: "it
+/// does not work on windows because it still tries bash".
 fn cursor_role_is_binary_live(role: &str) -> bool {
-    role_is_binary_live(role) || role == "jawata-hook-observer"
+    role_is_binary_live(role)
 }
 
 /// The role binary's on-disk file name (`.exe` on Windows).
@@ -5215,14 +5233,14 @@ fn path_is_role_binary(path: &Path) -> bool {
 /// Whether a role's BINARY generation is the live one — the stop_rules parity
 /// discipline applied at role granularity.
 ///
-/// The observer is NOT live as a binary: its binary arm is a deliberate stub
-/// (`pipeline.rs`: record a silence row, nothing else), while the script
-/// generation captures tool outcomes and the `jawata-fallback:` audit trail.
-/// The 3.7.2 dogfood found both dead on the live machine — `outcomes.log`
-/// froze the moment the observer entry first pointed at the binary — because
-/// the cutover was decided by file existence, not by parity. Until the binary
-/// ports those jobs, the observer's invocation path is the SCRIPT and its
-/// binary is not deployed. Declared in `hook-events.json` (`role_generations`).
+/// All six roles run as binaries since Sprint 28b (D8). The observer was the
+/// last: it stayed on its script from the 3.7.2 dogfood — which found both of
+/// its jobs dead the moment the entry first pointed at the stub binary,
+/// because that cutover was decided by file existence, not by parity — until
+/// `observer.rs` carried both halves (outcome capture + the `jawata-fallback:`
+/// audit trail). Declared in `hook-events.json` (`role_generations`), which a
+/// test binds to [`BINARY_LIVE_ROLES`]; a role whose binary loses parity
+/// reverts via [`BINARY_RETIRED_ROLES`].
 fn role_is_binary_live(role: &str) -> bool {
     BINARY_LIVE_ROLES.contains(&role)
 }
@@ -6111,7 +6129,7 @@ fn selftest_stop_hook_script(script: &Path) -> Result<(), String> {
 
 /// The single `PostToolUse` matcher entry that invokes the observer. Broad matcher:
 /// Read (ungrounded-read capture), the verify MCP tools, and search/edit tools (slip
-/// capture); the script no-ops on anything else.
+/// capture); the hook no-ops on anything else.
 fn build_managed_posthook_entry(observer_path: &Path) -> serde_json::Value {
     let command = hook_command_for(observer_path, HostPlatform::host());
     serde_json::json!({
@@ -6145,11 +6163,13 @@ fn write_managed_posthook(
         format!("failed to create observer dir {}: {error}", script_parent.display())
     })?;
     // Same refusal as write_managed_hook / the section writer (v3.7.3 audit
-    // F1): a role-binary path's content is deploy_hook_binaries'. Today the
-    // observer resolves to its script (role_generations declares the script
-    // generation live), so this arm is latent — it becomes load-bearing the
-    // day the observer binary cuts over, which is exactly when nobody will
-    // remember this copy of the body write exists.
+    // F1): a role-binary path's content is deploy_hook_binaries'. Since
+    // Sprint 28b (D8) the observer resolves to its BINARY, so this refusal is
+    // load-bearing on every full deploy — exactly the moment the latent-arm
+    // note that used to sit here predicted nobody would remember this copy of
+    // the body write exists. The script arm below remains for the honest
+    // fallback: an install whose bundle shipped no binary still gets the
+    // script generation (where a script can run at all).
     let body_is_ours = !path_is_role_binary(observer_path);
     let script_body = build_observer_script(mcp_url, token);
     let script_changed = body_is_ours
@@ -6399,10 +6419,10 @@ fn running_from_an_installed_build() -> bool {
 /// and that edge is asserted by a test. `hook-events.json` is what keeps the
 /// two lists honest with each other.
 ///
-/// `jawata-hook-observer` is deliberately ABSENT — its binary is a stub and
-/// the script generation still owns the role (`role_is_binary_live`). The
-/// deploy also REMOVES a previously-deployed observer binary, because a binary
-/// on disk is what flips the invocation path.
+/// All six roles are here since Sprint 28b (D8). A role LEAVES this list the
+/// release its binary is caught short of parity ([`BINARY_RETIRED_ROLES`] —
+/// the deploy then also REMOVES its binary from disk, because a binary on
+/// disk is what flips the invocation path).
 const BINARY_LIVE_ROLES: &[&str] = &[
     "jawata-hook-primer",
     "jawata-hook-userprompt",
@@ -6419,19 +6439,28 @@ const BINARY_LIVE_ROLES: &[&str] = &[
     // BLOCKS the user's command — seen live as an interactive bash window hung
     // on `cat` waiting for a payload nobody piped in.
     "jawata-hook-guard",
+    // Sprint 28b D8 (2026-08-17): the observer rejoins, because the binary now
+    // carries BOTH halves. It lost this place in the 3.7.2 dogfood, when a
+    // cutover decided by file existence pointed the entry at a stub and
+    // outcomes.log froze. Both halves are now in `observer.rs` — outcome
+    // capture (the outcomes.log signals: slip, read-ungrounded, verify) and
+    // the `jawata-fallback:` audit trail (the slip store bridge + steering
+    // answer), plus the C7 edit feed — pinned by the observer tests that
+    // drive the real module.
+    "jawata-hook-observer",
 ];
 
 /// Roles whose binary must NOT be on disk: a stale one from an earlier deploy
 /// would sit unfired forever — the 3.7.1 unwired shape, resurrected per role.
 ///
-/// The GUARD joined the observer here in the 3.7.3 dogfood (F5): its binary
-/// held parity on the shell-command half (java-grep redirect, the
-/// `jawata-fallback:` escape) and silently dropped the other half — the
-/// `.java` hand-edit gate with its `jawata-author:` authoring windows. A
-/// front-door Edit of a `.java` file went through unblocked. The script
-/// generation carries BOTH halves, so the role reverts until the binary
-/// ports the edit gate.
-const BINARY_RETIRED_ROLES: &[&str] = &["jawata-hook-observer"];
+/// EMPTY since Sprint 28b (D8), and kept as a mechanism rather than deleted:
+/// a role REVERTS here the release its binary is caught holding one half.
+/// The guard did exactly that in the 3.7.3 dogfood (F5) — parity on the
+/// shell-command half, the `.java` hand-edit gate silently dropped, a
+/// front-door Edit of a `.java` file through unblocked — and the observer
+/// lived here from the 3.7.2 dogfood until `observer.rs` carried both of its
+/// halves (outcome capture + the `jawata-fallback:` audit trail).
+const BINARY_RETIRED_ROLES: &[&str] = &[];
 
 /// Sprint 28 (D-SHIM, C6 clause 5 first half): deploy the role-named hook
 /// binaries — UNLINK, then write.
@@ -6524,6 +6553,46 @@ fn deploy_hook_binaries(
     sweep_managed_hook_residue(hooks_dir, &keep);
 
     Ok(written)
+}
+
+/// Sprint 28b (D8): remove the generation-2 `.sh` of every role whose BINARY
+/// generation is live and whose binary actually LANDED in `hooks_dir` — the
+/// Claude Code lane's twin of the residue sweep.
+///
+/// The sweep inside `deploy_hook_binaries` cannot take this job: it claims
+/// only the `jawata-`/`goja-` namespace, which covers Cursor's script names
+/// (`jawata-observer.sh`) but not Claude Code's event-named ones
+/// (`posttooluse-observer.sh`) — and widening its claim would let the CURSOR
+/// lane delete a user's own file that merely shares a name like
+/// `stop-gate.sh`, the exact over-claim the C6 audit measured (round 2, N2).
+/// So this runs from the Claude Code deploy only, where `hooks_dir` is a
+/// directory jawata-studio owns outright, and the names come from
+/// [`SCRIPT_GENERATION`] rather than a hand-kept list.
+///
+/// Gated on the binary being PRESENT, not on the declaration alone, for the
+/// reason the Cursor lane documents: an install whose bundle shipped no
+/// binary must keep its script, or it has no hook at all — strictly worse
+/// than the script it replaced.
+fn retire_claude_script_generation(hooks_dir: &Path, platform: HostPlatform) -> bool {
+    let mut removed = false;
+    for (binary, sentinel) in SCRIPT_GENERATION {
+        if !role_is_binary_live(binary) {
+            continue;
+        }
+        if !hooks_dir.join(role_binary_file_name_on(platform, binary)).exists() {
+            continue;
+        }
+        // The sentinel is "jawata-studio/<script>.sh"; the file sits directly
+        // in `hooks_dir` (which IS that jawata-studio directory).
+        let Some(script_name) = sentinel.rsplit('/').next() else {
+            continue;
+        };
+        let stale = hooks_dir.join(script_name);
+        if stale.exists() && fs::remove_file(&stale).is_ok() {
+            removed = true;
+        }
+    }
+    removed
 }
 
 /// Sprint 28 (C8): rotate the hook's silence log once it exceeds its cap.
@@ -7483,24 +7552,20 @@ const CURSOR_HOOK_SENTINEL: &str = "hooks/jawata-";
 
 /// The four managed (event, entry) pairs — the SINGLE source used by the
 /// merge-into-the-user's-file deploy path, which is the ONLY writer.
-/// Sprint 28a (2026-08-12): the GUARD now names the role BINARY, not a script.
 ///
-/// Why this one entry changed and the other three did not. On Windows a `.sh`
-/// cannot execute: Cursor launches it as an interactive login shell, the script's
-/// first act is to read its payload from stdin with `cat`, nothing is piped in,
-/// and it waits forever in a visible window. This entry carries
-/// `failClosed: true`, so a hook that never returns BLOCKS the user's command —
-/// a guard strictly worse than no guard. Observed live on a Windows 11 machine.
+/// Every entry names the role BINARY when one is deployed (the guard first,
+/// Sprint 28a; the remaining three in v3.7.9; the observer's Claude Code
+/// generation caught up in 28b D8, so no per-client exception remains). On
+/// Windows a `.sh` cannot execute: Cursor launches it as an interactive login
+/// shell, the script's first act is to read its payload from stdin with
+/// `cat`, nothing is piped in, and it waits forever in a visible window. The
+/// guard entry carries `failClosed: true`, so a hook that never returns
+/// BLOCKS the user's command — a guard strictly worse than no guard.
+/// Observed live on a Windows 11 machine.
 ///
 /// The binary has no shell in its path on any platform, and it carries a
 /// wedged-stdin watchdog, so the same launch shape exits cleanly instead of
-/// hanging. It moved only now because until Sprint 28a it held just the
-/// shell-command half of the guard; the `.java` hand-edit gate is now in it too
-/// (`editgate.rs`), which is the condition `role_generations` requires.
-///
-/// The other three roles stay on scripts here for the reason recorded in
-/// `hook-events.json` — their binaries do not yet hold parity — and they are
-/// the observer's problem to finish, not the guard's.
+/// hanging.
 fn managed_cursor_hook_entries(hooks_dir: &Path) -> Vec<(&'static str, serde_json::Value)> {
     managed_cursor_hook_entries_on(HostPlatform::host(), hooks_dir)
 }
@@ -10622,7 +10687,7 @@ mod tests {
     /// checks all passed at their instant; only the end state was wrong —
     /// which is why this asserts the end state.
     #[test]
-    fn the_full_deploy_order_leaves_live_roles_binaries_and_the_observer_a_script() {
+    fn the_full_deploy_order_leaves_every_role_a_binary_and_retires_the_scripts() {
         let dir = unique_tempdir("deploy-order");
         let hooks = dir.join("hooks");
         std::fs::create_dir_all(&hooks).unwrap();
@@ -10630,13 +10695,21 @@ mod tests {
         let binary_bytes = b"\x7fELF fake role binary".to_vec();
         std::fs::write(&source, &binary_bytes).unwrap();
 
-        // Stale retired-role binaries from 3.7.1/3.7.2/3.7.3. The deploy must
-        // REMOVE them: their existence is what used to flip a role away from
-        // its live script (the invocation path preferred any binary on disk).
-        std::fs::write(hooks.join("jawata-hook-observer"), &binary_bytes).unwrap();
-        std::fs::write(hooks.join("jawata-hook-guard"), &binary_bytes).unwrap();
+        // Binaries from an earlier deploy — both roles that once lived in
+        // BINARY_RETIRED_ROLES are live again, so these are overwritten in
+        // place, not removed.
+        std::fs::write(hooks.join("jawata-hook-observer"), b"stale stub").unwrap();
+        std::fs::write(hooks.join("jawata-hook-guard"), b"stale half").unwrap();
+        // The generation-2 script an install from before the 28b D8 cutover
+        // still carries. The deploy must RETIRE it: a stale script beside a
+        // live binary is the two-generations install the Cursor lane forbids.
+        std::fs::write(hooks.join(OBSERVER_SCRIPT_FILE), b"#!/usr/bin/env bash\n").unwrap();
 
         deploy_hook_binaries(&source, &hooks, BINARY_LIVE_ROLES, HostPlatform::host(), &[]).unwrap();
+        // The production order: retirement runs right after the binaries land,
+        // gated on each binary being ON DISK — see the Claude Code deploy.
+        assert!(retire_claude_script_generation(&hooks, HostPlatform::host()),
+            "the stale observer script was staged, so retirement must report work done");
 
         // The PRODUCTION writers, in the production order, with force_rewrite
         // (Regenerate mode) — the strongest clobber attempt. The first version
@@ -10682,9 +10755,12 @@ mod tests {
                 "{role}: a production writer clobbered the deployed binary with the \
                  generation-2 script — the 3.7.2 dogfood defect");
         }
-        assert_eq!(build_observer_script(url, token),
-            std::fs::read_to_string(hooks.join(OBSERVER_SCRIPT_FILE)).unwrap(),
-            "the observer's live generation is the SCRIPT (role_generations)");
+        // Sprint 28b (D8): the observer's script generation must be GONE, not
+        // merely unreferenced — its binary is live and the file on disk is
+        // what an old settings entry would still execute.
+        assert!(!hooks.join(OBSERVER_SCRIPT_FILE).exists(),
+            "the observer's script generation is retired (role_generations: \
+             binary since 28b D8), and the writers must not have re-created it");
         // Sprint 28a: the guard resolves to whichever generation this deploy
         // actually produced, and the OTHER one must not be left behind.
         let guard_binary = hooks.join(role_binary_file_name_on(HostPlatform::host(), "jawata-hook-guard")).exists();
@@ -10697,9 +10773,8 @@ mod tests {
                  flips the invocation path back to the incomplete generation");
         }
 
-        // And the settings entries point at what actually runs: the binary
-        // for live roles, the script for the observer — the wiring the last
-        // two releases got wrong.
+        // And the settings entries point at what actually runs: the binary,
+        // for every role — the wiring the 3.7.2/3.7.3 releases got wrong.
         let written: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
         let commands: Vec<String> = ["PreToolUse", "PostToolUse", "SessionStart",
@@ -10715,15 +10790,12 @@ mod tests {
             assert!(commands.iter().any(|c| c.ends_with(role)),
                 "{role}: no settings entry points at the deployed binary; commands: {commands:?}");
         }
-        assert!(commands.iter().any(|c| c.ends_with(OBSERVER_SCRIPT_FILE)),
-            "the observer entry must point at its script; commands: {commands:?}");
-        assert!(!commands.iter().any(|c| c.ends_with("jawata-hook-observer")),
-            "no entry may point at the retired observer binary; commands: {commands:?}");
-        // The guard's two assertions are GONE, not softened: it is a
-        // BINARY_LIVE_ROLE as of Sprint 28a, so the loop above already requires
-        // an entry naming its binary, and requiring the script too would demand
-        // both generations at once. The observer keeps its pair because it is
-        // still declared script-generation.
+        // The observer's script assertions flipped with its generation (28b
+        // D8): the loop above already requires an entry naming its binary, and
+        // no entry may keep naming the retired script.
+        assert!(!commands.iter().any(|c| c.ends_with(OBSERVER_SCRIPT_FILE)),
+            "the observer script is retired on the Claude side once its binary is live; \
+             commands: {commands:?}");
         assert!(!commands.iter().any(|c| c.ends_with(GUARD_SCRIPT_FILE)),
             "the guard script is retired on the Claude side once its binary is live; \
              commands: {commands:?}");
@@ -10731,17 +10803,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// role_generations, enforced at the resolver: an observer binary ON DISK
-    /// must not win the invocation path — the script generation is live.
+    /// role_generations, enforced at the resolver — INVERTED at 28b D8: the
+    /// observer is declared binary-live, so a deployed binary wins the
+    /// invocation path, and with none on disk the script is the honest
+    /// fallback (an install whose bundle shipped no sidecar keeps a hook).
     #[test]
-    fn the_observer_invocation_path_ignores_a_binary_on_disk() {
-        let dir = unique_tempdir("observer-script-gen");
+    fn the_observer_invocation_path_prefers_the_deployed_binary() {
+        let dir = unique_tempdir("observer-binary-gen");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("jawata-hook-observer"), b"stub").unwrap();
         assert_eq!(
             Some(dir.join(OBSERVER_SCRIPT_FILE)),
             invocation_path_in(&dir, "jawata-hook-observer", OBSERVER_SCRIPT_FILE),
-            "the observer binary is a stub; the invocation path must stay on the script"
+            "with no binary deployed the observer falls back to its script"
+        );
+        std::fs::write(dir.join("jawata-hook-observer"), b"both halves").unwrap();
+        assert_eq!(
+            Some(dir.join("jawata-hook-observer")),
+            invocation_path_in(&dir, "jawata-hook-observer", OBSERVER_SCRIPT_FILE),
+            "the observer binary carries both halves since 28b D8 — on disk, it wins"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -11845,42 +11924,61 @@ mod tests {
         );
     }
 
-    /// The claim `cursor_role_is_binary_live` makes in its doc comment, checked.
+    /// The observer's cutover, asserted against its declaration — on BOTH
+    /// clients, from the ONE row that now governs them.
     ///
-    /// That function hard-codes one Cursor-only exception. A hard-coded
-    /// exception whose declaration lives in a data file is two facts that can
-    /// drift apart, and the drift is silent — the deploy would keep cutting the
-    /// observer over while `hook-events.json`, the file a human reads to learn
-    /// what is live, said something else.
+    /// Extends the shape the guard's 28a flip established, and adds the
+    /// refusal the plan demands: the `role_generations` row flips to `binary`
+    /// only WITH a `ported` declaration that names BOTH script halves —
+    /// outcome capture and the jawata-fallback audit trail. A one-half binary
+    /// cannot honestly satisfy that text: the 3.7.2 and 3.7.3 cutovers each
+    /// shipped one half, and each was caught by a human, after shipping.
+    /// (`the_deployed_role_list_matches_the_shared_hook_contract` binds
+    /// BINARY_LIVE_ROLES to the same row, so the flip cannot outrun the
+    /// declaration either.)
     #[test]
-    fn the_cursor_observer_generation_matches_the_declaration() {
+    fn the_observer_generation_matches_the_declaration_on_both_clients() {
         let doc: serde_json::Value =
             serde_json::from_str(include_str!("../hook-events.json")).expect("contract parses");
         let row = &doc["role_generations"]["observer"];
 
         assert_eq!(
             "binary",
-            row["cursor"].as_str().unwrap_or(""),
-            "hook-events.json must declare the observer's CURSOR generation, because \
-             cursor_role_is_binary_live cuts it over"
+            row["live"].as_str().unwrap_or(""),
+            "hook-events.json must declare the observer's generation, because \
+             role_is_binary_live cuts it over"
+        );
+        assert!(
+            role_is_binary_live("jawata-hook-observer"),
+            "the Claude Code deploy must agree with the declaration it points at"
         );
         assert!(
             cursor_role_is_binary_live("jawata-hook-observer"),
-            "the code must agree with the declaration it points at"
-        );
-        assert!(
-            row["why_cursor"].as_str().is_some_and(|w| !w.is_empty()),
-            "an exception without its reason is the kind of row nobody can audit later"
+            "the Cursor deploy must agree with the SAME row — one declaration, \
+             two clients, since the v3.7.9 cursor override retired at 28b D8"
         );
 
-        // And the Claude Code side is UNCHANGED — this override must not have
-        // leaked into the generation that still has outcome capture to lose.
-        assert_eq!("script", row["live"].as_str().unwrap_or(""));
+        // THE REFUSAL: a flip is declared WITH its reason, and the reason must
+        // name both halves the script generation carried.
+        let ported = row["ported"].as_str().unwrap_or("").to_lowercase();
         assert!(
-            !role_is_binary_live("jawata-hook-observer"),
-            "the Claude Code observer must stay on its script: that one captures tool \
-             outcomes and the jawata-fallback audit trail, and cutting it over froze \
-             outcomes.log in the 3.7.2 dogfood"
+            !ported.is_empty(),
+            "a cutover without its `ported` reasoning is the kind of row nobody \
+             can audit later"
+        );
+        for half in ["outcome capture", "jawata-fallback"] {
+            assert!(
+                ported.contains(half),
+                "the ported declaration must name the {half:?} half — a \
+                 one-half binary is refused at declaration time, because the \
+                 3.7.2 and 3.7.3 cutovers each shipped one half: {ported}"
+            );
+        }
+        // A live-binary row must not still carry the script generation's cure
+        // text — two declarations disagreeing in one row.
+        assert!(
+            row["until"].is_null(),
+            "`until` is the script generation's cure; a binary-live row must drop it"
         );
     }
 
