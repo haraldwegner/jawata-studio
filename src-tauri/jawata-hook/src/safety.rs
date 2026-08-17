@@ -121,6 +121,13 @@ silence_reasons! {
     StoreHadNothing => "store-had-nothing", SilenceReason::StoreHadNothing;
     /// The store could not be asked, or answered in a shape we do not know.
     QueryFailed(String) => "query-failed", SilenceReason::QueryFailed("ConnectionRefused".into());
+
+    /// Sprint 28b D7: the store echoed a DIFFERENT contract version than ours —
+    /// the seam's meaning is unverified, so nothing is injected and the fact is
+    /// counted (never silence; the 21c→27a drift was invisible because both
+    /// sides stayed individually green). An ABSENT echo is an older store and
+    /// proceeds.
+    ContractMismatch(String) => "contract-mismatch", SilenceReason::ContractMismatch("ours=1 theirs=2".into());
     /// This role cannot inject on this client.
     CannotInject => "cannot-inject", SilenceReason::CannotInject;
     /// The body ran past the deadline; the watchdog ended it and said so.

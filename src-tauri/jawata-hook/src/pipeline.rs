@@ -274,6 +274,12 @@ fn recall(role: Role, client: Client, payload: &str, store: &dyn Store) -> Outco
         }
     }
     match last_failure {
+        // Sprint 28b D7: a contract mismatch is ITS OWN reason, never folded
+        // into query-failed — the fold classifies it as answered-but-suppressed
+        // (the dead-channel numerator), which query-failed is not.
+        Some(crate::query::QueryError::ContractMismatch { ours, theirs }) => Outcome::Silent(
+            SilenceReason::ContractMismatch(format!("ours={ours} theirs={theirs}")),
+        ),
         Some(e) => Outcome::Silent(SilenceReason::QueryFailed(format!("{e:?}"))),
         None => Outcome::Silent(SilenceReason::StoreHadNothing),
     }
@@ -297,6 +303,9 @@ fn finish(
             }
         }
         Ok(Answer::Nothing) => Outcome::Silent(SilenceReason::StoreHadNothing),
+        Err(crate::query::QueryError::ContractMismatch { ours, theirs }) => Outcome::Silent(
+            SilenceReason::ContractMismatch(format!("ours={ours} theirs={theirs}")),
+        ),
         Err(e) => Outcome::Silent(SilenceReason::QueryFailed(format!("{e:?}"))),
     }
 }

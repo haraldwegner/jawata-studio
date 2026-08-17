@@ -225,9 +225,9 @@ mod tests {
         let expected = [
             "unknown-role", "role-absent-on-client", "not-configured",
             "stdin-timed-out", "payload-unreadable", "no-cues",
-            "store-had-nothing", "query-failed", "cannot-inject",
-            "watchdog-fired", "no-transcript", "autonomy-unknown",
-            "stop-allowed", "panicked",
+            "store-had-nothing", "query-failed", "contract-mismatch",
+            "cannot-inject", "watchdog-fired", "no-transcript",
+            "autonomy-unknown", "stop-allowed", "panicked",
         ];
         assert_eq!(expected.len(), lines.len(), "one record per reason");
         for ((want, line), r) in expected.iter().zip(&lines).zip(every_reason()) {

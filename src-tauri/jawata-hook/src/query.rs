@@ -46,6 +46,11 @@ pub enum QueryError {
     ShapeChanged(String),
     /// The tool itself refused, and said why.
     ToolRefused { code: String, message: String },
+    /// Sprint 28b D7: the store echoed a DIFFERENT contract version than ours.
+    /// A present-but-different echo means the seam's meaning is unverified —
+    /// typed and counted, never silence. (An absent echo is an older store and
+    /// is NOT this error.)
+    ContractMismatch { ours: u32, theirs: String },
 }
 
 /// jawata's MCP envelope, declared rather than pattern-matched.
@@ -198,12 +203,26 @@ pub fn ask(endpoint: &Endpoint, arguments: serde_json::Value) -> Result<Answer, 
     let response = client
         .post(&endpoint.url)
         .bearer_auth(&endpoint.token)
+        // Sprint 28b D7: the contract version travels with every request…
+        .header("X-Jawata-Contract", crate::field::HOOK_CONTRACT.to_string())
         .json(&request)
         .send()
         .map_err(|e| QueryError::Unreachable(e.to_string()))?;
     let status = response.status();
     if !status.is_success() {
         return Err(QueryError::Status(status.as_u16()));
+    }
+    // …and a PRESENT echo must match. An absent echo is an older store: the
+    // seam predates the contract there, so it proceeds unverified rather than
+    // breaking every hook against a 3.10 resident.
+    if let Some(echo) = response.headers().get("X-Jawata-Contract") {
+        let theirs = echo.to_str().unwrap_or("unreadable").to_string();
+        if theirs != crate::field::HOOK_CONTRACT.to_string() {
+            return Err(QueryError::ContractMismatch {
+                ours: crate::field::HOOK_CONTRACT,
+                theirs,
+            });
+        }
     }
     let body = response.text().map_err(|e| QueryError::Unreachable(e.to_string()))?;
     parse_answer(&body)

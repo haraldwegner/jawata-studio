@@ -13,6 +13,7 @@ pub mod config;
 pub mod cue;
 pub mod editgate;
 pub mod emit;
+pub mod field;
 pub mod guard;
 pub mod pipeline;
 pub mod query;
