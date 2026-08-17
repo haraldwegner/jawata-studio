@@ -812,10 +812,19 @@ impl RuntimeManager {
     /// unknowable, and guessing wrong breaks authentication for every client.
     fn engine_reads_token_file(engine_version: Option<&str>) -> bool {
         match engine_version {
-            Some(version) => !matches!(
-                crate::release_manager::compare_version_strings(version, Self::MIN_TOKEN_FILE_ENGINE),
-                std::cmp::Ordering::Less
-            ),
+            Some(version) => {
+                // Strip a leading `v` before comparing. `normalize_version`
+                // already does this where the record is written, and this is the
+                // belt: a tag-shaped string falls out of semver parsing into a
+                // STRING comparison, where "v3.9.0" sorts ABOVE "3.10.0" and an
+                // old engine would silently be handed the token file — 401 on
+                // every client, from a version string nobody looked at.
+                let v = version.trim().trim_start_matches('v');
+                !matches!(
+                    crate::release_manager::compare_version_strings(v, Self::MIN_TOKEN_FILE_ENGINE),
+                    std::cmp::Ordering::Less
+                )
+            }
             None => false,
         }
     }
@@ -1531,6 +1540,26 @@ mod tests {
             RuntimeManager::MIN_TOKEN_FILE_ENGINE
         )));
         assert!(RuntimeManager::engine_reads_token_file(Some("4.0.0")));
+        // 3.10.0 vs 3.9.0 is the comparison that decides this, and it is only
+        // right under SEMVER — lexically "3.10.0" sorts BELOW "3.9.0".
+        assert_eq!(
+            std::cmp::Ordering::Greater,
+            crate::release_manager::compare_version_strings("3.10.0", "3.9.0"),
+            "a string comparison here would make the released engine look older than its \
+             predecessor and leave the token on argv forever"
+        );
+    }
+
+    #[test]
+    fn a_tag_shaped_version_does_not_slip_past_the_gate() {
+        // The record is normalized where it is written, so this is the belt: a
+        // `v`-prefixed string falls out of semver parsing into a STRING
+        // comparison, where "v3.9.0" sorts above "3.10.0" — an old engine would
+        // then be handed a token file it ignores, and every client the manager
+        // just configured would get 401 from a version string nobody read.
+        assert!(!RuntimeManager::engine_reads_token_file(Some("v3.9.0")));
+        assert!(RuntimeManager::engine_reads_token_file(Some("v3.10.0")));
+        assert!(RuntimeManager::engine_reads_token_file(Some(" 3.10.0 ")));
     }
 
     #[test]
