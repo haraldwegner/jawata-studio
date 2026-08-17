@@ -1,0 +1,15 @@
+{
+  "comment": "Stage-0 fixture (b): one error shape recurring 4x + a distinct shape once. Stage-3 nudge tests: with N=3 the recurring shape nudges exactly once (at its 3rd occurrence), the distinct shape never; posted-shape mark and the no-nudges switch each suppress.",
+  "events": [
+    { "tool": "run_tests",     "kind": "run",        "ok": false, "errorCode": "RUNNER_TIMEOUT",   "latencyBucket": 5, "client": "claude-code" },
+    { "tool": "run_tests",     "kind": "run",        "ok": false, "errorCode": "RUNNER_TIMEOUT",   "latencyBucket": 5, "client": "claude-code" },
+    { "tool": "inspect",       "kind": "source",     "ok": false, "errorCode": "TYPE_NOT_FOUND",   "latencyBucket": 1, "client": "claude-code" },
+    { "tool": "run_tests",     "kind": "run",        "ok": false, "errorCode": "RUNNER_TIMEOUT",   "latencyBucket": 5, "client": "cursor" },
+    { "tool": "run_tests",     "kind": "run",        "ok": false, "errorCode": "RUNNER_TIMEOUT",   "latencyBucket": 5, "client": "claude-code" }
+  ],
+  "expect": {
+    "nudgeThreshold": 3,
+    "nudgesFired": [ { "shapeOf": "run_tests/run/RUNNER_TIMEOUT", "atEventIndex": 3 } ],
+    "neverNudged": [ "inspect/source/TYPE_NOT_FOUND" ]
+  }
+}

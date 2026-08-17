@@ -1,0 +1,13 @@
+{
+  "comment": "Stage-0 fixture (d): reminder cadence — at most weekly AND only with news; strikes 1-2 plain, 3rd onward carries the go-silent question; /report use resets strikes; go-silent flag stops everything. Ages are day-offsets relative to 'now'.",
+  "scenarios": [
+    { "name": "due_first_time",        "lastReminderDaysAgo": null, "newShapeSinceLast": true,  "strikes": 0, "silenced": false, "expect": { "remind": true,  "carriesQuestion": false } },
+    { "name": "not_due_too_recent",    "lastReminderDaysAgo": 3,    "newShapeSinceLast": true,  "strikes": 1, "silenced": false, "expect": { "remind": false } },
+    { "name": "not_due_no_news",       "lastReminderDaysAgo": 10,   "newShapeSinceLast": false, "strikes": 1, "silenced": false, "expect": { "remind": false } },
+    { "name": "due_second_plain",      "lastReminderDaysAgo": 8,    "newShapeSinceLast": true,  "strikes": 1, "silenced": false, "expect": { "remind": true,  "carriesQuestion": false } },
+    { "name": "third_carries_question","lastReminderDaysAgo": 8,    "newShapeSinceLast": true,  "strikes": 2, "silenced": false, "expect": { "remind": true,  "carriesQuestion": true } },
+    { "name": "beyond_third_still_asks","lastReminderDaysAgo": 9,   "newShapeSinceLast": true,  "strikes": 5, "silenced": false, "expect": { "remind": true,  "carriesQuestion": true } },
+    { "name": "report_use_resets",     "lastReminderDaysAgo": 8,    "newShapeSinceLast": true,  "strikes": 2, "reportUsedSinceLast": true, "silenced": false, "expect": { "remind": true, "carriesQuestion": false, "strikesAfter": 1 } },
+    { "name": "silenced_never_reminds","lastReminderDaysAgo": 30,   "newShapeSinceLast": true,  "strikes": 3, "silenced": true,  "expect": { "remind": false } }
+  ]
+}
