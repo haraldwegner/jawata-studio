@@ -997,6 +997,37 @@ pub struct StoreHealthReport {
 /// A resident that is still LOADING is excluded: its store genuinely is not
 /// serving yet, and counting it would paint every cold start red — the exact
 /// defect `#16` was filed for, in a second place.
+/// Which reading a human should look at first: worst state, then slowest.
+///
+/// SEPARATED FROM THE REPORT, deliberately, and that separation is the whole
+/// architect ruling on this file. The comparison used to read
+/// `report.slowest_millis` — the same field the report WROTE, and which was
+/// being forced to zero for presentation reasons. So among several unreadable
+/// stores every candidate compared `> 0`, and "slowest wins" silently became
+/// "last iterated wins": three dead readings at 50 / 3 / 10 ms named the 10 ms
+/// one. A comparison whose input a renderer can write to is not a comparison.
+///
+/// Here it reads each reading's OWN latency and nothing else, so no
+/// presentation choice can reach it.
+fn worst_reading(results: &[CanaryResult]) -> Option<(&CanaryResult, StoreHealth)> {
+    results
+        .iter()
+        .filter(|r| !r.loading)
+        .map(|r| {
+            let state = if !r.recall_ok {
+                StoreHealth::Unavailable
+            } else if r.recall_millis > STORE_SLOW_MILLIS {
+                StoreHealth::Slow
+            } else {
+                StoreHealth::Healthy
+            };
+            (r, state)
+        })
+        .max_by(|(a, sa), (b, sb)| {
+            sa.cmp(sb).then(a.recall_millis.cmp(&b.recall_millis))
+        })
+}
+
 pub fn store_health(results: &[CanaryResult]) -> StoreHealthReport {
     let mut report = StoreHealthReport {
         slow_above_millis: STORE_SLOW_MILLIS,
@@ -1008,26 +1039,20 @@ pub fn store_health(results: &[CanaryResult]) -> StoreHealthReport {
         word: StoreHealth::Unknown.word().to_string(),
         ..Default::default()
     };
-    for r in results.iter().filter(|r| !r.loading) {
-        let state = if !r.recall_ok {
-            StoreHealth::Unavailable
-        } else if r.recall_millis > STORE_SLOW_MILLIS {
-            StoreHealth::Slow
-        } else {
-            StoreHealth::Healthy
+    // The report is DERIVED from the winner, after the comparison is over.
+    // Anything below this line may drop, round or reword a value; none of it
+    // can change who won.
+    if let Some((winner, state)) = worst_reading(results) {
+        report.health = state;
+        report.worst_workspace = winner.workspace.clone();
+        // An unreadable store's elapsed time is TIME TO FAILURE, not latency —
+        // a refused connection returns in about 3 ms and would render beside
+        // "unreadable" as the fastest thing on the machine. Suppressed HERE,
+        // where suppressing is all it can do.
+        report.slowest_millis = match state {
+            StoreHealth::Unavailable => 0,
+            _ => winner.recall_millis,
         };
-        // Worst wins, and ties go to the slower reading — so the workspace
-        // named is always the one a human should look at first.
-        if state > report.health || (state == report.health && r.recall_millis > report.slowest_millis)
-        {
-            report.health = state;
-            report.worst_workspace = r.workspace.clone();
-            // An unreadable store's elapsed time is TIME TO FAILURE, not
-            // latency — a refused connection returns in about 3 ms and would
-            // render beside "unreadable" as the fastest thing on the machine.
-            report.slowest_millis =
-                if state == StoreHealth::Unavailable { 0 } else { r.recall_millis };
-        }
     }
     report.word = report.health.word().to_string();
     report
@@ -1799,6 +1824,57 @@ mod tests {
             "one healthy resident does not offset a slow one"
         );
         assert_eq!("sluggish", r.worst_workspace);
+    }
+
+
+    /// STEP 2 of the architect's migration — the case that was missing, and the
+    /// reason the alarm fired.
+    ///
+    /// `slowest_millis` was both the tie-break's input and the rendered value.
+    /// Forcing it to zero for display made every later unreadable reading
+    /// compare `> 0`, so "slowest wins" became "last iterated wins" — three
+    /// dead stores at 50 / 3 / 10 ms named the 10 ms one. The commit that
+    /// introduced it shipped a single-reading test: the one shape where the
+    /// changed line cannot touch the comparison it feeds.
+    #[test]
+    fn among_several_dead_stores_the_slowest_is_the_one_named() {
+        let r = store_health(&[
+            reading("slow-dead", false, 50, false),
+            reading("fast-dead", false, 3, false),
+            reading("mid-dead", false, 10, false),
+        ]);
+        assert_eq!(StoreHealth::Unavailable, r.health);
+        assert_eq!(
+            "slow-dead", r.worst_workspace,
+            "the workspace named must be the one a human should look at first, not the \
+             one the loop happened to see last"
+        );
+        assert_eq!(0, r.slowest_millis, "and its time-to-failure is still suppressed");
+    }
+
+    /// STEP 4 of the migration: the invariant lives in ONE place.
+    ///
+    /// The view used to re-guard `health !== "unavailable"` around the latency,
+    /// which was unreachable — `store_health` already suppresses it — so one
+    /// rule was enforced twice in two languages with the JS half dead. The
+    /// Svelte guard is gone, which makes this function solely responsible.
+    #[test]
+    fn suppressing_a_dead_stores_latency_is_this_functions_job_alone() {
+        let view = std::fs::read_to_string(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("src")
+                .join("lib")
+                .join("components")
+                .join("FieldView.svelte"),
+        )
+        .unwrap();
+        assert!(
+            !view.contains("store.health !== \"unavailable\""),
+            "the view must not re-guard what the fold already guarantees — a second \
+             copy of one invariant is how the two drift apart"
+        );
+        assert_eq!(0, store_health(&[reading("dead", false, 3, false)]).slowest_millis);
     }
 
     /// A time-to-failure is not a latency. A refused connection comes back in
