@@ -45,6 +45,13 @@ pub struct HookConfig {
     /// no nudge, never a guessed path.
     #[serde(default)]
     pub field_dir: Option<String>,
+    /// The recall gate's authority: `off` | `observe` | `block`.
+    ///
+    /// Absent means `observe` — record what would have been blocked, block
+    /// nothing. The DOCUMENTED KILL SWITCH is `off`, and it lives here rather
+    /// than in the store so it can be reached without the resident being up.
+    #[serde(default)]
+    pub recall_gate: Option<String>,
 }
 
 impl HookConfig {
@@ -207,7 +214,7 @@ mod tests {
             other => panic!("an unknown client must not resolve: {other:?}"),
         }
         assert_eq!(Ok(crate::roles::Client::Cursor),
-            HookConfig { url: "u".into(), token: "t".into(), client: "cursor".into(), timeout_ms: None, field_dir: None }.client());
+            HookConfig { url: "u".into(), token: "t".into(), client: "cursor".into(), timeout_ms: None, field_dir: None, recall_gate: None }.client());
     }
 
     #[test]

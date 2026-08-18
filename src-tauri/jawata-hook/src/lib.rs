@@ -18,6 +18,7 @@ pub mod guard;
 pub mod observer;
 pub mod pipeline;
 pub mod query;
+pub mod recallgate;
 pub mod roles;
 pub mod safety;
 pub mod silence;

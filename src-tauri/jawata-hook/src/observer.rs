@@ -457,6 +457,7 @@ mod tests {
             client: "claude-code".into(),
             timeout_ms: None,
             field_dir: Some(field_dir.to_string_lossy().into_owned()),
+            recall_gate: None,
         }
     }
 
