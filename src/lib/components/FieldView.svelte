@@ -110,7 +110,7 @@
       yourself: type <code>/report</code> in any client to turn a shape into a bug
       report you review and file from your own GitHub account.
     </p>
-    <label class="checkbox-row">
+    <label class="checkbox-row field-silence">
       <input
         type="checkbox"
         checked={allSilenced}
@@ -273,7 +273,15 @@
 </section>
 
 <style>
+  /* The control is a separate act from the explanation above it — it needs the
+     breathing room that says so, rather than reading as the paragraph's last
+     line. Matched below by the headline row, so the checkbox sits in its own
+     band between the two. */
+  .field-silence {
+    margin-top: 0.9rem;
+  }
   .field-headline {
+    margin-top: 0.4rem;
     display: flex;
     flex-wrap: wrap;
     gap: 1.5rem;
