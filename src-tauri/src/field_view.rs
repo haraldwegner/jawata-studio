@@ -758,11 +758,18 @@ pub fn canary_health(results: &[CanaryResult], now_millis: u64) -> CanaryHealth 
     }
     let not_green: Vec<&CanaryResult> = results.iter().filter(|r| !r.green).collect();
     let all_loading_and_fresh = not_green.iter().all(|r| {
+        // `loading` is set from the COMPILER answer alone. A resident whose STORE is dead
+        // is also not green, and without this second clause its dead store would be
+        // excused for the whole grace period by the fact that its compiler happened to say
+        // "still importing" — silencing half of what the canary exists to watch.
         r.loading
+            && r.recall_ok
             && match r.loading_since_millis {
                 Some(since) => now_millis.saturating_sub(since) < LOADING_GRACE_MILLIS,
-                // Not stitched yet: this is the first round of the run.
-                None => true,
+                // FAIL CLOSED. Production always stitches before judging (publish_canary),
+                // so an unstitched value here means the wiring is gone — and treating it as
+                // innocent would make LOADING unbounded again with every test still green.
+                None => false,
             }
     });
     if all_loading_and_fresh {
@@ -1310,7 +1317,80 @@ mod tests {
         assert!(!result.green, "loading is not green — nothing was resolved");
         assert!(result.loading);
         assert!(result.compiler_detail.contains("still loading"));
-        assert_eq!(CanaryHealth::Loading, canary_health(&[result], 0));
+
+        // Stitch first, exactly as `publish_canary` does. An UNSTITCHED loading result
+        // deliberately does not get the grace — otherwise deleting the one wiring line
+        // would make Loading unbounded with every test still green.
+        let mut round = vec![result];
+        stitch_loading_runs(&[], &mut round, 0);
+        assert_eq!(CanaryHealth::Loading, canary_health(&round, 0));
+
+        round[0].loading_since_millis = None;
+        assert_eq!(
+            CanaryHealth::Degraded,
+            canary_health(&round, 0),
+            "an unstitched loading result must NOT be excused — that is the missing-wiring case"
+        );
+    }
+
+    /// The store half of the canary must not be excused by the compiler half. A resident
+    /// whose knowledge store is dead while its compiler says "still importing" is broken,
+    /// not starting up.
+    #[test]
+    fn a_dead_store_is_not_excused_by_a_loading_compiler() {
+        let result = judge_canary(
+            "ws",
+            "u",
+            Err("request failed: connection refused".into()),
+            ok(serde_json::json!({"success": false, "error": {"code": LOADING_ERROR_CODE}})),
+            0,
+        );
+        assert!(result.loading, "the compiler half did say it is loading");
+        assert!(!result.recall_ok, "but the store did not answer at all");
+
+        let mut round = vec![result];
+        stitch_loading_runs(&[], &mut round, 0);
+        assert_eq!(
+            CanaryHealth::Degraded,
+            canary_health(&round, 0),
+            "a dead store must raise the alarm even while the compiler is still importing"
+        );
+    }
+
+    /// The composition is optional at the type level: `canary_health` accepts unstitched
+    /// results, and the only thing that stitches them in production is one line in
+    /// `publish_canary`. Delete it and LOADING silently stops being granted (or, before the
+    /// fail-closed change, silently stopped being bounded) with every unit test still green.
+    /// So assert the wiring itself — the same idiom this file already uses to prove the view
+    /// renders what the fold produces.
+    #[test]
+    fn the_board_stitches_loading_runs_before_it_judges() {
+        let service = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("manager_service.rs");
+        let source = std::fs::read_to_string(&service)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", service.display()));
+        let publish = source
+            .split_once("fn publish_canary")
+            .expect("publish_canary must exist — it is the only production caller of the judge")
+            .1;
+        let body = &publish[..publish.len().min(1200)];
+        assert!(
+            body.contains("stitch_loading_runs"),
+            "publish_canary judges without stitching: the loading run loses its start, so the \
+             grace period is measured from the wrong instant and LOADING is no longer bounded"
+        );
+    }
+
+    /// The chain is Rust variant -> serialized name -> TS union -> Svelte comparison.
+    /// Asserting only the displayed word leaves the wire name free to drift, which would
+    /// silently drop the dashboard back to its fallback text.
+    #[test]
+    fn the_loading_verdict_serializes_under_the_name_the_view_compares() {
+        assert_eq!(
+            serde_json::json!("loading"),
+            serde_json::to_value(CanaryHealth::Loading).unwrap()
+        );
     }
 
     /// The allow-list has exactly one member. These two arrive in the SAME
