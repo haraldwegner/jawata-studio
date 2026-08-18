@@ -3649,8 +3649,9 @@ fn derive_seat_commands_dir(client: &str, mcp_target_path: &str) -> Option<PathB
     }
 }
 
-/// The five command-artifact paths for a command-bearing client (the
-/// deployed inventory — asserted by test, removed exactly by Delete).
+/// One command-artifact path per COMMAND_MAP row, for a command-bearing
+/// client (the deployed inventory — asserted by test, removed exactly by
+/// Delete). Derived, so registering a seat deploys it everywhere at once.
 fn seat_artifact_paths(client: &str, commands_dir: &Path) -> Vec<(String, PathBuf)> {
     crate::conductor::COMMAND_MAP
         .iter()
@@ -9436,9 +9437,16 @@ mod tests {
             fs::write(&cfg, "{}").unwrap();
             let dir = derive_seat_commands_dir(client, &display_path(&cfg))
                 .expect("command-bearing client");
-            // Deploy: exactly the five artifacts, by name (the inventory).
+            // Deploy: exactly one artifact per registered command, by name
+            // (the inventory). DERIVED from COMMAND_MAP — a hand-typed count
+            // here is a second place a new seat has to be remembered, and
+            // /report proved that is a place it gets forgotten.
             let written = write_managed_seat_commands(client, &dir, &seats, false).unwrap();
-            assert_eq!(written.len(), 5, "{client}: five command artifacts written");
+            assert_eq!(
+                written.len(),
+                crate::conductor::COMMAND_MAP.len(),
+                "{client}: one command artifact per registered command"
+            );
             for (cmd, path) in seat_artifact_paths(client, &dir) {
                 assert!(path.exists(), "{client}: /{cmd} artifact missing at {path:?}");
                 let body = fs::read_to_string(&path).unwrap();

@@ -8,7 +8,7 @@
 ## Target architecture
 
 ```
-seats/*.md  ──(single source; 7 seats; SHIPPED IN THE BINARY via include_str!,
+seats/*.md  ──(single source; 8 seats; SHIPPED IN THE BINARY via include_str!,
    │          materialized-if-absent into <config>/seats/ — config wins, so a
    │          user-edited seat regenerates every channel on redeploy)
    ▼
@@ -16,7 +16,8 @@ parse_seat_definition (runner.rs — REUSED, never a second parser)
    ▼
 src-tauri/src/conductor.rs (NEW module — pure functions, no I/O in renderers)
    ├─ COMMAND_MAP: javadoc-writer→/javadocs · test-writer→/cover ·
-   │               architect→/refactor · debugger→/debug · profiler→/profile
+   │               architect→/refactor · debugger→/debug · profiler→/profile ·
+   │               report→/report
    │               (spec-editor/spec-auditor: named in the section, live in /sprint)
    ├─ render_claude_skill(seat)      → SKILL.md text (frontmatter + stance +
    │                                    Lane-1 loop contract)

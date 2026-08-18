@@ -7,23 +7,29 @@ use crate::runner::{parse_seat_definition, GateClass, SeatDefinition};
 use std::fs;
 use std::path::Path;
 
-/// The seven seat definitions shipped in the binary. Materialized into
-/// `<config>/seats/` where absent; the materialized copy wins so a
-/// user-edited seat regenerates every channel on redeploy.
-pub const EMBEDDED_SEATS: [(&str, &str); 7] = [
+/// Every seat definition shipped in the binary — ONE row per `seats/*.md`,
+/// with no row left to a human to remember (`every_seat_file_is_embedded…`
+/// fails the build on a seat that exists on disk and is registered here).
+/// Materialized into `<config>/seats/` where absent; the materialized copy
+/// wins so a user-edited seat regenerates every channel on redeploy.
+pub const EMBEDDED_SEATS: [(&str, &str); 8] = [
     ("architect.md", include_str!("../../seats/architect.md")),
     ("debugger.md", include_str!("../../seats/debugger.md")),
     ("javadoc-writer.md", include_str!("../../seats/javadoc-writer.md")),
     ("profiler.md", include_str!("../../seats/profiler.md")),
+    ("report.md", include_str!("../../seats/report.md")),
     ("spec-auditor.md", include_str!("../../seats/spec-auditor.md")),
     ("spec-editor.md", include_str!("../../seats/spec-editor.md")),
     ("test-writer.md", include_str!("../../seats/test-writer.md")),
 ];
 
-/// seat name → (command name, one-line description). Exactly the five
-/// command-bearing seats; spec-editor/spec-auditor live in /sprint and
-/// render NO command (pinned by test).
-pub const COMMAND_MAP: [(&str, &str, &str); 5] = [
+/// seat name → (command name, one-line description). The command-bearing
+/// seats; spec-editor/spec-auditor live in /sprint and render NO command
+/// (pinned by test). Every row here must name a seat that is embedded, and
+/// every row renders into the deployed command list — both pinned, so the
+/// counts in the generated prose and in the deploy inventory are derived
+/// from this array rather than typed beside it.
+pub const COMMAND_MAP: [(&str, &str, &str); 6] = [
     (
         "javadoc-writer",
         "javadocs",
@@ -48,6 +54,11 @@ pub const COMMAND_MAP: [(&str, &str, &str); 5] = [
         "profiler",
         "profile",
         "Profile a JVM and name hotspots as compiler-accurate symbols (jawata profiler seat)",
+    ),
+    (
+        "report",
+        "report",
+        "Turn the local field recording into a bug report you post from your own GitHub account (jawata report seat)",
     ),
 ];
 
@@ -297,13 +308,16 @@ pub fn render_antigravity_workflow(seat: &SeatDefinition) -> Option<String> {
 }
 
 /// The fixed phrase → seat mapping (the IntelliJ substitute and the natural-
-/// language entry everywhere). One row per command-bearing seat.
-pub const PHRASE_MAP: [(&str, &str); 5] = [
+/// language entry everywhere). One row per command-bearing seat — that is the
+/// rule the table is built on, and `phrase_table_covers_every_command` fails
+/// the build on a command that has no way in through plain words.
+pub const PHRASE_MAP: [(&str, &str); 6] = [
     ("\"document this class\" / \"add javadocs\"", "javadocs"),
     ("\"write tests for this\" / \"improve coverage\"", "cover"),
     ("\"clean this up\" / \"review the architecture\"", "refactor"),
     ("\"find this bug\" / \"why does this fail\"", "debug"),
     ("\"why is this slow\" / \"profile this\"", "profile"),
+    ("\"report this to jawata\" / \"file a jawata bug\"", "report"),
 ];
 
 /// The phrase table as markdown rows: phrase → the seat stance to adopt.
@@ -419,10 +433,20 @@ pub const CONDUCTOR_SECTION_BUDGET_INTELLIJ: usize = 60;
 /// per-client variation in the rule-block body (the invariant test asserts
 /// every other section stays byte-identical across clients).
 pub fn render_conductor_section(seats: &[SeatDefinition], client: &str) -> Vec<String> {
+    // DERIVED, never typed: the sentence used to carry the words "seven" and
+    // "Five" while the arrays said something else was true — a seat could be
+    // added and the prose would keep announcing the old roster. The counts
+    // now come from the arrays themselves, and a test pins that they do.
+    let total = EMBEDDED_SEATS.len();
+    let direct = COMMAND_MAP.len();
+    let pipeline = total.saturating_sub(direct);
     let mut lines = vec![
         "## The jawata seats — narrow engineering roles, gate-disciplined".to_string(),
         String::new(),
-        "jawata ships seven SEATS. Five are direct roles; two live in /sprint:".to_string(),
+        format!(
+            "jawata ships {total} SEATS. {direct} are direct roles; \
+             {pipeline} live in /sprint:"
+        ),
         String::new(),
     ];
     for (seat_name, command, desc) in &COMMAND_MAP {
@@ -540,24 +564,71 @@ mod tests {
         embedded_seat_definitions().expect("embedded seats parse")
     }
 
+    /// The registration CONSISTENCY gate — replaces a test that pinned the
+    /// roster by hand (`command_map_is_exactly_the_five_pairs`).
+    ///
+    /// That test asserted the five pairs it already knew, so it pinned the
+    /// ABSENCE of every later seat and had to be hand-edited to accept one.
+    /// It therefore could not fail on the defect it should have caught:
+    /// `seats/report.md` existed for a whole stage, was registered in no
+    /// array, and so `/report` was deployed to NO client — the file was
+    /// written, shipped in no binary, and nothing said a word.
+    ///
+    /// This asserts the RELATIONSHIPS instead, so a new seat needs no edit
+    /// here and a seat that is only half-registered fails the build:
+    ///  - every `seats/*.md` on disk is embedded (by NAME, not by count);
+    ///  - every COMMAND_MAP row names an embedded seat and renders into the
+    ///    deployed command list;
+    ///  - the generated prose's counts are the arrays', not typed beside them.
     #[test]
-    fn command_map_is_exactly_the_five_pairs() {
-        let expected = [
-            ("javadoc-writer", "javadocs"),
-            ("test-writer", "cover"),
-            ("architect", "refactor"),
-            ("debugger", "debug"),
-            ("profiler", "profile"),
-        ];
-        assert_eq!(COMMAND_MAP.len(), expected.len());
-        for (seat, cmd) in expected {
-            assert_eq!(
-                command_for(seat).map(|(c, _)| c),
-                Some(cmd),
-                "seat {seat} must map to /{cmd}"
+    fn every_seat_file_is_embedded_and_the_prose_counts_match() {
+        let seats_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../seats");
+        let mut on_disk: Vec<String> = fs::read_dir(&seats_dir)
+            .expect("seats/ is readable from the crate root")
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".md"))
+            .collect();
+        on_disk.sort();
+        let mut embedded: Vec<String> =
+            EMBEDDED_SEATS.iter().map(|(f, _)| (*f).to_string()).collect();
+        embedded.sort();
+        assert_eq!(
+            embedded, on_disk,
+            "every seats/*.md must be embedded — a seat definition registered \
+             nowhere is shipped in no binary and reaches no client, however \
+             finished the file itself looks"
+        );
+
+        // A command may only name a seat that actually exists…
+        let definitions = seats();
+        for (seat_name, command, _) in COMMAND_MAP {
+            assert!(
+                definitions.iter().any(|s| s.name == seat_name),
+                "/{command} maps to seat '{seat_name}', which is not an embedded seat"
             );
         }
-        // The /sprint pair renders NO command.
+        // …and every command actually renders into the deployed list.
+        let rendered = render_conductor_section(&definitions, "claude").join("\n");
+        for (seat_name, command, _) in COMMAND_MAP {
+            assert!(
+                rendered.contains(&format!("- {seat_name} (`/{command}`)")),
+                "/{command} is registered but renders into no client's command list:\n{rendered}"
+            );
+        }
+
+        // The prose counts are DERIVED. A hand-typed "seven" is how the
+        // deployed rule block kept announcing a roster that had changed.
+        assert!(
+            rendered.contains(&format!("jawata ships {} SEATS.", EMBEDDED_SEATS.len())),
+            "the generated prose must count the seats it actually ships:\n{rendered}"
+        );
+        assert!(
+            rendered.contains(&format!("{} are direct roles", COMMAND_MAP.len())),
+            "the generated prose must count the direct roles it actually renders:\n{rendered}"
+        );
+
+        // The /sprint pair renders NO command — a rule, not a roster entry.
         assert_eq!(command_for("spec-editor"), None);
         assert_eq!(command_for("spec-auditor"), None);
     }
@@ -658,7 +729,7 @@ mod tests {
 
     
     #[test]
-    fn phrase_table_covers_all_five_commands() {
+    fn phrase_table_covers_every_command() {
         let table = render_phrase_table(&seats());
         for (_, command, _) in COMMAND_MAP {
             let (seat_name, _, _) = COMMAND_MAP.iter().find(|(_, c, _)| *c == command).unwrap();
@@ -667,14 +738,22 @@ mod tests {
                 "/{command}'s seat in the table:\n{table}"
             );
         }
-        assert_eq!(table.lines().count(), 2 + 5, "header + five rows, nothing more");
+        assert_eq!(
+            table.lines().count(),
+            2 + PHRASE_MAP.len(),
+            "header + one row per phrase, nothing more"
+        );
     }
 
     #[test]
     fn materialize_seeds_refreshes_unedited_and_preserves_edits() {
         let seats_dir = unique_tempdir("materialize").join("seats");
         let first = materialize_seats(&seats_dir).unwrap();
-        assert_eq!(first.seeded.len(), 7, "all seven materialized on first run");
+        assert_eq!(
+            first.seeded.len(),
+            EMBEDDED_SEATS.len(),
+            "every embedded seat materialized on first run"
+        );
 
         // A user edit survives every later run — config wins for EDITED files.
         let edited = seats_dir.join("javadoc-writer.md");
@@ -723,7 +802,7 @@ mod tests {
         let report = materialize_seats(&seats_dir).unwrap();
         assert!(report.migrated.contains(&"architect.md".to_string()), "{report:?}");
         assert!(report.shadowed.is_empty() && report.seeded.is_empty(),
-            "the six identical files are adopted silently: {report:?}");
+            "the other identical files are adopted silently: {report:?}");
         let embedded = EMBEDDED_SEATS.iter().find(|(f, _)| *f == "architect.md").unwrap().1;
         assert_eq!(fs::read_to_string(&stale).unwrap(), embedded, "refreshed to this build");
         assert_eq!(fs::read_to_string(seats_dir.join("architect.md.pre-refresh")).unwrap(),
@@ -736,7 +815,11 @@ mod tests {
         materialize_seats(&seats_dir).unwrap();
         fs::write(seats_dir.join("broken.md"), "not a seat").unwrap();
         let (ok, errors) = crate::runner::load_seat_definitions(&seats_dir);
-        assert_eq!(ok.len(), 7, "the seven good seats still load");
+        assert_eq!(
+            ok.len(),
+            EMBEDDED_SEATS.len(),
+            "every good seat still loads beside the broken file"
+        );
         assert_eq!(errors.len(), 1, "the broken file is a loud per-file error");
         assert!(errors[0].0.ends_with("broken.md"));
     }
