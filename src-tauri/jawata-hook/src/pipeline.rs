@@ -236,23 +236,50 @@ fn primer(client: Client, config: &HookConfig, store: &dyn Store) -> Outcome {
     let answer = store.ask(serde_json::json!({
         "kind": "primer", "format": "text", "limit": 12
     }));
-    let mut heading =
-        String::from("JAWATA domain primer (what this codebase is about):");
+    let heading = "JAWATA domain primer (what this codebase is about):";
+
     // Sprint 28b D9: the periodic failure reminder rides the primer — the
     // session's own opening, spoken by the agent. NO pop-up exists anywhere in
     // this sprint: the user's ruling was that the main agent tells him.
-    if let Some(field_dir) = config.field_dir.as_ref() {
+    let owed = config.field_dir.as_ref().and_then(|field_dir| {
         let dir = std::path::Path::new(field_dir);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        if let Some((line, _carries_question)) = crate::field::reminder_due(dir, now) {
-            crate::field::record_reminded(dir, now);
-            heading = format!("{line}\n\n{heading}");
+        crate::field::reminder_due(dir, now)
+            .map(|(line, _carries_question)| (dir.to_path_buf(), now, line))
+    });
+
+    let outcome = match (answer, owed.as_ref()) {
+        // The store had nothing to prime with, and a reminder is owed. The
+        // reminder is then the WHOLE injected context, not a heading for an
+        // answer that does not exist: it used to be prepended to the heading,
+        // which `finish` DISCARDS on `Nothing`, so the user was told nothing
+        // (28b closing audit, F3). D9's point is that the user who never opens
+        // studio still learns jawata is failing for him — an empty primer is
+        // no reason to withhold that.
+        (Ok(Answer::Nothing), Some((_, _, line))) => {
+            emit_body(client, Role::Primer, line.clone())
         }
+        // Anything else keeps the store's own outcome and its classification:
+        // a query failure or a contract mismatch must stay THE reason the
+        // primer was silent, because that is the dead-channel fold's
+        // numerator. The reminder rides along when there is something to ride.
+        (answer, Some((_, _, line))) => {
+            finish(client, Role::Primer, answer, &format!("{line}\n\n{heading}"))
+        }
+        (answer, None) => finish(client, Role::Primer, answer, heading),
+    };
+
+    // Recorded ONLY on a real emission — the discipline `observer.rs` already
+    // follows for the nudge. A reminder the client never saw is still OWED;
+    // burning its weekly slot for an emission that never happened is exactly
+    // how the user gets told nothing while the ledger says he was told.
+    if let (Outcome::Emitted(_), Some((dir, now, _))) = (&outcome, &owed) {
+        crate::field::record_reminded(dir, *now);
     }
-    finish(client, Role::Primer, answer, &heading)
+    outcome
 }
 
 fn recall(role: Role, client: Client, payload: &str, store: &dyn Store) -> Outcome {
@@ -310,21 +337,27 @@ fn finish(
     heading: &str,
 ) -> Outcome {
     match answer {
-        Ok(Answer::Text(text)) => {
-            let body = format!("{heading}\n{text}");
-            match emit::context_for(role, client, body) {
-                Emission::Silent => Outcome::Silent(by_design_or_failed(role, client)),
-                other => match emit::render(client, &other) {
-                    Some(rendered) => Outcome::Emitted(rendered),
-                    None => Outcome::Silent(by_design_or_failed(role, client)),
-                },
-            }
-        }
+        Ok(Answer::Text(text)) => emit_body(client, role, format!("{heading}\n{text}")),
         Ok(Answer::Nothing) => Outcome::Silent(SilenceReason::StoreHadNothing),
         Err(crate::query::QueryError::ContractMismatch { ours, theirs }) => Outcome::Silent(
             SilenceReason::ContractMismatch(format!("ours={ours} theirs={theirs}")),
         ),
         Err(e) => Outcome::Silent(unusable_or_failed(e)),
+    }
+}
+
+/// Put one body into this client's context, or say why it could not go.
+///
+/// The one place a body becomes an emission, so "was it actually delivered?"
+/// has a single answer for every caller — the question D9's ledger has to ask
+/// before it burns a week's slot.
+fn emit_body(client: Client, role: Role, body: String) -> Outcome {
+    match emit::context_for(role, client, body) {
+        Emission::Silent => Outcome::Silent(by_design_or_failed(role, client)),
+        other => match emit::render(client, &other) {
+            Some(rendered) => Outcome::Emitted(rendered),
+            None => Outcome::Silent(by_design_or_failed(role, client)),
+        },
     }
 }
 
@@ -698,6 +731,120 @@ mod tests {
             &store,
         );
         assert_eq!(Outcome::Silent(SilenceReason::StoreHadNothing), out);
+    }
+
+    // ---- D9's reminder: it is ledgered when it is SPOKEN, and only then ----
+
+    fn field_config(client: &str, dir: &std::path::Path) -> HookConfig {
+        HookConfig {
+            field_dir: Some(dir.to_string_lossy().into_owned()),
+            ..config(client)
+        }
+    }
+
+    fn primer_scratch(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir()
+            .join(format!("jawata-primer-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A field directory that genuinely OWES a reminder: unposted failures in
+    /// the pile, no ledger yet, neither switch set.
+    fn seed_owed_reminder(dir: &std::path::Path) {
+        let mut pile = String::from("{\"pileFormat\":1,\"contract\":1}\n");
+        for _ in 0..3 {
+            pile.push_str(
+                "{\"t\":1,\"tool\":\"run_tests\",\"kind\":\"run\",\"ok\":false,\
+                 \"code\":\"RUNNER_TIMEOUT\",\"lat\":5,\"client\":\"claude_code\",\
+                 \"ver\":\"3_11_0\"}\n",
+            );
+        }
+        std::fs::write(dir.join("pile.jsonl"), pile).unwrap();
+        assert!(
+            crate::field::reminder_due(dir, 40 * crate::field::REMINDER_INTERVAL_MILLIS)
+                .is_some(),
+            "the fixture must actually owe a reminder, or the assertions below prove nothing"
+        );
+    }
+
+    /// 28b closing audit, F3 — the reminder was SWALLOWED and burned its
+    /// weekly slot anyway. It was prepended to the primer's HEADING, and
+    /// `finish` discards the heading when the store answers `Nothing`, but
+    /// `record_reminded` had already fired. Observed live:
+    /// `role primer: SILENT [store-had-nothing]` while `reminded.log` gained a
+    /// `shown` line — the user was told nothing, the ledger said he was, and
+    /// the next reminder was blocked for seven days.
+    #[test]
+    fn a_reminder_owed_still_reaches_the_user_when_the_store_has_nothing() {
+        let dir = primer_scratch("empty-store");
+        seed_owed_reminder(&dir);
+        let store = Stub(Ok(Answer::Nothing));
+        let out = run(Role::Primer, &field_config("claude-code", &dir), "{}", &store);
+        match &out {
+            Outcome::Emitted(s) => {
+                let v: serde_json::Value = serde_json::from_str(s).unwrap();
+                let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+                assert!(
+                    ctx.contains("/report") && ctx.contains("failed tool calls"),
+                    "the reminder itself is the injected context when the primer has \
+                     nothing else to say: {ctx}"
+                );
+                assert!(
+                    !ctx.contains("domain primer"),
+                    "and it does not carry a heading for an answer that does not exist: {ctx}"
+                );
+            }
+            other => panic!("a reminder that is owed must reach the user: {other:?}"),
+        }
+        let (last_shown, strikes) = crate::field::reminder_ledger(&dir);
+        assert!(last_shown > 0, "a SPOKEN reminder is ledgered");
+        assert_eq!(1, strikes, "and counts one unanswered strike");
+    }
+
+    /// The other half: a reminder the client never saw is still OWED. Anything
+    /// that stops the primer emitting must leave the ledger untouched — the
+    /// exact discipline `observer.rs` already follows for the nudge
+    /// ("Recorded ONLY on a real emission").
+    #[test]
+    fn a_reminder_the_user_never_saw_is_not_ledgered() {
+        let dir = primer_scratch("suppressed");
+        seed_owed_reminder(&dir);
+        // The store never answered. The primer stays silent with the FAILURE as
+        // its reason — the dead-channel fold's numerator depends on that
+        // classification, so the reminder cannot claim the slot here.
+        let store = Stub(Err(QueryError::Unreachable("connection refused".into())));
+        let out = run(Role::Primer, &field_config("claude-code", &dir), "{}", &store);
+        assert!(
+            matches!(out, Outcome::Silent(SilenceReason::QueryFailed(_))),
+            "the store failure stays the reason: {out:?}"
+        );
+        assert_eq!(
+            (0, 0),
+            crate::field::reminder_ledger(&dir),
+            "nothing was spoken, so nothing is recorded and the reminder is still owed"
+        );
+    }
+
+    /// And the ordinary path still works: the store answered, so the reminder
+    /// rides the primer's own opening and IS ledgered.
+    #[test]
+    fn a_reminder_rides_a_primer_that_has_something_to_say() {
+        let dir = primer_scratch("with-answer");
+        seed_owed_reminder(&dir);
+        let store = Stub(Ok(Answer::Text("[domain] this codebase indexes ledgers".into())));
+        let out = run(Role::Primer, &field_config("claude-code", &dir), "{}", &store);
+        match &out {
+            Outcome::Emitted(s) => {
+                let v: serde_json::Value = serde_json::from_str(s).unwrap();
+                let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+                assert!(ctx.contains("/report"), "the reminder is there: {ctx}");
+                assert!(ctx.contains("indexes ledgers"), "and so is the primer: {ctx}");
+            }
+            other => panic!("expected both: {other:?}"),
+        }
+        assert_eq!(1, crate::field::reminder_ledger(&dir).1);
     }
 
     /// Cursor's prompt hook cannot inject context — the role table says so.
