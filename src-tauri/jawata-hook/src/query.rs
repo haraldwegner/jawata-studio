@@ -98,6 +98,49 @@ const ABSENCE_PREFIXES: &[&str] = &["No known knowledge", "No domain"];
 /// testable without a server — the property that made the regex untestable was
 /// that it only ran inside a curl pipeline.
 pub fn parse_answer(body: &str) -> Result<Answer, QueryError> {
+    // `data` is a string for the text-format tools this hook uses. A different
+    // JSON type means the contract moved — say so rather than stringifying it
+    // into something that looks like an answer.
+    let text = match parse_data(body)? {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Null => {
+            return Err(QueryError::ShapeChanged("`data` was null on a success".into()))
+        }
+        other => {
+            return Err(QueryError::ShapeChanged(format!(
+                "`data` was {}, expected a string",
+                kind_of(&other)
+            )))
+        }
+    };
+
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        // Success with empty data is not an absence — the store says absence
+        // in words. This is the exact case the regex manufactured.
+        return Err(QueryError::ShapeChanged(
+            "`data` was an empty string on a success — the store reports absence in words, \
+             so this is a changed contract, not 'nothing found'"
+                .into(),
+        ));
+    }
+    if ABSENCE_PREFIXES.iter().any(|p| trimmed.starts_with(p)) {
+        return Ok(Answer::Nothing);
+    }
+    Ok(Answer::Text(text))
+}
+
+/// Peel the envelope down to the tool's `data`, WHATEVER shape it is.
+///
+/// The text-format callers go through [`parse_answer`], which adds the string
+/// and absence-in-words rules on top of this. A caller that asked for the
+/// STRUCTURED answer — the recall gate needs `entries[].symbol`, which the
+/// rendered line does not carry — reads the value here instead.
+///
+/// Every failure mode above the `data` field is shared, and deliberately so: a
+/// second peeler with its own idea of the envelope is how one path keeps the
+/// shape rules while the other quietly does not.
+pub fn parse_data(body: &str) -> Result<serde_json::Value, QueryError> {
     let envelope: Envelope = serde_json::from_str(body)
         .map_err(|e| if body.trim_start().starts_with('{') || body.trim_start().starts_with('[') {
             QueryError::ShapeChanged(format!("envelope did not deserialize: {e}"))
@@ -131,36 +174,7 @@ pub fn parse_answer(body: &str) -> Result<Answer, QueryError> {
         return Err(QueryError::ToolRefused { code, message });
     }
 
-    // `data` is a string for the text-format tools this hook uses. A different
-    // JSON type means the contract moved — say so rather than stringifying it
-    // into something that looks like an answer.
-    let text = match payload.data {
-        serde_json::Value::String(s) => s,
-        serde_json::Value::Null => {
-            return Err(QueryError::ShapeChanged("`data` was null on a success".into()))
-        }
-        other => {
-            return Err(QueryError::ShapeChanged(format!(
-                "`data` was {}, expected a string",
-                kind_of(&other)
-            )))
-        }
-    };
-
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        // Success with empty data is not an absence — the store says absence
-        // in words. This is the exact case the regex manufactured.
-        return Err(QueryError::ShapeChanged(
-            "`data` was an empty string on a success — the store reports absence in words, \
-             so this is a changed contract, not 'nothing found'"
-                .into(),
-        ));
-    }
-    if ABSENCE_PREFIXES.iter().any(|p| trimmed.starts_with(p)) {
-        return Ok(Answer::Nothing);
-    }
-    Ok(Answer::Text(text))
+    Ok(payload.data)
 }
 
 fn kind_of(v: &serde_json::Value) -> &'static str {
@@ -190,8 +204,26 @@ pub struct Endpoint {
     pub timeout: Duration,
 }
 
-/// Call the `experience` tool and peel the answer.
+/// Call the `experience` tool and peel the TEXT answer.
 pub fn ask(endpoint: &Endpoint, arguments: serde_json::Value) -> Result<Answer, QueryError> {
+    parse_answer(&send(endpoint, arguments)?)
+}
+
+/// Call the `experience` tool and peel the STRUCTURED answer.
+///
+/// Same wire, same contract check, same typed errors — only the last step
+/// differs. The recall gate needs `entries[].symbol` to tell a record anchored
+/// at the member from one anchored at its package, and the rendered text line
+/// carries type, summary, status and details but no anchor.
+pub fn ask_value(
+    endpoint: &Endpoint,
+    arguments: serde_json::Value,
+) -> Result<serde_json::Value, QueryError> {
+    parse_data(&send(endpoint, arguments)?)
+}
+
+/// The wire: request, contract header, status, contract echo, body.
+fn send(endpoint: &Endpoint, arguments: serde_json::Value) -> Result<String, QueryError> {
     let request = serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": { "name": "experience", "arguments": arguments }
@@ -224,8 +256,7 @@ pub fn ask(endpoint: &Endpoint, arguments: serde_json::Value) -> Result<Answer, 
             });
         }
     }
-    let body = response.text().map_err(|e| QueryError::Unreachable(e.to_string()))?;
-    parse_answer(&body)
+    response.text().map_err(|e| QueryError::Unreachable(e.to_string()))
 }
 
 #[cfg(test)]
@@ -340,6 +371,37 @@ mod tests {
                 assert!(message.contains("660"));
             }
             other => panic!("a refusal must not read as an absence: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_knowledge_layer_outage_reads_as_a_refusal_never_as_an_absence() {
+        // jawata-mcp#37. The engine now answers KNOWLEDGE_UNAVAILABLE when the store
+        // could not be read — a wedged connection, or a degraded in-memory fallback
+        // whose emptiness was never an observed absence. Before that code existed,
+        // both of those arrived here as a successful "No known knowledge for this
+        // cue", which this module's whole reason for existing says must not happen.
+        //
+        // This also pins the CONTRACT DIRECTION: a hook built at contract 1 — this
+        // one — parses the new body without any change, because the code is carried
+        // in the error slot the envelope already declares. Nothing was bumped, and
+        // nothing needed to be.
+        let refused = envelope(
+            &serde_json::json!({
+                "success": false,
+                "error": {
+                    "code": "KNOWLEDGE_UNAVAILABLE",
+                    "message": "Knowledge layer unavailable: the store did not answer within 15000ms"
+                }
+            })
+            .to_string(),
+        );
+        match parse_answer(&refused) {
+            Err(QueryError::ToolRefused { code, message }) => {
+                assert_eq!("KNOWLEDGE_UNAVAILABLE", code);
+                assert!(message.contains("15000"), "the budget it blew must survive: {message}");
+            }
+            other => panic!("a store outage must not read as an absence: {other:?}"),
         }
     }
 
