@@ -104,11 +104,9 @@
          header is chrome, not hierarchy. -->
     <h2>Field recording</h2>
     <p class="muted">
-      What jawata recorded on THIS machine while you worked: shapes only — tool name,
-      kind, error code, counts, latency bucket, client and version. No file paths, no
-      symbol names, no message text. Nothing leaves this machine unless you post it
-      yourself: type <code>/report</code> in any client to turn a shape into a bug
-      report you review and file from your own GitHub account.
+      Shapes only — tool, kind, error code, counts, latency, client, version. No paths,
+      no symbol names, no message text. Nothing leaves this machine unless you send it:
+      type <code>/report</code> in any client to file one from your own GitHub account.
     </p>
     <label class="checkbox-row field-silence">
       <input
@@ -161,16 +159,14 @@
             tool instead ({status?.utilization.slips} declared fallbacks,
             {status?.utilization.ungroundedReads} reads with no lookup behind them).
           {:else}
-            Nothing has been observed yet, so there is no share to show. An empty
-            denominator is not a perfect score.
+            Nothing observed yet — an empty denominator is not a perfect score.
           {/if}
         </p>
       </div>
       <p class="field-caveat">{status?.utilization.caveat ?? ""}</p>
       {#if utilization && !utilization.observerPresent}
         <p class="muted">
-          The observer has never written on this machine, so the number above counts
-          JAWATA's own half and nothing against it.
+          No observer has written here, so this counts JAWATA's half and nothing against it.
         </p>
       {/if}
     </section>
@@ -179,8 +175,7 @@
       <div class="section-intro">
         <h3>Top failure shapes</h3>
         <p class="muted">
-          Ranked by how often they repeat. A shape at three or more that you have not
-          filed is what the count at the top of this page is counting.
+          Ranked by repeats. Three or more, unfiled, is what the count above counts.
         </p>
       </div>
       {#if allShapes.length === 0}
@@ -203,16 +198,13 @@
       <div class="section-intro">
         <h3>Channel reach</h3>
         <p class="muted">
-          A channel is DEAD when the store answered and nothing reached the session —
-          the signature of the outage that went two weeks unseen. Quiet is not dead:
-          a channel with nothing to say, or one this client cannot inject on, is
-          listed separately.
+          DEAD = the store answered and nothing reached the session. Quiet is not dead —
+          nothing to say, or this client cannot inject, is listed separately.
         </p>
       </div>
       {#if (status?.silenceLogsRead.length ?? 0) === 0}
         <p class="muted">
-          No hook has ever run on this machine — there is nothing to fold. That is a
-          finding, not a healthy zero.
+          No hook has ever run here — a finding, not a healthy zero.
         </p>
       {:else}
         {#if status && status.deadChannels.length > 0}
@@ -243,10 +235,8 @@
       <div class="section-intro">
         <h3>Resident canary</h3>
         <p class="muted">
-          Every few minutes each resident is asked one real recall and one real
-          compiler question about a type every Java workspace can resolve. A resident
-          that cannot answer both turns this amber and tints the tray icon — nothing
-          more; you find out when you look.
+          Each resident is asked one real recall and one real compiler question.
+          Failing either turns this amber and tints the tray — nothing more.
         </p>
       </div>
       {#if (status?.canary.length ?? 0) === 0}

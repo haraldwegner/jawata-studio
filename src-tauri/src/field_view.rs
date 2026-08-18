@@ -75,11 +75,9 @@ pub const DEAD_CHANNEL_WINDOW_MILLIS: u64 = 7 * 24 * 60 * 60 * 1000;
 
 /// R1, shown beside the number and never only in a sprint document: the
 /// denominator is hook-scoped.
-pub const UTILIZATION_CAVEAT: &str = "Hook-scoped number. jawata can only see a shell \
-fallback in a client where one of its hooks sits in the session — Claude Code and Cursor \
-today. Work done in any other client counts jawata's own half and nothing against it, so \
-the real share of shell text tools is at least this high, never lower. Sprint 28f closes \
-the denominator by observing every command from the principal seat.";
+pub const UTILIZATION_CAVEAT: &str = "Hook-scoped number: jawata only sees shell fallbacks \
+in clients where its hooks run (Claude Code, Cursor). The real share is at least this high, \
+never lower.";
 
 // ---------------------------------------------------------------------------
 // The pile
@@ -1264,8 +1262,19 @@ mod tests {
         let util = utilization(97, &signals);
         assert_eq!(3, util.shell_fallbacks);
         assert_eq!(Some(97.0), util.percent);
-        assert!(util.caveat.contains("Claude Code and Cursor"), "R1 is SHOWN: {}", util.caveat);
-        assert!(util.caveat.contains("28f"));
+        // R1 is SHOWN — and what must survive any rewording is the MEANING, not
+        // the sentence: the number is hook-scoped, it names which clients, and
+        // it says the true share can only be higher. The old assertion also
+        // pinned a sprint number, which is internal bookkeeping and does not
+        // belong in text a user reads.
+        assert!(util.caveat.contains("Hook-scoped"), "R1 is SHOWN: {}", util.caveat);
+        assert!(util.caveat.contains("Claude Code"), "{}", util.caveat);
+        assert!(util.caveat.contains("Cursor"), "{}", util.caveat);
+        assert!(
+            util.caveat.contains("at least this high"),
+            "the caveat must say the real share can only be higher: {}",
+            util.caveat
+        );
         assert!(util.observer_present);
     }
 
