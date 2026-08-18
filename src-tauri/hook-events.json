@@ -107,6 +107,11 @@
         "rust": "present",
         "what": "an upward ask with no communicator run since the human's turn"
       },
+      "unreported_degradation": {
+        "bash": "absent",
+        "rust": "present",
+        "what": "a tool result stamped DEGRADED: was consumed and the message does not say so (studio#4)"
+      },
       "communicator_rule_a": {
         "bash": "absent",
         "rust": "present-but-inert",

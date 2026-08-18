@@ -45,6 +45,46 @@ fn every_stop_rule_declares_its_status_on_both_sides() {
     }
 }
 
+/// The RUST column, asserted the way the studio-side test asserts the bash one.
+///
+/// The asymmetry was real: `manager_service` pinned every `bash: "present"`
+/// claim to a marker in the script template, and nothing at all checked the
+/// rust column — so a rule could be deleted from `judge` while the contract
+/// went on declaring it present. That is the same divergence the whole section
+/// exists to prevent, facing the other way.
+#[test]
+fn every_stop_rule_declared_present_in_rust_has_its_marker_in_judge() {
+    const JUDGE: &str = include_str!("../src/stop.rs");
+    let marker: std::collections::HashMap<&str, &str> = [
+        ("anti_loop", "already_bounced"),
+        ("audit_fix_loop", "AUDIT-FIX LOOP"),
+        ("unjudged_ask", "UNJUDGED ASK"),
+        ("unreported_degradation", "UNREPORTED DEGRADATION"),
+        ("communicator_rule_a", "Rule A"),
+        ("nothing_armed_rule_b", "Rule B"),
+        ("seat_discipline", "SEAT DISCIPLINE"),
+        ("decision_test_length", "TOO LONG"),
+        ("undefined_abbreviations", "UNDEFINED"),
+    ]
+    .into();
+    for (rule, row) in rules().as_object().unwrap() {
+        if row["rust"].as_str() != Some("present") {
+            continue;
+        }
+        let m = marker.get(rule.as_str()).unwrap_or_else(|| {
+            panic!(
+                "{rule}: declared present in rust but this test knows no marker \
+                 for it — add one here alongside the rule"
+            )
+        });
+        assert!(
+            JUDGE.contains(m),
+            "{rule}: declared present in the rust generation, but its marker \
+             {m:?} is not in stop.rs — the contract says more than the code does"
+        );
+    }
+}
+
 /// THE CUTOVER GATE. A rule the bash gate has and the binary does not is an
 /// open item — permitted while the script still ships, fatal once it does not.
 /// Flip `SCRIPTS_RETIRED` in the same change that stops deploying them.

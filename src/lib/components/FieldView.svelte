@@ -30,6 +30,7 @@
   const POLL_MILLIS = 5000;
 
   $: utilization = status?.utilization ?? null;
+  $: recall = status?.recall ?? null;
   $: sharePercent =
     utilization && utilization.percent !== null && utilization.percent !== undefined
       ? `${utilization.percent}%`
@@ -173,6 +174,30 @@
 
     <section class="panel stack settings-section">
       <div class="section-intro">
+        <h3>Recalled knowledge</h3>
+        <p class="muted">
+          {#if recall && recall.present}
+            What the agent did with what it was given.
+          {:else}
+            Nothing observed yet.
+          {/if}
+        </p>
+      </div>
+      <ul class="recall-counts">
+        <li><span>{recall?.applied ?? 0}</span> applied</li>
+        <li><span>{recall?.rejected ?? 0}</span> judged and rejected</li>
+        <li class:recall-bad={(recall?.skipped ?? 0) > 0}>
+          <span>{recall?.skipped ?? 0}</span> taken and never answered
+        </li>
+        <li><span>{recall?.wouldBlock ?? 0}</span> would block</li>
+        <li><span>{recall?.blocked ?? 0}</span> blocked</li>
+        <li><span>{recall?.unavailable ?? 0}</span> store unavailable</li>
+      </ul>
+      <p class="field-caveat">{recall?.coverage ?? ""}</p>
+    </section>
+
+    <section class="panel stack settings-section">
+      <div class="section-intro">
         <h3>Top failure shapes</h3>
         <p class="muted">
           Ranked by repeats. Three or more, unfiled, is what the count above counts.
@@ -293,6 +318,24 @@
   .field-stat-degraded .field-stat-value {
     color: #a8621a;
   }
+  .recall-counts {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1.1rem;
+    font-size: 0.9rem;
+  }
+  .recall-counts span {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  /* The one number that means something went wrong. */
+  .recall-counts .recall-bad span {
+    color: var(--color-warning, #d08700);
+  }
+
   .field-caveat {
     font-size: 0.85rem;
     opacity: 0.85;

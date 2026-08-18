@@ -596,6 +596,97 @@ pub fn utilization(jawata_calls: u64, signals: &OutcomeSignals) -> Utilization {
 }
 
 // ---------------------------------------------------------------------------
+// The recall gate's own counters (Stage 5)
+// ---------------------------------------------------------------------------
+
+/// What G3's coverage actually is, carried WITH the counters so a number can
+/// never be read as a machine-wide truth.
+///
+/// Both halves are measured, not assumed. The gate rides `Role::ToolRecall`
+/// and the skip signal rides `Role::Stop`; both are `Availability::Absent` on
+/// Cursor, which fires no before-a-tool-call event and has no agent-stop
+/// event. And on Windows the recall hook cannot parse its PreToolUse payload
+/// at all (`jawata-studio#6`), with the stop hook reaching no verdict there
+/// (`#7`). So these counters are silent about two of the six clients and about
+/// one OS — and a zero here means NOT OBSERVED, never "it did not happen".
+pub const RECALL_COVERAGE: &str = "Claude Code on Linux/macOS only. Cursor fires no \
+    before-a-tool-call event and no agent-stop event, and on Windows the recall hook \
+    cannot read its payload — so a zero here means not observed, not that it did not happen.";
+
+/// The recall gate's signals, folded out of the same `outcomes.log`.
+///
+/// Kept apart from [`OutcomeSignals`] deliberately: that one is the
+/// utilization ratio's two halves, and folding a disposition count into it
+/// would put a number into a denominator it does not belong to.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecallSignals {
+    /// False when the observer has never written — see [`RECALL_COVERAGE`].
+    pub present: bool,
+    /// The agent said it used the recalled record.
+    pub applied: u64,
+    /// The agent said why it did not — the judgement the gate exists to force.
+    pub rejected: u64,
+    /// OBSERVE mode: what the gate WOULD have held. The promotion decision is
+    /// made on this number, so it is a first-class datum rather than a log line.
+    pub would_block: u64,
+    /// BLOCK mode: calls actually held until dispositioned.
+    pub blocked: u64,
+    /// Sessions that took recalled knowledge and disposed of none of it.
+    pub skipped: u64,
+    /// The knowledge layer could not answer, so the gate stood down. Recorded
+    /// as its own fact — jawata-mcp#37's whole point is that this is not the
+    /// same event as "nothing known".
+    pub unavailable: u64,
+    pub coverage: String,
+}
+
+impl RecallSignals {
+    /// No observer log at all. The COVERAGE SENTENCE STILL RIDES — the case
+    /// with no data is the one where a bare row of zeros misleads most, and
+    /// `Utilization` learned the same lesson about its caveat.
+    pub fn absent() -> Self {
+        RecallSignals {
+            present: false,
+            coverage: RECALL_COVERAGE.to_string(),
+            ..Default::default()
+        }
+    }
+}
+
+pub fn fold_recall(text: &str) -> RecallSignals {
+    let mut r = RecallSignals {
+        present: true,
+        coverage: RECALL_COVERAGE.to_string(),
+        ..Default::default()
+    };
+    for line in text.lines() {
+        // `<iso-ts>\t<jawata-ver>\t<signal>\t<detail>`
+        let mut parts = line.splitn(4, '\t').skip(2);
+        let signal = parts.next().unwrap_or("").trim();
+        let detail = parts.next().unwrap_or("").trim();
+        match signal {
+            // One signal, two counters: the token IS the distinction between
+            // "I used it" and "I judged it and it did not fit", and collapsing
+            // them would hide the only difference that matters.
+            "recall-dispositioned" => {
+                if detail.starts_with("recall-rejected") {
+                    r.rejected += 1;
+                } else {
+                    r.applied += 1;
+                }
+            }
+            "recall-would-block" => r.would_block += 1,
+            "recall-blocked" => r.blocked += 1,
+            "recall-skipped" => r.skipped += 1,
+            "recall-gate-unavailable" => r.unavailable += 1,
+            _ => {}
+        }
+    }
+    r
+}
+
+// ---------------------------------------------------------------------------
 // The canary
 // ---------------------------------------------------------------------------
 
@@ -847,6 +938,8 @@ pub struct FieldStatus {
     pub badge: u64,
     pub canary: Vec<CanaryResult>,
     pub canary_health: CanaryHealth,
+    /// Stage 5: what the recall gate saw, with its coverage attached.
+    pub recall: RecallSignals,
 }
 
 /// Assemble the status from explicit paths — no `dirs::home_dir()`, no globals,
@@ -878,7 +971,17 @@ pub fn status_from(
         .collect();
 
     let channels = fold_silence_logs(silence_logs, now_millis);
-    let signals = fold_outcomes_file(outcomes_log);
+    // ONE read, two folds. Reading twice could straddle an append and report a
+    // utilization number and a recall count taken from different files.
+    let outcomes_text = std::fs::read_to_string(outcomes_log).ok();
+    let signals = match outcomes_text.as_deref() {
+        Some(text) => fold_outcomes(text),
+        None => OutcomeSignals::default(),
+    };
+    let recall = match outcomes_text.as_deref() {
+        Some(text) => fold_recall(text),
+        None => RecallSignals::absent(),
+    };
     let jawata_calls = folded.iter().map(|w| w.pile.total_events).sum();
 
     FieldStatus {
@@ -900,6 +1003,7 @@ pub fn status_from(
             .collect(),
         badge: folded.iter().map(|w| w.pile.badge).sum(),
         canary_health: canary_health(&canary, now_millis),
+        recall,
         canary,
         channels,
         workspaces: folded,
@@ -1457,6 +1561,80 @@ mod tests {
     /// fail-closed change, silently stopped being bounded) with every unit test still green.
     /// So assert the wiring itself — the same idiom this file already uses to prove the view
     /// renders what the fold produces.
+
+    // -----------------------------------------------------------------
+    // Stage 5 — the recall gate's counters
+    // -----------------------------------------------------------------
+
+    fn outcomes_line(signal: &str, detail: &str) -> String {
+        format!("2026-08-18T10:00:00Z\t3.11.2\t{signal}\t{detail}\n")
+    }
+
+    /// Every counter moves for ITS kind and for no other. Written as one table
+    /// rather than six tests because the failure that matters is a signal
+    /// landing in the WRONG counter, and that is only visible when all six are
+    /// read from the same log.
+    #[test]
+    fn each_recall_counter_moves_for_its_own_signal() {
+        let log: String = [
+            outcomes_line("recall-dispositioned", "recall-applied"),
+            outcomes_line("recall-dispositioned", "recall-rejected: about the other overload"),
+            outcomes_line("recall-dispositioned", "recall-rejected: wrong subsystem"),
+            outcomes_line("recall-would-block", "com.foo.Bar#baz"),
+            outcomes_line("recall-blocked", "com.foo.Bar#qux"),
+            outcomes_line("recall-skipped", "injected=3 disposed=0"),
+            outcomes_line("recall-gate-unavailable", "budget 200ms exceeded"),
+            // Not ours — the utilization fold's signals must not leak in.
+            outcomes_line("slip", "Bash"),
+            outcomes_line("read-ungrounded", "Read"),
+        ]
+        .concat();
+        let r = fold_recall(&log);
+        assert!(r.present);
+        assert_eq!(1, r.applied);
+        assert_eq!(2, r.rejected, "both rejections, and neither counted as applied");
+        assert_eq!(1, r.would_block);
+        assert_eq!(1, r.blocked);
+        assert_eq!(1, r.skipped);
+        assert_eq!(1, r.unavailable);
+
+        // And the reverse: the utilization fold must not pick up ours.
+        let u = fold_outcomes(&log);
+        assert_eq!(1, u.slips);
+        assert_eq!(1, u.ungrounded_reads);
+    }
+
+    /// THE COVERAGE CAVEAT SURVIVES THE EMPTY CASE. A missing observer log is
+    /// exactly when a bare row of zeros reads as "the agent ignored nothing" —
+    /// so the sentence that says these numbers are blind to two clients and an
+    /// OS has to be there precisely then. `Utilization` learned this about its
+    /// own caveat; this is the same rule, asserted rather than remembered.
+    #[test]
+    fn an_absent_log_still_carries_the_coverage_sentence() {
+        let r = RecallSignals::absent();
+        assert!(!r.present);
+        assert_eq!(0, r.skipped);
+        assert!(r.coverage.contains("Cursor"), "{}", r.coverage);
+        assert!(r.coverage.contains("Windows"), "{}", r.coverage);
+        assert!(
+            r.coverage.contains("not observed"),
+            "a zero must be readable as UNOBSERVED, not as innocence: {}",
+            r.coverage
+        );
+    }
+
+    /// A disposition with no recognisable token counts as APPLIED, not as a
+    /// rejection. Stated as a test because the default matters: `disposition_in`
+    /// already refuses a bare `recall-rejected:` with no reason, so anything
+    /// reaching this fold that is not a rejection IS the agent saying it used
+    /// the record.
+    #[test]
+    fn an_unlabelled_disposition_counts_as_applied() {
+        let r = fold_recall(&outcomes_line("recall-dispositioned", "recall-applied to the fix"));
+        assert_eq!(1, r.applied);
+        assert_eq!(0, r.rejected);
+    }
+
     #[test]
     fn the_board_stitches_loading_runs_before_it_judges() {
         let service = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1628,6 +1806,7 @@ mod tests {
 /// temptation actually lives — a view has a window to put a box in front of.
 #[cfg(test)]
 mod interruption_scans {
+    use super::{RecallSignals, RECALL_COVERAGE};
     use std::path::{Path, PathBuf};
 
     fn manifest() -> PathBuf {
@@ -1821,6 +2000,30 @@ mod interruption_scans {
         assert!(
             view.contains("/report"),
             "the header names the /report seat — the page's whole outbound path"
+        );
+
+        // Stage 5's counters, bound the way the list above SHOULD have been:
+        // DERIVED from the serialized struct, so adding a field to
+        // `RecallSignals` fails this test until the view renders it. The
+        // hand-maintained list is exactly how a Rust-only datum stayed green
+        // through C1.
+        let shape = serde_json::to_value(RecallSignals::absent()).unwrap();
+        for key in shape.as_object().unwrap().keys() {
+            assert!(
+                view.contains(key.as_str()),
+                "the view drops `recall.{key}` on the floor — the fold computes \
+                 it and nothing renders it"
+            );
+        }
+
+        // The coverage sentence is DATA, so binding its name renders the whole
+        // string — but an emptied constant would still pass that. Pin what it
+        // has to say: both limits, by name.
+        assert!(
+            RECALL_COVERAGE.contains("Cursor") && RECALL_COVERAGE.contains("Windows"),
+            "the counters must carry BOTH coverage holes — a zero from a client \
+             that fires no such event is not a zero the agent earned \
+             (studio#6, #7)"
         );
     }
 }

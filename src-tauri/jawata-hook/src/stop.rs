@@ -143,9 +143,35 @@ pub struct Turn {
     pub seats_invoked: Vec<String>,
     /// Whether a verification gate ran after them.
     pub gate_ran: bool,
+    /// studio#4: tool RESULTS in this window that carried a degradation stamp.
+    ///
+    /// Counted from tool results only — never from the raw window and never
+    /// from assistant text, for the reason `refusals_emitted` carries the same
+    /// restriction: the script generation counted the whole transcript and
+    /// fired on any session that merely READ the word.
+    pub degraded_consumed: usize,
 }
 
+/// The stamp a degraded resident puts on its response (`jawata-mcp#12`).
+///
+/// Matched at the START of a line, not anywhere in the text. A source file
+/// read, a grep hit or a test fixture can all contain the word mid-line —
+/// jawata's own tree does, in four places — and keying on a bare substring
+/// would block a turn for having LOOKED AT the notice rather than for having
+/// been given one.
+pub const DEGRADED_STAMP: &str = "DEGRADED:";
+
 impl Turn {
+    /// Did the final message tell the human about it?
+    ///
+    /// Any form of the word counts — "degraded", "degradation", "the store is
+    /// degraded". Demanding the literal stamp would make the rule satisfiable
+    /// by pasting a token, which is the reflex the recall gate's own design
+    /// notes refuse to manufacture.
+    pub fn surfaced_degradation(&self) -> bool {
+        self.final_text.to_lowercase().contains("degrad")
+    }
+
     pub fn communicator_ran(&self) -> bool {
         self.launches.iter().any(ToolUse::is_communicator)
     }
@@ -199,6 +225,25 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
                  architect seat as a watch-diff against the ARCHITECTURE artifact: \
                  design fix or bandage?",
                 facts.turn.refusals_emitted
+            ),
+        };
+    }
+
+    // studio#4: a turn that CONSUMED a degraded answer and said nothing about
+    // it. Independent of autonomy, for the reason the issue exists: every
+    // instruction-layer form of this rule ("if jawata is unavailable, ASK —
+    // don't silently degrade") has already been proven optional in practice.
+    // An agent routes around friction without narrating it, so the only
+    // channel that holds is one that does not depend on its goodwill.
+    //
+    // Placed BEFORE the ask rule deliberately: this is a factual omission from
+    // the message, and the communicator should judge the corrected text rather
+    // than the incomplete one.
+    if facts.turn.degraded_consumed > 0 && !facts.turn.surfaced_degradation() {
+        return StopVerdict::Block {
+            reason: format!(
+                "UNREPORTED DEGRADATION: {} tool result(s) in this turn came back                  stamped as degraded, and your message does not say so. The human                  is about to act on an answer produced by a component that                  declared itself unwell. Say WHICH capability was degraded and                  WHAT that means for the conclusions you just drew — then stop.",
+                facts.turn.degraded_consumed
             ),
         };
     }
@@ -316,6 +361,10 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                 // scope by the 2026-08-07 ruling.
                 turn.user_asked = user_asked(&user_text(&v));
             }
+            // The harness echoing our own tool call back. It does NOT reset the
+            // window (see `is_tool_result`), and it is the only place a
+            // degradation stamp can legitimately arrive.
+            Some("user") => turn.degraded_consumed += degraded_stamps_in(&v),
             Some("assistant") => {
                 let content = v
                     .get("message")
@@ -470,6 +519,43 @@ fn is_tool_result(v: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
+/// Count degradation stamps in one `user` entry's tool results.
+///
+/// A `tool_result` block's `content` is either a bare string or an array of
+/// blocks; both shapes are read, because which one arrives depends on the tool
+/// and getting it wrong would silently count zero forever.
+fn degraded_stamps_in(v: &serde_json::Value) -> usize {
+    let Some(blocks) = v
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+    else {
+        return 0;
+    };
+    let mut text = String::new();
+    for b in blocks {
+        if b.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+            continue;
+        }
+        match b.get("content") {
+            Some(serde_json::Value::String(s)) => text.push_str(s),
+            Some(serde_json::Value::Array(inner)) => {
+                for part in inner {
+                    if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
+                        text.push_str(t);
+                        text.push('\n');
+                    }
+                }
+            }
+            _ => {}
+        }
+        text.push('\n');
+    }
+    text.lines()
+        .filter(|l| l.trim_start().starts_with(DEGRADED_STAMP))
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,9 +569,127 @@ mod tests {
     fn facts(autonomy: Autonomy, launches: Vec<ToolUse>) -> StopFacts {
         StopFacts {
             already_bounced: false,
-            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, user_asked: false, seats_invoked: vec![], gate_ran: true },
+            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, user_asked: false, degraded_consumed: 0, seats_invoked: vec![], gate_ran: true },
             autonomy,
         }
+    }
+
+    // -----------------------------------------------------------------
+    // studio#4 — a consumed degradation must be surfaced
+    // -----------------------------------------------------------------
+
+    /// One user entry echoing a tool result with the given body.
+    fn result_line(body: &str) -> String {
+        format!(
+            "{{\"type\":\"user\",\"message\":{{\"content\":[{{\"type\":\"tool_result\",\"content\":{}}}]}}}}",
+            serde_json::to_string(body).unwrap()
+        )
+    }
+    fn assistant_line(text: &str) -> String {
+        format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":{}}}]}}}}",
+            serde_json::to_string(text).unwrap()
+        )
+    }
+    fn turn_of(result_body: &str, final_text: &str) -> Turn {
+        let t = format!(
+            "{{\"type\":\"user\",\"message\":{{\"content\":\"go\"}}}}\n{}\n{}\n",
+            result_line(result_body),
+            assistant_line(final_text)
+        );
+        read_turn(&t).unwrap()
+    }
+
+    /// ACCEPTANCE 1: consumed and unmentioned -> blocked, and the reason tells
+    /// the agent what to add.
+    #[test]
+    fn a_degraded_answer_the_message_hides_blocks_the_turn() {
+        let turn = turn_of(
+            "DEGRADED: experience store is serving a non-persistent in-memory copy\nresult: 3 entries",
+            "Found 3 entries. The store looks fine.",
+        );
+        assert_eq!(1, turn.degraded_consumed);
+        let mut f = facts(Autonomy::Unknown, vec![]);
+        f.turn = turn;
+        match judge(&f) {
+            StopVerdict::Block { reason } => {
+                assert!(reason.contains("UNREPORTED DEGRADATION"), "{reason}");
+                assert!(reason.to_lowercase().contains("which"), "{reason}");
+            }
+            v => panic!("expected a block, got {v:?}"),
+        }
+    }
+
+    /// ACCEPTANCE 2: the same transcript, said out loud -> passes.
+    #[test]
+    fn saying_it_closes_the_rule() {
+        let mut f = facts(Autonomy::Unknown, vec![]);
+        f.turn = turn_of(
+            "DEGRADED: experience store is serving a non-persistent in-memory copy",
+            "Found 3 entries — but the store answered DEGRADED (in-memory copy), so \
+             this count is not the persisted corpus.",
+        );
+        assert_eq!(StopVerdict::Allow, judge(&f));
+    }
+
+    /// Any form of the word closes it. Demanding the literal stamp would make
+    /// the rule satisfiable by pasting a token — the reflex the recall gate's
+    /// own design refuses to manufacture.
+    #[test]
+    fn the_word_not_the_token_is_what_closes_it() {
+        let mut f = facts(Autonomy::Unknown, vec![]);
+        f.turn = turn_of(
+            "DEGRADED: store on the in-memory fallback",
+            "Three entries, but note the degradation: the store is on its in-memory \
+             fallback, so treat the number as a floor.",
+        );
+        assert_eq!(StopVerdict::Allow, judge(&f));
+    }
+
+    /// THE FALSE-POSITIVE GUARD, and it is not hypothetical: jawata's own tree
+    /// contains the string in four source files, so a grep or a file read puts
+    /// it in a tool result during ordinary work. Blocking there would punish
+    /// the agent for having LOOKED AT the notice rather than for having been
+    /// handed one — the exact failure the bash gate made with "REFUSE".
+    #[test]
+    fn merely_reading_the_word_is_not_consuming_a_degraded_answer() {
+        let turn = turn_of(
+            "RecoveringExperienceStore:245:  \"in-memory (DEGRADED: \" + why\n\
+             AbstractAstDetector:203:  \"DEGRADED SCAN: every file was read\"",
+            "Two hits, both in source.",
+        );
+        assert_eq!(
+            0, turn.degraded_consumed,
+            "a mid-line mention in a grep hit is not a degradation stamp"
+        );
+        let mut f = facts(Autonomy::Unknown, vec![]);
+        f.turn = turn;
+        assert_eq!(StopVerdict::Allow, judge(&f));
+    }
+
+    /// The stamp arriving in the BLOCK-shaped content array, not as a bare
+    /// string. Which shape a client uses is not ours to choose, and reading
+    /// only one of them would silently count zero forever.
+    #[test]
+    fn the_stamp_is_read_from_a_block_array_too() {
+        let line = "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\
+                    \"content\":[{\"type\":\"text\",\"text\":\"DEGRADED: compiler index is rebuilding\"}]}]}}";
+        let t = format!(
+            "{{\"type\":\"user\",\"message\":{{\"content\":\"go\"}}}}\n{line}\n{}\n",
+            assistant_line("Done.")
+        );
+        assert_eq!(1, read_turn(&t).unwrap().degraded_consumed);
+    }
+
+    /// THE ANTI-WEDGE VALVE. A rule that can block twice can trap a session,
+    /// and this one fires on a condition the agent might not be able to satisfy
+    /// (a stamp it never saw in its own context).
+    #[test]
+    fn a_second_pass_never_blocks_on_degradation() {
+        let mut f = facts(Autonomy::Unknown, vec![]);
+        f.turn = turn_of("DEGRADED: store unavailable", "All good.");
+        f.already_bounced = true;
+        assert_eq!(StopVerdict::Allow, judge(&f));
     }
 
     #[test]

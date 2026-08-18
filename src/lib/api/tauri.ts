@@ -595,6 +595,24 @@ export interface FieldCanaryResult {
  */
 export type FieldCanaryHealth = "unknown" | "green" | "loading" | "degraded";
 
+/**
+ * What the recall gate saw this install. `coverage` rides WITH the numbers for
+ * the same reason `FieldUtilization.caveat` does: a zero here means NOT
+ * OBSERVED (Cursor fires neither event; Windows cannot read the payload), and
+ * a bare row of zeros would read as "the agent never ignored anything".
+ */
+export interface FieldRecallSignals {
+  present: boolean;
+  applied: number;
+  rejected: number;
+  /** OBSERVE mode: what the gate WOULD have held. Promotion is decided on it. */
+  wouldBlock: number;
+  blocked: number;
+  skipped: number;
+  unavailable: number;
+  coverage: string;
+}
+
 export interface FieldWorkspaceStatus {
   workspace: string;
   fieldDir: string;
@@ -614,6 +632,7 @@ export interface FieldStatus {
   badge: number;
   canary: FieldCanaryResult[];
   canaryHealth: FieldCanaryHealth;
+  recall: FieldRecallSignals;
 }
 
 /** Read the field recording. File reads only — cheap enough to poll. */
