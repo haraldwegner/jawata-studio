@@ -2420,6 +2420,25 @@ mod interruption_scans {
             );
         }
 
+        // Stage 9: the classpath half is rendered too. Derived from the
+        // serialized struct like the others, so a new field fails until the
+        // view renders it. `error` is deliberately EXCLUDED: the section only
+        // appears when there is something to list, so an unreachable resident
+        // is reported by the residents tile, not twice.
+        let resolution = serde_json::to_value(crate::manager_service::ProjectResolution {
+            project_key: String::new(),
+            unresolved: 0,
+            healthy: true,
+        })
+        .unwrap();
+        for key in resolution.as_object().unwrap().keys() {
+            assert!(
+                view.contains(key.as_str()),
+                "the view drops `resolution.{key}` — the fold computes it and nothing \
+                 renders it"
+            );
+        }
+
         // Stage 5a, same instrument: the store report's fields, derived.
         let store_shape = serde_json::to_value(store_health(&[])).unwrap();
         for key in store_shape.as_object().unwrap().keys() {

@@ -17,7 +17,14 @@
   // LAYOUT: the app-wide panel / settings-grid / section-intro classes, as the
   // Memory view uses them.
   import { onDestroy, onMount } from "svelte";
-  import { fieldSetSilence, fieldStatus, type FieldStatus } from "../api/tauri";
+  import {
+    fieldSetSilence,
+    fieldStatus,
+    resolutionStatus,
+    type FieldStatus,
+    type ProjectResolution,
+    type ResolutionStatus,
+  } from "../api/tauri";
 
   export let disabled = false;
 
@@ -32,6 +39,13 @@
   $: utilization = status?.utilization ?? null;
   $: recall = status?.recall ?? null;
   $: store = status?.store ?? null;
+  // Stage 9: the classpath half. Loaded once on mount rather than polled — an
+  // import's outcome changes when a workspace is (re)loaded, not second to
+  // second, and this costs one health_check per resident.
+  let resolution: ResolutionStatus[] = [];
+  $: unresolvedProjects = resolution.flatMap((r: ResolutionStatus) =>
+    r.projects.map((p: ProjectResolution) => ({ ...p, workspace: r.workspace })),
+  );
   $: sharePercent =
     utilization && utilization.percent !== null && utilization.percent !== undefined
       ? `${utilization.percent}%`
@@ -181,6 +195,27 @@
         </p>
       {/if}
     </section>
+
+    {#if unresolvedProjects.length > 0}
+      <section class="panel stack settings-section">
+        <div class="section-intro">
+          <h3>Projects missing dependencies</h3>
+          <p class="muted">
+            These resolved fewer dependencies than they asked for, so their errors may be
+            the classpath rather than the code.
+          </p>
+        </div>
+        <ul class="shape-list">
+          {#each unresolvedProjects as p (p.workspace + p.projectKey)}
+            <li>
+              <code>{p.projectKey}</code>
+              <span class="shape-count">{p.unresolved} unresolved</span>
+              <span class="muted">{p.workspace}</span>
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
 
     <section class="panel stack settings-section">
       <div class="section-intro">

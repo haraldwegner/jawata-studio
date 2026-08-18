@@ -687,6 +687,7 @@ pub fn run() {
             commands::probe_services,
             commands::deploy_to_agents,
             commands::knowledge_status,
+            commands::resolution_status,
             commands::experience_verb,
             commands::field_status,
             commands::field_set_silence,

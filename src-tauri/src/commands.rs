@@ -51,6 +51,21 @@ pub async fn knowledge_status(
 }
 
 #[tauri::command]
+pub async fn resolution_status(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::manager_service::ResolutionStatus>, String> {
+    // Sprint 21b: sync Tauri commands run ON THE MAIN THREAD — this one makes up to
+    // N×5 s of HTTP calls and is polled by the Memory view, which froze the entire UI
+    // while residents were booting. Config reads stay here; HTTP goes off-thread.
+    let servers = state.manager_service.knowledge_servers();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::manager_service::resolution_status_for(&servers)
+    })
+    .await
+    .map_err(|e| format!("status task failed: {e}"))
+}
+
+#[tauri::command]
 pub async fn experience_verb(
     state: State<'_, AppState>,
     workspace: String,

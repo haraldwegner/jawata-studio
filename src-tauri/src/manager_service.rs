@@ -6141,6 +6141,186 @@ pub struct KnowledgeWorkspaceStatus {
     pub error: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Stage 9 (G6b) — the studio shows what an import could not resolve
+// ---------------------------------------------------------------------------
+
+/// One project's dependency-resolution state, as the resident reports it.
+///
+/// Sprint 28 Stage 8 gave `health_check` an `unresolvedDependencyCount` per
+/// project. Before that the studio DISCARDED the whole `health_check` body —
+/// `resident_answers` returned a bare `bool` — so the honesty the engine now
+/// emits had no consumer at all. A capability nobody renders is not delivered.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectResolution {
+    pub project_key: String,
+    /// How many requirements this project's import asked for and could not find.
+    pub unresolved: u64,
+    /// The refactoring guard, reported as the resident computes it. Carried
+    /// SEPARATELY from `unresolved` on purpose: unresolved dependencies do not
+    /// arm it (Stage 8 pinned that), and merging the two here would invent a
+    /// coupling the engine deliberately does not have.
+    pub healthy: bool,
+}
+
+/// One workspace's resolution report.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolutionStatus {
+    pub workspace: String,
+    pub url: String,
+    pub reachable: bool,
+    /// Projects that reported a NON-ZERO unresolved count. Empty when every
+    /// project resolved everything — which is a different fact from
+    /// `reachable: false`, and the two must not be readable as the same.
+    pub projects: Vec<ProjectResolution>,
+    /// Every project the resident reported, resolving or not.
+    pub project_count: u64,
+    pub error: Option<String>,
+}
+
+/// Fold one resident's `health_check` body into a resolution report. Pure.
+///
+/// A resident on an older runtime emits no `unresolvedDependencyCount` at all.
+/// That reads as ZERO here, and that is a deliberate under-report: inventing a
+/// count from an absent field would be worse than saying nothing, and the
+/// studio pulls the matching runtime on update. `reachable` still tells the
+/// reader the resident answered.
+pub fn fold_resolution(workspace: &str, url: &str, body: &serde_json::Value) -> ResolutionStatus {
+    let rows = body
+        .pointer("/data/workspace/projects")
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let projects: Vec<ProjectResolution> = rows
+        .iter()
+        .filter_map(|row| {
+            let unresolved = row.get("unresolvedDependencyCount")?.as_u64()?;
+            if unresolved == 0 {
+                return None;
+            }
+            Some(ProjectResolution {
+                project_key: row
+                    .get("projectKey")
+                    .and_then(|k| k.as_str())
+                    .unwrap_or("<unnamed>")
+                    .to_string(),
+                unresolved,
+                healthy: row.get("healthy").and_then(|h| h.as_bool()).unwrap_or(true),
+            })
+        })
+        .collect();
+    ResolutionStatus {
+        workspace: workspace.to_string(),
+        url: url.to_string(),
+        reachable: true,
+        project_count: rows.len() as u64,
+        projects,
+        error: None,
+    }
+}
+
+/// The blocking HTTP half — no `&self`, callable from `spawn_blocking`.
+pub(crate) fn resolution_status_for(servers: &[ManagedDeployServer]) -> Vec<ResolutionStatus> {
+    servers
+        .iter()
+        .map(|server| {
+            match call_tool_json(
+                &server.url,
+                &server.token,
+                "health_check",
+                serde_json::json!({}),
+                5,
+            ) {
+                Ok(body) => fold_resolution(&server.workspace_name, &server.url, &body),
+                Err(error) => ResolutionStatus {
+                    workspace: server.workspace_name.clone(),
+                    url: server.url.clone(),
+                    reachable: false,
+                    projects: Vec::new(),
+                    project_count: 0,
+                    error: Some(error),
+                },
+            }
+        })
+        .collect()
+}
+
+/// Stage 9 (G6b) — the studio renders what an import could not resolve.
+#[cfg(test)]
+mod resolution_tests {
+    use super::*;
+
+    fn body(projects: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "data": { "workspace": { "projects": projects } } })
+    }
+
+    /// The measured shape: four projects resolving nothing among eleven.
+    #[test]
+    fn only_the_projects_that_missed_something_are_listed() {
+        let b = body(serde_json::json!([
+            {"projectKey": "clicktrader", "unresolvedDependencyCount": 41, "healthy": true},
+            {"projectKey": "e4fixes", "unresolvedDependencyCount": 3, "healthy": true},
+            {"projectKey": "fine-one", "unresolvedDependencyCount": 0, "healthy": true},
+        ]));
+        let r = fold_resolution("orb", "http://x/mcp", &b);
+        assert!(r.reachable);
+        assert_eq!(3, r.project_count, "every project counts toward the denominator");
+        assert_eq!(2, r.projects.len(), "only the ones with something to say are listed");
+        assert_eq!("clicktrader", r.projects[0].project_key);
+        assert_eq!(41, r.projects[0].unresolved);
+    }
+
+    /// EVERYTHING RESOLVED is not the same fact as NOBODY ANSWERED, and the two
+    /// must not read the same on the page.
+    #[test]
+    fn a_clean_workspace_is_reachable_with_nothing_listed() {
+        let b = body(serde_json::json!([
+            {"projectKey": "a", "unresolvedDependencyCount": 0, "healthy": true}
+        ]));
+        let r = fold_resolution("dev", "http://x/mcp", &b);
+        assert!(r.reachable);
+        assert!(r.projects.is_empty());
+        assert_eq!(1, r.project_count);
+        assert!(r.error.is_none());
+    }
+
+    /// An OLDER RUNTIME emits no such field. That reads as zero — an honest
+    /// under-report — rather than as an invented number, and `reachable` still
+    /// says the resident answered.
+    #[test]
+    fn a_runtime_without_the_field_under_reports_rather_than_inventing() {
+        let b = body(serde_json::json!([{"projectKey": "a", "healthy": true}]));
+        let r = fold_resolution("dev", "http://x/mcp", &b);
+        assert!(r.reachable, "the resident DID answer");
+        assert!(r.projects.is_empty(), "no field, no claim");
+        assert_eq!(1, r.project_count);
+    }
+
+    /// The guard is reported, never derived. Stage 8 pinned that unresolved
+    /// dependencies do NOT arm `healthy`; inventing the coupling here would
+    /// re-introduce it one layer up.
+    #[test]
+    fn the_refactoring_guard_is_carried_not_computed() {
+        let b = body(serde_json::json!([
+            {"projectKey": "a", "unresolvedDependencyCount": 9, "healthy": true},
+            {"projectKey": "b", "unresolvedDependencyCount": 9, "healthy": false},
+        ]));
+        let r = fold_resolution("dev", "http://x/mcp", &b);
+        assert!(r.projects[0].healthy, "unresolved dependencies alone do not arm it");
+        assert!(!r.projects[1].healthy, "and a genuinely unreadable project still says so");
+    }
+
+    /// A body the studio does not understand is not a clean workspace.
+    #[test]
+    fn a_shape_we_do_not_know_lists_nothing_and_counts_nothing() {
+        let r = fold_resolution("dev", "http://x/mcp", &serde_json::json!({"data": {}}));
+        assert_eq!(0, r.project_count);
+        assert!(r.projects.is_empty());
+    }
+}
+
 /// Sprint 21a (item D): which residents to auto-seed. Pure so the toggle logic is
 /// unit-testable; empty when the setting is off or a server has no url/token.
 fn auto_seed_targets(enabled: bool, servers: &[ManagedDeployServer]) -> Vec<(String, String)> {

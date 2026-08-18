@@ -656,6 +656,36 @@ export interface FieldStatus {
   recall: FieldRecallSignals;
 }
 
+
+/**
+ * Stage 9 (G6b): what an import could not resolve, per project.
+ *
+ * The studio used to DISCARD the whole `health_check` body — `residentAnswers`
+ * was a bare boolean — so the engine's classpath honesty had no consumer at
+ * all. `projects` lists only the NON-ZERO rows; empty means every project
+ * resolved everything, which is a different fact from `reachable: false`.
+ */
+export interface ProjectResolution {
+  projectKey: string;
+  unresolved: number;
+  /** The refactoring guard, as the resident computes it — NOT derived here. */
+  healthy: boolean;
+}
+
+export interface ResolutionStatus {
+  workspace: string;
+  url: string;
+  reachable: boolean;
+  projects: ProjectResolution[];
+  projectCount: number;
+  error?: string | null;
+}
+
+/** Per-workspace dependency-resolution report. One health_check per resident. */
+export function resolutionStatus(): Promise<ResolutionStatus[]> {
+  return invoke<ResolutionStatus[]>("resolution_status");
+}
+
 /** Read the field recording. File reads only — cheap enough to poll. */
 export function fieldStatus(): Promise<FieldStatus> {
   return invoke("field_status");
