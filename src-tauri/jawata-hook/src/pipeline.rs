@@ -321,9 +321,14 @@ fn primer(client: Client, config: &HookConfig, store: &dyn Store) -> Outcome {
         // primer was silent, because that is the dead-channel fold's
         // numerator. The reminder rides along when there is something to ride.
         (answer, Some((_, _, line))) => {
-            finish(client, Role::Primer, answer, &format!("{line}\n\n{heading}"))
+            // NO SESSION, DELIBERATELY (Stage 5): the primer is the always-on
+            // domain layer, not a nominee raised about a question the agent
+            // asked. Demanding a disposition for it would turn the skip signal
+            // into a session-start tax and teach the token as a reflex — the
+            // failure the gate's own narrowness exists to avoid.
+            finish(client, Role::Primer, answer, &format!("{line}\n\n{heading}"), "")
         }
-        (answer, None) => finish(client, Role::Primer, answer, heading),
+        (answer, None) => finish(client, Role::Primer, answer, heading, ""),
     };
 
     // Recorded ONLY on a real emission — the discipline `observer.rs` already
@@ -368,6 +373,7 @@ fn recall_gate(
         // The agent already said what it did. Recorded, then out of the way.
         crate::recallgate::Verdict::Dispositioned { token } => {
             emit_gate_signal("recall-dispositioned", &token);
+            note_disposition(&session_id_in(payload).unwrap_or_default(), &token);
             None
         }
 
@@ -415,6 +421,9 @@ fn emit_gate_signal(signal: &str, detail: &str) {
 }
 
 fn recall(role: Role, client: Client, payload: &str, store: &dyn Store) -> Outcome {
+    // Stage 5: the ledger is per session, so a skip is a property of ONE
+    // conversation rather than of the machine.
+    let session = session_id_in(payload).unwrap_or_default();
     let cues = match cues_for(role, payload) {
         Ok(c) => c,
         Err(reason) => return Outcome::Silent(reason),
@@ -439,6 +448,7 @@ fn recall(role: Role, client: Client, payload: &str, store: &dyn Store) -> Outco
                     Ok(Answer::Text(text)),
                     "JAWATA recalled candidate prior knowledge for this topic — these are \
                      NOMINEES, not vouched answers; judge whether each fits before relying on it:",
+                    &session,
                 )
             }
             Ok(Answer::Nothing) => continue,
@@ -467,9 +477,16 @@ fn finish(
     role: Role,
     answer: Result<Answer, QueryError>,
     heading: &str,
+    session: &str,
 ) -> Outcome {
     match answer {
-        Ok(Answer::Text(text)) => emit_body(client, role, format!("{heading}\n{text}")),
+        Ok(Answer::Text(text)) => {
+            let out = emit_body(client, role, format!("{heading}\n{text}"));
+            if matches!(out, Outcome::Emitted(_)) {
+                note_injection(session);
+            }
+            out
+        }
         Ok(Answer::Nothing) => Outcome::Silent(SilenceReason::StoreHadNothing),
         Err(crate::query::QueryError::ContractMismatch { ours, theirs }) => Outcome::Silent(
             SilenceReason::ContractMismatch(format!("ours={ours} theirs={theirs}")),
@@ -490,6 +507,32 @@ fn emit_body(client: Client, role: Role, body: String) -> Outcome {
             Some(rendered) => Outcome::Emitted(rendered),
             None => Outcome::Silent(by_design_or_failed(role, client)),
         },
+    }
+}
+
+/// Stage 5: record that knowledge REACHED this session.
+///
+/// Called only on a real emission, and that is the whole point — the skip
+/// ledger keys on INJECTED, never on the store having answered. On a client
+/// that cannot inject, nothing is recorded and no session can later be accused
+/// of ignoring what it was never given.
+fn note_injection(session: &str) {
+    if let Some(home) = home_dir() {
+        crate::recallledger::record_injected(
+            &home.join(".claude").join("jawata-studio"),
+            session,
+        );
+    }
+}
+
+/// Stage 5: record that the agent SAID what it did with recalled knowledge.
+fn note_disposition(session: &str, token: &str) {
+    if let Some(home) = home_dir() {
+        crate::recallledger::record_disposition(
+            &home.join(".claude").join("jawata-studio"),
+            session,
+            token,
+        );
     }
 }
 
@@ -694,10 +737,42 @@ fn stop_gate(client: Client, payload: &str, autonomy: crate::stop::Autonomy) -> 
         // pass was fine only while production could not observe autonomy; the
         // moment Studio supplies it, every judged autonomous stop would file a
         // false reason.
-        StopVerdict::Allow => Outcome::Silent(match autonomy {
-            crate::stop::Autonomy::Unknown => SilenceReason::AutonomyUnknown,
-            _ => SilenceReason::StopAllowed,
-        }),
+        // Stage 5: the stop gate allows the turn — but this is also the LAST
+        // moment anything can observe what the session did with the knowledge
+        // it was handed. A session that took recalled knowledge and never said
+        // one word about it is the failure that motivated the whole gate work,
+        // and it is invisible at every earlier event, because at every earlier
+        // event the agent might still speak.
+        //
+        // It never BLOCKS on this. The stop gate blocks on its own rules; a
+        // skip is reported, and reporting it after the fact is the honest
+        // shape — the agent cannot be asked to judge knowledge it has already
+        // finished with.
+        StopVerdict::Allow => {
+            let session = session_id_in(payload).unwrap_or_default();
+            if let Some(home) = home_dir() {
+                let dir = home.join(".claude").join("jawata-studio");
+                let ledger = crate::recallledger::verdict(&dir, &session);
+                if ledger.is_skip() {
+                    // RECORDED, NOT BLOCKED — and the distinction is not a
+                    // detail. The Stop role's only injection shape is a BLOCK
+                    // decision, which bounces the agent back into the turn; a
+                    // first version of this line did exactly that, which would
+                    // have wedged a session over an observation. The skip is a
+                    // measurement, and the number is what decides whether it
+                    // ever earns an interruption.
+                    crate::observer::emit_signal(
+                        &dir,
+                        "recall-skipped",
+                        &format!("injected={} disposed=0", ledger.injected),
+                    );
+                }
+            }
+            Outcome::Silent(match autonomy {
+                crate::stop::Autonomy::Unknown => SilenceReason::AutonomyUnknown,
+                _ => SilenceReason::StopAllowed,
+            })
+        }
     }
 }
 
@@ -1558,6 +1633,54 @@ mod payload_parsing_tests {
     // ---- jawata-mcp#37: our deadline must reach the store -------------------
 
     use std::time::Duration;
+
+    // ---- Stage 5: the skip signal ----------------------------------------
+
+    /// The skip is an OBSERVATION and must never bounce the agent back into a
+    /// turn. The Stop role's only injection shape is a block decision, and the
+    /// first version of this reached for it — which would have wedged a session
+    /// over a measurement. This pins the rule the code now follows.
+    #[test]
+    fn a_recall_skip_is_recorded_and_never_blocks_the_stop() {
+        let home = std::env::temp_dir().join(format!("jawata-skip-{}", std::process::id()));
+        let dir = home.join(".claude").join("jawata-studio");
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A session that took knowledge and said nothing.
+        crate::recallledger::record_injected(&dir, "s-skip");
+        crate::recallledger::record_injected(&dir, "s-skip");
+        let v = crate::recallledger::verdict(&dir, "s-skip");
+        assert!(v.is_skip(), "fixture must actually be a skip: {v:?}");
+
+        // The signal is a LOG LINE, not a decision: emitting it must not
+        // produce anything the client would read as "block".
+        crate::observer::emit_signal(&dir, "recall-skipped", "injected=2 disposed=0");
+        let log = std::fs::read_to_string(dir.join("outcomes.log")).unwrap();
+        assert!(log.contains("recall-skipped"), "the skip must be recorded: {log}");
+        assert!(
+            !log.contains("\"decision\"") && !log.to_lowercase().contains("block"),
+            "the skip signal must not carry a stop decision: {log}"
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The false-accusation guard, at the level that matters: a session which
+    /// disposed of what it was given is not a skip, so nothing is recorded.
+    #[test]
+    fn a_session_that_answered_leaves_no_skip() {
+        let home = std::env::temp_dir().join(format!("jawata-noskip-{}", std::process::id()));
+        let dir = home.join(".claude").join("jawata-studio");
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        crate::recallledger::record_injected(&dir, "s-ok");
+        crate::recallledger::record_disposition(&dir, "s-ok", "recall-applied");
+        assert!(!crate::recallledger::verdict(&dir, "s-ok").is_skip());
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     // ---- Stage 4: the recall gate, WIRED ---------------------------------
 
