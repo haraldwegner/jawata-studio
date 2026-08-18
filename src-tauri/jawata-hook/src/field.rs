@@ -26,7 +26,12 @@ pub const HOOK_CONTRACT: u32 = 1;
 /// Tags that mean "the store answered, and the channel still delivered
 /// nothing" — the dead-channel numerator. Extended, not edited, when a new
 /// answered-class suppression appears.
-const ANSWERED_BUT_SUPPRESSED: &[&str] =
+///
+/// PUBLIC so the two folds can be pinned to each other:
+/// `tests/the_two_folds_classify_the_same_tags.rs` asserts this list against
+/// the studio's copy, which must stay a copy (neither crate may depend on the
+/// other) but must not become a different one.
+pub const ANSWERED_BUT_SUPPRESSED: &[&str] =
     &["cannot-inject", "contract-mismatch", "answer-unusable"];
 
 /// Tags that mean "quiet was the correct outcome".

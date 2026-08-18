@@ -34,7 +34,12 @@ pub const NUDGE_THRESHOLD: u64 = 3;
 
 /// Suppression tags that mean "the store answered and the channel still
 /// delivered nothing" — the dead-channel numerator.
-const ANSWERED_BUT_SUPPRESSED: &[&str] =
+///
+/// PUBLIC so the two folds can be pinned to each other: the hook's
+/// `tests/the_two_folds_classify_the_same_tags.rs` asserts this list against
+/// its own. The duplication is required — studio must not link the hook crate
+/// — but nothing made the two lists agree until that test existed.
+pub const ANSWERED_BUT_SUPPRESSED: &[&str] =
     &["cannot-inject", "contract-mismatch", "answer-unusable"];
 
 /// Tags that mean quiet was the CORRECT outcome. A channel that only ever
