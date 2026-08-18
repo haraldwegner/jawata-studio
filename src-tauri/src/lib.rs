@@ -74,10 +74,20 @@ const TRAY_REFRESH_INTERVAL_SECS: u64 = 1;
 /// for being slow to start.
 const CANARY_FIRST_DELAY_SECS: u64 = 45;
 
-/// And how often it asks again. Two real round-trips per resident is not free,
-/// and a channel that dies stays dead — five minutes is soon enough to notice
-/// and rare enough to be invisible.
+/// And how often it asks again WHEN THE LAST ANSWER WAS GOOD. Two real
+/// round-trips per resident is not free, and a healthy channel that dies stays
+/// dead — five minutes is soon enough to notice and rare enough to be invisible.
 const CANARY_INTERVAL_SECS: u64 = 300;
+
+/// How soon it asks again when the last answer was NOT good (studio#21).
+///
+/// Five minutes is the right cadence for confirming health and the wrong one
+/// for confirming RECOVERY. Measured live on 2026-08-18: after a resident
+/// restart both residents answered the canary's own probes correctly while the
+/// tray was still amber, because the verdict was up to five minutes old. The
+/// light's whole job is to be current when someone looks at it, so an unhappy
+/// verdict is re-checked quickly and a happy one is not.
+const CANARY_RECHECK_SECS: u64 = 15;
 
 #[derive(Clone, Copy, Debug)]
 enum TrayIconVariant {
@@ -507,11 +517,24 @@ pub fn run() {
             // against a JVM, and the first round is deferred so a just-launched
             // resident is not called dead while OSGi and JDT are still booting.
             let canary_handle = app.handle().clone();
+            let (wake_tx, wake_rx) = std::sync::mpsc::sync_channel::<()>(1);
+            let _ = CANARY_WAKE.set(wake_tx);
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(CANARY_FIRST_DELAY_SECS));
                 loop {
-                    run_canary_round(&canary_handle);
-                    std::thread::sleep(std::time::Duration::from_secs(CANARY_INTERVAL_SECS));
+                    let health = run_canary_round(&canary_handle);
+                    // studio#21: how long to wait depends on WHAT WE JUST LEARNED.
+                    // A good answer keeps the slow cadence; anything else is
+                    // re-checked quickly, because a stale unhappy verdict is the
+                    // one a user is actually staring at. A wake request (a
+                    // resident just started, the Field view just opened) cuts
+                    // either wait short — and `sync_channel(1)` collapses a burst
+                    // of them into a single extra round.
+                    let wait = match health {
+                        field_view::CanaryHealth::Green => CANARY_INTERVAL_SECS,
+                        _ => CANARY_RECHECK_SECS,
+                    };
+                    let _ = wake_rx.recv_timeout(std::time::Duration::from_secs(wait));
                 }
             });
 
@@ -694,16 +717,36 @@ pub fn run() {
         });
 }
 
+/// Ask the canary thread for a round NOW (studio#21).
+///
+/// Bounded to one pending request: a burst — several residents starting at
+/// once, a window regaining focus while the Field view mounts — costs one extra
+/// round, not one per event. Silent when the thread is not up yet; a missed
+/// wake only means the periodic cadence applies, never a wrong verdict.
+static CANARY_WAKE: std::sync::OnceLock<std::sync::mpsc::SyncSender<()>> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn request_canary_round() {
+    if let Some(tx) = CANARY_WAKE.get() {
+        let _ = tx.try_send(());
+    }
+}
+
 /// One canary round: probe every resident, publish the verdict, and let the
 /// tray wear it. Passive throughout — the only user-visible effect is a colour.
-fn run_canary_round<R: Runtime>(app: &AppHandle<R>) {
+///
+/// Returns the verdict so the caller can decide how soon to ask again.
+fn run_canary_round<R: Runtime>(app: &AppHandle<R>) -> field_view::CanaryHealth {
     let servers = app.state::<AppState>().manager_service.knowledge_servers();
     if servers.is_empty() {
-        return; // nothing deployed yet — an absence, not a failure
+        // Nothing deployed yet — an absence, not a failure. Reported as Unknown
+        // rather than swallowed, so the caller does not read it as health.
+        return field_view::CanaryHealth::Unknown;
     }
     let results = ManagerService::canary_round_for(&servers);
     let health = app.state::<AppState>().manager_service.publish_canary(results);
     apply_canary_health_to_tray(app, health);
+    health
 }
 
 /// Swap the tray icon when — and only when — the verdict changed. Every swap is
@@ -995,6 +1038,51 @@ mod tray_icon_tests {
         // Nor is "still starting up" — issue #16: every healthy launch of a
         // large workspace used to wear the alarm for five minutes.
         assert_eq!(brand, tray_disc_colour(field_view::CanaryHealth::Loading));
+    }
+
+    /// studio#21: an UNHAPPY verdict is re-checked soon, a happy one is not.
+    ///
+    /// Measured live on 2026-08-18: after a resident restart both residents
+    /// answered the canary's own probes correctly while the tray was still
+    /// amber, because the verdict was up to five minutes old. Harald's ruling:
+    /// "Cold start is ok until it is up, but not 5 minutes." The colour during
+    /// startup is honest; the staleness afterwards is the defect.
+    ///
+    /// This pins the RULE (which wait follows which verdict) rather than the
+    /// thread, because the thread's sleep is not observable from a test — and a
+    /// rule nothing asserts is how a constant drifts back.
+    #[test]
+    fn an_unhappy_verdict_is_rechecked_soon_a_happy_one_is_not() {
+        let wait_for = |health: field_view::CanaryHealth| match health {
+            field_view::CanaryHealth::Green => CANARY_INTERVAL_SECS,
+            _ => CANARY_RECHECK_SECS,
+        };
+
+        assert_eq!(CANARY_INTERVAL_SECS, wait_for(field_view::CanaryHealth::Green));
+        for unhappy in [
+            field_view::CanaryHealth::Degraded,
+            field_view::CanaryHealth::Loading,
+            field_view::CanaryHealth::Unknown,
+        ] {
+            assert_eq!(
+                CANARY_RECHECK_SECS,
+                wait_for(unhappy),
+                "{unhappy:?} must be re-checked on the short cadence — a user \
+                 staring at amber is staring at the verdict that is most likely \
+                 to be out of date"
+            );
+        }
+        assert!(
+            CANARY_RECHECK_SECS * 4 <= CANARY_INTERVAL_SECS,
+            "the recheck cadence must be materially faster than the healthy one, \
+             or recovery is still invisible: recheck={CANARY_RECHECK_SECS}s \
+             healthy={CANARY_INTERVAL_SECS}s"
+        );
+        assert!(
+            CANARY_RECHECK_SECS >= 5,
+            "but not so fast that two blocking round-trips per resident become a \
+             load generator"
+        );
     }
 
     /// The branded (Linux/Windows) icon keeps its filled disc — the template

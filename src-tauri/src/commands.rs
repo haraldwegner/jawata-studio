@@ -115,12 +115,18 @@ pub fn delete_project(
 
 #[tauri::command]
 pub fn start_all_runtimes(state: State<'_, AppState>) -> Result<ManagerDashboard, String> {
-    state.manager_service.start_all_runtimes()
+    let dashboard = state.manager_service.start_all_runtimes();
+    // studio#21: residents just changed state — ask the canary now instead of
+    // wearing a verdict from before they existed.
+    crate::request_canary_round();
+    dashboard
 }
 
 #[tauri::command]
 pub fn stop_all_runtimes(state: State<'_, AppState>) -> Result<ManagerDashboard, String> {
-    state.manager_service.stop_all_runtimes()
+    let dashboard = state.manager_service.stop_all_runtimes();
+    crate::request_canary_round();   // studio#21
+    dashboard
 }
 
 #[tauri::command]
@@ -223,7 +229,9 @@ pub fn start_runtime(
     state: State<'_, AppState>,
     project_id: String,
 ) -> Result<RuntimeStatusRecord, String> {
-    state.manager_service.start_runtime(&project_id)
+    let started = state.manager_service.start_runtime(&project_id);
+    crate::request_canary_round();   // studio#21
+    started
 }
 
 #[tauri::command]
@@ -327,8 +335,15 @@ pub fn perform_quit_action(
 /// Sync on purpose — it is FILE READS ONLY, so it is safe on the main thread
 /// and cheap enough for an open view to poll. The canary's HTTP runs on the
 /// studio's own timer thread and leaves its verdict behind for this to read.
+///
+/// studio#21: it also ASKS for a fresh round. Someone looking at the page is
+/// the strongest signal that the verdict should be current, and this call was
+/// already the moment we learn they are looking. The request is bounded to one
+/// pending round, so the 5-second poll of an open view does not become a probe
+/// every 5 seconds — it keeps at most one round queued behind the one running.
 #[tauri::command]
 pub fn field_status(state: State<'_, AppState>) -> Result<crate::field_view::FieldStatus, String> {
+    crate::request_canary_round();
     Ok(state.manager_service.field_status())
 }
 
