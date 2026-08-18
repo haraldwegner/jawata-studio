@@ -19,14 +19,59 @@ use crate::safety::{Outcome, SilenceReason};
 /// stub — a hook whose only test needs a live JVM is a hook nobody tests.
 pub trait Store {
     fn ask(&self, arguments: serde_json::Value) -> Result<Answer, QueryError>;
+
+    /// The STRUCTURED answer, for the one caller that needs more than the
+    /// rendered line: the recall gate reads `entries[].symbol` to tell a record
+    /// anchored at the member from one anchored at its package, and the text
+    /// line carries no anchor.
+    ///
+    /// A required method, not a defaulted one. A default returning "not
+    /// supported" would let a Store implementation look complete while the gate
+    /// silently never fires against it — the hollow-shape failure this codebase
+    /// has already paid for once.
+    fn ask_value(&self, arguments: serde_json::Value) -> Result<serde_json::Value, QueryError>;
 }
 
 /// The real one.
 pub struct LiveStore(pub Endpoint);
 
 impl Store for LiveStore {
-    fn ask(&self, arguments: serde_json::Value) -> Result<Answer, QueryError> {
+    fn ask(&self, mut arguments: serde_json::Value) -> Result<Answer, QueryError> {
+        with_budget(&mut arguments, self.0.timeout);
         query::ask(&self.0, arguments)
+    }
+
+    fn ask_value(&self, mut arguments: serde_json::Value) -> Result<serde_json::Value, QueryError> {
+        with_budget(&mut arguments, self.0.timeout);
+        query::ask_value(&self.0, arguments)
+    }
+}
+
+/// Margin for the round trip itself — request, JSON, response — so the store's
+/// deadline fires with time left for its answer to reach us.
+const BUDGET_MARGIN_MILLIS: u64 = 300;
+
+/// Floor, mirroring the engine's own: below this a healthy read would be cut off
+/// and a working store reported as an outage.
+const BUDGET_FLOOR_MILLIS: u64 = 200;
+
+/// Tell the store OUR deadline (jawata-mcp#37).
+///
+/// The engine bounds a retrieval and answers `KNOWLEDGE_UNAVAILABLE` when the
+/// budget blows — but its default budget is 15 seconds, and this hook gives up
+/// at 1500 ms. Without this, a wedged store still produced an anonymous
+/// transport timeout here and the typed answer arrived ten times too late to be
+/// read: the fix existed and its consumer could never see it.
+///
+/// Injected HERE rather than at each call site, so a caller cannot forget it —
+/// a capability that three production sites turned off by picking the shorter
+/// constructor is this repository's own recorded lesson.
+fn with_budget(arguments: &mut serde_json::Value, timeout: std::time::Duration) {
+    let budget = (timeout.as_millis() as u64)
+        .saturating_sub(BUDGET_MARGIN_MILLIS)
+        .max(BUDGET_FLOOR_MILLIS);
+    if let Some(map) = arguments.as_object_mut() {
+        map.insert("budget_ms".into(), serde_json::json!(budget));
     }
 }
 
@@ -638,6 +683,12 @@ mod tests {
         fn ask(&self, _: serde_json::Value) -> Result<Answer, QueryError> {
             self.0.clone()
         }
+        fn ask_value(&self, _: serde_json::Value) -> Result<serde_json::Value, QueryError> {
+            // These tests exercise the TEXT path. A stub that answered the
+            // structured question too would let a gate test pass against a
+            // fixture nobody wrote.
+            Err(QueryError::ShapeChanged("this stub answers only the text path".into()))
+        }
     }
 
     fn config(client: &str) -> HookConfig {
@@ -647,6 +698,7 @@ mod tests {
             client: client.into(),
             timeout_ms: Some(50),
             field_dir: None,
+            recall_gate: None,
         }
     }
 
@@ -1140,6 +1192,9 @@ mod tests {
                 assert_eq!("ProjectImporter", args["symbol"], "the .java stem is the cue");
                 Ok(Answer::Text("[lesson] a line".into()))
             }
+            fn ask_value(&self, _: serde_json::Value) -> Result<serde_json::Value, QueryError> {
+                Err(QueryError::ShapeChanged("text path only".into()))
+            }
         }
         let out = run(
             Role::ToolRecall,
@@ -1159,6 +1214,9 @@ mod tests {
             fn ask(&self, args: serde_json::Value) -> Result<Answer, QueryError> {
                 assert_eq!("com.example.Old#field", args["symbol"]);
                 Ok(Answer::Text("[hazard] a line".into()))
+            }
+            fn ask_value(&self, _: serde_json::Value) -> Result<serde_json::Value, QueryError> {
+                Err(QueryError::ShapeChanged("text path only".into()))
             }
         }
         let out = run(
@@ -1408,5 +1466,55 @@ mod payload_parsing_tests {
             }
             other => panic!("expected an unreadable payload, got {other:?}"),
         }
+    }
+
+    // ---- jawata-mcp#37: our deadline must reach the store -------------------
+
+    use std::time::Duration;
+
+    #[test]
+    fn the_store_is_told_our_deadline_and_it_fires_before_ours() {
+        let mut args = serde_json::json!({"kind": "recall", "symbol": "com.example.Foo#bar"});
+        with_budget(&mut args, Duration::from_millis(1_500));
+        let budget = args["budget_ms"].as_u64().expect("the budget must travel with the ask");
+
+        assert!(
+            budget < 1_500,
+            "a store deadline at or past ours is unreachable: its typed answer would arrive \
+             after this process has already given up, which is the state #37 was filed about"
+        );
+        assert!(budget >= BUDGET_FLOOR_MILLIS, "and not so tight it cuts off a healthy read");
+    }
+
+    #[test]
+    fn an_absurdly_short_timeout_still_asks_for_a_workable_budget() {
+        // saturating_sub would otherwise hand the store a 0 ms deadline, and a
+        // store told to answer in no time answers UNAVAILABLE every time — a
+        // manufactured outage, which is worse than the timeout it replaced.
+        let mut args = serde_json::json!({"kind": "recall"});
+        with_budget(&mut args, Duration::from_millis(50));
+        assert_eq!(BUDGET_FLOOR_MILLIS, args["budget_ms"].as_u64().unwrap());
+    }
+
+    #[test]
+    fn every_live_ask_carries_the_budget_no_call_site_can_forget_it() {
+        // The injection is in `LiveStore::ask`, not at the call sites, so this
+        // asserts the seam rather than one caller's discipline. The URL is
+        // unroutable on purpose: we are asserting what was SENT, not an answer.
+        let live = LiveStore(Endpoint {
+            url: "http://127.0.0.1:1/mcp".into(),
+            token: "t".into(),
+            timeout: Duration::from_millis(1_500),
+        });
+        // `ask` fails (nothing is listening) — the point is that it fails as an
+        // Unreachable transport error, having gone through the budget seam,
+        // rather than never reaching it.
+        assert!(matches!(
+            live.ask(serde_json::json!({"kind": "recall"})),
+            Err(QueryError::Unreachable(_))
+        ));
+        let mut args = serde_json::json!({"kind": "recall"});
+        with_budget(&mut args, live.0.timeout);
+        assert!(args["budget_ms"].is_number());
     }
 }

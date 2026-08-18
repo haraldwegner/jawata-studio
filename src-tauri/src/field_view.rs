@@ -647,6 +647,28 @@ pub const LOADING_ERROR_CODE: &str = "PROJECT_LOADING";
 /// finishes cannot masquerade as health.
 pub const LOADING_GRACE_MILLIS: u64 = 15 * 60 * 1000;
 
+/// jawata-mcp#37's error code, as the resident spells it.
+pub const KNOWLEDGE_UNAVAILABLE_CODE: &str = "KNOWLEDGE_UNAVAILABLE";
+
+/// The message of a `KNOWLEDGE_UNAVAILABLE` body, or `None` for any other answer.
+///
+/// Keyed on the CODE rather than on `success:false`, because the two are not the
+/// same fact: a refusal we caused (a bad parameter) says nothing about the store's
+/// health, while this one says the layer could not be read.
+fn unavailable_code(value: &serde_json::Value) -> Option<String> {
+    let error = value.pointer("/error")?;
+    if error.get("code")?.as_str()? != KNOWLEDGE_UNAVAILABLE_CODE {
+        return None;
+    }
+    Some(
+        error
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or(KNOWLEDGE_UNAVAILABLE_CODE)
+            .to_string(),
+    )
+}
+
 /// Judge one resident from the two answers. Pure — the HTTP lives in
 /// `manager_service`, so the verdict is testable with no resident, no agent
 /// session and no network.
@@ -660,6 +682,22 @@ pub fn judge_canary(
     let (recall_ok, recall_detail) = match recall {
         // The store answered in its own envelope. A `success:false` body is
         // still an ANSWER — the store spoke; only silence is degradation.
+        //
+        // WITH ONE EXCEPTION, and it is the one this canary exists for
+        // (jawata-mcp#37). `KNOWLEDGE_UNAVAILABLE` is the resident saying, in
+        // its own words, that the knowledge layer could not be read: a wedged
+        // connection, or a degraded in-memory fallback standing in for the real
+        // corpus. Counting that as "the store spoke" would paint the tray GREEN
+        // during exactly the outage the canary was built to catch — and the
+        // better the engine reports its own trouble, the more thoroughly the
+        // dashboard would hide it.
+        Ok(value) if unavailable_code(&value).is_some() => (
+            false,
+            format!(
+                "the store could not answer: {}",
+                unavailable_code(&value).unwrap_or_default()
+            ),
+        ),
         Ok(value) => (
             value.is_object(),
             if value.is_object() {
@@ -1274,6 +1312,53 @@ mod tests {
             0,
         );
         assert!(result.green, "{}", result.recall_detail);
+    }
+
+    /// THE PAIR for the test above, and the reason the canary exists
+    /// (jawata-mcp#37). An empty answer and an unreadable store are different
+    /// facts; the engine now says which, and the canary must not flatten them
+    /// back together. Before this, `KNOWLEDGE_UNAVAILABLE` was an object, so
+    /// `recall_ok` was true and the tray went GREEN during the outage the
+    /// canary was built to catch.
+    #[test]
+    fn a_store_that_could_not_answer_is_not_a_store_that_answered() {
+        let result = judge_canary(
+            "ws",
+            "u",
+            ok(serde_json::json!({
+                "success": false,
+                "error": {
+                    "code": "KNOWLEDGE_UNAVAILABLE",
+                    "message": "the store did not answer within 1200ms; it is unreachable or wedged"
+                }
+            })),
+            ok(serde_json::json!({"data": {"typeName": "java.lang.String"}})),
+            0,
+        );
+        assert!(!result.recall_ok, "an unreadable store is not a store that spoke");
+        assert!(!result.green, "and the tray must not be green during the outage");
+        assert!(
+            result.recall_detail.contains("wedged"),
+            "the reason the resident gave must survive to the dashboard: {}",
+            result.recall_detail
+        );
+    }
+
+    /// A refusal WE caused says nothing about the store's health, so it must
+    /// not be read as an outage. Keyed on the code, not on `success:false`.
+    #[test]
+    fn an_ordinary_refusal_is_not_read_as_a_store_outage() {
+        let result = judge_canary(
+            "ws",
+            "u",
+            ok(serde_json::json!({
+                "success": false,
+                "error": {"code": "INVALID_PARAMETER", "message": "kind is required"}
+            })),
+            ok(serde_json::json!({"data": {"typeName": "java.lang.String"}})),
+            0,
+        );
+        assert!(result.recall_ok, "the store answered — it just refused our question");
     }
 
     #[test]
