@@ -990,6 +990,7 @@ impl ManagerService {
             &crate::field_view::silence_log_paths(),
             &crate::field_view::outcomes_log_path(),
             self.canary_board(),
+            crate::field_view::now_millis(),
         )
     }
 

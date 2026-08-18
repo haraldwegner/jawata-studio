@@ -35,6 +35,26 @@ pub const LEGITIMATELY_QUIET: &[&str] = &[
     "recorded-not-injected", "nothing-to-observe",
 ];
 
+/// How far back the DEAD verdict is allowed to look: seven days.
+///
+/// The condition without a window has no present tense. This machine's log
+/// carries 175 `cannot-inject` observer rows, every one written on 2026-08-09
+/// by a stub that was retired nine days later — and the fold called that
+/// channel dead, forever, because the log is append-only and the rows never
+/// age out. That is the same class of built-in false alarm the C2 F2
+/// amendment removed for by-design quiet, arriving through the other door.
+///
+/// Seven days, and not an arbitrary seven: the verdict feeds the same surface
+/// D9 speaks on at most weekly ([`REMINDER_INTERVAL_MILLIS`]), so the evidence
+/// window and the cadence at which the user hears about it are one period. A
+/// shorter window would call a channel unknown after a weekend away; a longer
+/// one keeps convicting on behaviour the user has already replaced.
+///
+/// Older rows are HISTORY, not evidence: they stay in `fired` / `emitted` /
+/// `suppressed`, which is what the counters are for. They simply no longer
+/// convict.
+pub const DEAD_CHANNEL_WINDOW_MILLIS: u64 = 7 * 24 * 60 * 60 * 1000;
+
 /// One channel's folded counters.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChannelCounters {
@@ -42,6 +62,10 @@ pub struct ChannelCounters {
     pub emitted: u64,
     /// Suppressions by their bounded tag — the reason enum, never free text.
     pub suppressed: BTreeMap<String, u64>,
+    /// The same two facts, restricted to [`DEAD_CHANNEL_WINDOW_MILLIS`]. The
+    /// verdict's working set, kept separate from the history above.
+    recent_emitted: u64,
+    recent_answered_but_suppressed: u64,
 }
 
 impl ChannelCounters {
@@ -52,9 +76,10 @@ impl ChannelCounters {
             .sum()
     }
 
-    /// The deterministic condition: answered > 0 while emitted == 0.
+    /// The deterministic condition, on RECENT evidence only: the store
+    /// answered and the channel delivered nothing, within the window.
     pub fn dead(&self) -> bool {
-        self.emitted == 0 && self.answered_but_suppressed() > 0
+        self.recent_emitted == 0 && self.recent_answered_but_suppressed > 0
     }
 
     /// Quiet, and rightly so: nothing emitted, and every suppression was a
@@ -72,23 +97,40 @@ impl ChannelCounters {
 /// Fold the silence log into per-role counters. Unparseable lines are
 /// skipped — a half-written line loses itself, never the fold (the log's own
 /// contract).
-pub fn fold_lines<'a>(lines: impl Iterator<Item = &'a str>) -> BTreeMap<String, ChannelCounters> {
+/// `now_millis` anchors the recency window: a row whose timestamp is missing,
+/// unparseable, or older than [`DEAD_CHANNEL_WINDOW_MILLIS`] still counts in
+/// the history, and never toward the verdict.
+pub fn fold_lines<'a>(
+    lines: impl Iterator<Item = &'a str>,
+    now_millis: u64,
+) -> BTreeMap<String, ChannelCounters> {
     let mut by_role: BTreeMap<String, ChannelCounters> = BTreeMap::new();
     for line in lines {
         let mut parts = line.splitn(4, '\t');
-        let (Some(_millis), Some(role), Some(tag)) = (parts.next(), parts.next(), parts.next())
+        let (Some(millis), Some(role), Some(tag)) = (parts.next(), parts.next(), parts.next())
         else {
             continue;
         };
         if role.is_empty() || tag.is_empty() {
             continue;
         }
+        let recent = millis
+            .trim()
+            .parse::<u64>()
+            .map(|at| now_millis.saturating_sub(at) <= DEAD_CHANNEL_WINDOW_MILLIS)
+            .unwrap_or(false);
         let counters = by_role.entry(role.to_string()).or_default();
         counters.fired += 1;
         if tag == "emitted" {
             counters.emitted += 1;
+            if recent {
+                counters.recent_emitted += 1;
+            }
         } else {
             *counters.suppressed.entry(tag.to_string()).or_insert(0) += 1;
+            if recent && ANSWERED_BUT_SUPPRESSED.contains(&tag) {
+                counters.recent_answered_but_suppressed += 1;
+            }
         }
     }
     by_role
@@ -97,9 +139,9 @@ pub fn fold_lines<'a>(lines: impl Iterator<Item = &'a str>) -> BTreeMap<String, 
 /// Fold a silence log file; a missing or unreadable file folds to empty —
 /// callers surface THAT distinctly (an absent log is "the hook never ran",
 /// which is its own finding, not a healthy zero).
-pub fn fold_file(path: &Path) -> BTreeMap<String, ChannelCounters> {
+pub fn fold_file(path: &Path, now_millis: u64) -> BTreeMap<String, ChannelCounters> {
     match std::fs::read_to_string(path) {
-        Ok(content) => fold_lines(content.lines()),
+        Ok(content) => fold_lines(content.lines(), now_millis),
         Err(_) => BTreeMap::new(),
     }
 }
@@ -327,21 +369,28 @@ mod tests {
     /// channel answered every time and emitted nothing (the two-week outage's
     /// exact signature), the tool-call recall emitted, the primer emitted,
     /// and the guard was legitimately quiet.
+    /// A plausible "now" for the fold, and rows written moments before it —
+    /// the timestamps must be RELATIVE, because the verdict now has a
+    /// recency window and a fixed 2023 constant would make every one of these
+    /// tests pass for the wrong reason (nothing recent, therefore not dead).
+    const NOW: u64 = 1_700_000_000_000;
+
     fn fixture_log() -> String {
+        let at = NOW - 1000;
         let mut log = String::new();
         for _ in 0..3 {
-            log.push_str("1700000000000\tuser-prompt\tcannot-inject\t\n");
+            log.push_str(&format!("{at}\tuser-prompt\tcannot-inject\t\n"));
         }
-        log.push_str("1700000000000\ttool-recall\temitted\t\n");
-        log.push_str("1700000000000\ttool-recall\tstore-had-nothing\t\n");
-        log.push_str("1700000000000\tprimer\temitted\t\n");
-        log.push_str("1700000000000\tguard\tstore-had-nothing\t\n");
+        log.push_str(&format!("{at}\ttool-recall\temitted\t\n"));
+        log.push_str(&format!("{at}\ttool-recall\tstore-had-nothing\t\n"));
+        log.push_str(&format!("{at}\tprimer\temitted\t\n"));
+        log.push_str(&format!("{at}\tguard\tstore-had-nothing\t\n"));
         log
     }
 
     #[test]
     fn the_dead_channel_condition_fires_on_answered_but_never_emitted() {
-        let folded = fold_lines(fixture_log().lines());
+        let folded = fold_lines(fixture_log().lines(), NOW);
         assert_eq!(dead_channels(&folded), vec!["user-prompt".to_string()]);
         let dead = &folded["user-prompt"];
         assert_eq!(dead.fired, 3);
@@ -351,10 +400,88 @@ mod tests {
 
     #[test]
     fn legitimate_absence_is_not_dead() {
-        let folded = fold_lines(fixture_log().lines());
+        let folded = fold_lines(fixture_log().lines(), NOW);
         assert!(!folded["guard"].dead(), "absence is often legitimate");
         assert!(folded["guard"].legitimately_quiet());
         assert!(!folded["tool-recall"].dead(), "it emitted");
+    }
+
+    // ---- the recency window (28b closing audit, F6) ----
+
+    /// A RETIRED outage does not read as a currently-dead channel.
+    ///
+    /// This machine's `hook_silence.log` carries 175 `cannot-inject` observer
+    /// rows, all written on 2026-08-09 by a stub retired nine days later, and
+    /// the windowless fold called that channel dead forever — the same
+    /// built-in false alarm the C2 F2 amendment removed for by-design quiet.
+    /// The history is still counted; it just no longer convicts.
+    #[test]
+    fn an_outage_that_is_over_does_not_read_as_dead() {
+        let long_ago = NOW - DEAD_CHANNEL_WINDOW_MILLIS - 1;
+        let log: String = std::iter::repeat(format!("{long_ago}\tobserver\tcannot-inject\t\n"))
+            .take(175)
+            .collect();
+        let folded = fold_lines(log.lines(), NOW);
+        assert!(
+            dead_channels(&folded).is_empty(),
+            "a nine-day-old outage is history, not a dead channel today"
+        );
+        assert_eq!(175, folded["observer"].fired, "and the history is still there");
+        assert_eq!(Some(&175), folded["observer"].suppressed.get("cannot-inject"));
+    }
+
+    /// The window does not blunt the instrument: the SAME rows, written now,
+    /// are exactly the condition the fold exists to catch.
+    #[test]
+    fn the_same_outage_happening_now_does_read_as_dead() {
+        let log: String = std::iter::repeat(format!("{}\tobserver\tcannot-inject\t\n", NOW - 60_000))
+            .take(175)
+            .collect();
+        let folded = fold_lines(log.lines(), NOW);
+        assert_eq!(dead_channels(&folded), vec!["observer".to_string()]);
+    }
+
+    /// The boundary, both sides, and a row the fold cannot date: an
+    /// unparseable timestamp counts as history — the verdict never convicts
+    /// on evidence it could not place in time.
+    #[test]
+    fn the_window_edge_and_an_undateable_row() {
+        let edge = format!("{}\tuser-prompt\tcannot-inject\t\n", NOW - DEAD_CHANNEL_WINDOW_MILLIS);
+        assert!(!dead_channels(&fold_lines(edge.lines(), NOW)).is_empty(), "inside the window");
+
+        let past = format!("{}\tuser-prompt\tcannot-inject\t\n", NOW - DEAD_CHANNEL_WINDOW_MILLIS - 1);
+        assert!(dead_channels(&fold_lines(past.lines(), NOW)).is_empty(), "one millisecond outside");
+
+        let undateable = "not-a-timestamp\tuser-prompt\tcannot-inject\t\n";
+        let folded = fold_lines(undateable.lines(), NOW);
+        assert!(dead_channels(&folded).is_empty(), "an undateable row cannot convict");
+        assert_eq!(1, folded["user-prompt"].fired, "but it is still counted");
+    }
+
+    /// A channel that emitted recently is alive even if it was suppressed a
+    /// month ago — and one that emitted only long ago is not kept alive by it.
+    #[test]
+    fn only_recent_emissions_answer_recent_suppressions() {
+        let stale_emit = format!(
+            "{}\tuser-prompt\temitted\t\n{}\tuser-prompt\tcannot-inject\t\n",
+            NOW - DEAD_CHANNEL_WINDOW_MILLIS - 1,
+            NOW - 1000
+        );
+        assert_eq!(
+            vec!["user-prompt".to_string()],
+            dead_channels(&fold_lines(stale_emit.lines(), NOW)),
+            "an emission from before the window does not vouch for the channel today"
+        );
+
+        let fresh_emit = format!(
+            "{}\tuser-prompt\temitted\t\n{}\tuser-prompt\tcannot-inject\t\n",
+            NOW - 1000,
+            NOW - 2000
+        );
+        assert!(
+            dead_channels(&fold_lines(fresh_emit.lines(), NOW)).is_empty(),
+            "it delivered inside the window — it is not dead"
+        );
     }
 
     /// C2 audit, NO CONTROL #2: the by-design quiet tags must never make a
@@ -362,10 +489,14 @@ mod tests {
     /// machine's observer and prompt channels permanently broken.
     #[test]
     fn by_design_quiet_never_reads_as_dead() {
-        let log = "1\tobserver\tnothing-to-observe\t\n\
-                   1\tobserver\trecorded-not-injected\t\n\
-                   1\tuser-prompt\trecorded-not-injected\t\n";
-        let folded = fold_lines(log.lines());
+        // Written just now, so the window cannot be what saves them: they are
+        // not dead because the TAGS are by-design quiet.
+        let log = format!(
+            "{NOW}\tobserver\tnothing-to-observe\t\n\
+             {NOW}\tobserver\trecorded-not-injected\t\n\
+             {NOW}\tuser-prompt\trecorded-not-injected\t\n"
+        );
+        let folded = fold_lines(log.lines(), NOW);
         assert!(dead_channels(&folded).is_empty(), "quiet by design is not dead");
         assert!(folded["observer"].legitimately_quiet());
         assert!(folded["user-prompt"].legitimately_quiet());
@@ -375,27 +506,28 @@ mod tests {
     /// numerator — it is the two-week outage's own mechanism.
     #[test]
     fn an_unusable_answer_counts_toward_dead() {
-        let folded = fold_lines("1\tuser-prompt\tanswer-unusable\tShapeChanged\n".lines());
+        let log = format!("{NOW}\tuser-prompt\tanswer-unusable\tShapeChanged\n");
+        let folded = fold_lines(log.lines(), NOW);
         assert_eq!(dead_channels(&folded), vec!["user-prompt".to_string()]);
     }
 
     #[test]
     fn a_contract_mismatch_counts_toward_dead() {
-        let log = "1\tuser-prompt\tcontract-mismatch\tours=1 theirs=2\n";
-        let folded = fold_lines(log.lines());
+        let log = format!("{NOW}\tuser-prompt\tcontract-mismatch\tours=1 theirs=2\n");
+        let folded = fold_lines(log.lines(), NOW);
         assert_eq!(dead_channels(&folded), vec!["user-prompt".to_string()]);
     }
 
     #[test]
     fn garbage_lines_lose_themselves_never_the_fold() {
         let log = format!("not a record\n{}\t\n\n", fixture_log());
-        let folded = fold_lines(log.lines());
+        let folded = fold_lines(log.lines(), NOW);
         assert_eq!(folded["primer"].emitted, 1);
     }
 
     #[test]
     fn a_missing_log_folds_to_empty() {
-        let folded = fold_file(Path::new("/nonexistent/hook_silence.log"));
+        let folded = fold_file(Path::new("/nonexistent/hook_silence.log"), NOW);
         assert!(folded.is_empty());
     }
 

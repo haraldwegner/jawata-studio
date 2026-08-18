@@ -49,6 +49,25 @@ pub const LEGITIMATELY_QUIET: &[&str] = &[
     "nothing-to-observe",
 ];
 
+/// How far back the DEAD verdict is allowed to look: seven days.
+///
+/// Without a window the condition has no present tense, and an append-only log
+/// never forgets. This machine's `hook_silence.log` carries 175 `cannot-inject`
+/// observer rows, every one written on 2026-08-09 by a stub retired nine days
+/// later, and the fold called that channel dead forever — the same class of
+/// built-in false alarm the C2 F2 amendment removed for by-design quiet,
+/// arriving through the other door (28b closing audit, F6).
+///
+/// Seven days, and not arbitrarily: the verdict feeds the same surface the D9
+/// reminder speaks on at most weekly, so the evidence window and the cadence
+/// at which the user hears about it are one period. Shorter would call a
+/// channel unknown after a weekend away; longer keeps convicting on behaviour
+/// already replaced. Older rows stay in `fired`/`emitted`/`suppressed` — they
+/// are history, which is what the counters are for; they just no longer
+/// convict. The hook holds the same constant, for the same reason, in
+/// `jawata-hook/src/field.rs`.
+pub const DEAD_CHANNEL_WINDOW_MILLIS: u64 = 7 * 24 * 60 * 60 * 1000;
+
 /// R1, shown beside the number and never only in a sprint document: the
 /// denominator is hook-scoped.
 pub const UTILIZATION_CAVEAT: &str = "Hook-scoped number. jawata can only see a shell \
@@ -414,26 +433,45 @@ pub struct ChannelReach {
 
 /// Fold a `hook_silence.log` (`<millis>\t<role>\t<tag>\t<detail>`) into
 /// per-role counters. A half-written line loses itself, never the fold.
-pub fn fold_silence_log(text: &str) -> Vec<ChannelReach> {
+///
+/// `now_millis` anchors [`DEAD_CHANNEL_WINDOW_MILLIS`]: a row older than the
+/// window, or one whose timestamp cannot be read, counts in the history and
+/// never toward the `dead` verdict.
+pub fn fold_silence_log(text: &str, now_millis: u64) -> Vec<ChannelReach> {
+    // The verdict's working set, kept beside the per-role history rather than
+    // in it: the counters are what the tile SHOWS, and they are all-time.
     let mut by_role: BTreeMap<String, ChannelReach> = BTreeMap::new();
+    let mut recent: BTreeMap<String, (u64, u64)> = BTreeMap::new();
     for line in text.lines() {
         let mut parts = line.splitn(4, '\t');
-        let (Some(_millis), Some(role), Some(tag)) = (parts.next(), parts.next(), parts.next())
+        let (Some(millis), Some(role), Some(tag)) = (parts.next(), parts.next(), parts.next())
         else {
             continue;
         };
         if role.is_empty() || tag.is_empty() {
             continue;
         }
+        let is_recent = millis
+            .trim()
+            .parse::<u64>()
+            .map(|at| now_millis.saturating_sub(at) <= DEAD_CHANNEL_WINDOW_MILLIS)
+            .unwrap_or(false);
         let entry = by_role.entry(role.to_string()).or_insert_with(|| ChannelReach {
             role: role.to_string(),
             ..Default::default()
         });
+        let window = recent.entry(role.to_string()).or_insert((0, 0));
         entry.fired += 1;
         if tag == "emitted" {
             entry.emitted += 1;
+            if is_recent {
+                window.0 += 1;
+            }
         } else {
             *entry.suppressed.entry(tag.to_string()).or_insert(0) += 1;
+            if is_recent && ANSWERED_BUT_SUPPRESSED.contains(&tag) {
+                window.1 += 1;
+            }
         }
     }
     by_role
@@ -443,7 +481,9 @@ pub fn fold_silence_log(text: &str) -> Vec<ChannelReach> {
                 .iter()
                 .filter_map(|t| reach.suppressed.get(*t))
                 .sum();
-            reach.dead = reach.emitted == 0 && answered > 0;
+            let (recent_emitted, recent_answered) =
+                recent.get(&reach.role).copied().unwrap_or((0, 0));
+            reach.dead = recent_emitted == 0 && recent_answered > 0;
             reach.legitimately_quiet = reach.emitted == 0
                 && answered == 0
                 && reach
@@ -458,7 +498,7 @@ pub fn fold_silence_log(text: &str) -> Vec<ChannelReach> {
 /// Fold every install's silence log into one per-role view. Two installs
 /// (Claude Code's dir and Cursor's) write separate files for the same roles;
 /// the view is per machine, so they merge.
-pub fn fold_silence_logs(paths: &[PathBuf]) -> Vec<ChannelReach> {
+pub fn fold_silence_logs(paths: &[PathBuf], now_millis: u64) -> Vec<ChannelReach> {
     let mut merged = String::new();
     for path in paths {
         if let Ok(text) = std::fs::read_to_string(path) {
@@ -468,7 +508,7 @@ pub fn fold_silence_logs(paths: &[PathBuf]) -> Vec<ChannelReach> {
             }
         }
     }
-    fold_silence_log(&merged)
+    fold_silence_log(&merged, now_millis)
 }
 
 // ---------------------------------------------------------------------------
@@ -691,11 +731,17 @@ pub struct FieldStatus {
 
 /// Assemble the status from explicit paths — no `dirs::home_dir()`, no globals,
 /// so the whole thing is drivable from a seeded temp directory.
+///
+/// `now_millis` is passed in for the same reason the paths are: the
+/// dead-channel verdict now depends on WHEN the rows were written, so a
+/// seeded fixture must be able to name its own present. Production hands it
+/// [`now_millis()`].
 pub fn status_from(
     workspaces: &[(String, PathBuf)],
     silence_logs: &[PathBuf],
     outcomes_log: &Path,
     canary: Vec<CanaryResult>,
+    now_millis: u64,
 ) -> FieldStatus {
     let folded: Vec<FieldWorkspaceStatus> = workspaces
         .iter()
@@ -711,7 +757,7 @@ pub fn status_from(
         })
         .collect();
 
-    let channels = fold_silence_logs(silence_logs);
+    let channels = fold_silence_logs(silence_logs, now_millis);
     let signals = fold_outcomes_file(outcomes_log);
     let jawata_calls = folded.iter().map(|w| w.pile.total_events).sum();
 
@@ -968,24 +1014,86 @@ mod tests {
 
     // ---- reach counters ----
 
+    /// A plausible "now" the seeded rows are written just before. The
+    /// timestamps must be RELATIVE to it: the verdict has a recency window,
+    /// and a fixed 2023 constant would make every assertion below pass for
+    /// the wrong reason — nothing recent, therefore nothing dead.
+    const NOW: u64 = 1_700_000_000_000;
+
     fn seeded_silence_log() -> String {
+        let at = NOW - 1000;
         let mut log = String::new();
         // The two-week outage's signature: answered every time, emitted never.
         for _ in 0..3 {
-            log.push_str("1700000000000\tuser-prompt\tcannot-inject\t\n");
+            log.push_str(&format!("{at}\tuser-prompt\tcannot-inject\t\n"));
         }
-        log.push_str("1700000000000\ttool-recall\temitted\t\n");
-        log.push_str("1700000000000\ttool-recall\tstore-had-nothing\t\n");
-        log.push_str("1700000000000\tprimer\temitted\t\n");
-        log.push_str("1700000000000\tguard\tstore-had-nothing\t\n");
-        log.push_str("1700000000000\tobserver\tnothing-to-observe\t\n");
-        log.push_str("1700000000000\tuser-prompt\tanswer-unusable\tShapeChanged\n");
+        log.push_str(&format!("{at}\ttool-recall\temitted\t\n"));
+        log.push_str(&format!("{at}\ttool-recall\tstore-had-nothing\t\n"));
+        log.push_str(&format!("{at}\tprimer\temitted\t\n"));
+        log.push_str(&format!("{at}\tguard\tstore-had-nothing\t\n"));
+        log.push_str(&format!("{at}\tobserver\tnothing-to-observe\t\n"));
+        log.push_str(&format!("{at}\tuser-prompt\tanswer-unusable\tShapeChanged\n"));
         log
+    }
+
+    /// 28b closing audit, F6 — a RETIRED outage is not a dead channel today.
+    ///
+    /// This machine's own `hook_silence.log` carries 175 `cannot-inject`
+    /// observer rows, all written on 2026-08-09 by a stub retired nine days
+    /// later, and the windowless fold reported that channel dead — the false
+    /// alarm the C2 F2 amendment was supposed to end. The history stays
+    /// visible; it just stops convicting.
+    #[test]
+    fn an_outage_that_is_over_does_not_read_as_dead() {
+        let long_ago = NOW - DEAD_CHANNEL_WINDOW_MILLIS - 1;
+        let log: String = std::iter::repeat(format!("{long_ago}\tobserver\tcannot-inject\t\n"))
+            .take(175)
+            .collect();
+        let channels = fold_silence_log(&log, NOW);
+        assert!(
+            !channels.iter().any(|c| c.dead),
+            "a nine-day-old outage is history, not a currently-dead channel"
+        );
+        let observer = channels.iter().find(|c| c.role == "observer").unwrap();
+        assert_eq!(175, observer.fired, "and the history is still shown");
+        assert_eq!(Some(&175), observer.suppressed.get("cannot-inject"));
+    }
+
+    /// The window does not blunt the instrument: the same rows, written now.
+    #[test]
+    fn the_same_outage_happening_now_does_read_as_dead() {
+        let log: String = std::iter::repeat(format!("{}\tobserver\tcannot-inject\t\n", NOW - 60_000))
+            .take(175)
+            .collect();
+        let dead: Vec<String> = fold_silence_log(&log, NOW)
+            .into_iter()
+            .filter(|c| c.dead)
+            .map(|c| c.role)
+            .collect();
+        assert_eq!(vec!["observer".to_string()], dead);
+    }
+
+    /// The boundary on both sides, and a row the fold cannot date — which
+    /// counts as history, because the verdict never convicts on evidence it
+    /// could not place in time.
+    #[test]
+    fn the_window_edge_and_an_undateable_row() {
+        let inside = format!("{}\tuser-prompt\tcannot-inject\t\n", NOW - DEAD_CHANNEL_WINDOW_MILLIS);
+        assert!(fold_silence_log(&inside, NOW).iter().any(|c| c.dead), "inside the window");
+
+        let outside =
+            format!("{}\tuser-prompt\tcannot-inject\t\n", NOW - DEAD_CHANNEL_WINDOW_MILLIS - 1);
+        assert!(!fold_silence_log(&outside, NOW).iter().any(|c| c.dead), "one ms outside");
+
+        let undateable = "not-a-timestamp\tuser-prompt\tcannot-inject\t\n";
+        let channels = fold_silence_log(undateable, NOW);
+        assert!(!channels.iter().any(|c| c.dead), "an undateable row cannot convict");
+        assert_eq!(1, channels[0].fired, "but it is still counted");
     }
 
     #[test]
     fn a_channel_that_answered_and_never_emitted_reads_as_dead() {
-        let channels = fold_silence_log(&seeded_silence_log());
+        let channels = fold_silence_log(&seeded_silence_log(), NOW);
         let dead: Vec<&str> = channels.iter().filter(|c| c.dead).map(|c| c.role.as_str()).collect();
         assert_eq!(vec!["user-prompt"], dead);
         let it = channels.iter().find(|c| c.role == "user-prompt").unwrap();
@@ -996,7 +1104,7 @@ mod tests {
 
     #[test]
     fn quiet_by_design_is_never_dead() {
-        let channels = fold_silence_log(&seeded_silence_log());
+        let channels = fold_silence_log(&seeded_silence_log(), NOW);
         let quiet: Vec<&str> = channels
             .iter()
             .filter(|c| c.legitimately_quiet)
@@ -1011,9 +1119,9 @@ mod tests {
         let dir = scratch("installs");
         let a = dir.join("hook_silence.log");
         let b = dir.join("cursor_silence.log");
-        std::fs::write(&a, "1\tprimer\temitted\t").unwrap(); // no trailing newline
-        std::fs::write(&b, "2\tprimer\temitted\t\n").unwrap();
-        let channels = fold_silence_logs(&[a, b, dir.join("absent.log")]);
+        std::fs::write(&a, format!("{NOW}\tprimer\temitted\t")).unwrap(); // no trailing newline
+        std::fs::write(&b, format!("{NOW}\tprimer\temitted\t\n")).unwrap();
+        let channels = fold_silence_logs(&[a, b, dir.join("absent.log")], NOW);
         assert_eq!(1, channels.len());
         assert_eq!(2, channels[0].emitted, "a missing newline must not eat a record");
     }
@@ -1133,6 +1241,7 @@ mod tests {
             &[silence.clone(), root.join("never-deployed.log")],
             &outcomes,
             vec![judge_canary("alpha", "u", Err("connection refused".into()), Err("connection refused".into()), 1)],
+            NOW,
         );
 
         assert_eq!(2, status.workspaces.len());
