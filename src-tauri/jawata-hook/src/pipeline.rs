@@ -94,7 +94,16 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
         // exactly the calls it exists to deny.
         Role::Guard => guard(client, payload),
         Role::Primer => primer(client, config, store),
-        Role::UserPrompt | Role::ToolRecall => recall(role, client, payload, store),
+        // Stage 4: the recall gate runs BEFORE the ordinary injection, and only
+        // on ToolRecall — a tool call about a symbol is the one event where the
+        // store's answer can be checked against the call's own subject. In
+        // Observe mode (the shipping default) it records what it WOULD have
+        // held and falls through; only in Block mode does it stop the call.
+        Role::ToolRecall => match recall_gate(client, config, payload, store) {
+            Some(outcome) => outcome,
+            None => recall(role, client, payload, store),
+        },
+        Role::UserPrompt => recall(role, client, payload, store),
         Role::Stop => stop_gate(client, payload, crate::stop::Autonomy::Unknown),
         // Sprint 28b D8: the ported observer arm (outcome capture, slip trail,
         // edit feed) — no longer the stub that read as a dead channel.
@@ -325,6 +334,84 @@ fn primer(client: Client, config: &HookConfig, store: &dyn Store) -> Outcome {
         crate::field::record_reminded(dir, *now);
     }
     outcome
+}
+
+/// Stage 4: the recall gate's I/O half — the pure decision lives in
+/// [`crate::recallgate`].
+///
+/// `Some(outcome)` means the gate has spoken for this call; `None` means it has
+/// nothing to say and the ordinary recall injection should run. It answers
+/// `None` far more often than not, and that is the design: it fires only when a
+/// record's own anchor IS the symbol the call is about.
+///
+/// FAILS OPEN at every step. No member cue, kill switch off, store unreachable,
+/// answer unusable — all `None`. A gate that blocked when the knowledge layer
+/// was down would turn an outage into a work stoppage, which is worse than the
+/// miss it prevents.
+fn recall_gate(
+    client: Client,
+    config: &HookConfig,
+    payload: &str,
+    store: &dyn Store,
+) -> Option<Outcome> {
+    let mode = crate::recallgate::Mode::parse(config.recall_gate.as_deref());
+    let verdict = crate::recallgate::judge(mode, payload, |cue| {
+        store.ask_value(serde_json::json!({ "kind": "recall", "symbol": cue }))
+    });
+
+    match verdict {
+        // Nothing to say — the ordinary injection runs.
+        crate::recallgate::Verdict::Disabled
+        | crate::recallgate::Verdict::NoMemberCue
+        | crate::recallgate::Verdict::NoAnchoredRecord => None,
+
+        // The agent already said what it did. Recorded, then out of the way.
+        crate::recallgate::Verdict::Dispositioned { token } => {
+            emit_gate_signal("recall-dispositioned", &token);
+            None
+        }
+
+        // The knowledge layer could not answer. Recorded as ITS OWN fact — this
+        // is exactly the distinction jawata-mcp#37 built, and folding it into
+        // "nothing to gate on" would throw it away at the one consumer that
+        // asked for it.
+        crate::recallgate::Verdict::Unavailable { why } => {
+            emit_gate_signal("recall-gate-unavailable", &why);
+            None
+        }
+
+        crate::recallgate::Verdict::Undispositioned { cue, summary } => match mode {
+            // OBSERVE (the shipping default): record what would have been held
+            // and let the call through. Promotion to Block is decided on this
+            // number, not on intent.
+            crate::recallgate::Mode::Observe => {
+                emit_gate_signal("recall-would-block", &cue);
+                None
+            }
+            crate::recallgate::Mode::Block => {
+                emit_gate_signal("recall-blocked", &cue);
+                Some(emit_body(
+                    client,
+                    Role::ToolRecall,
+                    crate::recallgate::steering(&cue, &summary),
+                ))
+            }
+            crate::recallgate::Mode::Off => None,
+        },
+    }
+}
+
+/// One line in the outcomes log the observer already owns, so the gate's
+/// counters live where every other signal lives rather than in a second file
+/// with its own idea of the format.
+fn emit_gate_signal(signal: &str, detail: &str) {
+    if let Some(home) = home_dir() {
+        crate::observer::emit_signal(
+            &home.join(".claude").join("jawata-studio"),
+            signal,
+            detail,
+        );
+    }
 }
 
 fn recall(role: Role, client: Client, payload: &str, store: &dyn Store) -> Outcome {
@@ -1471,6 +1558,123 @@ mod payload_parsing_tests {
     // ---- jawata-mcp#37: our deadline must reach the store -------------------
 
     use std::time::Duration;
+
+    // ---- Stage 4: the recall gate, WIRED ---------------------------------
+
+    struct GateStore {
+        anchor: &'static str,
+        asked_structured: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl Store for GateStore {
+        fn ask(&self, _: serde_json::Value) -> Result<Answer, QueryError> {
+            Ok(Answer::Text("[lesson] the ordinary injection".into()))
+        }
+        fn ask_value(&self, args: serde_json::Value) -> Result<serde_json::Value, QueryError> {
+            self.asked_structured.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!("recall", args["kind"], "the gate asks the store for a recall");
+            Ok(serde_json::json!({
+                "result": "match",
+                "entries": [{"symbol": self.anchor, "summary": "the pool already resolves these"}]
+            }))
+        }
+    }
+
+    fn member_call() -> &'static str {
+        r#"{"tool_input":{"symbol":"com.example.Importer#addDependencyEntries"}}"#
+    }
+
+    /// This module's own config — the sibling test module's helper is private
+    /// to it, and reaching across would couple two test modules for one line.
+    fn gate_config(client: &str) -> HookConfig {
+        HookConfig {
+            url: "http://127.0.0.1:1/mcp".into(),
+            token: "t".into(),
+            client: client.into(),
+            timeout_ms: Some(50),
+            field_dir: None,
+            recall_gate: None,   // absent = Observe, the shipping default
+        }
+    }
+
+    fn gate_store(asked: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> GateStore {
+        GateStore { anchor: "com.example.Importer#addDependencyEntries", asked_structured: asked }
+    }
+
+    /// THE WIRING. `recallgate::judge` is unit-tested on its own, but a pure
+    /// function nothing calls is this repository's recorded failure shape — a
+    /// release shipped its headline inert exactly that way. So this drives
+    /// `run()` and asserts the gate was REACHED: the structured question is one
+    /// only the gate asks.
+    #[test]
+    fn the_gate_is_on_the_tool_recall_path_not_merely_present() {
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let _ = run(Role::ToolRecall, &gate_config("claude-code"), member_call(), &gate_store(asked.clone()));
+        assert_eq!(
+            1,
+            asked.load(std::sync::atomic::Ordering::SeqCst),
+            "the gate never asked the store — it is present but not wired"
+        );
+    }
+
+    /// OBSERVE IS THE SHIPPING DEFAULT, and observe does not block.
+    #[test]
+    fn observe_mode_records_but_lets_the_call_through() {
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        match run(Role::ToolRecall, &gate_config("claude-code"), member_call(), &gate_store(asked)) {
+            Outcome::Emitted(text) => assert!(
+                text.contains("ordinary injection"),
+                "observe must fall through to the normal recall, got: {text}"
+            ),
+            other => panic!("observe must not hold the call: {other:?}"),
+        }
+    }
+
+    /// A USER PROMPT IS NOT A TOOL CALL. The gate's soundness claim is that the
+    /// record's anchor IS the symbol the call is about; a typed prompt has no
+    /// such subject, so the gate must not run there.
+    #[test]
+    fn the_gate_does_not_run_on_the_user_prompt_role() {
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let _ = run(
+            Role::UserPrompt,
+            &gate_config("claude-code"),
+            r#"{"prompt":"what about com.example.Importer and the bundle pool"}"#,
+            &gate_store(asked.clone()),
+        );
+        assert_eq!(
+            0,
+            asked.load(std::sync::atomic::Ordering::SeqCst),
+            "the gate ran on a typed prompt — it belongs to tool calls only"
+        );
+    }
+
+    /// FAIL OPEN, against the shape jawata-mcp#37 introduced: an unreadable
+    /// knowledge layer must never hold a tool call.
+    #[test]
+    fn an_unavailable_store_never_holds_the_call() {
+        struct Outage;
+        fn outage() -> QueryError {
+            QueryError::ToolRefused {
+                code: "KNOWLEDGE_UNAVAILABLE".into(),
+                message: "the store did not answer within 1200ms".into(),
+            }
+        }
+        impl Store for Outage {
+            fn ask(&self, _: serde_json::Value) -> Result<Answer, QueryError> {
+                Err(outage())
+            }
+            fn ask_value(&self, _: serde_json::Value) -> Result<serde_json::Value, QueryError> {
+                Err(outage())
+            }
+        }
+        match run(Role::ToolRecall, &gate_config("claude-code"), member_call(), &Outage) {
+            Outcome::Silent(_) => {}
+            Outcome::Emitted(text) => assert!(
+                !text.contains("JAWATA GATE"),
+                "an outage must never produce a gate hold: {text}"
+            ),
+        }
+    }
 
     #[test]
     fn the_store_is_told_our_deadline_and_it_fires_before_ours() {

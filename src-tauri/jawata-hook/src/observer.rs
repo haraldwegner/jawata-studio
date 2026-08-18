@@ -244,6 +244,12 @@ fn names_a_search_tool(command: &str) -> bool {
 }
 
 /// One outcomes.log line; errors swallowed — observing must never disturb.
+/// The gate (pipeline.rs) writes its counters through this too — one writer for
+/// the outcomes log, so a second signal source cannot invent a second format.
+pub(crate) fn emit_signal(dir: &Path, signal: &str, detail: &str) {
+    emit(dir, signal, detail);
+}
+
 fn emit(dir: &Path, signal: &str, detail: &str) {
     let _ = std::fs::create_dir_all(dir);
     let ts = chrono_free_iso();
