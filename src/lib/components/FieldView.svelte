@@ -40,13 +40,13 @@
     .sort((a, b) => b.count - a.count)
     .slice(0, 8);
   $: canaryHealth = status?.canaryHealth ?? "unknown";
-  // The go-silent state, aggregated: the model is PER-WORKSPACE (each has its
-  // own field/state.json), but "stop reminding me" is a machine-level intent.
-  // Checked = every workspace silenced; indeterminate = they disagree (a state
-  // the removed per-workspace tiles could produce). Granularity returns with
-  // 28f's Seats page.
+  // GO SILENT IS PER MACHINE. Harald's ruling, 2026-08-18: "I report tool
+  // failures for jawata. Why should I want to report for one workspace and not
+  // for the other?" — so the per-workspace split is an implementation detail of
+  // where the state file lives, never a distinction the user is shown. There is
+  // no indeterminate state to render: the box reflects whether reminders are
+  // off, and setting it settles every workspace.
   $: allSilenced = workspaces.length > 0 && workspaces.every((w) => w.lane.silenced);
-  $: someSilenced = workspaces.some((w) => w.lane.silenced);
   let silenceBusy = false;
   let silenceError = "";
 
@@ -99,7 +99,10 @@
 
 <section class="panel stack runtime-settings-root field-root">
   <div>
-    <h2>Field Reporting</h2>
+    <!-- The tab says "Reporting" — what you DO here. The header names what is
+         ON the page — the recording itself. Repeating the tab word in the
+         header is chrome, not hierarchy. -->
+    <h2>Field recording</h2>
     <p class="muted">
       What jawata recorded on THIS machine while you worked: shapes only — tool name,
       kind, error code, counts, latency bucket, client and version. No file paths, no
@@ -111,13 +114,11 @@
       <input
         type="checkbox"
         checked={allSilenced}
-        indeterminate={someSilenced && !allSilenced}
         disabled={disabled || silenceBusy || workspaces.length === 0}
         on:change={onGoSilent}
       />
       <span>
         Go silent about failures — stop the periodic reminder
-        {#if workspaces.length > 1}(applies to both workspaces){/if}
         {#if allSilenced}<em>(currently off by your choice)</em>{/if}
       </span>
     </label>
