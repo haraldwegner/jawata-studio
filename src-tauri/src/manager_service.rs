@@ -292,6 +292,13 @@ pub struct ManagerService {
     config_store: ConfigStore,
     release_manager: ReleaseManager,
     runtime_manager: RuntimeManager,
+    /// Sprint 28b (D6): the last canary reading per resident, published by the
+    /// studio's canary thread and read by the field view and the tray.
+    ///
+    /// Held here rather than recomputed on read because the probe is two real
+    /// HTTP round-trips against a JVM — `field_status` is polled by an open
+    /// view, and a view that probed on every poll would be a load generator.
+    canary: Arc<RwLock<Vec<crate::field_view::CanaryResult>>>,
     /// Sprint 16b/B: shared routing table the single-service gateway reads.
     /// Empty until the first deploy populates it.
     routing_table: Arc<RwLock<gateway::RoutingTable>>,
@@ -330,6 +337,7 @@ impl ManagerService {
             release_manager,
             runtime_manager,
             routing_table,
+            canary: Arc::new(RwLock::new(Vec::new())),
             release_sync_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
@@ -955,6 +963,93 @@ impl ManagerService {
             .expect("arguments is an object")
             .insert("kind".into(), serde_json::Value::String(kind.to_string()));
         call_experience(&server.url, &server.token, arguments, 60)
+    }
+
+    // ===== Sprint 28b (D2 / D6 / D10): the field view, the seat lane, the canary =====
+
+    /// The workspaces whose residents have a field directory, paired with it.
+    /// Config reads only — safe on the main thread, like `knowledge_servers`.
+    pub(crate) fn field_workspaces(&self) -> Vec<(String, PathBuf)> {
+        self.knowledge_servers()
+            .into_iter()
+            .filter(|server| !server.field_dir.is_empty())
+            .map(|server| (server.workspace_name.clone(), PathBuf::from(&server.field_dir)))
+            .collect()
+    }
+
+    /// Everything the field view renders: the per-workspace piles, the machine's
+    /// reach counters and utilization number, the `/report` lane state, and the
+    /// last canary reading.
+    ///
+    /// FILE READS ONLY. No HTTP happens here, so an open view may poll it from
+    /// the main thread — the canary's two round-trips run on their own thread
+    /// and leave their verdict behind.
+    pub fn field_status(&self) -> crate::field_view::FieldStatus {
+        crate::field_view::status_from(
+            &self.field_workspaces(),
+            &crate::field_view::silence_log_paths(),
+            &crate::field_view::outcomes_log_path(),
+            self.canary_board(),
+        )
+    }
+
+    /// Set one or both of the field switches for a workspace and hand back the
+    /// refreshed status. `None` leaves a switch exactly as it was.
+    pub fn field_set_silence(
+        &self,
+        workspace: &str,
+        nudges: Option<bool>,
+        silenced: Option<bool>,
+    ) -> Result<crate::field_view::FieldStatus, String> {
+        let dir = self.field_dir_for(workspace)?;
+        crate::field_view::write_state(&dir, nudges, silenced)?;
+        Ok(self.field_status())
+    }
+
+    /// Resolve a workspace to its field directory. Studio keys workspaces by
+    /// NAME; the deploy's server id is accepted too, so a caller holding either
+    /// identifier lands on the same directory rather than on an error.
+    fn field_dir_for(&self, workspace: &str) -> Result<PathBuf, String> {
+        self.knowledge_servers()
+            .into_iter()
+            .find(|server| server.workspace_name == workspace || server.id == workspace)
+            .filter(|server| !server.field_dir.is_empty())
+            .map(|server| PathBuf::from(&server.field_dir))
+            .ok_or_else(|| format!("no field recording for workspace '{workspace}'"))
+    }
+
+    /// The last published canary reading.
+    pub(crate) fn canary_board(&self) -> Vec<crate::field_view::CanaryResult> {
+        self.canary
+            .read()
+            .map(|board| board.clone())
+            .unwrap_or_default()
+    }
+
+    /// Publish a fresh round. Returns the health so the caller can decide
+    /// whether anything visible needs to change.
+    pub(crate) fn publish_canary(
+        &self,
+        results: Vec<crate::field_view::CanaryResult>,
+    ) -> crate::field_view::CanaryHealth {
+        let health = crate::field_view::canary_health(&results);
+        if let Ok(mut board) = self.canary.write() {
+            *board = results;
+        }
+        health
+    }
+
+    /// One canary round against every reachable resident — BLOCKING, two real
+    /// round-trips each. No `&self`, so the studio's timer thread can hold it
+    /// without holding the service.
+    pub(crate) fn canary_round_for(
+        servers: &[ManagedDeployServer],
+    ) -> Vec<crate::field_view::CanaryResult> {
+        servers
+            .iter()
+            .filter(|server| !server.url.is_empty() && !server.token.is_empty())
+            .map(|server| canary_probe(&server.workspace_name, &server.url, &server.token))
+            .collect()
     }
 
     /// Sprint 21a (item E): GC the historically scattered `.bak` files (dry-run first).
@@ -5925,7 +6020,20 @@ fn call_experience(
     arguments: serde_json::Value,
     timeout_secs: u64,
 ) -> Result<serde_json::Value, String> {
-    let body = call_resident_tool(url, token, "experience", arguments, timeout_secs)?;
+    call_tool_json(url, token, "experience", arguments, timeout_secs)
+}
+
+/// The same peel for ANY tool — jawata's envelope shape is one shape, and a
+/// second copy of the peel is a second thing to get wrong when it changes.
+/// Sprint 28b (D6) added the canary's compiler question as its second caller.
+fn call_tool_json(
+    url: &str,
+    token: &str,
+    tool: &str,
+    arguments: serde_json::Value,
+    timeout_secs: u64,
+) -> Result<serde_json::Value, String> {
+    let body = call_resident_tool(url, token, tool, arguments, timeout_secs)?;
     let envelope: serde_json::Value =
         serde_json::from_str(&body).map_err(|error| format!("bad envelope: {error}"))?;
     if let Some(rpc_error) = envelope.get("error") {
@@ -5936,6 +6044,61 @@ fn call_experience(
         .and_then(|text| text.as_str())
         .ok_or_else(|| "unexpected envelope (no result.content[0].text)".to_string())?;
     serde_json::from_str(text).map_err(|error| format!("bad tool response: {error}"))
+}
+
+/// Sprint 28b (D6): the canary — ONE real recall and ONE real compiler question
+/// per resident, against a fixture that is present without anyone setting it up.
+///
+/// Both halves are the product's own front door, not a health endpoint: a
+/// resident whose HTTP port answers while its store or its JDT layer is dead is
+/// exactly the state the two-week outage was, and a liveness ping would have
+/// called it healthy throughout. The compiler question asks for
+/// `java.lang.String` because every Java workspace can resolve it and nothing
+/// but the compiler layer can answer it; the recall asks for a cue nothing will
+/// match, because an AUTHORITATIVE ABSENCE is the store speaking — depending on
+/// the user's own stored content would make the canary a lottery.
+///
+/// The timeouts are generous on purpose: a resident that is merely BUSY must
+/// not be reported as broken.
+fn canary_probe(workspace: &str, url: &str, token: &str) -> crate::field_view::CanaryResult {
+    let recall = call_experience(
+        url,
+        token,
+        serde_json::json!({
+            "kind": "recall",
+            "symptom": crate::field_view::CANARY_RECALL_SYMPTOM,
+        }),
+        15,
+    );
+    let compiler = call_tool_json(
+        url,
+        token,
+        "inspect",
+        serde_json::json!({
+            "kind": "source",
+            "typeName": crate::field_view::CANARY_FIXTURE_TYPE,
+            "maxChars": 256,
+        }),
+        30,
+    );
+    crate::field_view::judge_canary(
+        workspace,
+        url,
+        recall,
+        compiler,
+        crate::field_view::now_millis(),
+    )
+}
+
+/// The canary against an arbitrary endpoint — the seam the degraded-resident
+/// test drives, so the probe it exercises is the SAME function the timer runs.
+#[cfg(test)]
+pub(crate) fn canary_probe_at(
+    workspace: &str,
+    url: &str,
+    token: &str,
+) -> crate::field_view::CanaryResult {
+    canary_probe(workspace, url, token)
 }
 
 /// Sprint 21a (item F): the exact verb vocabulary — the Knowledge view's actions are
@@ -13783,5 +13946,54 @@ mod stage2_live_probe {
             )
             .unwrap(),
         }
+    }
+}
+
+/// Sprint 28b (D6): the canary, driven end to end against a resident that is
+/// not there.
+#[cfg(test)]
+mod canary_tests {
+    use super::*;
+    use crate::field_view::{canary_health, CanaryHealth};
+
+    /// A DEGRADED RESIDENT FLIPS THE STATE — with no agent session, no client,
+    /// and nothing listening on the port.
+    ///
+    /// This drives the real `canary_probe`, not a stand-in: the same function
+    /// the studio's timer calls, over the same HTTP client, against a loopback
+    /// port nothing is bound to. That is the exact shape of the failure the
+    /// canary exists to catch — a resident that used to answer and now does
+    /// not — and the state it produces is the one the tray reads.
+    #[test]
+    fn a_resident_that_cannot_answer_turns_the_board_non_green() {
+        // Port 9 is discard/unassigned on every platform we ship and nothing in
+        // this repo binds it; the connect fails immediately rather than hanging.
+        let result = canary_probe_at("dead-workspace", "http://127.0.0.1:9/mcp", "token");
+
+        assert!(!result.recall_ok, "no store answered: {}", result.recall_detail);
+        assert!(!result.compiler_ok, "no compiler answered: {}", result.compiler_detail);
+        assert!(!result.green);
+        assert_eq!("dead-workspace", result.workspace);
+        assert!(
+            !result.recall_detail.is_empty() && !result.compiler_detail.is_empty(),
+            "a degraded reading must SAY why — an empty reason is the ambiguity \
+             this whole lane exists to end"
+        );
+        assert_eq!(CanaryHealth::Degraded, canary_health(&[result]));
+    }
+
+    /// And a resident that answers both questions is green — so the test above
+    /// is a discriminator rather than a function that always says "broken".
+    #[test]
+    fn the_verdict_is_not_simply_always_degraded() {
+        let green = crate::field_view::judge_canary(
+            "alpha",
+            "http://127.0.0.1:9/mcp",
+            Ok(serde_json::json!({"success": true, "data": {}})),
+            Ok(serde_json::json!({"success": true, "data": {"sourceLength": 90000}})),
+            0,
+        );
+        assert!(green.green);
+        assert_eq!(CanaryHealth::Green, canary_health(&[green]));
     }
 }

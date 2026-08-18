@@ -2,6 +2,7 @@ mod backups;
 mod client_dialect;
 mod commands;
 mod config;
+mod field_view;
 mod gateway;
 mod lombok;
 mod conductor;
@@ -68,6 +69,16 @@ const TRAY_ICON_ID: &str = "jawata-tray";
 /// `set_menu` to AppIndicator), well under 1 % CPU.
 const TRAY_REFRESH_INTERVAL_SECS: u64 = 1;
 
+/// Sprint 28b (D6): how long the canary waits before its first round, so a
+/// resident that is still booting (OSGi + JDT, ~30 s) is not called degraded
+/// for being slow to start.
+const CANARY_FIRST_DELAY_SECS: u64 = 45;
+
+/// And how often it asks again. Two real round-trips per resident is not free,
+/// and a channel that dies stays dead — five minutes is soon enough to notice
+/// and rare enough to be invisible.
+const CANARY_INTERVAL_SECS: u64 = 300;
+
 #[derive(Clone, Copy, Debug)]
 enum TrayIconVariant {
     /// The jawata arch mark (Sprint 22b brand) on the batik-indigo circle.
@@ -109,8 +120,16 @@ fn selected_tray_icon_variant() -> TrayIconVariant {
 /// alpha channel alone, and that is what made the icon disappear. v3.6.1 then
 /// changed the template's SHAPE, which was fixing the wrong thing twice.
 fn build_tray_icon(variant: TrayIconVariant) -> Image<'static> {
+    build_tray_icon_for(variant, field_view::CanaryHealth::Green)
+}
+
+/// The same mark, tinted by the canary verdict (Sprint 28b, D6).
+fn build_tray_icon_for(
+    variant: TrayIconVariant,
+    health: field_view::CanaryHealth,
+) -> Image<'static> {
     let mut rgba = vec![0u8; (TRAY_ICON_SIZE * TRAY_ICON_SIZE * 4) as usize];
-    draw_base_circle(&mut rgba);
+    draw_base_circle_in(&mut rgba, tray_disc_colour(health));
     match variant {
         TrayIconVariant::ArchCircle => draw_arch_glyph(&mut rgba),
         TrayIconVariant::CoffeeCircle => draw_coffee_glyph(&mut rgba),
@@ -198,12 +217,33 @@ fn draw_ring(rgba: &mut [u8], cx: i32, cy: i32, radius: i32, thickness: i32, col
     }
 }
 
+/// The disc colour the tray wears for a given canary verdict.
+///
+/// Sprint 28b (D6): a failing canary is a PASSIVE state change — the icon's
+/// disc goes amber and the dashboard goes non-green. Nothing pops, nothing
+/// beeps, nothing steals focus; the user finds out when he next looks at his
+/// tray, which is the same way he finds out a service stopped.
+///
+/// `Unknown` keeps the brand colour: nothing has been probed yet, and painting
+/// an alarm for "we have not looked" would train the user to ignore the alarm.
+fn tray_disc_colour(health: field_view::CanaryHealth) -> [u8; 4] {
+    match health {
+        // Brand batik-indigo (#1d2f4e, the jawata palette).
+        field_view::CanaryHealth::Unknown | field_view::CanaryHealth::Green => [29, 47, 78, 255],
+        // Amber (#a8621a) — legible against both a light and a dark menu bar,
+        // and unmistakably not the brand colour at 32 px.
+        field_view::CanaryHealth::Degraded => [168, 98, 26, 255],
+    }
+}
+
 fn draw_base_circle(rgba: &mut [u8]) {
+    draw_base_circle_in(rgba, tray_disc_colour(field_view::CanaryHealth::Green));
+}
+
+fn draw_base_circle_in(rgba: &mut [u8], fill: [u8; 4]) {
     let center = (TRAY_ICON_SIZE as i32) / 2;
     // Draw slightly beyond the nominal radius so the circle nearly fills the tray slot.
     let radius = center + 1;
-    // Brand batik-indigo circle background (#1d2f4e, the jawata palette)
-    let fill = [29, 47, 78, 255]; // #1d2f4e
     for y in 0..TRAY_ICON_SIZE as i32 {
         for x in 0..TRAY_ICON_SIZE as i32 {
             let dx = x - center;
@@ -453,6 +493,23 @@ pub fn run() {
                 refresh_tray_menu(&refresh_handle);
             });
 
+            // Sprint 28b (D6): the canary. Every resident is asked ONE real
+            // recall and ONE real compiler question against a fixture every
+            // Java workspace has; a resident that cannot answer both flips the
+            // tray icon and the dashboard to non-green.
+            //
+            // Its own thread because each probe is two blocking round-trips
+            // against a JVM, and the first round is deferred so a just-launched
+            // resident is not called dead while OSGi and JDT are still booting.
+            let canary_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(CANARY_FIRST_DELAY_SECS));
+                loop {
+                    run_canary_round(&canary_handle);
+                    std::thread::sleep(std::time::Duration::from_secs(CANARY_INTERVAL_SECS));
+                }
+            });
+
             // Sprint 14 (v0.14.0): reconcile OS-level autostart with
             // the saved `autostart_on_boot` setting at every launch.
             // Best-effort — errors here don't block startup; the next
@@ -603,6 +660,8 @@ pub fn run() {
             commands::deploy_to_agents,
             commands::knowledge_status,
             commands::experience_verb,
+            commands::field_status,
+            commands::field_set_silence,
             commands::get_quit_prompt_context,
             commands::perform_quit_action,
         ])
@@ -628,6 +687,43 @@ pub fn run() {
                 }
             }
         });
+}
+
+/// One canary round: probe every resident, publish the verdict, and let the
+/// tray wear it. Passive throughout — the only user-visible effect is a colour.
+fn run_canary_round<R: Runtime>(app: &AppHandle<R>) {
+    let servers = app.state::<AppState>().manager_service.knowledge_servers();
+    if servers.is_empty() {
+        return; // nothing deployed yet — an absence, not a failure
+    }
+    let results = ManagerService::canary_round_for(&servers);
+    let health = app.state::<AppState>().manager_service.publish_canary(results);
+    apply_canary_health_to_tray(app, health);
+}
+
+/// Swap the tray icon when — and only when — the verdict changed. Every swap is
+/// a D-Bus message the shell re-renders, and the tray menu ticker already
+/// taught this file what a per-second swap looks like to a user.
+fn apply_canary_health_to_tray<R: Runtime>(app: &AppHandle<R>, health: field_view::CanaryHealth) {
+    use std::sync::Mutex;
+    static LAST: Mutex<Option<field_view::CanaryHealth>> = Mutex::new(None);
+    {
+        let last = LAST.lock().unwrap();
+        if *last == Some(health) {
+            return;
+        }
+    }
+    if let Some(tray) = app.tray_by_id(TRAY_ICON_ID) {
+        let icon = build_tray_icon_for(selected_tray_icon_variant(), health);
+        if let Err(e) = tray.set_icon(Some(icon)) {
+            eprintln!("jawata-studio: tray.set_icon failed: {e}");
+            return;
+        }
+    } else {
+        eprintln!("jawata-studio: tray_by_id({TRAY_ICON_ID}) returned None");
+        return;
+    }
+    *LAST.lock().unwrap() = Some(health);
 }
 
 fn emit_quit_prompt_event(app_handle: &tauri::AppHandle, source: &str) {
@@ -846,6 +942,51 @@ mod tray_icon_tests {
                  image is what vanished from the macOS menu bar in v3.6.0/v3.6.1"
             );
         }
+    }
+
+    /// Sprint 28b (D6): a degraded canary changes the tray icon, and it changes
+    /// it PASSIVELY — a different colour on the same mark, nothing else.
+    ///
+    /// The verdict half of this is driven with no resident, no agent session and
+    /// no network: `judge_canary` is pure, so "the resident could not answer"
+    /// is expressible as data. That matters because the state this guards is
+    /// precisely the one where nothing is running to ask.
+    #[test]
+    fn a_degraded_resident_flips_the_tray_icon() {
+        let degraded = field_view::judge_canary(
+            "alpha",
+            "http://127.0.0.1:65000/mcp",
+            Err("request failed: connection refused".into()),
+            Err("request failed: connection refused".into()),
+            0,
+        );
+        assert!(!degraded.green);
+        let health = field_view::canary_health(std::slice::from_ref(&degraded));
+        assert_eq!(field_view::CanaryHealth::Degraded, health);
+
+        let alarmed = tray_disc_colour(health);
+        let brand = tray_disc_colour(field_view::CanaryHealth::Green);
+        assert_ne!(brand, alarmed, "the tray must LOOK different, not merely know");
+
+        // The centre pixel of the built icon carries the alarmed colour, so the
+        // flip reaches the image the tray is handed and not just a helper.
+        let icon = build_tray_icon_for(TrayIconVariant::ArchCircle, health);
+        let rgba = icon.rgba();
+        let centre = ((TRAY_ICON_SIZE / 2) * TRAY_ICON_SIZE + TRAY_ICON_SIZE / 2) as usize;
+        let corner_of_disc = ((2 * TRAY_ICON_SIZE) + TRAY_ICON_SIZE / 2) as usize;
+        assert_eq!(255, rgba[centre * 4 + 3], "still an opaque disc");
+        assert_eq!(
+            [alarmed[0], alarmed[1], alarmed[2]],
+            [
+                rgba[corner_of_disc * 4],
+                rgba[corner_of_disc * 4 + 1],
+                rgba[corner_of_disc * 4 + 2]
+            ],
+            "the disc wears the alarmed colour"
+        );
+
+        // And "we have not looked yet" is NOT an alarm.
+        assert_eq!(brand, tray_disc_colour(field_view::CanaryHealth::Unknown));
     }
 
     /// The branded (Linux/Windows) icon keeps its filled disc — the template

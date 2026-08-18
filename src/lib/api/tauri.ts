@@ -497,3 +497,134 @@ export function getQuitPromptContext(): Promise<QuitPromptContext> {
 export function performQuitAction(action: QuitAction): Promise<void> {
   return invoke("perform_quit_action", { action });
 }
+
+// ===== Sprint 28b (D2 / D6 / D10): the field view, the seat lane, the canary =====
+
+/** One recurring failure shape: `<tool>/<kind>/<code>`. Shapes only — the pile
+ * carries no paths, symbol names or message text, so neither does this. */
+export interface FieldErrorShape {
+  shape: string;
+  tool: string;
+  kind: string;
+  code: string;
+  count: number;
+  /** Already filed. The nudge stops and the badge stops counting it. */
+  posted: boolean;
+  clients: string[];
+  versions: string[];
+  worstLatencyBucket: number;
+}
+
+/** What one workspace's `pile.jsonl` says. */
+export interface FieldPileFold {
+  /** False when nothing has been recorded here yet — NOT the same as zero failures. */
+  present: boolean;
+  contract?: number | null;
+  totalEvents: number;
+  failures: number;
+  successes: number;
+  /** Ranked by recurrence, highest first. */
+  shapes: FieldErrorShape[];
+  /** Unposted shapes that recurred at least three times. */
+  badge: number;
+  unreadableLines: number;
+}
+
+/** The `/report` tile's state: the two switches, the reminder's REASON, the history. */
+export interface FieldSeatLaneState {
+  seat: string;
+  /** The in-session pointer switch. Distinct from `silenced`. */
+  nudges: boolean;
+  /** The periodic reminder's go-silent checkbox. */
+  silenced: boolean;
+  /** "off by your choice" | "on" — never inferred by the view. */
+  reminderReason: string;
+  strikes: number;
+  remindersShown: number;
+  lastRemindedAtMillis: number;
+  nudgedShapes: string[];
+  postedShapes: string[];
+  /** False when neither switch has ever been touched — both are defaults, not choices. */
+  stateFilePresent: boolean;
+}
+
+/** One hook channel's reach: what fired, what came out, and why it did not. */
+export interface FieldChannelReach {
+  role: string;
+  fired: number;
+  emitted: number;
+  suppressed: Record<string, number>;
+  /** The store answered and nothing came out. */
+  dead: boolean;
+  /** Nothing came out and every suppression was a legitimate absence. */
+  legitimatelyQuiet: boolean;
+}
+
+/** Where the agent used JAWATA and where it reached for the shell instead. */
+export interface FieldUtilization {
+  jawataCalls: number;
+  shellFallbacks: number;
+  slips: number;
+  ungroundedReads: number;
+  /** null when nothing has been observed — an empty denominator is not 100 %. */
+  percent?: number | null;
+  /** R1: the denominator is hook-scoped. Always rendered WITH the number. */
+  caveat: string;
+  observerPresent: boolean;
+}
+
+/** One resident's canary reading: a real recall and a real compiler question. */
+export interface FieldCanaryResult {
+  workspace: string;
+  url: string;
+  recallOk: boolean;
+  recallDetail: string;
+  compilerOk: boolean;
+  compilerDetail: string;
+  green: boolean;
+  checkedAtMillis: number;
+}
+
+/** "unknown" is never rendered as healthy — it means nothing has been probed yet. */
+export type FieldCanaryHealth = "unknown" | "green" | "degraded";
+
+export interface FieldWorkspaceStatus {
+  workspace: string;
+  fieldDir: string;
+  pile: FieldPileFold;
+  lane: FieldSeatLaneState;
+}
+
+export interface FieldStatus {
+  utilization: FieldUtilization;
+  channels: FieldChannelReach[];
+  deadChannels: string[];
+  legitimatelyQuietChannels: string[];
+  /** The silence logs that actually existed. Empty = no hook has ever run here. */
+  silenceLogsRead: string[];
+  workspaces: FieldWorkspaceStatus[];
+  /** Machine-wide: unposted recurring shapes across every workspace. */
+  badge: number;
+  canary: FieldCanaryResult[];
+  canaryHealth: FieldCanaryHealth;
+}
+
+/** Read the field recording. File reads only — cheap enough to poll. */
+export function fieldStatus(): Promise<FieldStatus> {
+  return invoke("field_status");
+}
+
+/** Set one or both field switches for a workspace, atomically.
+ *
+ * THEY ARE TWO SWITCHES. `silenced` is the go-silent checkbox: it stops the
+ * periodic reminder the agent speaks. `nudges` is the separate no-nudges
+ * switch: it stops the one-line pointer at `/report` inside a running session.
+ * Pass `null` for either to leave it exactly as it was — the state file has
+ * three writers and setting one switch must never move the other. */
+export function fieldSetSilence(
+  workspace: string,
+  nudges: boolean | null,
+  silenced: boolean | null
+): Promise<FieldStatus> {
+  return invoke("field_set_silence", { workspace, nudges, silenced });
+}

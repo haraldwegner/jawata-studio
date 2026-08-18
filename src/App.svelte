@@ -7,6 +7,7 @@
   import WorkspaceList from "./lib/components/WorkspaceList.svelte";
   import RuntimeSettings from "./lib/components/RuntimeSettings.svelte";
   import MemoryView from "./lib/components/MemoryView.svelte";
+  import FieldView from "./lib/components/FieldView.svelte";
   import HelpView from "./lib/components/HelpView.svelte";
   import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
   import { createAppStore } from "./lib/stores/app";
@@ -25,7 +26,7 @@
   const MIN_RIGHT_PANEL_WIDTH = 420;
   const SPLITTER_WIDTH = 12;
 
-  let currentView: "dashboard" | "memory" | "settings" | "help" = "dashboard";
+  let currentView: "dashboard" | "memory" | "field" | "settings" | "help" = "dashboard";
   /** Sprint 10 v0.10.4: which workspace the Register Project / Import
    * forms add to. Owned at App.svelte so the Workspaces card and the
    * forms stay in sync. Defaults to the first existing workspace if
@@ -434,6 +435,13 @@
           Memory
         </button>
         <button
+          class="tab {currentView === 'field' ? 'active' : ''}"
+          on:click={() => (currentView = 'field')}
+          type="button"
+        >
+          Field
+        </button>
+        <button
           class="tab {currentView === 'settings' ? 'active' : ''}"
           on:click={() => (currentView = 'settings')}
           type="button"
@@ -670,6 +678,12 @@
           <p class="muted">Loading settings...</p>
         </section>
       {/if}
+    </section>
+  {:else if currentView === 'field'}
+    <!-- Sprint 28b (D2/D10): the field view. Passive — it renders the local
+         recording and carries the /report tile's two switches. -->
+    <section class="dashboard-main">
+      <FieldView disabled={$appStore.isBusy} />
     </section>
   {:else if currentView === 'help'}
     <section class="dashboard-main">

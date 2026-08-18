@@ -317,3 +317,37 @@ pub fn perform_quit_action(
         }
     }
 }
+
+// ===== Sprint 28b (D2 / D6 / D10): the field view + the seat lane =====
+
+/// Everything the field view and the `/report` tile render: the per-workspace
+/// piles, the machine's reach counters and utilization number (with its
+/// caveat), the lane state, and the last canary reading.
+///
+/// Sync on purpose — it is FILE READS ONLY, so it is safe on the main thread
+/// and cheap enough for an open view to poll. The canary's HTTP runs on the
+/// studio's own timer thread and leaves its verdict behind for this to read.
+#[tauri::command]
+pub fn field_status(state: State<'_, AppState>) -> Result<crate::field_view::FieldStatus, String> {
+    Ok(state.manager_service.field_status())
+}
+
+/// Set one or both of the field switches for a workspace.
+///
+/// THEY ARE TWO SWITCHES, not one with two names. `silenced` is the go-silent
+/// checkbox: it stops the periodic reminder the agent speaks. `nudges` is the
+/// separate no-nudges switch: it stops the one-line pointer at `/report` that
+/// appears in a running session when a shape recurs. Passing `None` for either
+/// leaves it exactly as it was — the state file has three writers, and a
+/// caller setting one switch must never move the other.
+#[tauri::command]
+pub fn field_set_silence(
+    state: State<'_, AppState>,
+    workspace: String,
+    nudges: Option<bool>,
+    silenced: Option<bool>,
+) -> Result<crate::field_view::FieldStatus, String> {
+    state
+        .manager_service
+        .field_set_silence(&workspace, nudges, silenced)
+}
