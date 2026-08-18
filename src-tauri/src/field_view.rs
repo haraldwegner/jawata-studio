@@ -987,6 +987,13 @@ pub struct StoreHealthReport {
 
 /// Judge the knowledge layer from the canary readings. Pure.
 ///
+/// The latency it reads is the whole ROUND TRIP — connect, request, the
+/// store's own work, response, and the studio's two JSON parses. That is
+/// deliberate and it is what the threshold means: the hook's budget covers a
+/// round trip too, so comparing one against the other is comparing like with
+/// like. It is NOT a measurement of the store in isolation, and an earlier
+/// comment here claimed it was.
+///
 /// A resident that is still LOADING is excluded: its store genuinely is not
 /// serving yet, and counting it would paint every cold start red — the exact
 /// defect `#16` was filed for, in a second place.
@@ -1015,7 +1022,11 @@ pub fn store_health(results: &[CanaryResult]) -> StoreHealthReport {
         {
             report.health = state;
             report.worst_workspace = r.workspace.clone();
-            report.slowest_millis = r.recall_millis;
+            // An unreadable store's elapsed time is TIME TO FAILURE, not
+            // latency — a refused connection returns in about 3 ms and would
+            // render beside "unreadable" as the fastest thing on the machine.
+            report.slowest_millis =
+                if state == StoreHealth::Unavailable { 0 } else { r.recall_millis };
         }
     }
     report.word = report.health.word().to_string();
@@ -1762,6 +1773,44 @@ mod tests {
         assert_eq!("ready", r.worst_workspace);
     }
 
+
+    /// C5 audit round 2, 5a-2: `store_health` rules by derived `Ord`, which is
+    /// DECLARATION ORDER, and nothing pinned it. The auditor swapped `Healthy`
+    /// and `Slow` in the enum and the whole studio suite stayed green — after
+    /// which a machine with one healthy resident and one slow one reported
+    /// "answering", which is precisely the state the tile exists to catch.
+    ///
+    /// Nothing caught it because no test held a Healthy reading and a Slow
+    /// reading TOGETHER: the three-reading test used Unavailable, which is the
+    /// maximum under either ordering.
+    #[test]
+    fn a_slow_store_outranks_a_healthy_one() {
+        assert!(StoreHealth::Unavailable > StoreHealth::Slow);
+        assert!(StoreHealth::Slow > StoreHealth::Healthy);
+        assert!(StoreHealth::Healthy > StoreHealth::Unknown);
+
+        let r = store_health(&[
+            reading("fine", true, 30, false),
+            reading("sluggish", true, STORE_SLOW_MILLIS + 1, false),
+        ]);
+        assert_eq!(
+            StoreHealth::Slow,
+            r.health,
+            "one healthy resident does not offset a slow one"
+        );
+        assert_eq!("sluggish", r.worst_workspace);
+    }
+
+    /// A time-to-failure is not a latency. A refused connection comes back in
+    /// about 3 ms, and the page renders the number beside the verdict — so an
+    /// unreadable store would read as the fastest thing on the machine.
+    #[test]
+    fn an_unreadable_store_reports_no_latency() {
+        let r = store_health(&[reading("dead", false, 3, false)]);
+        assert_eq!(StoreHealth::Unavailable, r.health);
+        assert_eq!(0, r.slowest_millis, "3 ms to a refused connection is not a store answering");
+    }
+
     /// Nothing probed is UNKNOWN, never healthy — and the threshold's
     /// explanation is there anyway, because that is when a blank tile misleads.
     #[test]
@@ -1778,13 +1827,30 @@ mod tests {
     /// minus the 300 ms round-trip margin `pipeline::with_budget` subtracts.
     /// Change either side of that and this test says so, instead of the studio
     /// quietly calling a store healthy that the hook can no longer use.
+    /// C5 audit round 2, 5a-1: this test used to declare `1_500` and `300` as
+    /// LOCAL LITERALS and assert their difference against the constant — so it
+    /// pinned `1500 - 300 == 1200` and nothing else. The auditor changed
+    /// `STDIN_DEADLINE` to 4000, making the hook's real budget 3700, and the
+    /// whole studio suite stayed green while the tile went on calling a store
+    /// healthy that the hook could no longer use.
+    ///
+    /// It now reads the hook's OWN constants. Moving either side fails here,
+    /// which is what the doc comment claimed all along.
     #[test]
     fn the_slow_line_is_the_hooks_own_budget() {
-        let hook_timeout_millis = 1_500u64;
-        let hook_margin_millis = 300u64;
+        // Read from `hook-events.json`, the contract file both crates already
+        // include. NOT from local literals — that made the assertion
+        // `1500 - 300 == 1200`, which survived changing the hook's real
+        // deadline to 4000. And NOT by depending on the hook crate:
+        // `dependency_edges.rs` forbids that edge, correctly, because deploy
+        // WRITES the hook binary and must not link it.
+        let contract: serde_json::Value =
+            serde_json::from_str(include_str!("../hook-events.json")).unwrap();
+        let budget = &contract["hook_budget"];
+        let hook_budget = budget["stdin_deadline_millis"].as_u64().unwrap()
+            - budget["budget_margin_millis"].as_u64().unwrap();
         assert_eq!(
-            hook_timeout_millis - hook_margin_millis,
-            STORE_SLOW_MILLIS,
+            hook_budget, STORE_SLOW_MILLIS,
             "the slow line must BE the hook's effective budget — above it the \
              recall channel is already dead and nothing else would say so"
         );

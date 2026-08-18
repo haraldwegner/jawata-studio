@@ -154,7 +154,7 @@
     >
       <span class="field-stat-value">{store?.word ?? "not checked yet"}</span>
       <span class="field-stat-label">
-        knowledge store{#if store && store.slowestMillis > 0} · {store.slowestMillis} ms{/if}
+        knowledge store{#if store && store.slowestMillis > 0 && store.health !== "unavailable"} · {store.slowestMillis} ms{/if}
       </span>
     </div>
   </div>

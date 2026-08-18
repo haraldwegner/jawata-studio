@@ -63,18 +63,31 @@ fn every_stop_rule_that_claims_rust_code_has_its_marker_in_judge() {
     // have survived even a test-stripped scan, so the cut is at the test module
     // and the doc comment sits above it either way — which is why the markers
     // below are the RULE NAMES the reasons print, not prose from the header.
+    // JUDGE'S BODY ONLY, and the markers are the rule NAMES the reasons print.
+    //
+    // Round 1 scanned the whole file: every marker was satisfied by the tests,
+    // so deleting a rule left this green. Round 2 cut it to production code and
+    // found FOUR of nine still dead — `already_bounced` was satisfied by the
+    // struct field, `UNJUDGED ASK` by a doc comment, and Rules A and B by prose
+    // in the module header. The five that held all had one thing in common:
+    // their marker lived inside the emitted `reason` string. So the two prose
+    // ones now say their own name in the text the model reads, and the scan
+    // stops at the end of `judge` — a doc comment above a deleted branch can no
+    // longer vouch for it.
     const WHOLE_FILE: &str = include_str!("../src/stop.rs");
-    let judge_only = &WHOLE_FILE[..WHOLE_FILE
-        .find("#[cfg(test)]")
-        .expect("stop.rs has a test module; if that changed, this cut needs rethinking")];
-    let judge = judge_only;
+    let start = WHOLE_FILE.find("pub fn judge(").expect("judge is the gate; find it");
+    let end = WHOLE_FILE[start..]
+        .find("\n/// Parse the last assistant turn")
+        .map(|o| start + o)
+        .expect("judge is followed by read_turn's doc comment; if that moved, re-cut this");
+    let judge = &WHOLE_FILE[start..end];
     let marker: std::collections::HashMap<&str, &str> = [
         ("anti_loop", "already_bounced"),
         ("audit_fix_loop", "AUDIT-FIX LOOP"),
         ("unjudged_ask", "UNJUDGED ASK"),
         ("unreported_degradation", "UNREPORTED DEGRADATION"),
-        ("communicator_rule_a", "Rule A"),
-        ("nothing_armed_rule_b", "Rule B"),
+        ("communicator_rule_a", "RULE A:"),
+        ("nothing_armed_rule_b", "RULE B:"),
         ("seat_discipline", "SEAT DISCIPLINE"),
         ("decision_test_length", "TOO LONG"),
         ("undefined_abbreviations", "UNDEFINED"),
@@ -131,4 +144,33 @@ fn no_rule_is_lost_when_the_scripts_retire() {
             "if nothing is outstanding, retire the scripts and flip SCRIPTS_RETIRED"
         );
     }
+}
+
+/// The other half of the shared budget fact.
+///
+/// The studio's store-slow line is derived from these two numbers and asserted
+/// against the contract file; this asserts the contract still describes the
+/// HOOK. Without it the contract could drift from the code it claims to
+/// publish, and the studio would go on deriving a threshold from a fiction —
+/// the same divergence `stop_rules` exists to prevent, one file over.
+#[test]
+fn the_contract_publishes_the_hooks_real_budget() {
+    let contract: Value = serde_json::from_str(EVENTS).expect("committed contract");
+    let budget = &contract["hook_budget"];
+    assert_eq!(
+        jawata_hook::safety::STDIN_DEADLINE.as_millis() as u64,
+        budget["stdin_deadline_millis"].as_u64().expect("stdin_deadline_millis"),
+        "hook-events.json publishes a deadline the hook does not use"
+    );
+    assert_eq!(
+        jawata_hook::pipeline::BUDGET_MARGIN_MILLIS,
+        budget["budget_margin_millis"].as_u64().expect("budget_margin_millis"),
+        "hook-events.json publishes a margin the hook does not use"
+    );
+    assert_eq!(
+        jawata_hook::safety::STDIN_DEADLINE.as_millis() as u64
+            - jawata_hook::pipeline::BUDGET_MARGIN_MILLIS,
+        budget["store_slow_millis"].as_u64().expect("store_slow_millis"),
+        "the published store-slow line is not what a recall actually gets"
+    );
 }

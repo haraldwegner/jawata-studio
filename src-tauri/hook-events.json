@@ -66,6 +66,28 @@
       "violation": "a hook that trims, truncates or renames this file — six audit rounds proved in-path bounding destroys records"
     }
   },
+  "hook_budget": {
+    "_why": [
+      "The studio's store-slow line IS the hook's effective store budget, and the two",
+      "live in different crates that MUST NOT link (see dependency_edges.rs: deploy",
+      "writes the hook binary, it never runs it, so an edge would rebuild the GUI on a",
+      "hook change). Repeating the number on both sides made the studio's test assert",
+      "1500 - 300 == 1200 and nothing else: the C5 audit changed STDIN_DEADLINE to 4000",
+      "and the whole studio suite stayed green while the tile went on calling a store",
+      "healthy that the hook could no longer use.",
+      "",
+      "So the number lives HERE, in the file both crates already include_str!, and each",
+      "side asserts against it. Same shape as stop_rules: one fact, two readers, neither",
+      "linking the other.",
+      "",
+      "stdin_deadline_millis - budget_margin_millis is what a recall actually gets. Above",
+      "it, every recall on the machine is timing out silently while a canary that buys",
+      "ten seconds reports health."
+    ],
+    "stdin_deadline_millis": 1500,
+    "budget_margin_millis": 300,
+    "store_slow_millis": 1200
+  },
   "stop_rules": {
     "_why": [
       "Sprint 28, C8 architect finding F3. TWO stop gates exist: the deployed bash",

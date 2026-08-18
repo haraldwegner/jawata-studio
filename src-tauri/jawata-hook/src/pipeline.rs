@@ -49,7 +49,7 @@ impl Store for LiveStore {
 
 /// Margin for the round trip itself — request, JSON, response — so the store's
 /// deadline fires with time left for its answer to reach us.
-const BUDGET_MARGIN_MILLIS: u64 = 300;
+pub const BUDGET_MARGIN_MILLIS: u64 = 300;
 
 /// Floor, mirroring the engine's own: below this a healthy read would be cut off
 /// and a working store reported as an outage.

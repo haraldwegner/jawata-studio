@@ -143,7 +143,15 @@ pub struct Turn {
     pub seats_invoked: Vec<String>,
     /// Whether a verification gate ran after them.
     pub gate_ran: bool,
-    /// EVERY assistant text block in this window, joined.
+    /// Assistant text emitted AFTER a degradation stamp arrived, joined.
+    ///
+    /// Not every block, and the difference is a live hole rather than a nicety.
+    /// Accumulating the whole window let a mention emitted BEFORE the stamp
+    /// satisfy a rule about reporting it AFTER — an agent that opened with "I
+    /// will check for graceful degradation in the retry path", then consumed a
+    /// degraded answer and said nothing about it, passed. "degrad" is ordinary
+    /// working vocabulary in this repo, so that is an accident waiting rather
+    /// than an attack.
     ///
     /// `final_text` is the LAST block, which is what the length budget and the
     /// ask detector want. It is the wrong input for "did you say it": an agent
@@ -330,9 +338,9 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
     // defeatable by wording, and the agent authors the wording.
     if facts.autonomy == Autonomy::Granted && !facts.turn.communicator_ran() {
         return StopVerdict::Block {
-            reason: "Autonomy is granted and this turn ends with a message that \
-                     the communicator has not judged. Run the communicator \
-                     subagent on it, apply its verdict, then stop."
+            reason: "RULE A: autonomy is granted and this turn ends with a message \
+that the communicator has not judged. Run the communicator subagent on it, \
+apply its verdict, then stop."
                 .to_string(),
         };
     }
@@ -341,10 +349,9 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
     // armed. The converse does not hold, so it is not asserted.
     if facts.autonomy == Autonomy::Granted && !facts.turn.armed_anything() {
         return StopVerdict::Block {
-            reason: "Autonomy is granted and this turn armed no background work, \
-                     so ending here sleeps until the human returns. Start the \
-                     next piece of work, or state plainly that you are blocked \
-                     on the human."
+            reason: "RULE B: autonomy is granted and this turn armed no background \
+work, so ending here sleeps until the human returns. Start the next piece of \
+work, or state plainly that you are blocked on the human."
                 .to_string(),
         };
     }
@@ -400,8 +407,14 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                         Some("text") => {
                             if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
                                 turn.final_text = t.to_string();
-                                turn.narration.push_str(t);
-                                turn.narration.push('\n');
+                                // Ordered, not merely collected: `read_turn`
+                                // walks the window forward, so "after the
+                                // stamp" is simply "while the counter is
+                                // non-zero".
+                                if turn.degraded_consumed > 0 {
+                                    turn.narration.push_str(t);
+                                    turn.narration.push('\n');
+                                }
                                 // Count refusals the AGENT EMITTED, from
                                 // assistant text only — never the raw window,
                                 // which made the script fire on any session
@@ -655,6 +668,34 @@ mod tests {
             StopVerdict::Allow,
             judge(&f),
             "it was said out loud; blocking here punishes the agent for not repeating itself"
+        );
+    }
+
+
+    /// B1-REGRESSION, from the C5 audit ROUND 2 — a false negative my own fix
+    /// for B1 opened, and the auditor proved it by running it.
+    ///
+    /// Widening from "the last block" to "every block" removed the ordering
+    /// constraint entirely, so a mention emitted BEFORE the stamp arrived
+    /// satisfied a rule about reporting it AFTER. And "degrad" is ordinary
+    /// working vocabulary here — the hook's own source, the audit texts and
+    /// the memory files all use it — so an agent working in this repo trips
+    /// the exemption by accident, not by malice.
+    #[test]
+    fn a_mention_before_the_stamp_does_not_excuse_silence_after_it() {
+        let transcript = format!(
+            "{{\"type\":\"user\",\"message\":{{\"content\":\"go\"}}}}\n{}\n{}\n{}\n",
+            assistant_line("I will check for graceful degradation in the retry path."),
+            result_line("DEGRADED: store on the in-memory fallback"),
+            assistant_line("Three entries. All good.")
+        );
+        let turn = read_turn(&transcript).unwrap();
+        assert_eq!(1, turn.degraded_consumed);
+        let mut f = facts(Autonomy::Unknown, vec![]);
+        f.turn = turn;
+        assert!(
+            matches!(judge(&f), StopVerdict::Block { .. }),
+            "the word appeared before the answer did; nothing reported the answer"
         );
     }
 
