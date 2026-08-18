@@ -69,40 +69,48 @@ pub fn observe_in(
     };
     let dir = home.join(".claude").join("jawata-studio");
 
-    if tool == "Read" {
+    // EVERY ARM YIELDS WHAT IT OWES; the function has ONE exit.
+    //
+    // The arms used to `return` their own silence, which left `nudge(...)`
+    // reachable only as the fall-through — so `compile_workspace`,
+    // `get_diagnostics`, `run_tests`, `find_tests`, `refactoring`, `Read`,
+    // `Edit`, `Write` and `MultiEdit` all returned before it. That is the
+    // compile/edit/test loop: exactly the loop in which error shapes recur,
+    // and therefore the only moment the nudge exists for. It could fire only
+    // on calls the observer had nothing else to say about.
+    //
+    // `None` means "this arm owes the session nothing of its own" — its side
+    // effects (the trail, the edit feed) have already happened.
+    let owed: Option<Outcome> = if tool == "Read" {
         if let Some(path) = crate::pipeline::edit_path_in(payload) {
             if is_java(&path) && !read_is_grounded(&dir, session, &path) {
                 emit(&dir, "read-ungrounded", &path);
             }
         }
-        return Outcome::Silent(SilenceReason::NothingToObserve);
-    }
-    if ends_with_any(tool, &["compile_workspace", "get_diagnostics", "run_tests"]) {
+        None
+    } else if ends_with_any(tool, &["compile_workspace", "get_diagnostics", "run_tests"]) {
         emit(&dir, "verify", tool);
         editfeed_resolve(&dir, session, &doc, None, config);
-        return Outcome::Silent(SilenceReason::NothingToObserve);
-    }
-    if ends_with_any(tool, &["find_tests"]) {
+        None
+    } else if ends_with_any(tool, &["find_tests"]) {
         emit(&dir, "verify", tool);
-        return Outcome::Silent(SilenceReason::NothingToObserve);
-    }
-    if ends_with_any(tool, &["refactoring"]) {
+        None
+    } else if ends_with_any(tool, &["refactoring"]) {
         if doc["tool_input"]["action"].as_str().unwrap_or("").starts_with("undo") {
             editfeed_resolve(&dir, session, &doc, Some("failed"), config);
         }
-        return Outcome::Silent(SilenceReason::NothingToObserve);
-    }
-    if matches!(tool, "Edit" | "Write" | "MultiEdit") {
+        None
+    } else if matches!(tool, "Edit" | "Write" | "MultiEdit") {
         let path = crate::pipeline::edit_path_in(payload).unwrap_or_default();
+        let mut slipped = None;
         if is_java(&path) {
             editfeed_hold(&dir, session, &doc);
             if request_only.to_lowercase().contains("jawata-fallback:") {
-                return slip(&dir, client, tool, &request_only, config);
+                slipped = Some(slip(&dir, client, tool, &request_only, config));
             }
         }
-        return Outcome::Silent(SilenceReason::NothingToObserve);
-    }
-    if matches!(tool, "Bash" | "Grep") {
+        slipped
+    } else if matches!(tool, "Bash" | "Grep") {
         let flat = request_only
             .replace("\\n", " ")
             .replace("\\r", " ")
@@ -112,9 +120,27 @@ pub fn observe_in(
             && flat.to_lowercase().contains(".java")
             && flat.to_lowercase().contains("jawata-fallback:")
         {
-            return slip(&dir, client, tool, &request_only, config);
+            Some(slip(&dir, client, tool, &request_only, config))
+        } else {
+            None
         }
+    } else {
+        None
+    };
+
+    // THE ARBITRATION TAIL — the one exit.
+    //
+    // A SLIP OUTRANKS A NUDGE. The slip is about the call just made and its
+    // steering is what the agent needs next; the nudge is about a shape that
+    // has been recurring for a while and is still owed on the next
+    // observation, because nothing is recorded unless it was actually
+    // emitted. Two injections in one response would only compete for the same
+    // attention.
+    if let Some(outcome) = owed {
+        return outcome;
     }
+    // Otherwise the nudge gets its turn — and when none is due it answers with
+    // the silent reason itself, which is what every arm used to return here.
     nudge(client, config)
 }
 
@@ -408,6 +434,124 @@ mod tests {
             "tool_name": tool, "session_id": "s1", "tool_input": input
         })
         .to_string()
+    }
+
+    /// A field pile carrying one shape at the nudge threshold — the state in
+    /// which a nudge is genuinely OWED, so a run that stays quiet is the
+    /// observer failing to say something it had.
+    fn seed_field(field_dir: &Path) -> HookConfig {
+        std::fs::create_dir_all(field_dir).unwrap();
+        let mut pile = String::from("{\"pileFormat\":1,\"contract\":1}\n");
+        for _ in 0..crate::field::NUDGE_THRESHOLD {
+            pile.push_str(
+                "{\"t\":1,\"tool\":\"run_tests\",\"kind\":\"run\",\"ok\":false,\
+                 \"code\":\"RUNNER_TIMEOUT\",\"lat\":5,\"client\":\"claude_code\",\"ver\":\"3_11_0\"}\n",
+            );
+        }
+        std::fs::write(field_dir.join("pile.jsonl"), pile).unwrap();
+        HookConfig {
+            // Port 1 refuses immediately: the slip bridge is allowed to try
+            // and fail fast — this suite must never depend on a live resident.
+            url: "http://127.0.0.1:1/mcp".into(),
+            token: "t".into(),
+            client: "claude-code".into(),
+            timeout_ms: None,
+            field_dir: Some(field_dir.to_string_lossy().into_owned()),
+        }
+    }
+
+    fn gate_payload() -> String {
+        let inner = serde_json::json!({"success": true, "data": {"errorCount": 0}}).to_string();
+        serde_json::json!({
+            "tool_name": "mcp__jawata__compile_workspace", "session_id": "s1",
+            "tool_input": {},
+            "tool_response": {"content": [{"text": inner}]}
+        })
+        .to_string()
+    }
+
+    /// D4 REACHABILITY (Sprint 28b): the nudge used to be the FALL-THROUGH of
+    /// five early returns, so `compile_workspace`, `get_diagnostics`,
+    /// `run_tests`, `find_tests`, `refactoring`, `Read`, `Edit`, `Write` and
+    /// `MultiEdit` all returned before it. That is the compile/edit/test loop —
+    /// the loop in which error shapes recur, which is the only reason the
+    /// nudge exists. It could fire only on calls the observer had nothing to
+    /// say about.
+    #[test]
+    fn the_nudge_is_owed_after_a_compile_workspace_observation() {
+        let home = scratch("nudge-after-gate");
+        let field = home.join("field");
+        let cfg = seed_field(&field);
+
+        let out = observe_in(&home, Client::ClaudeCode, &gate_payload(), Some(&cfg));
+
+        match out {
+            Outcome::Emitted(s) => assert!(
+                s.contains("/report"),
+                "the nudge points at /report: {s}"
+            ),
+            other => panic!(
+                "a compile that just ran in the loop where the shape recurs is exactly \
+                 when the pointer is owed — got {other:?}"
+            ),
+        }
+        let nudged = std::fs::read_to_string(field.join("nudged.log")).unwrap();
+        assert!(
+            nudged.contains("run_tests/run/RUNNER_TIMEOUT"),
+            "and the shape is recorded so it is never said twice: {nudged}"
+        );
+    }
+
+    /// The arbitration the single tail has to make: BOTH are owed on this
+    /// call. The slip is about the call just made and its steering is what the
+    /// agent needs next; the nudge is about a long-running shape that is still
+    /// owed on the next observation. Two injections would compete for the same
+    /// attention, so the slip takes it.
+    #[test]
+    fn a_slip_outranks_a_nudge_that_is_also_owed() {
+        let home = scratch("slip-outranks");
+        let field = home.join("field");
+        let cfg = seed_field(&field);
+        let p = payload(
+            "Bash",
+            serde_json::json!({
+                "command": "rg -n Foo src/Thing.java # jawata-fallback: a genuine reason"
+            }),
+        );
+
+        let out = observe_in(&home, Client::ClaudeCode, &p, Some(&cfg));
+
+        match out {
+            Outcome::Emitted(s) => {
+                assert!(s.contains("jawata-fallback recorded"), "the SLIP wins: {s}");
+                assert!(!s.contains("/report"), "and the nudge does not ride along: {s}");
+            }
+            other => panic!("a declared fallback still answers its steering, got {other:?}"),
+        }
+        assert!(
+            !field.join("nudged.log").exists(),
+            "the nudge was NOT spent on a response that never carried it — it is still owed"
+        );
+    }
+
+    /// THE WIRING CONTROL. Not about which arm wins: about the `nudge(...)`
+    /// call existing at all. Deleting it from the tail must turn this red —
+    /// the D4 nudge shipped once already as code nothing reached.
+    #[test]
+    fn an_ordinary_observation_still_carries_the_nudge_to_the_client() {
+        let home = scratch("nudge-wiring");
+        let field = home.join("field");
+        let cfg = seed_field(&field);
+        let p = payload("mcp__jawata__search_symbols", serde_json::json!({"query": "Foo*"}));
+
+        let out = observe_in(&home, Client::ClaudeCode, &p, Some(&cfg));
+
+        match out {
+            Outcome::Emitted(s) => assert!(s.contains("/report"), "names /report: {s}"),
+            other => panic!("the nudge must reach the client, got {other:?}"),
+        }
+        let nudged = std::fs::read_to_string(field.join("nudged.log")).unwrap();
+        assert!(nudged.contains("run_tests/run/RUNNER_TIMEOUT"), "{nudged}");
     }
 
     #[test]
