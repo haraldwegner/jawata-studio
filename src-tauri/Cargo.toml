@@ -4,6 +4,12 @@ version = "3.11.1"
 description = "Desktop manager for running JAWATA MCP across multiple Java projects."
 license = "AGPL-3.0-only"
 edition = "2021"
+# The crate lives in a workspace whose default-members carry TWO binaries
+# (jawata-studio, jawata-hook), so a bare `cargo run` — which is exactly what
+# `tauri dev` issues — could not choose and failed with "could not determine
+# which binary to run". Naming the app here fixes `npm run tauri dev` without
+# narrowing default-members, which is what makes `cargo test` cover both.
+default-run = "jawata-studio"
 
 [lib]
 name = "jawata_studio_lib"
