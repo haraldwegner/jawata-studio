@@ -587,6 +587,8 @@ export interface FieldCanaryResult {
   /** When the unbroken loading run began; null whenever it is not loading. */
   loadingSinceMillis: number | null;
   checkedAtMillis: number;
+  /** How long the store's own answer took. Measured, not asserted. */
+  recallMillis: number;
 }
 
 /**
@@ -613,6 +615,24 @@ export interface FieldRecallSignals {
   coverage: string;
 }
 
+/**
+ * Stage 5a. `recallOk` is binary and the failure was not — 3459 seconds of a
+ * read parked in a socket poll, with the port answering throughout.
+ */
+export type FieldStoreHealth = "unknown" | "healthy" | "slow" | "unavailable";
+
+export interface FieldStoreHealthReport {
+  health: FieldStoreHealth;
+  /** The dashboard word for the variant — a separate binding from the variant. */
+  word: string;
+  worstWorkspace: string;
+  slowestMillis: number;
+  /** Derived from the hook's own budget, not chosen. */
+  slowAboveMillis: number;
+  /** Why the threshold is there. Rendered WITH the verdict. */
+  why: string;
+}
+
 export interface FieldWorkspaceStatus {
   workspace: string;
   fieldDir: string;
@@ -632,6 +652,7 @@ export interface FieldStatus {
   badge: number;
   canary: FieldCanaryResult[];
   canaryHealth: FieldCanaryHealth;
+  store: FieldStoreHealthReport;
   recall: FieldRecallSignals;
 }
 

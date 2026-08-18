@@ -6069,6 +6069,11 @@ fn call_tool_json(
 /// The timeouts are generous on purpose: a resident that is merely BUSY must
 /// not be reported as broken.
 fn canary_probe(workspace: &str, url: &str, token: &str) -> crate::field_view::CanaryResult {
+    // Stage 5a: MEASURED, not asserted. `recall_ok` is binary and the incident
+    // was not — 3459 seconds of a read parked in `Net.poll`, with the port
+    // answering throughout. The clock starts here and stops on the answer, so
+    // what the tile reports is the store's own latency and not the studio's.
+    let started = std::time::Instant::now();
     let recall = call_experience(
         url,
         token,
@@ -6086,6 +6091,7 @@ fn canary_probe(workspace: &str, url: &str, token: &str) -> crate::field_view::C
         }),
         15,
     );
+    let recall_millis = started.elapsed().as_millis() as u64;
     let compiler = call_tool_json(
         url,
         token,
@@ -6102,6 +6108,7 @@ fn canary_probe(workspace: &str, url: &str, token: &str) -> crate::field_view::C
         url,
         recall,
         compiler,
+        recall_millis,
         crate::field_view::now_millis(),
     )
 }
@@ -14005,6 +14012,75 @@ mod canary_tests {
         assert_eq!(CanaryHealth::Degraded, canary_health(&[result], 0));
     }
 
+/// STAGE 5a, END TO END: a resident that ANSWERS, correctly, and too slowly
+    /// to be of any use.
+    ///
+    /// This is the state a binary check cannot see and the one that actually
+    /// happened: 3459 seconds of a read parked in `Net.poll` while the port
+    /// went on accepting. `recall_ok` is true here — the store spoke, the
+    /// answer was well-formed, the canary is green on every question it used
+    /// to ask. Only the CLOCK says the recall channel is dead.
+    ///
+    /// Driven through the real `canary_probe`, so what is proven is the whole
+    /// wire: the probe measures, the measurement survives into the reading,
+    /// and the judge names it. A unit test on `store_health` proves only the
+    /// last of those three.
+    #[test]
+    fn a_resident_that_answers_too_slowly_reads_as_slow_not_as_healthy() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Two requests: the recall (stalled) and the compiler question.
+        std::thread::spawn(move || {
+            let mut first = true;
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut buf = [0u8; 8192];
+                let _ = stream.read(&mut buf);
+                if first {
+                    // Past the hook's whole budget, and far under the canary's
+                    // own 15 s timeout — the exact band where the studio said
+                    // "healthy" while every hook recall was already giving up.
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        crate::field_view::STORE_SLOW_MILLIS + 250,
+                    ));
+                    first = false;
+                }
+                let inner = r#"{"success":true,"data":{"entries":[],"absence":true}}"#;
+                let body = format!(
+                    r#"{{"jsonrpc":"2.0","id":1,"result":{{"content":[{{"type":"text","text":{}}}]}}}}"#,
+                    serde_json::to_string(inner).unwrap()
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+
+        let reading = canary_probe_at("sluggish", &format!("http://{addr}/mcp"), "t");
+        assert!(
+            reading.recall_ok,
+            "the premise of this test is that the store ANSWERED: {}",
+            reading.recall_detail
+        );
+        assert!(
+            reading.recall_millis > crate::field_view::STORE_SLOW_MILLIS,
+            "the probe must have MEASURED the stall, not merely survived it: {} ms",
+            reading.recall_millis
+        );
+
+        let verdict = crate::field_view::store_health(&[reading]);
+        assert_eq!(
+            crate::field_view::StoreHealth::Slow,
+            verdict.health,
+            "a store this slow is unusable by the hook and must not read as healthy"
+        );
+        assert_eq!("sluggish", verdict.worst_workspace);
+    }
+
     /// And a resident that answers both questions is green — so the test above
     /// is a discriminator rather than a function that always says "broken".
     #[test]
@@ -14014,6 +14090,7 @@ mod canary_tests {
             "http://127.0.0.1:9/mcp",
             Ok(serde_json::json!({"success": true, "data": {}})),
             Ok(serde_json::json!({"success": true, "data": {"sourceLength": 90000}})),
+            12, // a fast, healthy answer
             0,
         );
         assert!(green.green);

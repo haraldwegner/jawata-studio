@@ -31,6 +31,7 @@
 
   $: utilization = status?.utilization ?? null;
   $: recall = status?.recall ?? null;
+  $: store = status?.store ?? null;
   $: sharePercent =
     utilization && utilization.percent !== null && utilization.percent !== undefined
       ? `${utilization.percent}%`
@@ -147,6 +148,15 @@
       <span class="field-stat-value">{canaryHealth}</span>
       <span class="field-stat-label">residents {canaryWord}</span>
     </div>
+    <div
+      class="field-stat"
+      class:field-stat-degraded={store?.health === "slow" || store?.health === "unavailable"}
+    >
+      <span class="field-stat-value">{store?.word ?? "not checked yet"}</span>
+      <span class="field-stat-label">
+        knowledge store{#if store && store.slowestMillis > 0} · {store.slowestMillis} ms{/if}
+      </span>
+    </div>
   </div>
 
   <div class="settings-grid">
@@ -194,6 +204,11 @@
         <li><span>{recall?.unavailable ?? 0}</span> store unavailable</li>
       </ul>
       <p class="field-caveat">{recall?.coverage ?? ""}</p>
+      {#if store && (store.health === "slow" || store.health === "unavailable")}
+        <p class="field-caveat">
+          {store.worstWorkspace}: {store.why} (over {store.slowAboveMillis} ms)
+        </p>
+      {/if}
     </section>
 
     <section class="panel stack settings-section">

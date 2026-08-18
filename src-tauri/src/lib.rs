@@ -1006,6 +1006,7 @@ mod tray_icon_tests {
             "http://127.0.0.1:65000/mcp",
             Err("request failed: connection refused".into()),
             Err("request failed: connection refused".into()),
+            0, // never answered, so no latency to report
             0,
         );
         assert!(!degraded.green);

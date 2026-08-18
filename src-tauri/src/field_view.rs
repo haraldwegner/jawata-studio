@@ -709,6 +709,13 @@ pub struct CanaryResult {
     /// `None` whenever the workspace is not loading.
     pub loading_since_millis: Option<u64>,
     pub checked_at_millis: u64,
+    /// How long the store's own answer took, in milliseconds.
+    ///
+    /// Stage 5a: `recall_ok` is BINARY, and the failure that motivated all of
+    /// this was not binary — it was 3459 seconds of a read parked in
+    /// `Net.poll`. A store answering in nine seconds passes every check above
+    /// and is nonetheless broken for the one consumer that matters.
+    pub recall_millis: u64,
 }
 
 /// The fixture the compiler question asks about: the one type every Java
@@ -766,6 +773,7 @@ pub fn judge_canary(
     url: &str,
     recall: Result<serde_json::Value, String>,
     compiler: Result<serde_json::Value, String>,
+    recall_millis: u64,
     now_millis: u64,
 ) -> CanaryResult {
     let (recall_ok, recall_detail) = match recall {
@@ -826,6 +834,7 @@ pub fn judge_canary(
     CanaryResult {
         workspace: workspace.to_string(),
         url: url.to_string(),
+        recall_millis,
         recall_ok,
         recall_detail,
         compiler_ok,
@@ -907,6 +916,113 @@ pub fn canary_health(results: &[CanaryResult], now_millis: u64) -> CanaryHealth 
 }
 
 // ---------------------------------------------------------------------------
+// Stage 5a — the store says when it is UNWELL, not only when it is silent
+// ---------------------------------------------------------------------------
+
+/// The point at which a store that is still answering has already broken the
+/// consumer that matters.
+///
+/// **Derived, not chosen.** The hook gives its HTTP call `STDIN_DEADLINE`
+/// (1500 ms) and tells the engine to answer inside that minus a 300 ms
+/// round-trip margin — so 1200 ms is the budget every recall on this machine
+/// actually runs on. Above it the hook's recalls are already timing out
+/// silently, one prompt at a time, while the studio's own canary (which buys
+/// 10 s) goes on reporting a healthy store. That gap IS the invisible
+/// degradation this tile exists to end.
+///
+/// For scale: a healthy recall measured **178 ms** server-side on the live
+/// fleet. This threshold is nearly seven times that, so it is not a hair
+/// trigger — it is the line past which a capability is gone.
+pub const STORE_SLOW_MILLIS: u64 = 1_200;
+
+/// What the knowledge layer is doing, as a human-visible state.
+///
+/// Ordered by severity so the worst resident sets the machine's verdict: one
+/// unreadable store is not offset by another that is fine.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StoreHealth {
+    /// Nothing probed yet. Never rendered as healthy.
+    #[default]
+    Unknown,
+    Healthy,
+    /// Answering, and too slowly for the hook to use — see [`STORE_SLOW_MILLIS`].
+    Slow,
+    /// The layer could not be read at all.
+    Unavailable,
+}
+
+impl StoreHealth {
+    /// The dashboard word. Kept beside the variant because the two are separate
+    /// bindings: C1 shipped a Rust-only variant that rendered as the fallback,
+    /// and the binding test now asserts the WORD.
+    pub fn word(self) -> &'static str {
+        match self {
+            StoreHealth::Unknown => "not checked yet",
+            StoreHealth::Healthy => "answering",
+            StoreHealth::Slow => "too slow to use",
+            StoreHealth::Unavailable => "unreadable",
+        }
+    }
+}
+
+/// The knowledge layer's state across every probed resident, with the evidence
+/// that produced it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoreHealthReport {
+    pub health: StoreHealth,
+    pub word: String,
+    /// The workspace that set the verdict — empty when nothing was probed.
+    pub worst_workspace: String,
+    /// Its answer time. The number a human can act on.
+    pub slowest_millis: u64,
+    /// The threshold, carried so the number is readable without the source.
+    pub slow_above_millis: u64,
+    /// Why the threshold is where it is. Rendered WITH the verdict, for the
+    /// reason `Utilization` carries its caveat: a bare "slow" invites tuning
+    /// the number instead of fixing the store.
+    pub why: String,
+}
+
+/// Judge the knowledge layer from the canary readings. Pure.
+///
+/// A resident that is still LOADING is excluded: its store genuinely is not
+/// serving yet, and counting it would paint every cold start red — the exact
+/// defect `#16` was filed for, in a second place.
+pub fn store_health(results: &[CanaryResult]) -> StoreHealthReport {
+    let mut report = StoreHealthReport {
+        slow_above_millis: STORE_SLOW_MILLIS,
+        why: format!(
+            "The hook gives a recall {STORE_SLOW_MILLIS} ms before it gives up. A store \
+             answering slower than that is already failing every recall on this machine, \
+             one prompt at a time, while still looking alive here."
+        ),
+        word: StoreHealth::Unknown.word().to_string(),
+        ..Default::default()
+    };
+    for r in results.iter().filter(|r| !r.loading) {
+        let state = if !r.recall_ok {
+            StoreHealth::Unavailable
+        } else if r.recall_millis > STORE_SLOW_MILLIS {
+            StoreHealth::Slow
+        } else {
+            StoreHealth::Healthy
+        };
+        // Worst wins, and ties go to the slower reading — so the workspace
+        // named is always the one a human should look at first.
+        if state > report.health || (state == report.health && r.recall_millis > report.slowest_millis)
+        {
+            report.health = state;
+            report.worst_workspace = r.workspace.clone();
+            report.slowest_millis = r.recall_millis;
+        }
+    }
+    report.word = report.health.word().to_string();
+    report
+}
+
+// ---------------------------------------------------------------------------
 // The whole status
 // ---------------------------------------------------------------------------
 
@@ -938,6 +1054,8 @@ pub struct FieldStatus {
     pub badge: u64,
     pub canary: Vec<CanaryResult>,
     pub canary_health: CanaryHealth,
+    /// Stage 5a: is the knowledge layer answering, slow, or unreadable?
+    pub store: StoreHealthReport,
     /// Stage 5: what the recall gate saw, with its coverage attached.
     pub recall: RecallSignals,
 }
@@ -1003,6 +1121,7 @@ pub fn status_from(
             .collect(),
         badge: folded.iter().map(|w| w.pile.badge).sum(),
         canary_health: canary_health(&canary, now_millis),
+        store: store_health(&canary),
         recall,
         canary,
         channels,
@@ -1404,6 +1523,7 @@ mod tests {
             "http://127.0.0.1:1/mcp",
             ok(serde_json::json!({"success": true, "data": {"entries": []}})),
             ok(serde_json::json!({"success": true, "data": {"sourceLength": 12345}})),
+            12, // a fast, healthy answer
             7,
         );
         assert!(result.green);
@@ -1422,6 +1542,7 @@ mod tests {
             "u",
             ok(serde_json::json!({"success": true, "data": {"entries": [], "absence": true}})),
             ok(serde_json::json!({"data": {"typeName": "java.lang.String"}})),
+            12, // a fast, healthy answer
             0,
         );
         assert!(result.green, "{}", result.recall_detail);
@@ -1446,6 +1567,7 @@ mod tests {
                 }
             })),
             ok(serde_json::json!({"data": {"typeName": "java.lang.String"}})),
+            12, // a fast, healthy answer
             0,
         );
         assert!(!result.recall_ok, "an unreadable store is not a store that spoke");
@@ -1469,6 +1591,7 @@ mod tests {
                 "error": {"code": "INVALID_PARAMETER", "message": "kind is required"}
             })),
             ok(serde_json::json!({"data": {"typeName": "java.lang.String"}})),
+            12, // a fast, healthy answer
             0,
         );
         assert!(result.recall_ok, "the store answered — it just refused our question");
@@ -1481,6 +1604,7 @@ mod tests {
             "u",
             ok(serde_json::json!({"success": true})),
             ok(serde_json::json!({"success": false, "error": "no project loaded"})),
+            12, // a fast, healthy answer
             0,
         );
         assert!(result.recall_ok, "the store still answers");
@@ -1509,6 +1633,7 @@ mod tests {
                 "success": false,
                 "error": {"code": LOADING_ERROR_CODE, "message": "project is loading"}
             })),
+            12, // a fast, healthy answer
             0,
         );
         assert!(result.recall_ok, "the store still answers");
@@ -1541,6 +1666,7 @@ mod tests {
             "u",
             Err("request failed: connection refused".into()),
             ok(serde_json::json!({"success": false, "error": {"code": LOADING_ERROR_CODE}})),
+            12, // a fast, healthy answer
             0,
         );
         assert!(result.loading, "the compiler half did say it is loading");
@@ -1561,6 +1687,108 @@ mod tests {
     /// fail-closed change, silently stopped being bounded) with every unit test still green.
     /// So assert the wiring itself — the same idiom this file already uses to prove the view
     /// renders what the fold produces.
+
+
+    // -----------------------------------------------------------------
+    // Stage 5a — the store says when it is UNWELL, not only when it is silent
+    // -----------------------------------------------------------------
+
+    fn reading(workspace: &str, ok: bool, millis: u64, loading: bool) -> CanaryResult {
+        CanaryResult {
+            workspace: workspace.to_string(),
+            url: "u".into(),
+            recall_ok: ok,
+            recall_detail: String::new(),
+            compiler_ok: true,
+            compiler_detail: String::new(),
+            green: ok,
+            loading,
+            loading_since_millis: None,
+            checked_at_millis: 0,
+            recall_millis: millis,
+        }
+    }
+
+    /// THE MEASURED INCIDENT, in the shape the tile has to catch. The store
+    /// answered throughout — `recall_ok` was true the whole time — while every
+    /// hook recall on the machine was already timing out. A binary check calls
+    /// this healthy; that is why the number exists.
+    #[test]
+    fn a_store_that_answers_too_slowly_to_use_is_not_healthy() {
+        let r = store_health(&[reading("alpha", true, STORE_SLOW_MILLIS + 1, false)]);
+        assert_eq!(StoreHealth::Slow, r.health);
+        assert_eq!("alpha", r.worst_workspace);
+        assert_eq!(STORE_SLOW_MILLIS + 1, r.slowest_millis);
+        assert_eq!("too slow to use", r.word);
+        assert!(
+            r.why.contains(&STORE_SLOW_MILLIS.to_string()),
+            "the verdict must carry WHY the line is where it is, or the reader \
+             tunes the number instead of fixing the store: {}",
+            r.why
+        );
+    }
+
+    /// C5a's own exit: an injected unavailable reaches the tile.
+    #[test]
+    fn an_unreadable_store_reaches_the_tile_as_unreadable() {
+        let r = store_health(&[reading("alpha", false, 40, false)]);
+        assert_eq!(StoreHealth::Unavailable, r.health);
+        assert_eq!("unreadable", r.word);
+    }
+
+    /// The worst resident sets the verdict — one unreadable store is not offset
+    /// by another that is fine — and the workspace NAMED is the one to look at.
+    #[test]
+    fn the_worst_resident_sets_the_machine_verdict() {
+        let r = store_health(&[
+            reading("fast", true, 20, false),
+            reading("wedged", false, 15_000, false),
+            reading("slow", true, 5_000, false),
+        ]);
+        assert_eq!(StoreHealth::Unavailable, r.health);
+        assert_eq!("wedged", r.worst_workspace);
+    }
+
+    /// A resident still IMPORTING is excluded. Its store genuinely is not
+    /// serving yet, and counting it would paint every cold start red — the
+    /// defect #16 was filed for, reappearing in a second place.
+    #[test]
+    fn a_loading_resident_does_not_make_the_store_look_broken() {
+        let r = store_health(&[
+            reading("importing", false, 0, true),
+            reading("ready", true, 30, false),
+        ]);
+        assert_eq!(StoreHealth::Healthy, r.health);
+        assert_eq!("ready", r.worst_workspace);
+    }
+
+    /// Nothing probed is UNKNOWN, never healthy — and the threshold's
+    /// explanation is there anyway, because that is when a blank tile misleads.
+    #[test]
+    fn nothing_probed_is_never_healthy() {
+        let r = store_health(&[]);
+        assert_eq!(StoreHealth::Unknown, r.health);
+        assert_eq!("not checked yet", r.word);
+        assert_eq!(STORE_SLOW_MILLIS, r.slow_above_millis);
+        assert!(!r.why.is_empty());
+    }
+
+    /// THE THRESHOLD IS DERIVED, and this pins the derivation rather than the
+    /// number. It is the hook's own store budget: `STDIN_DEADLINE` (1500 ms)
+    /// minus the 300 ms round-trip margin `pipeline::with_budget` subtracts.
+    /// Change either side of that and this test says so, instead of the studio
+    /// quietly calling a store healthy that the hook can no longer use.
+    #[test]
+    fn the_slow_line_is_the_hooks_own_budget() {
+        let hook_timeout_millis = 1_500u64;
+        let hook_margin_millis = 300u64;
+        assert_eq!(
+            hook_timeout_millis - hook_margin_millis,
+            STORE_SLOW_MILLIS,
+            "the slow line must BE the hook's effective budget — above it the \
+             recall channel is already dead and nothing else would say so"
+        );
+    }
 
     // -----------------------------------------------------------------
     // Stage 5 — the recall gate's counters
@@ -1676,6 +1904,7 @@ mod tests {
                 "u",
                 ok(serde_json::json!({"success": true})),
                 ok(serde_json::json!({"success": false, "error": {"code": code}})),
+                12, // a fast, healthy answer
                 0,
             );
             assert!(!result.loading, "{code} is a failure, not a loading answer");
@@ -1696,6 +1925,7 @@ mod tests {
             "u",
             ok(serde_json::json!({"success": true})),
             ok(serde_json::json!({"success": false, "error": {"code": LOADING_ERROR_CODE}})),
+            12, // a fast, healthy answer
             0,
         );
         result.loading_since_millis = Some(0);
@@ -1721,6 +1951,7 @@ mod tests {
                 "u",
                 ok(serde_json::json!({"success": true})),
                 ok(serde_json::json!({"success": false, "error": {"code": LOADING_ERROR_CODE}})),
+                12, // a fast, healthy answer
                 0,
             )
         };
@@ -1743,6 +1974,7 @@ mod tests {
             "u",
             ok(serde_json::json!({"success": true})),
             ok(serde_json::json!({"success": true, "data": {"sourceLength": 1}})),
+            12, // a fast, healthy answer
             0,
         )];
         stitch_loading_runs(&second, &mut recovered, 500_000);
@@ -1777,7 +2009,14 @@ mod tests {
             ],
             &[silence.clone(), root.join("never-deployed.log")],
             &outcomes,
-            vec![judge_canary("alpha", "u", Err("connection refused".into()), Err("connection refused".into()), 1)],
+            vec![judge_canary(
+                "alpha",
+                "u",
+                Err("connection refused".into()),
+                Err("connection refused".into()),
+                12, // a fast, healthy answer
+                1,
+            )],
             NOW,
         );
 
@@ -1806,7 +2045,7 @@ mod tests {
 /// temptation actually lives — a view has a window to put a box in front of.
 #[cfg(test)]
 mod interruption_scans {
-    use super::{RecallSignals, RECALL_COVERAGE};
+    use super::{store_health, RecallSignals, StoreHealth, RECALL_COVERAGE};
     use std::path::{Path, PathBuf};
 
     fn manifest() -> PathBuf {
@@ -2013,6 +2252,29 @@ mod interruption_scans {
                 view.contains(key.as_str()),
                 "the view drops `recall.{key}` on the floor — the fold computes \
                  it and nothing renders it"
+            );
+        }
+
+        // Stage 5a, same instrument: the store report's fields, derived.
+        let store_shape = serde_json::to_value(store_health(&[])).unwrap();
+        for key in store_shape.as_object().unwrap().keys() {
+            assert!(
+                view.contains(key.as_str()),
+                "the view drops `store.{key}` on the floor"
+            );
+        }
+
+        // AND THE WORDS. `health` is an enum, and a datum NAME cannot pin an
+        // enum — that is exactly how CanaryHealth::Loading shipped rendering
+        // its fallback. Every variant's displayed word must be somewhere the
+        // view can produce: three come from `word` (which the view renders
+        // raw), and the two the view BRANCHES on by variant name are asserted
+        // as branches.
+        for variant in [StoreHealth::Slow, StoreHealth::Unavailable] {
+            assert!(
+                view.contains(&format!("\"{}\"", serde_json::to_value(variant).unwrap().as_str().unwrap())),
+                "the view never branches on StoreHealth::{variant:?} — a store that \
+                 is {variant:?} would render as ordinary health"
             );
         }
 
