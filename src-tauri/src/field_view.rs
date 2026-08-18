@@ -1635,8 +1635,11 @@ mod interruption_scans {
         vec![
             root.join("src").join("field_view.rs"),
             root.join("src").join("commands.rs"),
+            // FieldSeatTile.svelte left this list when the seat lane left the
+            // page (Harald's ruling, 2026-08-18): its go-silent control moved
+            // into FieldView's header; the seat roster returns as its own menu
+            // item in Sprint 28f and rejoins this render path then.
             web.join("FieldView.svelte"),
-            web.join("FieldSeatTile.svelte"),
         ]
     }
 
@@ -1747,19 +1750,23 @@ mod interruption_scans {
         );
     }
 
-    /// The seeded-render half: every datum the fold produces has somewhere to
-    /// land, and the two switches BOTH have a visible surface on the tile. A
-    /// view that renders half the fold is how a shipped-but-unwired headline
-    /// happens — this sprint's own predecessor did exactly that.
+    /// The seeded-render half: every datum the fold produces for THIS page has
+    /// somewhere to land. A view that renders half the fold is how a
+    /// shipped-but-unwired headline happens — this sprint's own predecessor did
+    /// exactly that.
+    ///
+    /// The seat lane left the page (Harald's ruling, 2026-08-18): the per-seat
+    /// data (posted history, reminder state, nudged shapes, the no-nudges
+    /// switch) is deliberately UNRENDERED until Sprint 28f's Seats page, and
+    /// this test's enumeration shrank with the page rather than asserting a
+    /// binding for a surface that no longer exists. What survived — the
+    /// go-silent switch — is asserted below, on the view itself.
     #[test]
     fn the_view_binds_every_datum_the_fold_produces() {
         let web = manifest().join("..").join("src").join("lib").join("components");
         let view = std::fs::read_to_string(web.join("FieldView.svelte")).unwrap();
-        let tile = std::fs::read_to_string(web.join("FieldSeatTile.svelte")).unwrap();
-        let both = format!("{view}\n{tile}");
 
         for datum in [
-            // the field view
             "badge",
             "shapes",
             "deadChannels",
@@ -1770,17 +1777,11 @@ mod interruption_scans {
             "shellFallbacks",
             "jawataCalls",
             "canaryHealth",
-            // the /report tile
-            "posted",
-            "reminderReason",
-            "strikes",
-            "lastRemindedAtMillis",
-            "nudgedShapes",
+            // the go-silent control, survived from the seat lane
             "silenced",
-            "nudges",
         ] {
             assert!(
-                both.contains(datum),
+                view.contains(datum),
                 "the view drops `{datum}` on the floor — the fold computes it and \
                  nothing renders it"
             );
@@ -1797,17 +1798,20 @@ mod interruption_scans {
              healthy cold start (#16)"
         );
 
-        // BOTH switches have a control, not just the checkbox. The plan's exit
-        // clause asks for the no-nudges switch's VISIBLE SURFACE by name.
-        let checkboxes = tile.matches("type=\"checkbox\"").count();
+        // The go-silent switch has a VISIBLE control in the header, and it
+        // writes through the atomic setter — the same on-disk state the hook
+        // reads, so the hook-side contract test stays honest.
         assert!(
-            checkboxes >= 2,
-            "the tile carries the go-silent checkbox AND the no-nudges switch, \
-             found {checkboxes} checkbox control(s)"
+            view.matches("type=\"checkbox\"").count() >= 1,
+            "the header carries the go-silent checkbox"
         );
         assert!(
-            tile.contains("fieldSetSilence"),
-            "and the controls write through the atomic setter"
+            view.contains("fieldSetSilence"),
+            "and the control writes through the atomic setter"
+        );
+        assert!(
+            view.contains("/report"),
+            "the header names the /report seat — the page's whole outbound path"
         );
     }
 }

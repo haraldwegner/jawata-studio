@@ -439,7 +439,7 @@
           on:click={() => (currentView = 'field')}
           type="button"
         >
-          Field
+          Reporting
         </button>
         <button
           class="tab {currentView === 'settings' ? 'active' : ''}"

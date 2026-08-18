@@ -2,18 +2,22 @@
   // Sprint 28b (D2 + D10 + D6): the field view.
   //
   // PASSIVE BY CONSTRUCTION. This view renders what jawata recorded locally and
-  // offers the two switches on the /report tile. It mounts nothing over the
+  // offers the go-silent switch in its header. It mounts nothing over the
   // window, it opens nothing, and a failing canary changes a colour here and on
   // the tray icon rather than interrupting anyone. That is asserted from the
   // Rust side, not merely stated here: field_view.rs::interruption_scans reads
   // this file and fails the build's own suite if an interrupting surface ever
   // appears in it.
   //
+  // Harald's ruling (2026-08-18): the SEAT LANE left this page — a Seats menu
+  // item is Sprint 28f's work. What survived it, moved into the header: the
+  // /report mention and the go-silent control. The no-nudges switch is parked
+  // until 28f (its on-disk state persists; a user who set it keeps it).
+  //
   // LAYOUT: the app-wide panel / settings-grid / section-intro classes, as the
   // Memory view uses them.
   import { onDestroy, onMount } from "svelte";
-  import FieldSeatTile from "./FieldSeatTile.svelte";
-  import { fieldStatus, type FieldStatus } from "../api/tauri";
+  import { fieldSetSilence, fieldStatus, type FieldStatus } from "../api/tauri";
 
   export let disabled = false;
 
@@ -36,6 +40,31 @@
     .sort((a, b) => b.count - a.count)
     .slice(0, 8);
   $: canaryHealth = status?.canaryHealth ?? "unknown";
+  // The go-silent state, aggregated: the model is PER-WORKSPACE (each has its
+  // own field/state.json), but "stop reminding me" is a machine-level intent.
+  // Checked = every workspace silenced; indeterminate = they disagree (a state
+  // the removed per-workspace tiles could produce). Granularity returns with
+  // 28f's Seats page.
+  $: allSilenced = workspaces.length > 0 && workspaces.every((w) => w.lane.silenced);
+  $: someSilenced = workspaces.some((w) => w.lane.silenced);
+  let silenceBusy = false;
+  let silenceError = "";
+
+  /** Fan the existing per-workspace command out to every workspace. */
+  async function onGoSilent(event: Event) {
+    const checked = (event.currentTarget as HTMLInputElement).checked;
+    silenceBusy = true;
+    silenceError = "";
+    try {
+      for (const w of workspaces) {
+        status = await fieldSetSilence(w.workspace, null, checked);
+      }
+    } catch (error) {
+      silenceError = String(error);
+    } finally {
+      silenceBusy = false;
+    }
+  }
   $: canaryWord =
     canaryHealth === "green"
       ? "answering"
@@ -70,13 +99,31 @@
 
 <section class="panel stack runtime-settings-root field-root">
   <div>
-    <h2>Field</h2>
+    <h2>Field Reporting</h2>
     <p class="muted">
       What jawata recorded on THIS machine while you worked: shapes only — tool name,
       kind, error code, counts, latency bucket, client and version. No file paths, no
-      symbol names, no message text, and nothing leaves this machine unless you run
-      <code>/report</code> and post it yourself.
+      symbol names, no message text. Nothing leaves this machine unless you post it
+      yourself: type <code>/report</code> in any client to turn a shape into a bug
+      report you review and file from your own GitHub account.
     </p>
+    <label class="checkbox-row">
+      <input
+        type="checkbox"
+        checked={allSilenced}
+        indeterminate={someSilenced && !allSilenced}
+        disabled={disabled || silenceBusy || workspaces.length === 0}
+        on:change={onGoSilent}
+      />
+      <span>
+        Go silent about failures — stop the periodic reminder
+        {#if workspaces.length > 1}(applies to both workspaces){/if}
+        {#if allSilenced}<em>(currently off by your choice)</em>{/if}
+      </span>
+    </label>
+    {#if silenceError}
+      <p class="field-error">{silenceError}</p>
+    {/if}
   </div>
 
   {#if loadError}
@@ -218,30 +265,10 @@
     </section>
   </div>
 
-  <section class="panel stack settings-section">
-    <div class="section-intro">
-      <h3>Seats</h3>
-      <p class="muted">
-        One tile per seat. <code>/report</code> ships here now; the rest of the roster
-        arrives with Sprint 28f.
-      </p>
-    </div>
-    {#if workspaces.length === 0}
-      <p class="muted">
-        No workspace has a resident yet, so there is no recording and no seat state.
-      </p>
-    {:else}
-      <div class="seat-lane">
-        {#each workspaces as entry (entry.workspace)}
-          <FieldSeatTile
-            {disabled}
-            {entry}
-            on:changed={(event) => (status = event.detail)}
-          />
-        {/each}
-      </div>
-    {/if}
-  </section>
+  <!-- The seat lane left this page (Harald, 2026-08-18): seats get their own
+       menu item in Sprint 28f. The go-silent switch and the /report mention
+       moved into the header above; the no-nudges switch is parked until 28f,
+       its on-disk state untouched. -->
 </section>
 
 <style>
@@ -277,11 +304,6 @@
   .field-error,
   .field-dead {
     color: #a8621a;
-  }
-  .seat-lane {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(22rem, 1fr));
-    gap: 1rem;
   }
   .shape-list {
     list-style: none;
