@@ -43,11 +43,34 @@ const FORBIDDEN: &[&str] = &[
 ///
 /// Blanking literal contents also removes a false-positive class the old
 /// version had: a string that happens to contain `.unwrap()` is not code.
-fn lex(line: &str, block_depth: &mut i32) -> (String, i32) {
+fn lex(line: &str, block_depth: &mut i32, raw_string: &mut Option<usize>) -> (String, i32) {
     let chars: Vec<char> = line.chars().collect();
     let mut code = String::with_capacity(chars.len());
     let mut delta = 0i32;
     let mut i = 0;
+    // Inside a MULTI-LINE raw string (round-5, live in the tree): the raw-string
+    // scan below used to be line-local, so a r#"…"# whose closing `"#` sat on a
+    // LATER line left the continuation lines lexed as fresh code. A test
+    // fixture's `"}}"#,` tail then contributed -2 to the depth, collapsed the
+    // test-module skip to zero, and the scanner read test code as production —
+    // while the `< 0` clamp kept its own balance check green. String state now
+    // crosses lines exactly the way block-comment state always has.
+    if let Some(hashes) = *raw_string {
+        while i < chars.len() {
+            if chars[i] == '"' && (1..=hashes).all(|k| chars.get(i + k) == Some(&'#')) {
+                i += hashes + 1;
+                *raw_string = None;
+                break;
+            }
+            i += 1;
+        }
+        for _ in 0..i {
+            code.push(' ');
+        }
+        if raw_string.is_some() {
+            return (code, 0);       // the whole line was string content
+        }
+    }
     while i < chars.len() {
         let c = chars[i];
         if *block_depth > 0 {
@@ -97,15 +120,23 @@ fn lex(line: &str, block_depth: &mut i32) -> (String, i32) {
                 code.push(' ');
                 j += 1;
                 // Scan to the closing quote followed by `hashes` hashes.
+                let mut closed = false;
                 while j < chars.len() {
                     if chars[j] == '"' {
                         let closes = (1..=hashes).all(|k| chars.get(j + k) == Some(&'#'));
                         if closes {
                             j += hashes + 1;
+                            closed = true;
                             break;
                         }
                     }
                     j += 1;
+                }
+                if !closed {
+                    // The string continues on the NEXT line — carry the state,
+                    // like block_depth, instead of re-lexing string content as
+                    // code (the round-5 defeat).
+                    *raw_string = Some(hashes);
                 }
                 for _ in i..j.min(chars.len()) {
                     code.push(' ');
@@ -223,9 +254,10 @@ fn production_lines(text: &str) -> (Vec<(usize, String)>, i32, bool) {
     let mut skip_depth: i32 = 0;
     let mut arming = false;
     let mut block_depth = 0i32;
+    let mut raw_string: Option<usize> = None;
 
     for (n, raw) in text.lines().enumerate() {
-        let (code, delta) = lex(raw, &mut block_depth);
+        let (code, delta) = lex(raw, &mut block_depth, &mut raw_string);
 
         // A brace ON THIS LINE distinguishes "the item is still to come" from
         // "the item opened and closed here" — `#[cfg(test)] fn helper() {}` has
@@ -259,9 +291,18 @@ fn production_lines(text: &str) -> (Vec<(usize, String)>, i32, bool) {
         }
         if skip_depth > 0 {
             skip_depth += delta;
-            if skip_depth < 0 {
-                skip_depth = 0;
-            }
+            // A NEGATIVE depth is a lexer desync, and it must FAIL, not resume.
+            // The old arm clamped it to zero — which is how the round-5 raw-string
+            // defeat stayed invisible: the desync collapsed the skip, the clamp
+            // swallowed the evidence, and the balance self-check reported clean
+            // while test code was being scanned as production.
+            assert!(
+                skip_depth >= 0,
+                "lexer desync at line {}: skip depth went negative ({skip_depth}) — \
+                 the scanner has lost track of what is test code; fix the lexer, \
+                 do not trust this run's findings",
+                n + 1
+            );
             continue;
         }
         out.push((n + 1, code));

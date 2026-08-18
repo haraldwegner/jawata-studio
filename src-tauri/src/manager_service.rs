@@ -6075,6 +6075,14 @@ fn canary_probe(workspace: &str, url: &str, token: &str) -> crate::field_view::C
         serde_json::json!({
             "kind": "recall",
             "symptom": crate::field_view::CANARY_RECALL_SYMPTOM,
+            // jawata-mcp#37: state OUR deadline, strictly under the 15 s HTTP
+            // timeout below. Without it, the engine's own default equals our
+            // timeout exactly, and whether a wedged store answers with the typed
+            // KNOWLEDGE_UNAVAILABLE (which judge_canary reads) or with a bare
+            // transport timeout is a dead-heat race — the same rule the hook
+            // follows in LiveStore::ask, stated here because this probe does not
+            // go through that seam.
+            "budget_ms": 10_000,
         }),
         15,
     );
