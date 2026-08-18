@@ -53,8 +53,21 @@ fn every_stop_rule_declares_its_status_on_both_sides() {
 /// went on declaring it present. That is the same divergence the whole section
 /// exists to prevent, facing the other way.
 #[test]
-fn every_stop_rule_declared_present_in_rust_has_its_marker_in_judge() {
-    const JUDGE: &str = include_str!("../src/stop.rs");
+fn every_stop_rule_that_claims_rust_code_has_its_marker_in_judge() {
+    // THE PRODUCTION HALF ONLY. The first version of this scanned the whole
+    // file — tests and doc comments included — so every marker was satisfied by
+    // the tests that exercise the rule, and the assertion held even with the
+    // rule DELETED from `judge`. The C5 audit proved it by doing exactly that:
+    // 623 characters removed from the branch, `stop_rule_parity` still 3/3.
+    // Two markers ("Rule A", "Rule B") live in the module doc comment and would
+    // have survived even a test-stripped scan, so the cut is at the test module
+    // and the doc comment sits above it either way — which is why the markers
+    // below are the RULE NAMES the reasons print, not prose from the header.
+    const WHOLE_FILE: &str = include_str!("../src/stop.rs");
+    let judge_only = &WHOLE_FILE[..WHOLE_FILE
+        .find("#[cfg(test)]")
+        .expect("stop.rs has a test module; if that changed, this cut needs rethinking")];
+    let judge = judge_only;
     let marker: std::collections::HashMap<&str, &str> = [
         ("anti_loop", "already_bounced"),
         ("audit_fix_loop", "AUDIT-FIX LOOP"),
@@ -68,7 +81,11 @@ fn every_stop_rule_declared_present_in_rust_has_its_marker_in_judge() {
     ]
     .into();
     for (rule, row) in rules().as_object().unwrap() {
-        if row["rust"].as_str() != Some("present") {
+        // `present-but-inert` counts: the rule IS in the code and can still be
+        // deleted while the contract declares it. Skipping it here would have
+        // silently turned the guard off the moment a rule was honestly marked
+        // inert, which is the opposite of what honesty should cost.
+        if !matches!(row["rust"].as_str(), Some("present") | Some("present-but-inert")) {
             continue;
         }
         let m = marker.get(rule.as_str()).unwrap_or_else(|| {
@@ -78,7 +95,7 @@ fn every_stop_rule_declared_present_in_rust_has_its_marker_in_judge() {
             )
         });
         assert!(
-            JUDGE.contains(m),
+            judge.contains(m),
             "{rule}: declared present in the rust generation, but its marker \
              {m:?} is not in stop.rs — the contract says more than the code does"
         );
@@ -90,7 +107,7 @@ fn every_stop_rule_declared_present_in_rust_has_its_marker_in_judge() {
 /// Flip `SCRIPTS_RETIRED` in the same change that stops deploying them.
 #[test]
 fn no_rule_is_lost_when_the_scripts_retire() {
-    // FLIPPED. All eight rules now exist on both sides, and the deploy points a
+    // FLIPPED. All nine rules now exist on both sides, and the deploy points a
     // client at the binary when one is present. From here, a rule that lives
     // only in the scripts fails this test.
     const SCRIPTS_RETIRED: bool = true;

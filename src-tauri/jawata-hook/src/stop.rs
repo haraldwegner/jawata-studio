@@ -143,6 +143,15 @@ pub struct Turn {
     pub seats_invoked: Vec<String>,
     /// Whether a verification gate ran after them.
     pub gate_ran: bool,
+    /// EVERY assistant text block in this window, joined.
+    ///
+    /// `final_text` is the LAST block, which is what the length budget and the
+    /// ask detector want. It is the wrong input for "did you say it": an agent
+    /// that narrates a degradation, keeps working, and ends on "Done." said it
+    /// - and would have been blocked and told it had not. `refusals_emitted`
+    /// on the adjacent line already accumulates across blocks for exactly this
+    /// reason.
+    pub narration: String,
     /// studio#4: tool RESULTS in this window that carried a degradation stamp.
     ///
     /// Counted from tool results only — never from the raw window and never
@@ -153,6 +162,17 @@ pub struct Turn {
 }
 
 /// The stamp a degraded resident puts on its response (`jawata-mcp#12`).
+///
+/// **NOTHING EMITS IT YET, and that is declared rather than discovered.**
+/// `jawata-mcp#12` is open; a search of the engine's every string literal
+/// finds the word in three places and a line beginning `DEGRADED:` in none —
+/// the store's fallback notice reads `EXPERIENCE STORE DEGRADED — …` (no
+/// colon) and the scan notice reads `DEGRADED SCAN: …`. So this rule is
+/// correct and unreachable, and `hook-events.json` carries it as
+/// `present-but-inert` for the same reason Rules A and B do. A gate that
+/// reads as enforcement and enforces nothing is the shape this whole file
+/// exists to stop, so it is written down here rather than left for the next
+/// reader to measure.
 ///
 /// Matched at the START of a line, not anywhere in the text. A source file
 /// read, a grep hit or a test fixture can all contain the word mid-line —
@@ -169,7 +189,7 @@ impl Turn {
     /// by pasting a token, which is the reflex the recall gate's own design
     /// notes refuse to manufacture.
     pub fn surfaced_degradation(&self) -> bool {
-        self.final_text.to_lowercase().contains("degrad")
+        self.narration.to_lowercase().contains("degrad")
     }
 
     pub fn communicator_ran(&self) -> bool {
@@ -242,7 +262,11 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
     if facts.turn.degraded_consumed > 0 && !facts.turn.surfaced_degradation() {
         return StopVerdict::Block {
             reason: format!(
-                "UNREPORTED DEGRADATION: {} tool result(s) in this turn came back                  stamped as degraded, and your message does not say so. The human                  is about to act on an answer produced by a component that                  declared itself unwell. Say WHICH capability was degraded and                  WHAT that means for the conclusions you just drew — then stop.",
+                "UNREPORTED DEGRADATION: {} tool result(s) in this turn came back stamped as \
+                 degraded, and nothing you said mentions it. The human is about to \
+                 act on an answer produced by a component that declared itself \
+                 unwell. Say WHICH capability was degraded and WHAT that means for \
+                 the conclusions you just drew, then stop.",
                 facts.turn.degraded_consumed
             ),
         };
@@ -376,6 +400,8 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                         Some("text") => {
                             if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
                                 turn.final_text = t.to_string();
+                                turn.narration.push_str(t);
+                                turn.narration.push('\n');
                                 // Count refusals the AGENT EMITTED, from
                                 // assistant text only — never the raw window,
                                 // which made the script fire on any session
@@ -569,7 +595,7 @@ mod tests {
     fn facts(autonomy: Autonomy, launches: Vec<ToolUse>) -> StopFacts {
         StopFacts {
             already_bounced: false,
-            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, user_asked: false, degraded_consumed: 0, seats_invoked: vec![], gate_ran: true },
+            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, user_asked: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true },
             autonomy,
         }
     }
@@ -598,6 +624,64 @@ mod tests {
             assistant_line(final_text)
         );
         read_turn(&t).unwrap()
+    }
+
+
+    /// B1, from the C5 audit — and it was a LIVE block, not a hypothesis.
+    ///
+    /// `final_text` holds only the LAST assistant block. An agent that says
+    /// "the store answered degraded, so this count is a floor", keeps working,
+    /// and ends on "Done." has surfaced it — and was blocked and told it had
+    /// not. Ending short after narrating is the ordinary shape of a turn, so
+    /// this was not a corner case; it was most of them.
+    #[test]
+    fn narrating_it_mid_turn_and_ending_short_still_closes_the_rule() {
+        let transcript = format!(
+            "{{\"type\":\"user\",\"message\":{{\"content\":\"go\"}}}}\n{}\n{}\n{}\n{}\n",
+            result_line("DEGRADED: store on the in-memory fallback"),
+            assistant_line(
+                "Heads up: the store answered DEGRADED, so treat this count as a floor."
+            ),
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\
+             \"name\":\"Bash\",\"input\":{}}]}}",
+            assistant_line("Done.")
+        );
+        let turn = read_turn(&transcript).unwrap();
+        assert_eq!("Done.", turn.final_text, "the last block is still the final message");
+        assert_eq!(1, turn.degraded_consumed);
+        let mut f = facts(Autonomy::Unknown, vec![]);
+        f.turn = turn;
+        assert_eq!(
+            StopVerdict::Allow,
+            judge(&f),
+            "it was said out loud; blocking here punishes the agent for not repeating itself"
+        );
+    }
+
+    /// And the rule still fires when NO block mentions it — otherwise the fix
+    /// above would have turned the rule off rather than corrected its input.
+    #[test]
+    fn a_multi_block_turn_that_never_mentions_it_is_still_blocked() {
+        let transcript = format!(
+            "{{\"type\":\"user\",\"message\":{{\"content\":\"go\"}}}}\n{}\n{}\n{}\n",
+            result_line("DEGRADED: store on the in-memory fallback"),
+            assistant_line("Looking at the store now."),
+            assistant_line("Three entries. All good.")
+        );
+        let mut f = facts(Autonomy::Unknown, vec![]);
+        f.turn = read_turn(&transcript).unwrap();
+        assert!(matches!(judge(&f), StopVerdict::Block { .. }));
+    }
+
+    /// N1: the reason is fed back to the MODEL, so its own text must not be
+    /// mangled. The first version was a multi-line literal whose continuations
+    /// were lost, leaving runs of eighteen spaces mid-sentence.
+    #[test]
+    fn the_block_reason_is_not_full_of_whitespace_runs() {
+        let mut f = facts(Autonomy::Unknown, vec![]);
+        f.turn = turn_of("DEGRADED: x", "All good.");
+        let StopVerdict::Block { reason } = judge(&f) else { panic!("expected a block") };
+        assert!(!reason.contains("   "), "three spaces in a row: {reason:?}");
     }
 
     /// ACCEPTANCE 1: consumed and unmentioned -> blocked, and the reason tells

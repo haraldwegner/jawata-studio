@@ -2000,7 +2000,20 @@ mod tests {
         let silence = root.join("hook_silence.log");
         std::fs::write(&silence, seeded_silence_log()).unwrap();
         let outcomes = root.join("outcomes.log");
-        std::fs::write(&outcomes, "t\tv\tslip\tBash\n").unwrap();
+        // C5 audit B4: the recall counters had NO guard on their data path.
+        // Replacing the fold in `status_from` with a permanent
+        // `RecallSignals::absent()` — every counter zero on every machine —
+        // left the whole studio suite green. That is how this repo's own
+        // memory records shipping semantic recall inert, and the neighbouring
+        // comment says as much about a half-rendered fold. So the seeded
+        // status now carries recall lines and asserts they arrive.
+        std::fs::write(
+            &outcomes,
+            "t\tv\tslip\tBash\n\
+             t\tv\trecall-dispositioned\trecall-applied\n\
+             t\tv\trecall-skipped\tinjected=2 disposed=0\n",
+        )
+        .unwrap();
 
         let status = status_from(
             &[
@@ -2020,6 +2033,16 @@ mod tests {
             NOW,
         );
 
+        assert!(
+            status.recall.present,
+            "the observer log was read, so the recall fold must say so"
+        );
+        assert_eq!(1, status.recall.applied, "the disposition must reach the status");
+        assert_eq!(1, status.recall.skipped, "and so must the skip");
+        assert!(
+            !status.recall.coverage.is_empty(),
+            "a counter without its coverage sentence is a number nobody can read"
+        );
         assert_eq!(2, status.workspaces.len());
         assert_eq!(2, status.badge, "the machine badge sums the workspaces");
         assert!(status.workspaces[0].pile.present);
@@ -2045,7 +2068,7 @@ mod tests {
 /// temptation actually lives — a view has a window to put a box in front of.
 #[cfg(test)]
 mod interruption_scans {
-    use super::{store_health, RecallSignals, StoreHealth, RECALL_COVERAGE};
+    use super::{store_health, RecallSignals, StoreHealth};
     use std::path::{Path, PathBuf};
 
     fn manifest() -> PathBuf {
@@ -2278,14 +2301,5 @@ mod interruption_scans {
             );
         }
 
-        // The coverage sentence is DATA, so binding its name renders the whole
-        // string — but an emptied constant would still pass that. Pin what it
-        // has to say: both limits, by name.
-        assert!(
-            RECALL_COVERAGE.contains("Cursor") && RECALL_COVERAGE.contains("Windows"),
-            "the counters must carry BOTH coverage holes — a zero from a client \
-             that fires no such event is not a zero the agent earned \
-             (studio#6, #7)"
-        );
     }
 }

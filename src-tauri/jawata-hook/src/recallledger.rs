@@ -17,6 +17,14 @@
 //! One line per event, append-only, per session. No read-modify-write: the
 //! studio's own silence log was written that way once and lost records under
 //! concurrent appends.
+//!
+//! **There is no signal TEXT here, deliberately.** An earlier draft carried a
+//! sentence to show the agent at session end; the only shape `Role::Stop` can
+//! inject is a BLOCK decision, which bounces the agent back into a turn it has
+//! finished — over a measurement. So the skip is recorded and counted, the
+//! studio renders it, and nothing interrupts. The unused sentence was deleted
+//! rather than left sitting here looking like a delivered capability: the last
+//! member kept in that state failed a release on the hollow-wiring gate.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -82,18 +90,6 @@ pub fn verdict(dir: &Path, session: &str) -> Verdict {
         }
     }
     v
-}
-
-/// The line the agent is shown at session end when it took knowledge and never
-/// said anything about it.
-pub fn signal_line(v: &Verdict) -> String {
-    format!(
-        "JAWATA: this session was given {} piece(s) of recalled knowledge and disposed of none \
-         of it. Prior knowledge is a NOMINEE, not an answer — but it is meant to be JUDGED, not \
-         passed over. When recalled knowledge does not fit, say so and why; when it does, say \
-         you used it. Silence is the failure this signal exists to make visible.",
-        v.injected
-    )
 }
 
 #[cfg(test)]
@@ -164,10 +160,4 @@ mod tests {
         assert!(!d.path().join("recallledger").exists());
     }
 
-    #[test]
-    fn the_signal_names_the_count_and_asks_for_a_judgement() {
-        let line = signal_line(&Verdict { injected: 3, dispositioned: 0 });
-        assert!(line.contains('3'));
-        assert!(line.to_lowercase().contains("judged"));
-    }
 }
