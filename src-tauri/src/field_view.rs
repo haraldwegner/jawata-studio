@@ -612,6 +612,13 @@ pub struct CanaryResult {
     pub compiler_ok: bool,
     pub compiler_detail: String,
     pub green: bool,
+    /// The resident answered the compiler question CORRECTLY, with
+    /// `PROJECT_LOADING` — it is still importing. Not green, and not a failure.
+    pub loading: bool,
+    /// When this workspace was first seen loading in an unbroken run of loading
+    /// rounds. A single round cannot know it; [`stitch_loading_runs`] carries it.
+    /// `None` whenever the workspace is not loading.
+    pub loading_since_millis: Option<u64>,
     pub checked_at_millis: u64,
 }
 
@@ -626,6 +633,19 @@ pub const CANARY_FIXTURE_TYPE: &str = "java.lang.String";
 /// all. Asking something that must match would make the canary depend on the
 /// user's store contents.
 pub const CANARY_RECALL_SYMPTOM: &str = "jawata studio canary probe";
+
+/// The ONE error code that means "still importing, ask again later" rather than
+/// "broken". `ToolResponse.projectLoading()` emits it. Deliberately an
+/// allow-list of exactly one: `PROJECT_LOAD_FAILED` and `PROJECT_NOT_LOADED`
+/// arrive in the same `Ok(value)` envelope and are real failures — treating any
+/// error body as loading would paint a FAILED workspace healthy forever.
+pub const LOADING_ERROR_CODE: &str = "PROJECT_LOADING";
+
+/// How long a workspace may keep saying "loading" before the tray stops giving
+/// it the benefit of the doubt. A cold start of 33 projects measured ~5 minutes;
+/// three canary rounds is generous and still bounded, so a load that never
+/// finishes cannot masquerade as health.
+pub const LOADING_GRACE_MILLIS: u64 = 15 * 60 * 1000;
 
 /// Judge one resident from the two answers. Pure — the HTTP lives in
 /// `manager_service`, so the verdict is testable with no resident, no agent
@@ -650,6 +670,7 @@ pub fn judge_canary(
         ),
         Err(error) => (false, error),
     };
+    let mut loading = false;
     let (compiler_ok, compiler_detail) = match compiler {
         Ok(value) => {
             let resolved = value
@@ -657,10 +678,17 @@ pub fn judge_canary(
                 .or_else(|| value.pointer("/data/sourceLength"))
                 .or_else(|| value.pointer("/data/typeName"))
                 .is_some();
+            // A resident that is still IMPORTING answers this question
+            // correctly — with PROJECT_LOADING — and that is not a compiler
+            // failure. Exactly this code and no other.
+            loading = !resolved
+                && value.pointer("/error/code").and_then(|c| c.as_str()) == Some(LOADING_ERROR_CODE);
             (
                 resolved,
                 if resolved {
                     format!("the compiler resolved {CANARY_FIXTURE_TYPE}")
+                } else if loading {
+                    "the resident is still loading its projects".to_string()
                 } else {
                     format!("the resident answered but could not resolve {CANARY_FIXTURE_TYPE}")
                 },
@@ -676,7 +704,32 @@ pub fn judge_canary(
         compiler_ok,
         compiler_detail,
         green: recall_ok && compiler_ok,
+        loading,
+        // A single round cannot know when the run started; the board stitches it.
+        loading_since_millis: None,
         checked_at_millis: now_millis,
+    }
+}
+
+/// Carry a LOADING run forward across rounds, so the grace period is measured
+/// from when loading STARTED and not from the latest probe. A workspace already
+/// loading keeps its original stamp; one that has just started gets `now`; one
+/// that stopped loading drops it. This is what bounds [`CanaryHealth::Loading`].
+pub fn stitch_loading_runs(
+    previous: &[CanaryResult],
+    current: &mut [CanaryResult],
+    now_millis: u64,
+) {
+    for result in current.iter_mut() {
+        if !result.loading {
+            result.loading_since_millis = None;
+            continue;
+        }
+        let carried = previous
+            .iter()
+            .find(|p| p.workspace == result.workspace && p.loading)
+            .and_then(|p| p.loading_since_millis);
+        result.loading_since_millis = Some(carried.unwrap_or(now_millis));
     }
 }
 
@@ -687,14 +740,33 @@ pub enum CanaryHealth {
     /// Nothing has been probed yet — never rendered as green.
     Unknown,
     Green,
+    /// Every not-green resident answered correctly and is still importing, and
+    /// has not been doing so past [`LOADING_GRACE_MILLIS`]. A cold start of a
+    /// large workspace takes minutes; that is not a fault to alarm about.
+    Loading,
     Degraded,
 }
 
-pub fn canary_health(results: &[CanaryResult]) -> CanaryHealth {
+/// The shared verdict. `now_millis` is needed because LOADING is only innocent
+/// while it is young — past the grace period an unfinished load is a fault.
+pub fn canary_health(results: &[CanaryResult], now_millis: u64) -> CanaryHealth {
     if results.is_empty() {
-        CanaryHealth::Unknown
-    } else if results.iter().all(|r| r.green) {
-        CanaryHealth::Green
+        return CanaryHealth::Unknown;
+    }
+    if results.iter().all(|r| r.green) {
+        return CanaryHealth::Green;
+    }
+    let not_green: Vec<&CanaryResult> = results.iter().filter(|r| !r.green).collect();
+    let all_loading_and_fresh = not_green.iter().all(|r| {
+        r.loading
+            && match r.loading_since_millis {
+                Some(since) => now_millis.saturating_sub(since) < LOADING_GRACE_MILLIS,
+                // Not stitched yet: this is the first round of the run.
+                None => true,
+            }
+    });
+    if all_loading_and_fresh {
+        CanaryHealth::Loading
     } else {
         CanaryHealth::Degraded
     }
@@ -784,7 +856,7 @@ pub fn status_from(
             .map(|p| p.to_string_lossy().to_string())
             .collect(),
         badge: folded.iter().map(|w| w.pile.badge).sum(),
-        canary_health: canary_health(&canary),
+        canary_health: canary_health(&canary, now_millis),
         canary,
         channels,
         workspaces: folded,
@@ -1179,7 +1251,7 @@ mod tests {
         assert!(result.green);
         assert!(result.recall_ok && result.compiler_ok);
         assert!(result.compiler_detail.contains(CANARY_FIXTURE_TYPE));
-        assert_eq!(CanaryHealth::Green, canary_health(&[result]));
+        assert_eq!(CanaryHealth::Green, canary_health(&[result], 7));
     }
 
     /// An AUTHORITATIVE ABSENCE passes: the store spoke. Only a store that
@@ -1209,12 +1281,120 @@ mod tests {
         assert!(result.recall_ok, "the store still answers");
         assert!(!result.compiler_ok, "the compiler question did not resolve the fixture");
         assert!(!result.green);
-        assert_eq!(CanaryHealth::Degraded, canary_health(&[result]));
+        assert!(!result.loading, "a shapeless error is not a loading answer");
+        assert_eq!(CanaryHealth::Degraded, canary_health(&[result], 0));
     }
 
     #[test]
     fn nothing_probed_yet_is_unknown_and_never_green() {
-        assert_eq!(CanaryHealth::Unknown, canary_health(&[]));
+        assert_eq!(CanaryHealth::Unknown, canary_health(&[], 0));
+    }
+
+    /// The `#16` defect: a resident that is still IMPORTING answers the compiler
+    /// question correctly — with PROJECT_LOADING — and used to be counted a
+    /// compiler failure, painting the tray amber for five minutes on every
+    /// healthy launch.
+    #[test]
+    fn a_still_loading_resident_reads_as_loading_not_degraded() {
+        let result = judge_canary(
+            "ws",
+            "u",
+            ok(serde_json::json!({"success": true, "data": {"entries": []}})),
+            ok(serde_json::json!({
+                "success": false,
+                "error": {"code": LOADING_ERROR_CODE, "message": "project is loading"}
+            })),
+            0,
+        );
+        assert!(result.recall_ok, "the store still answers");
+        assert!(!result.green, "loading is not green — nothing was resolved");
+        assert!(result.loading);
+        assert!(result.compiler_detail.contains("still loading"));
+        assert_eq!(CanaryHealth::Loading, canary_health(&[result], 0));
+    }
+
+    /// The allow-list has exactly one member. These two arrive in the SAME
+    /// `Ok(value)` envelope, and treating any error body as loading would paint
+    /// a genuinely broken workspace healthy forever.
+    #[test]
+    fn a_failed_or_absent_load_stays_degraded_it_is_not_loading() {
+        for code in ["PROJECT_LOAD_FAILED", "PROJECT_NOT_LOADED"] {
+            let result = judge_canary(
+                "ws",
+                "u",
+                ok(serde_json::json!({"success": true})),
+                ok(serde_json::json!({"success": false, "error": {"code": code}})),
+                0,
+            );
+            assert!(!result.loading, "{code} is a failure, not a loading answer");
+            assert_eq!(
+                CanaryHealth::Degraded,
+                canary_health(&[result], 0),
+                "{code} must keep its amber"
+            );
+        }
+    }
+
+    /// Loading is innocent while it is young. A load that never finishes must
+    /// not masquerade as health forever.
+    #[test]
+    fn a_load_that_never_finishes_loses_the_benefit_of_the_doubt() {
+        let mut result = judge_canary(
+            "ws",
+            "u",
+            ok(serde_json::json!({"success": true})),
+            ok(serde_json::json!({"success": false, "error": {"code": LOADING_ERROR_CODE}})),
+            0,
+        );
+        result.loading_since_millis = Some(0);
+
+        assert_eq!(
+            CanaryHealth::Loading,
+            canary_health(std::slice::from_ref(&result), LOADING_GRACE_MILLIS - 1)
+        );
+        assert_eq!(
+            CanaryHealth::Degraded,
+            canary_health(std::slice::from_ref(&result), LOADING_GRACE_MILLIS),
+            "past the grace period an unfinished load is a fault"
+        );
+    }
+
+    /// The grace period is measured from when loading STARTED, so the run has to
+    /// survive the rounds in between.
+    #[test]
+    fn a_loading_run_keeps_its_first_timestamp_across_rounds() {
+        let loading = |workspace: &str| {
+            judge_canary(
+                workspace,
+                "u",
+                ok(serde_json::json!({"success": true})),
+                ok(serde_json::json!({"success": false, "error": {"code": LOADING_ERROR_CODE}})),
+                0,
+            )
+        };
+
+        let mut first = vec![loading("ws")];
+        stitch_loading_runs(&[], &mut first, 1_000);
+        assert_eq!(Some(1_000), first[0].loading_since_millis);
+
+        let mut second = vec![loading("ws")];
+        stitch_loading_runs(&first, &mut second, 400_000);
+        assert_eq!(
+            Some(1_000),
+            second[0].loading_since_millis,
+            "the run keeps its origin, it does not restart every round"
+        );
+
+        // Once it stops loading the stamp is dropped, so a LATER run starts fresh.
+        let mut recovered = vec![judge_canary(
+            "ws",
+            "u",
+            ok(serde_json::json!({"success": true})),
+            ok(serde_json::json!({"success": true, "data": {"sourceLength": 1}})),
+            0,
+        )];
+        stitch_loading_runs(&second, &mut recovered, 500_000);
+        assert_eq!(None, recovered[0].loading_since_millis);
     }
 
     // ---- the whole status over seeded files ----
@@ -1440,6 +1620,17 @@ mod interruption_scans {
                  nothing renders it"
             );
         }
+
+        // A datum NAME is not enough for an enum: `canaryHealth` was already in
+        // the list above, so adding a variant to it in Rust leaves this test
+        // green while the dashboard renders the fallback. The variant and the
+        // word it displays are two separate bindings, so assert the word.
+        assert!(
+            view.contains("starting up"),
+            "CanaryHealth::Loading reaches the view as a variant with no word — \
+             the dashboard would fall through to \"not checked yet\" on every \
+             healthy cold start (#16)"
+        );
 
         // BOTH switches have a control, not just the checkbox. The plan's exit
         // clause asks for the no-nudges switch's VISIBLE SURFACE by name.

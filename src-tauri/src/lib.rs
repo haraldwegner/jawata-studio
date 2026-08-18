@@ -228,8 +228,13 @@ fn draw_ring(rgba: &mut [u8], cx: i32, cy: i32, radius: i32, thickness: i32, col
 /// an alarm for "we have not looked" would train the user to ignore the alarm.
 fn tray_disc_colour(health: field_view::CanaryHealth) -> [u8; 4] {
     match health {
-        // Brand batik-indigo (#1d2f4e, the jawata palette).
-        field_view::CanaryHealth::Unknown | field_view::CanaryHealth::Green => [29, 47, 78, 255],
+        // Brand batik-indigo (#1d2f4e, the jawata palette). `Loading` joins them:
+        // a resident still importing is answering correctly, and alarming on a
+        // healthy cold start trains the user to ignore the alarm just as surely
+        // as alarming on "we have not looked" would.
+        field_view::CanaryHealth::Unknown
+        | field_view::CanaryHealth::Green
+        | field_view::CanaryHealth::Loading => [29, 47, 78, 255],
         // Amber (#a8621a) — legible against both a light and a dark menu bar,
         // and unmistakably not the brand colour at 32 px.
         field_view::CanaryHealth::Degraded => [168, 98, 26, 255],
@@ -961,7 +966,7 @@ mod tray_icon_tests {
             0,
         );
         assert!(!degraded.green);
-        let health = field_view::canary_health(std::slice::from_ref(&degraded));
+        let health = field_view::canary_health(std::slice::from_ref(&degraded), 0);
         assert_eq!(field_view::CanaryHealth::Degraded, health);
 
         let alarmed = tray_disc_colour(health);
@@ -987,6 +992,9 @@ mod tray_icon_tests {
 
         // And "we have not looked yet" is NOT an alarm.
         assert_eq!(brand, tray_disc_colour(field_view::CanaryHealth::Unknown));
+        // Nor is "still starting up" — issue #16: every healthy launch of a
+        // large workspace used to wear the alarm for five minutes.
+        assert_eq!(brand, tray_disc_colour(field_view::CanaryHealth::Loading));
     }
 
     /// The branded (Linux/Windows) icon keeps its filled disc — the template

@@ -582,11 +582,18 @@ export interface FieldCanaryResult {
   compilerOk: boolean;
   compilerDetail: string;
   green: boolean;
+  /** The resident answered CORRECTLY, with PROJECT_LOADING — still importing. */
+  loading: boolean;
+  /** When the unbroken loading run began; null whenever it is not loading. */
+  loadingSinceMillis: number | null;
   checkedAtMillis: number;
 }
 
-/** "unknown" is never rendered as healthy — it means nothing has been probed yet. */
-export type FieldCanaryHealth = "unknown" | "green" | "degraded";
+/**
+ * "unknown" is never rendered as healthy — it means nothing has been probed yet.
+ * "loading" is a cold start still importing: not green, and not an alarm (#16).
+ */
+export type FieldCanaryHealth = "unknown" | "green" | "loading" | "degraded";
 
 export interface FieldWorkspaceStatus {
   workspace: string;

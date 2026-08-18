@@ -1031,9 +1031,15 @@ impl ManagerService {
     /// whether anything visible needs to change.
     pub(crate) fn publish_canary(
         &self,
-        results: Vec<crate::field_view::CanaryResult>,
+        mut results: Vec<crate::field_view::CanaryResult>,
     ) -> crate::field_view::CanaryHealth {
-        let health = crate::field_view::canary_health(&results);
+        // A single round cannot know when a LOADING run began, so stitch it
+        // against the previous board before judging: the grace period must be
+        // measured from when loading started, not from this probe.
+        let now = crate::field_view::now_millis();
+        let previous = self.canary_board();
+        crate::field_view::stitch_loading_runs(&previous, &mut results, now);
+        let health = crate::field_view::canary_health(&results, now);
         if let Ok(mut board) = self.canary.write() {
             *board = results;
         }
@@ -13988,7 +13994,7 @@ mod canary_tests {
             "a degraded reading must SAY why — an empty reason is the ambiguity \
              this whole lane exists to end"
         );
-        assert_eq!(CanaryHealth::Degraded, canary_health(&[result]));
+        assert_eq!(CanaryHealth::Degraded, canary_health(&[result], 0));
     }
 
     /// And a resident that answers both questions is green — so the test above
@@ -14003,6 +14009,6 @@ mod canary_tests {
             0,
         );
         assert!(green.green);
-        assert_eq!(CanaryHealth::Green, canary_health(&[green]));
+        assert_eq!(CanaryHealth::Green, canary_health(&[green], 0));
     }
 }

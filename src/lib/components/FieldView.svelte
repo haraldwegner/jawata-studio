@@ -41,7 +41,9 @@
       ? "answering"
       : canaryHealth === "degraded"
         ? "not answering"
-        : "not checked yet";
+        : canaryHealth === "loading"
+          ? "starting up"
+          : "not checked yet";
 
   async function refresh() {
     if (loading) return;
