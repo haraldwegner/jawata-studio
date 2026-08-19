@@ -143,6 +143,10 @@ pub struct Turn {
     pub seats_invoked: Vec<String>,
     /// Whether a verification gate ran after them.
     pub gate_ran: bool,
+    /// Whether this window actually CHANGED CODE (studio#18). A seat run that
+    /// edited nothing owes no compile gate — the obligation belongs to the
+    /// edit, not to the seat.
+    pub changed_code: bool,
     /// Assistant text emitted AFTER a degradation stamp arrived, joined.
     ///
     /// Not every block, and the difference is a live hole rather than a nicety.
@@ -309,11 +313,12 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
 
     // PORTED: seat discipline. A seat that proposes without running its gates
     // is proposing work it has not verified.
-    if !facts.turn.seats_invoked.is_empty() && !facts.turn.gate_ran {
+    if !facts.turn.seats_invoked.is_empty() && facts.turn.changed_code && !facts.turn.gate_ran {
         return StopVerdict::Block {
             reason: format!(
-                "SEAT DISCIPLINE: {} invoked with no verification gate after it. \
-                 A gate you did not run has NOT passed. Run it before proposing.",
+                "SEAT DISCIPLINE: {} invoked, code changed, and no verification gate \
+                 ran after it. A gate you did not run has NOT passed. Run it before \
+                 proposing.",
                 facts.turn.seats_invoked.join(", ")
             ),
         };
@@ -391,6 +396,11 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                 // this line is a REPLY, and a reply is out of the ask gate's
                 // scope by the 2026-08-07 ruling.
                 turn.user_asked = user_asked(&user_text(&v));
+                // studio#18: a seat is INVOKED by the human typing its command
+                // — so read it from the human's own text, at the line level.
+                // Scanning the raw transcript for the bare token counted every
+                // sentence that merely mentioned a seat as a run of it.
+                turn.seats_invoked = seats_in(&user_text(&v));
             }
             // The harness echoing our own tool call back. It does NOT reset the
             // window (see `is_tool_result`), and it is the only place a
@@ -449,15 +459,60 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
         }
     }
     turn.asks_the_human = asks_the_human(&turn.final_text);
-    for seat in ["/refactor", "/cover", "/javadocs", "/debug", "/profile"] {
-        if transcript_text.contains(seat) && !turn.seats_invoked.iter().any(|s| s == seat) {
-            turn.seats_invoked.push(seat.to_string());
+    // (Seats are read from the human's own message where the window opens —
+    // see `seats_in`. A `Skill` launch counts too: an agent may invoke a seat
+    // on its own.)
+    if turn.launches.iter().any(|l| l.name == "Skill") {
+        for seat in SEATS {
+            if !turn.seats_invoked.iter().any(|s| s == seat) {
+                turn.seats_invoked.push((*seat).to_string());
+            }
         }
     }
     turn.gate_ran = ["compile_workspace", "run_tests", "get_diagnostics", "cargo test"]
         .iter()
         .any(|g| transcript_text.contains(g));
+    // studio#18, half two: WHAT OWES A CODE GATE IS A CODE CHANGE, not a seat.
+    // /report changes no code — it turns a recorded error shape into an issue
+    // — so demanding compile_workspace of it made a correct run declare the
+    // gate "inapplicable", which teaches agents to narrate around gates. The
+    // obligation now follows the edit.
+    turn.changed_code = turn.launches.iter().any(|l| {
+        matches!(l.name.as_str(),
+            "Edit" | "Write" | "NotebookEdit"
+            | "rename_symbol" | "extract" | "inline" | "move" | "move_method"
+            | "move_in_hierarchy" | "change_method_signature" | "generate"
+            | "organize_imports" | "apply_cleanup" | "apply_null_annotations"
+            | "refactor_to_pattern" | "replace_duplicates" | "refactoring"
+            | "encapsulate_field" | "quick_fix" | "format")
+    });
     Ok(turn)
+}
+
+/// The seat commands the discipline gate knows.
+const SEATS: &[&str] =
+    &["/refactor", "/cover", "/javadocs", "/debug", "/profile", "/report"];
+
+/// Seats INVOKED by this text — a slash command is typed, so it opens a line.
+///
+/// studio#18: the old scan matched the bare token anywhere in the whole
+/// transcript, so a turn that merely WROTE about the seats (a report, a plan,
+/// a comment naming them) counted as having run them, and was then asked for
+/// gates it never owed.
+fn seats_in(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let l = line.trim_start();
+        for seat in SEATS {
+            if l.starts_with(seat)
+                && l[seat.len()..].chars().next().is_none_or(|c| c.is_whitespace())
+                && !out.iter().any(|s: &String| s == seat)
+            {
+                out.push((*seat).to_string());
+            }
+        }
+    }
+    out
 }
 
 /// Does this message ask the human for something?
@@ -608,7 +663,7 @@ mod tests {
     fn facts(autonomy: Autonomy, launches: Vec<ToolUse>) -> StopFacts {
         StopFacts {
             already_bounced: false,
-            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, user_asked: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true },
+            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, user_asked: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false },
             autonomy,
         }
     }
@@ -1119,12 +1174,47 @@ mod tests {
         let mut f = facts(Autonomy::Unknown, vec![]);
         f.turn.seats_invoked = vec!["/refactor".into()];
         f.turn.gate_ran = false;
+        f.turn.changed_code = true;
         match judge(&f) {
             StopVerdict::Block { reason } => assert!(reason.contains("SEAT DISCIPLINE"), "{reason}"),
-            StopVerdict::Allow => panic!("a seat that skipped its gate must block"),
+            StopVerdict::Allow => panic!("a seat that changed code and skipped its gate must block"),
         }
         f.turn.gate_ran = true;
         assert_eq!(StopVerdict::Allow, judge(&f));
+    }
+
+    /// studio#18: `/report` changes no code — it turns a recorded error shape
+    /// into an issue — so a correct run of it owed a compile gate it could
+    /// never sensibly pass, and had to declare the gate "inapplicable". A gate
+    /// a correct run cannot satisfy teaches agents to narrate around gates.
+    #[test]
+    fn a_seat_that_changed_no_code_owes_no_gate() {
+        let mut f = facts(Autonomy::Unknown, vec![]);
+        f.turn.seats_invoked = vec!["/report".into()];
+        f.turn.gate_ran = false;
+        f.turn.changed_code = false;
+        assert_eq!(StopVerdict::Allow, judge(&f),
+            "a seat run that edited nothing owes no verification gate");
+    }
+
+    /// studio#18, the half found while fixing it: the seat scan matched the
+    /// bare token ANYWHERE in the transcript, so a turn that merely WROTE
+    /// about the seats counted as having run them.
+    #[test]
+    fn writing_about_a_seat_is_not_invoking_it() {
+        let mentions = exchange(
+            "What do the seats do?",
+            "The architect seat is invoked with /refactor and reviews a diff; \
+             /cover writes characterization tests.",
+        );
+        let turn = read_turn(&mentions).expect("parses");
+        assert!(turn.seats_invoked.is_empty(),
+            "a sentence ABOUT the seats invoked none of them: {:?}", turn.seats_invoked);
+
+        let invoked = exchange("/refactor the applier", "Report follows.");
+        let turn2 = read_turn(&invoked).expect("parses");
+        assert_eq!(vec!["/refactor".to_string()], turn2.seats_invoked,
+            "a line that OPENS with the command did invoke it");
     }
 
     #[test]

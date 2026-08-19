@@ -31,9 +31,18 @@ Work these five steps, in order. Each one is binding:
    client, jawata version — because that is all the pile CAN carry: shapes,
    never content. You have no file paths, no error message strings, no symbol
    names and no repository identity, and you must not invent, infer or ask
-   for any. Choose the tracker by the failing tool's product: an engine tool
-   (search_symbols, compile_workspace, refactoring, debug, profile, …) is
-   jawata-mcp; a studio/hook symptom is jawata-studio.
+   for any. Choose the tracker by THE COMPONENT AT FAULT, which is not always
+   the product of the tool that appears in the shape. Ask, in this order:
+   (a) did the tool ANSWER CORRECTLY and something else misread, mis-routed
+   or ignored the answer? Then the fault is in that consumer — a hook, a
+   seat, the studio, the deploy — and it files to jawata-studio even though
+   an engine tool's name is on the record. (b) Otherwise, did the engine
+   return the wrong answer, refuse a legal request, or fail? That is
+   jawata-mcp. (c) When the recording genuinely cannot tell the two apart —
+   the pile carries shapes, not content, so it often cannot — say so on the
+   review screen and let the user pick the tracker; do NOT guess from the
+   tool name, which is how a correct engine answer gets filed as an engine
+   bug (studio#17).
 
 3. PROPOSE — THE REVIEW SCREEN IS THE CONSENT. Show the user the EXACT title
    and body you would post, the tracker it would go to, and the account it
