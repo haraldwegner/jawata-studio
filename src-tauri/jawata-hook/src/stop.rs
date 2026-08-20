@@ -448,6 +448,14 @@ work, or state plainly that you are blocked on the human."
 /// line can be a partial write. An unparseable line is SKIPPED, never fatal:
 /// failing the gate because the harness was mid-flush would block a turn for a
 /// reason that has nothing to do with the rules.
+/// Is this user line the client echoing OUR OWN blocked-stop reason back?
+///
+/// The wrapper is the client's, not ours, which is why it is matched rather
+/// than the reason text: the human quotes the reason back in conversation.
+fn is_our_own_bounce(v: &serde_json::Value) -> bool {
+    user_text(v).trim_start().starts_with("Stop hook feedback")
+}
+
 pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
     if transcript_text.trim().is_empty() {
         return Err(SilenceReason::NoTranscript);
@@ -464,6 +472,25 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
         match v.get("type").and_then(|t| t.as_str()) {
             // A human message resets the window: we only care about what has
             // happened since the human last spoke.
+            // OUR OWN BOUNCE IS NOT THE HUMAN SPEAKING.
+            //
+            // The client injects a blocked stop's reason back as a USER turn,
+            // and a user turn resets this window — so the communicator call
+            // that happened BEFORE the bounce was erased from the window the
+            // retry then judged. The gate destroyed the evidence of compliance
+            // by the act of demanding it: run the reviewer, get bounced, and
+            // the next stop cannot see that you ran it. Measured 2026-08-20 by
+            // byte-offset in the live transcript — the bounce lands after the
+            // spawn, every time, by construction.
+            //
+            // Matched on the CLIENT'S OWN WRAPPER at the start of the line, not
+            // on our rule text: the human quotes our rule text back at us (he
+            // did today), and matching that would let a real message be
+            // mistaken for a bounce. The residual risk is the inverse — a human
+            // message that genuinely opens with this exact prefix keeps the
+            // previous window — which is the safer direction: it can only make
+            // the gate see MORE of the turn, never less.
+            Some("user") if !is_tool_result(&v) && is_our_own_bounce(&v) => {}
             Some("user") if !is_tool_result(&v) => {
                 turn = Turn::default();
                 // studio#11: remember whether the human ASKED. Everything after
@@ -1066,6 +1093,42 @@ mod tests {
 {"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}
 {"type":"assistant","message":{"content":[{"type":"text","text":"the summary"}]}}
 "#;
+
+    /// THE GATE MUST NOT ERASE ITS OWN EVIDENCE.
+    ///
+    /// The client injects a blocked stop's reason back as a USER turn. A user
+    /// turn resets this window, so the communicator call made BEFORE the bounce
+    /// vanished from the window the retry judged: run the reviewer, get
+    /// bounced, and the next stop could not see that you ran it. Measured live
+    /// 2026-08-20 by byte offset — the bounce always lands after the call.
+    #[test]
+    fn our_own_bounce_does_not_erase_the_turn() {
+        const BOUNCED: &str = r#"
+{"type":"user","message":{"content":"go"}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Agent","input":{"subagent_type":"communicator"}}]}}
+{"type":"user","message":{"content":"Stop hook feedback:\nUNJUDGED MESSAGE: this turn ends with a message the communicator has not read."}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"the reviewed message"}]}}
+"#;
+        let turn = read_turn(BOUNCED).expect("parses");
+        assert!(
+            turn.communicator_ran(),
+            "the review happened BEFORE the bounce; the bounce must not hide it"
+        );
+        assert_eq!("the reviewed message", turn.final_text);
+
+        // A REAL human turn still resets, or the window would never close.
+        const HUMAN: &str = r#"
+{"type":"user","message":{"content":"go"}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Agent","input":{"subagent_type":"communicator"}}]}}
+{"type":"user","message":{"content":"and now something else"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"a new turn"}]}}
+"#;
+        let fresh = read_turn(HUMAN).expect("parses");
+        assert!(
+            !fresh.communicator_ran(),
+            "a genuine human message still starts a new window"
+        );
+    }
 
     #[test]
     fn the_turn_is_read_from_the_transcript() {
