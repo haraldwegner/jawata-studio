@@ -86,7 +86,7 @@ fn every_stop_rule_that_claims_rust_code_has_its_marker_in_judge() {
         ("audit_fix_loop", "AUDIT-FIX LOOP"),
         ("unjudged_ask", "UNJUDGED ASK"),
         ("unreported_degradation", "UNREPORTED DEGRADATION"),
-        ("communicator_rule_a", "RULE A:"),
+        ("communicator_rule_a", "UNJUDGED MESSAGE:"),
         ("nothing_armed_rule_b", "RULE B:"),
         ("seat_discipline", "SEAT DISCIPLINE"),
         ("decision_test_length", "TOO LONG"),

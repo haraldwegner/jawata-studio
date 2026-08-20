@@ -726,6 +726,39 @@ fn stop_gate(client: Client, payload: &str, autonomy: crate::stop::Autonomy) -> 
     // left the whole suite green, so the anti-wedge valve could be deleted and
     // nothing would notice.
 
+    // THE SKIP IS AN OBSERVATION, NOT A VERDICT — so it is recorded BEFORE the
+    // gate decides, and whatever the gate decides.
+    //
+    // It used to live inside the Allow arm, which coupled a measurement to a
+    // ruling by accident: harmless only while the gate almost never blocked.
+    // The moment the communicator rule became unconditional, every unjudged
+    // turn blocked and the skip stopped being recorded at all — silently
+    // disabling the one signal Stage 5 exists to produce, in the commit that
+    // was strengthening the gate. Caught by `the_skip_is_seen_end_to_end`,
+    // which drives the real binary.
+    //
+    // Emitting it here is also strictly more honest: a turn that ignored its
+    // recalled knowledge AND got bounced for another reason is still a turn
+    // that ignored its recalled knowledge.
+    let session = session_id_in(payload).unwrap_or_default();
+    if let Some(home) = home_dir() {
+        let dir = home.join(".claude").join("jawata-studio");
+        let ledger = crate::recallledger::verdict(&dir, &session);
+        if ledger.is_skip() {
+            // RECORDED, NOT BLOCKED — and the distinction is not a detail. The
+            // Stop role's only injection shape is a BLOCK decision, which
+            // bounces the agent back into the turn; a first version of this
+            // line did exactly that, which would have wedged a session over an
+            // observation. The skip is a measurement, and the number is what
+            // decides whether it ever earns an interruption.
+            crate::observer::emit_signal(
+                &dir,
+                "recall-skipped",
+                &format!("injected={} disposed=0", ledger.injected),
+            );
+        }
+    }
+
     match stop::judge(&StopFacts { already_bounced, turn, autonomy }) {
         StopVerdict::Block { reason } => {
             match crate::emit::render(client, &crate::emit::Emission::StopDecision { reason }) {
@@ -749,25 +782,6 @@ fn stop_gate(client: Client, payload: &str, autonomy: crate::stop::Autonomy) -> 
         // shape — the agent cannot be asked to judge knowledge it has already
         // finished with.
         StopVerdict::Allow => {
-            let session = session_id_in(payload).unwrap_or_default();
-            if let Some(home) = home_dir() {
-                let dir = home.join(".claude").join("jawata-studio");
-                let ledger = crate::recallledger::verdict(&dir, &session);
-                if ledger.is_skip() {
-                    // RECORDED, NOT BLOCKED — and the distinction is not a
-                    // detail. The Stop role's only injection shape is a BLOCK
-                    // decision, which bounces the agent back into the turn; a
-                    // first version of this line did exactly that, which would
-                    // have wedged a session over an observation. The skip is a
-                    // measurement, and the number is what decides whether it
-                    // ever earns an interruption.
-                    crate::observer::emit_signal(
-                        &dir,
-                        "recall-skipped",
-                        &format!("injected={} disposed=0", ledger.injected),
-                    );
-                }
-            }
             Outcome::Silent(match autonomy {
                 crate::stop::Autonomy::Unknown => SilenceReason::AutonomyUnknown,
                 _ => SilenceReason::StopAllowed,

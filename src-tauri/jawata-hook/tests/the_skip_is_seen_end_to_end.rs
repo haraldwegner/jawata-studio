@@ -162,7 +162,14 @@ fn knowledge_injected_and_never_answered_raises_the_skip_at_session_end() {
     let transcript = home.join("transcript.jsonl");
     std::fs::write(
         &transcript,
+        // The communicator pass is part of the FIXTURE, not the subject: since
+        // 2026-08-20 every stop needs one, and without it this turn would bounce
+        // for that unrelated reason — which would leave the assertion below
+        // reading "no decision" when the truth is "a decision about something
+        // else". The subject here is that a SKIP produces no decision.
         "{\"type\":\"user\",\"message\":{\"content\":\"why does it resolve nothing?\"}}\n\
+         {\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\
+         \"name\":\"Agent\",\"input\":{\"subagent_type\":\"communicator\"}}]}}\n\
          {\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\
          \"text\":\"The importer never populates projectDependencies here.\"}]}}\n",
     )
@@ -199,6 +206,61 @@ fn knowledge_injected_and_never_answered_raises_the_skip_at_session_end() {
 
 /// THE FALSE-ACCUSATION GUARD, end to end. One word from the agent closes it,
 /// and the same session then produces no signal at all.
+/// THE DISCRIMINATOR for decoupling the skip from the verdict.
+///
+/// The skip used to be emitted inside the ALLOW arm, which tied a measurement
+/// to a ruling. That was harmless only while the gate almost never blocked;
+/// the moment the communicator rule became unconditional, every unjudged turn
+/// blocked and the skip stopped being recorded at all — the signal Stage 5
+/// exists to produce, disabled by the commit that was strengthening the gate.
+///
+/// Here the turn is BLOCKED (no communicator pass) and the skip must be
+/// recorded anyway. Move the emission back inside the Allow arm and this fails.
+#[test]
+fn a_blocked_turn_still_records_the_skip() {
+    let home = scratch("skip-blocked");
+    let url = serve_recalls(PACKAGE_ANCHORED);
+    let session = "s-blocked";
+
+    let prompt = serde_json::json!({
+        "session_id": session,
+        "prompt": "why does ProjectImporter#addDependencyEntries resolve nothing here?"
+    })
+    .to_string();
+    let emitted = run_as("userprompt", &home, &url, &prompt);
+    assert!(emitted.contains("additionalContext"), "the offer must reach the session: {emitted}");
+
+    // No communicator pass anywhere in the window, and no disposition either.
+    let transcript = home.join("transcript.jsonl");
+    std::fs::write(
+        &transcript,
+        "{\"type\":\"user\",\"message\":{\"content\":\"why does it resolve nothing?\"}}\n\
+         {\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\
+         \"text\":\"The importer never populates projectDependencies here.\"}]}}\n",
+    )
+    .unwrap();
+    let stop = serde_json::json!({
+        "session_id": session,
+        "transcript_path": transcript.to_string_lossy(),
+        "stop_hook_active": false
+    })
+    .to_string();
+    let stop_out = run_as("stop", &home, &url, &stop);
+
+    assert!(
+        stop_out.contains("UNJUDGED MESSAGE"),
+        "this turn must indeed be blocked, or the test proves nothing: {stop_out:?}"
+    );
+    let log = outcomes(&home);
+    assert!(
+        log.contains("recall-skipped"),
+        "a turn that ignored its recalled knowledge AND got bounced for another reason is \
+         STILL a turn that ignored its recalled knowledge — the observation must not \
+         depend on the verdict.\noutcomes.log: {log:?}"
+    );
+    assert!(log.contains("injected=1"), "and it must carry how much was ignored: {log:?}");
+}
+
 #[test]
 fn one_disposition_closes_the_session_and_nothing_is_raised() {
     let home = scratch("answered");

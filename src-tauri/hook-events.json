@@ -136,8 +136,8 @@
       },
       "communicator_rule_a": {
         "bash": "absent",
-        "rust": "present-but-inert",
-        "what": "Rule A; gated on autonomy, which production cannot observe"
+        "rust": "present",
+        "what": "every stop must show a communicator pass — UNCONDITIONAL since 2026-08-20. It was gated on autonomy, which production never reports, so it had never fired in 267 recorded stops; and that condition was also what made it unimplementable, because every conditional form must read a final message the transcript does not yet hold (studio#23). Keyed on whether the subagent ran, which IS recorded before the stop."
       },
       "nothing_armed_rule_b": {
         "bash": "absent",
