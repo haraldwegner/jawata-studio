@@ -118,7 +118,25 @@ impl ToolUse {
 
     /// Was this the communicator judging an upward message?
     pub fn is_communicator(&self) -> bool {
-        self.name == "Agent" && self.subagent.as_deref() == Some("communicator")
+        // A SPAWN...
+        if self.name == "Agent" && self.subagent.as_deref() == Some("communicator") {
+            return true;
+        }
+        // ...or a CONTINUATION of one. Harald ruled on 2026-08-20 that the
+        // reviewer should be ONE per session, continued rather than respawned:
+        // it sees only his messages and the drafts, so what it accumulates is
+        // exactly what HE has, and a genuinely cold reader would demand terms
+        // re-explained that he already owns.
+        //
+        // Keyed on the spawn alone, this gate would have DEMANDED a fresh spawn
+        // every turn — forcing the very cost that ruling removes, and doing it
+        // in the name of a rule the agent had already satisfied. Found the same
+        // hour, by continuing the reviewer and watching the gate not notice.
+        //
+        // The addressee must be the NAME, not an opaque id: the turn window
+        // resets at each human message, so the original spawn is out of view
+        // and an id cannot be resolved back to a communicator from here.
+        self.name == "SendMessage" && self.subagent.as_deref() == Some("communicator")
     }
 }
 
@@ -496,11 +514,17 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                                 .to_string();
                             let input = b.get("input");
                             turn.launches.push(ToolUse {
-                                name,
                                 subagent: input
                                     .and_then(|i| i.get("subagent_type"))
+                                    // A SendMessage names its recipient in `to`
+                                    // rather than `subagent_type`; both answer
+                                    // the same question — WHICH agent is this.
+                                    .or_else(|| {
+                                        if name == "SendMessage" { input.and_then(|i| i.get("to")) } else { None }
+                                    })
                                     .and_then(|s| s.as_str())
                                     .map(str::to_string),
+                                name,
                                 backgrounded: input
                                     .and_then(|i| i.get("run_in_background"))
                                     .and_then(serde_json::Value::as_bool)
