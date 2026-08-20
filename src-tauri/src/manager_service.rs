@@ -6103,6 +6103,22 @@ fn canary_probe(workspace: &str, url: &str, token: &str) -> crate::field_view::C
         }),
         30,
     );
+    // jawata-studio#24: the third question. The canary asks the store and the
+    // compiler; neither can report that a PROJECT'S DIRECTORY IS GONE. The
+    // resident already computes that verdict — per project, with a problem and a
+    // remedy — and the studio was throwing it away, so an unreadable workspace
+    // in which every refactoring is refused rendered green.
+    //
+    // A resident that does not ANSWER this is left READABLE on purpose: "we
+    // could not ask" is not "it said it is unwell", and the recall/compiler
+    // probes above are what report an unreachable resident.
+    let workspace_readable = call_tool_json(url, token, "health_check", serde_json::json!({}), 5)
+        .ok()
+        .and_then(|body| {
+            body.pointer("/data/workspace/healthy")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(true);
     crate::field_view::judge_canary(
         workspace,
         url,
@@ -6111,6 +6127,7 @@ fn canary_probe(workspace: &str, url: &str, token: &str) -> crate::field_view::C
         recall_millis,
         crate::field_view::now_millis(),
     )
+    .with_workspace_readable(workspace_readable)
 }
 
 /// The canary against an arbitrary endpoint — the seam the degraded-resident
@@ -6162,6 +6179,14 @@ pub struct ProjectResolution {
     /// arm it (Stage 8 pinned that), and merging the two here would invent a
     /// coupling the engine deliberately does not have.
     pub healthy: bool,
+    /// WHY the project cannot be read, in the resident's own words — e.g.
+    /// "registered, but its directory NO LONGER EXISTS on disk". `None` when
+    /// the project is healthy, or when an older runtime does not emit it.
+    pub problem: Option<String>,
+    /// What the reader can DO about it, in the resident's own words. The engine
+    /// writes this for exactly this moment; discarding it made the studio show
+    /// a fault with no way out of it.
+    pub remedy: Option<String>,
 }
 
 /// One workspace's resolution report.
@@ -6177,6 +6202,15 @@ pub struct ResolutionStatus {
     pub projects: Vec<ProjectResolution>,
     /// Every project the resident reported, resolving or not.
     pub project_count: u64,
+    /// The workspace-level refactoring guard. FALSE means at least one project
+    /// cannot be READ, which is a different and worse fact than "something did
+    /// not resolve": every whole-workspace answer is then incomplete, and
+    /// refactorings are refused.
+    pub healthy: bool,
+    /// The resident's own warning text when the workspace is unreadable. Kept
+    /// verbatim because it names the CONSEQUENCE (refactorings refused), and a
+    /// colour cannot carry a consequence.
+    pub warning: Option<String>,
     pub error: Option<String>,
 }
 
@@ -6196,8 +6230,19 @@ pub fn fold_resolution(workspace: &str, url: &str, body: &serde_json::Value) -> 
     let projects: Vec<ProjectResolution> = rows
         .iter()
         .filter_map(|row| {
-            let unresolved = row.get("unresolvedDependencyCount")?.as_u64()?;
-            if unresolved == 0 {
+            // THE PREDICATE THIS REPLACES: `unresolved == 0 -> drop`, evaluated
+            // BEFORE `healthy` was ever read. A project that cannot be READ AT
+            // ALL reports zero unresolved dependencies — there is nothing to
+            // resolve — so the one state that must never be hidden was the one
+            // state guaranteed to be filtered out. Measured live 2026-08-20
+            // (jawata-studio#24): the resident said healthy:false with a named
+            // problem and a remedy, and the studio showed the workspace green.
+            let unresolved = row
+                .get("unresolvedDependencyCount")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let healthy = row.get("healthy").and_then(|h| h.as_bool()).unwrap_or(true);
+            if unresolved == 0 && healthy {
                 return None;
             }
             Some(ProjectResolution {
@@ -6207,7 +6252,15 @@ pub fn fold_resolution(workspace: &str, url: &str, body: &serde_json::Value) -> 
                     .unwrap_or("<unnamed>")
                     .to_string(),
                 unresolved,
-                healthy: row.get("healthy").and_then(|h| h.as_bool()).unwrap_or(true),
+                healthy,
+                problem: row
+                    .get("problem")
+                    .and_then(|p| p.as_str())
+                    .map(str::to_string),
+                remedy: row
+                    .get("remedy")
+                    .and_then(|r| r.as_str())
+                    .map(str::to_string),
             })
         })
         .collect();
@@ -6217,6 +6270,18 @@ pub fn fold_resolution(workspace: &str, url: &str, body: &serde_json::Value) -> 
         reachable: true,
         project_count: rows.len() as u64,
         projects,
+        // Absent on an older runtime, which reads as healthy — the same
+        // deliberate under-report as the unresolved count, and for the same
+        // reason: inventing a fault from a missing field is worse than saying
+        // nothing, and the studio pulls the matching runtime on update.
+        healthy: body
+            .pointer("/data/workspace/healthy")
+            .and_then(|h| h.as_bool())
+            .unwrap_or(true),
+        warning: body
+            .pointer("/data/workspace/warning")
+            .and_then(|w| w.as_str())
+            .map(str::to_string),
         error: None,
     }
 }
@@ -6240,6 +6305,12 @@ pub(crate) fn resolution_status_for(servers: &[ManagedDeployServer]) -> Vec<Reso
                     reachable: false,
                     projects: Vec::new(),
                     project_count: 0,
+                    // A resident that did not ANSWER has not told us its
+                    // workspace is unhealthy — "we could not ask" and "it said
+                    // it is unwell" are different facts, and `reachable` is the
+                    // one that carries this case.
+                    healthy: true,
+                    warning: None,
                     error: Some(error),
                 },
             }
@@ -6254,6 +6325,65 @@ mod resolution_tests {
 
     fn body(projects: serde_json::Value) -> serde_json::Value {
         serde_json::json!({ "data": { "workspace": { "projects": projects } } })
+    }
+
+    /// jawata-studio#24, MEASURED LIVE 2026-08-20 and reproduced here verbatim.
+    ///
+    /// A project whose directory was deleted reports ZERO unresolved
+    /// dependencies — there is nothing left to resolve — with `healthy: false`,
+    /// a named problem and a remedy. The old predicate dropped every row whose
+    /// unresolved count was zero BEFORE reading `healthy`, so the one state that
+    /// must never be hidden was the one state guaranteed to be hidden, and the
+    /// studio showed the workspace green.
+    ///
+    /// THE DISCRIMINATOR: restore `if unresolved == 0 { return None; }` and this
+    /// test fails on the first assertion.
+    #[test]
+    fn an_unreadable_project_is_surfaced_even_though_it_resolves_nothing() {
+        let b = serde_json::json!({"data": {"workspace": {
+            "healthy": false,
+            "warning": "This workspace has 1 project(s) that CANNOT BE READ. \
+                        REFACTORINGS ARE REFUSED while this is true.",
+            "projects": [{
+                "projectKey": "jawata-probe-ws",
+                "unresolvedDependencyCount": 0,
+                "healthy": false,
+                "problem": "registered, but its directory NO LONGER EXISTS on disk",
+                "remedy": "The project was moved or deleted. Drop it: project(action=remove, projectKey=\"jawata-probe-ws\")"
+            }]
+        }}});
+        let r = fold_resolution("test", "http://x/mcp", &b);
+        assert_eq!(1, r.projects.len(), "an unreadable project must be listed");
+        let p = &r.projects[0];
+        assert!(!p.healthy);
+        assert_eq!(0, p.unresolved, "nothing to resolve is exactly why it was hidden");
+        assert!(
+            p.problem.as_deref().unwrap_or_default().contains("NO LONGER EXISTS"),
+            "the resident's own words survive: {:?}", p.problem
+        );
+        assert!(
+            p.remedy.as_deref().unwrap_or_default().contains("project(action=remove"),
+            "a fault with no way out of it is half a report: {:?}", p.remedy
+        );
+        assert!(!r.healthy, "the workspace-level guard is carried, not derived");
+        assert!(
+            r.warning.as_deref().unwrap_or_default().contains("REFACTORINGS ARE REFUSED"),
+            "the CONSEQUENCE is what a colour cannot carry: {:?}", r.warning
+        );
+    }
+
+    /// The inverse must keep holding: fixing #24 must not re-introduce #16,
+    /// which painted a healthy workspace as broken.
+    #[test]
+    fn a_healthy_workspace_stays_clean_and_carries_no_warning() {
+        let b = serde_json::json!({"data": {"workspace": {
+            "healthy": true,
+            "projects": [{"projectKey": "a", "unresolvedDependencyCount": 0, "healthy": true}]
+        }}});
+        let r = fold_resolution("dev", "http://x/mcp", &b);
+        assert!(r.projects.is_empty(), "nothing to report is not something to report");
+        assert!(r.healthy);
+        assert!(r.warning.is_none());
     }
 
     /// The measured shape: four projects resolving nothing among eleven.

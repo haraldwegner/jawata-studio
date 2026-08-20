@@ -670,6 +670,10 @@ export interface ProjectResolution {
   unresolved: number;
   /** The refactoring guard, as the resident computes it — NOT derived here. */
   healthy: boolean;
+  /** WHY it cannot be read, in the resident's own words. Null when healthy. */
+  problem?: string | null;
+  /** What the reader can DO about it, in the resident's own words. */
+  remedy?: string | null;
 }
 
 export interface ResolutionStatus {
@@ -678,6 +682,11 @@ export interface ResolutionStatus {
   reachable: boolean;
   projects: ProjectResolution[];
   projectCount: number;
+  /** FALSE means at least one project cannot be READ — worse than unresolved
+   *  dependencies, because every whole-workspace answer is then incomplete. */
+  healthy: boolean;
+  /** The resident's warning text; it names the consequence a colour cannot. */
+  warning?: string | null;
   error?: string | null;
 }
 

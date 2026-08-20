@@ -46,6 +46,12 @@
   $: unresolvedProjects = resolution.flatMap((r: ResolutionStatus) =>
     r.projects.map((p: ProjectResolution) => ({ ...p, workspace: r.workspace })),
   );
+  // A workspace that cannot be READ is a different and worse fact than one
+  // missing dependencies: every whole-workspace answer is incomplete and
+  // refactorings are refused. The resident says so; this only carries it.
+  $: unreadableWorkspaces = resolution.filter(
+    (r: ResolutionStatus) => r.reachable && r.healthy === false,
+  );
   $: sharePercent =
     utilization && utilization.percent !== null && utilization.percent !== undefined
       ? `${utilization.percent}%`
@@ -199,18 +205,33 @@
     {#if unresolvedProjects.length > 0}
       <section class="panel stack settings-section">
         <div class="section-intro">
-          <h3>Projects missing dependencies</h3>
+          <h3>Projects needing attention</h3>
           <p class="muted">
-            These resolved fewer dependencies than they asked for, so their errors may be
-            the classpath rather than the code.
+            A project here either resolved fewer dependencies than it asked for — so its
+            errors may be the classpath rather than the code — or cannot be read at all.
           </p>
         </div>
+        {#each unreadableWorkspaces as w (w.workspace)}
+          {#if w.warning}
+            <p class="muted">{w.warning}</p>
+          {/if}
+        {/each}
         <ul class="shape-list">
           {#each unresolvedProjects as p (p.workspace + p.projectKey)}
             <li>
               <code>{p.projectKey}</code>
-              <span class="shape-count">{p.unresolved} unresolved</span>
+              {#if p.healthy === false}
+                <span class="shape-count">cannot be read</span>
+              {:else}
+                <span class="shape-count">{p.unresolved} unresolved</span>
+              {/if}
               <span class="muted">{p.workspace}</span>
+              {#if p.problem}
+                <span class="muted">{p.problem}</span>
+              {/if}
+              {#if p.remedy}
+                <span class="muted">{p.remedy}</span>
+              {/if}
             </li>
           {/each}
         </ul>

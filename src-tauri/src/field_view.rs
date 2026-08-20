@@ -709,6 +709,11 @@ pub struct CanaryResult {
     /// `None` whenever the workspace is not loading.
     pub loading_since_millis: Option<u64>,
     pub checked_at_millis: u64,
+    /// Can the resident READ its own workspace? False means at least one
+    /// project cannot be read at all — the resident's own `workspace.healthy`.
+    /// Set by [`CanaryResult::with_workspace_readable`] after the judge, because
+    /// it comes from a different question than the two this canary asks.
+    pub workspace_readable: bool,
     /// How long the store's own answer took, in milliseconds.
     ///
     /// Stage 5a: `recall_ok` is BINARY, and the failure that motivated all of
@@ -833,6 +838,10 @@ pub fn judge_canary(
     };
     CanaryResult {
         workspace: workspace.to_string(),
+        // Readable until something says otherwise: this judge asks the store
+        // and the compiler, never the workspace. `with_workspace_readable`
+        // carries the third answer in.
+        workspace_readable: true,
         url: url.to_string(),
         recall_millis,
         recall_ok,
@@ -881,6 +890,31 @@ pub enum CanaryHealth {
     /// large workspace takes minutes; that is not a fault to alarm about.
     Loading,
     Degraded,
+}
+
+impl CanaryResult {
+    /// Carry the resident's own workspace verdict into this result.
+    ///
+    /// jawata-studio#24: a workspace with a project that CANNOT BE READ is not
+    /// healthy — every whole-workspace answer is incomplete and refactorings are
+    /// refused — and the studio painted it green because nothing asked.
+    ///
+    /// #16 IS NOT PROTECTED HERE, and a first version of this method pretended
+    /// otherwise: it carried a `&& !self.loading` guard whose test passed with
+    /// the guard REMOVED. A loading resident is already not-green, and
+    /// [`canary_health`] decides LOADING from `loading && recall_ok` without ever
+    /// reading `green` — so the guard changed no verdict on any path. It was a
+    /// line taking credit for a protection that lives one function away, which is
+    /// how a green suite comes to mean nothing. Deleted; the composed behaviour
+    /// is pinned by a test that says where the protection really is.
+    #[must_use]
+    pub fn with_workspace_readable(mut self, readable: bool) -> Self {
+        self.workspace_readable = readable;
+        if !readable {
+            self.green = false;
+        }
+        self
+    }
 }
 
 /// The shared verdict. `now_millis` is needed because LOADING is only innocent
@@ -1552,6 +1586,58 @@ mod tests {
         Ok(value)
     }
 
+    /// jawata-studio#24. The store answers, the compiler answers, and the
+    /// workspace still cannot be READ — a project's directory is gone, so every
+    /// whole-workspace answer is incomplete and refactorings are refused. Before
+    /// this, the tray was green in exactly that state.
+    #[test]
+    fn a_workspace_that_cannot_be_read_is_not_green() {
+        let healthy_answers = judge_canary(
+            "ws",
+            "http://127.0.0.1:1/mcp",
+            ok(serde_json::json!({"success": true, "data": {"entries": []}})),
+            ok(serde_json::json!({"success": true, "data": {"sourceLength": 12345}})),
+            12,
+            7,
+        );
+        assert!(healthy_answers.green, "both questions answered");
+        let result = healthy_answers.with_workspace_readable(false);
+        assert!(!result.workspace_readable);
+        assert!(!result.green, "an unreadable workspace is not a green one");
+        assert_eq!(CanaryHealth::Degraded, canary_health(&[result], 7));
+    }
+
+    /// #16 must not come back: a resident that is still IMPORTING, and whose
+    /// workspace therefore cannot be fully read yet, must stay LOADING rather
+    /// than turn the tray amber.
+    ///
+    /// This pins the COMPOSED behaviour, and it is honest about not being a
+    /// discriminator for `with_workspace_readable`: the protection lives in
+    /// [`canary_health`], which reaches LOADING from `loading && recall_ok`
+    /// without consulting `green` at all. Verified by mutation — removing the
+    /// once-present `!self.loading` guard left this green, which is what proved
+    /// the guard was decoration.
+    #[test]
+    fn a_still_importing_resident_is_not_called_unreadable() {
+        let loading = judge_canary(
+            "ws",
+            "http://127.0.0.1:1/mcp",
+            ok(serde_json::json!({"success": true, "data": {"entries": []}})),
+            ok(serde_json::json!({"success": false, "error": {"code": "PROJECT_LOADING"}})),
+            12,
+            7,
+        );
+        assert!(loading.loading, "the compiler answered PROJECT_LOADING");
+        let mut result = loading.with_workspace_readable(false);
+        assert!(!result.workspace_readable, "the fact is still carried");
+        result.loading_since_millis = Some(7);
+        assert_eq!(
+            CanaryHealth::Loading,
+            canary_health(&[result], 7),
+            "a load in progress stays innocent; #16 must not come back"
+        );
+    }
+
     #[test]
     fn a_resident_that_answers_both_questions_is_green() {
         let result = judge_canary(
@@ -1732,6 +1818,7 @@ mod tests {
     fn reading(workspace: &str, ok: bool, millis: u64, loading: bool) -> CanaryResult {
         CanaryResult {
             workspace: workspace.to_string(),
+            workspace_readable: true,
             url: "u".into(),
             recall_ok: ok,
             recall_detail: String::new(),
@@ -2429,6 +2516,8 @@ mod interruption_scans {
             project_key: String::new(),
             unresolved: 0,
             healthy: true,
+            problem: None,
+            remedy: None,
         })
         .unwrap();
         for key in resolution.as_object().unwrap().keys() {
