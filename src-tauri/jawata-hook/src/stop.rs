@@ -287,21 +287,10 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
     // through and the giving-up is recorded. The agent can always exit sooner
     // by doing the thing — which is the difference between a bounded gate and
     // a trap.
-    if facts.already_bounced {
-        if !facts.turn.owes_a_review() || facts.bounces >= MAX_UNJUDGED_BOUNCES {
-            return StopVerdict::Allow;
-        }
-        return StopVerdict::Block {
-            reason: format!(
-                "UNJUDGED MESSAGE (bounce {} of {}): the retry does not excuse this one. \
-Hand the draft to the communicator; it returns what it understands in plain words. Send \
-ITS version if that matches what you meant. After {} bounces the turn is let through and \
-the skip is recorded.",
-                facts.bounces + 1,
-                MAX_UNJUDGED_BOUNCES,
-                MAX_UNJUDGED_BOUNCES
-            ),
-        };
+    // The anti-loop valve for every rule EXCEPT the review one, which carries
+    // its own ceiling below.
+    if facts.already_bounced && !facts.turn.owes_a_review() {
+        return StopVerdict::Allow;
     }
 
     // PORTED FROM THE SCRIPT GENERATION, and deliberately NOT gated on
@@ -418,12 +407,32 @@ the skip is recorded.",
     // What survives from the unconditional experiment, because both were real
     // defects rather than scope: the bounce no longer erases the window it
     // judges, and a CONTINUED reviewer counts as a review.
+    // THE CEILING GUARDS THE RULE, NOT ONE PATH THROUGH IT.
+    //
+    // v3.12.3 put the bound inside the `already_bounced` branch, which assumed
+    // every client marks a retry. Cursor does not: it re-invokes with the flag
+    // unset, so that branch was never entered, the ceiling was unreachable, and
+    // the rule blocked forever. Measured on Harald's machine — an endless loop,
+    // counter at 11 and still climbing. A safety valve on one path is not a
+    // safety valve; the bound now sits on the rule itself, so it holds however
+    // the client re-invokes.
     if facts.turn.owes_a_review() {
+        // Past the ceiling the turn is RELEASED OUTRIGHT rather than falling
+        // through to the rules below. Falling through would let a different
+        // rule bounce the same turn the review rule just gave up on — a second
+        // loop wearing another rule's name, which is the incident again with a
+        // different label.
+        if facts.bounces >= MAX_UNJUDGED_BOUNCES {
+            return StopVerdict::Allow;
+        }
         return StopVerdict::Block {
-            reason: "UNJUDGED MESSAGE: this message asks for a word, a ruling or a \
+            reason: format!(
+                "UNJUDGED MESSAGE ({} of {}): this message asks for a word, a ruling or a \
 decision, and the communicator has not read it. Hand it the draft FIRST — before writing \
-the answer — and send back what it understood, so the reader sees the text once."
-                .to_string(),
+the answer — and send back what it understood, so the reader sees the text once.",
+                facts.bounces + 1,
+                MAX_UNJUDGED_BOUNCES
+            ),
         };
     }
 
@@ -991,6 +1000,39 @@ mod tests {
         assert_eq!(StopVerdict::Allow, judge(&f));
     }
 
+    /// THE INCIDENT TEST — jawata-studio v3.12.3, live on Harald's machine.
+    ///
+    /// The ceiling lived inside the `already_bounced` branch, which assumed
+    /// every client marks a retry. Cursor re-invokes with the flag UNSET, so
+    /// that branch was never entered, the bound was unreachable, and the rule
+    /// blocked forever. His counter reached 11 and was still climbing.
+    ///
+    /// A client that never sets the flag must still be released.
+    #[test]
+    fn a_client_that_never_marks_a_retry_is_still_released() {
+        let mut f = facts(Autonomy::Unknown, vec![]);
+        f.turn.asks_the_human = true;
+        f.already_bounced = false; // Cursor: every invocation looks like the first
+
+        for n in 0..MAX_UNJUDGED_BOUNCES {
+            f.bounces = n;
+            match judge(&f) {
+                StopVerdict::Block { reason } => {
+                    assert!(reason.contains(&format!("{} of {}", n + 1, MAX_UNJUDGED_BOUNCES)),
+                        "each bounce must say where it is: {reason}");
+                }
+                StopVerdict::Allow => panic!("bounce {n} must still hold"),
+            }
+        }
+        f.bounces = MAX_UNJUDGED_BOUNCES;
+        assert_eq!(
+            StopVerdict::Allow,
+            judge(&f),
+            "past the ceiling the turn is RELEASED — a safety valve on one path is not a \
+             safety valve"
+        );
+    }
+
     #[test]
     fn only_a_decision_class_message_owes_a_review() {
         // SCOPE, twice corrected: decision-class (2026-08-07) -> UNCONDITIONAL
@@ -1086,7 +1128,7 @@ mod tests {
         match judge(&f) {
             StopVerdict::Block { reason } => {
                 assert!(reason.contains("UNJUDGED MESSAGE"), "{reason}");
-                assert!(reason.contains("bounce 1 of 3"), "it must say where it is: {reason}");
+                assert!(reason.contains("1 of 3"), "it must say where it is: {reason}");
             }
             StopVerdict::Allow => panic!("the retry must not excuse a missing review"),
         }
