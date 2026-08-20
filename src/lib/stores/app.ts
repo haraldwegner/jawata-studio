@@ -30,8 +30,8 @@ import {
   type ManagerDashboard,
   type ServiceProbeResult,
   type RuntimeStatusRecord,
-  type UpdateSettingsInput
-} from "../api/tauri";
+  type UpdateSettingsInput,
+  workspaceReadability} from "../api/tauri";
 
 interface AppState extends Partial<ManagerDashboard> {
   selectedProjectId?: string;
@@ -40,6 +40,10 @@ interface AppState extends Partial<ManagerDashboard> {
   settingsSaveStatus?: "idle" | "saving" | "success" | "error";
   settingsSaveMessage?: string;
   projectErrors?: Record<string, string>;
+  /** jawata-studio#24: per-workspace readability from the resident's own
+   *  verdict. Absent means not yet observed, which is NOT the same as
+   *  unreadable — a row only says so when the resident said so. */
+  workspaceReadable?: Record<string, boolean>;
   lastCleanupSummary?: CleanupSummary;
   serviceProbeBusy?: boolean;
   serviceProbeError?: string;
@@ -52,6 +56,7 @@ interface AppState extends Partial<ManagerDashboard> {
 const initialState: AppState = {
   projects: [],
   runtimeStatuses: {},
+  workspaceReadable: {},
   projectErrors: {},
   isBusy: false,
   settingsSaveStatus: "idle"
@@ -487,6 +492,20 @@ export function createAppStore() {
         }))
       );
 
+      // jawata-studio#24: the resident's own verdict on whether it can READ its
+      // workspace, so a row cannot say RUNNING for a project whose directory is
+      // gone. A cached read of the canary board — no probe, which is why it can
+      // ride this 2.5-second poll at all. A failure here leaves the previous
+      // answer standing rather than inventing "readable".
+      let readable: Record<string, boolean> | undefined;
+      try {
+        readable = Object.fromEntries(
+          (await workspaceReadability()).map((w) => [w.workspace, w.readable])
+        );
+      } catch (e) {
+        console.error("workspace readability poll failed", e);
+      }
+
       update((state) => {
         const currentIds = new Set((state.projects ?? []).map((project) => project.id));
         const runtimeStatuses = { ...(state.runtimeStatuses ?? {}) };
@@ -495,7 +514,11 @@ export function createAppStore() {
             runtimeStatuses[result.value.projectId] = result.value.status;
           }
         }
-        return { ...state, runtimeStatuses };
+        return {
+          ...state,
+          runtimeStatuses,
+          workspaceReadable: readable ?? state.workspaceReadable ?? {}
+        };
       });
     } finally {
       pollInFlight = false;

@@ -693,6 +693,22 @@ export interface ResolutionStatus {
   error?: string | null;
 }
 
+/** Whether a workspace can be READ, as its resident last reported it.
+ *
+ *  Separate from the service state on purpose: "the process is running" and
+ *  "the workspace can be read" are two different facts, and the engine keeps
+ *  them apart. */
+export interface WorkspaceReadability {
+  workspace: string;
+  readable: boolean;
+}
+
+/** Per-workspace readability from the canary readings ALREADY TAKEN — a cached
+ *  read, no probe. Safe to poll on the dashboard's own cadence. */
+export function workspaceReadability(): Promise<WorkspaceReadability[]> {
+  return invoke<WorkspaceReadability[]>("workspace_readability");
+}
+
 /** Per-workspace dependency-resolution report. One health_check per resident. */
 export function resolutionStatus(): Promise<ResolutionStatus[]> {
   return invoke<ResolutionStatus[]>("resolution_status");

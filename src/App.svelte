@@ -574,6 +574,7 @@
               projects={$appStore.projects ?? []}
               projectErrors={$appStore.projectErrors ?? {}}
               runtimeStatuses={$appStore.runtimeStatuses ?? {}}
+              workspaceReadable={$appStore.workspaceReadable ?? {}}
               selectedProjectId={$appStore.selectedProjectId}
             />
           </div>

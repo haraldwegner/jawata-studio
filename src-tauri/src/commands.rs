@@ -343,6 +343,18 @@ pub fn perform_quit_action(
 
 // ===== Sprint 28b (D2 / D6 / D10): the field view + the seat lane =====
 
+/// jawata-studio#24: per-workspace readability for the dashboard rows.
+///
+/// A CACHED read of the canary board — no probe, and no canary round requested.
+/// `field_status` below deliberately asks for a round; this one must not,
+/// because the dashboard polls it every 2.5 seconds.
+#[tauri::command]
+pub fn workspace_readability(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::manager_service::WorkspaceReadability>, String> {
+    Ok(state.manager_service.workspace_readability())
+}
+
 /// Everything the field view and the `/report` tile render: the per-workspace
 /// piles, the machine's reach counters and utilization number (with its
 /// caveat), the lane state, and the last canary reading.

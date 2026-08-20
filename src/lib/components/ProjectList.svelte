@@ -43,6 +43,14 @@
    * for rendering empty workspace cards (newly-created without
    * projects). Owner is App.svelte. */
   export let knownWorkspaces: string[] = [];
+  /** jawata-studio#24: the resident's own verdict per workspace. A row said
+   *  RUNNING in green for a project whose directory was gone, because that dot
+   *  reports the SERVICE and the service was genuinely up. This is the other
+   *  fact, kept separate rather than merged into the phase — the engine keeps
+   *  them apart and merging here would invent a coupling it does not have.
+   *  A workspace absent from this map has not been observed yet, which is NOT
+   *  the same as unreadable. */
+  export let workspaceReadable: Record<string, boolean> = {};
   export let onDeploy: (mode: DeployMode, targetClients?: string[]) => void;
   export let deployTargetDefaults: DeployTargetFlags = {
     cursor: true,
@@ -590,6 +598,8 @@
         projects: ws_projects,
         phase: deriveWorkspacePhase(ws_phases),
         runningCount: ws_running,
+        // Explicitly `=== false`: "not observed" must never read as "unreadable".
+        unreadable: workspaceReadable[name] === false,
       };
     });
   })();
@@ -895,6 +905,15 @@
                 <span class={`status-lamp ${workspace.phase}`}></span>
                 {workspace.phase}
               </span>
+              {#if workspace.unreadable}
+                <!-- jawata-studio#24. Beside the phase, never instead of it: the
+                     service really is running, AND the workspace cannot be read.
+                     Both are true and the reader needs both. -->
+                <span class="badge workspace-status failed" title="The resident cannot read this workspace — at least one project's directory is missing or unreadable. Refactorings are refused while this is true.">
+                  <span class="status-lamp failed"></span>
+                  cannot be read
+                </span>
+              {/if}
               <span class="workspace-meta muted">
                 {workspace.projects.length} project{workspace.projects.length === 1 ? "" : "s"}
                 {#if workspace.runningCount > 0 && workspace.phase !== "running"}

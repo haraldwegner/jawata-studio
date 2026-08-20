@@ -1020,6 +1020,27 @@ impl ManagerService {
     }
 
     /// The last published canary reading.
+    /// Per-workspace readability, from the canary readings ALREADY TAKEN.
+    ///
+    /// jawata-studio#24: the dashboard drew a green RUNNING row for a project
+    /// whose directory was gone, because that dot reports the SERVICE — "the
+    /// resident process is up" — which was true. The resident's own verdict
+    /// (`workspace.healthy`) never reached the row.
+    ///
+    /// It is read from the canary board rather than asked for here, and that is
+    /// the whole point: the dashboard polls every 2.5 s, and a health question
+    /// per resident at that rate is exactly the load the canary exists to space
+    /// out. This is a cached read — no probe, no request for a round.
+    pub fn workspace_readability(&self) -> Vec<WorkspaceReadability> {
+        self.canary_board()
+            .into_iter()
+            .map(|r| WorkspaceReadability {
+                workspace: r.workspace,
+                readable: r.workspace_readable,
+            })
+            .collect()
+    }
+
     pub(crate) fn canary_board(&self) -> Vec<crate::field_view::CanaryResult> {
         self.canary
             .read()
@@ -6195,6 +6216,19 @@ pub struct ProjectResolution {
     pub remedy: Option<String>,
 }
 
+/// Whether a workspace can be READ, as its resident last reported.
+///
+/// Deliberately tiny and deliberately separate from the service state: "the
+/// process is running" and "the workspace can be read" are two different facts,
+/// and the engine keeps them apart on purpose. Merging them here would invent a
+/// coupling the resident does not have.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceReadability {
+    pub workspace: String,
+    pub readable: bool,
+}
+
 /// One workspace's resolution report.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -6336,6 +6370,40 @@ mod resolution_tests {
 
     fn body(projects: serde_json::Value) -> serde_json::Value {
         serde_json::json!({ "data": { "workspace": { "projects": projects } } })
+    }
+
+    /// jawata-studio#24, the DASHBOARD half. The report half shipped in 3.12.2
+    /// and the tray went amber; the Managed Projects row stayed green, because
+    /// that dot reports the SERVICE and the service really was running.
+    ///
+    /// Readability is carried from the canary readings ALREADY TAKEN, never
+    /// asked for here — the dashboard polls every 2.5 s and a health question
+    /// per resident at that rate is the load the canary exists to space out.
+    #[test]
+    fn readability_is_carried_from_the_canary_never_asked_for() {
+        use crate::field_view::{judge_canary, CanaryResult};
+        fn reading(ws: &str, readable: bool) -> CanaryResult {
+            judge_canary(
+                ws,
+                "http://127.0.0.1:1/mcp",
+                Ok(serde_json::json!({"success": true, "data": {"entries": []}})),
+                Ok(serde_json::json!({"success": true, "data": {"sourceLength": 1}})),
+                5,
+                7,
+            )
+            .with_workspace_readable(readable)
+        }
+        let board = vec![reading("healthy-ws", true), reading("broken-ws", false)];
+        let out: Vec<WorkspaceReadability> = board
+            .into_iter()
+            .map(|r| WorkspaceReadability { workspace: r.workspace, readable: r.workspace_readable })
+            .collect();
+        assert_eq!(2, out.len());
+        assert!(out.iter().any(|w| w.workspace == "healthy-ws" && w.readable));
+        assert!(
+            out.iter().any(|w| w.workspace == "broken-ws" && !w.readable),
+            "the resident's verdict must survive the trip to the dashboard: {out:?}"
+        );
     }
 
     /// jawata-studio#24, MEASURED LIVE 2026-08-20 and reproduced here verbatim.

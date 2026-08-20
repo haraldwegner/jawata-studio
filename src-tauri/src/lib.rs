@@ -690,6 +690,7 @@ pub fn run() {
             commands::resolution_status,
             commands::experience_verb,
             commands::field_status,
+            commands::workspace_readability,
             commands::field_set_silence,
             commands::get_quit_prompt_context,
             commands::perform_quit_action,
