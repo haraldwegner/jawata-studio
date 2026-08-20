@@ -6172,6 +6172,12 @@ pub struct KnowledgeWorkspaceStatus {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectResolution {
     pub project_key: String,
+    /// The project's path on disk, as the resident reports it. Carried so a
+    /// consumer can join this report to its own project list EXACTLY: the
+    /// dashboard knows projects by path, the resident answers by key, and
+    /// guessing that one maps to the other is how a row ends up describing a
+    /// different project than the one it names.
+    pub project_path: String,
     /// How many requirements this project's import asked for and could not find.
     pub unresolved: u64,
     /// The refactoring guard, reported as the resident computes it. Carried
@@ -6250,6 +6256,11 @@ pub fn fold_resolution(workspace: &str, url: &str, body: &serde_json::Value) -> 
                     .get("projectKey")
                     .and_then(|k| k.as_str())
                     .unwrap_or("<unnamed>")
+                    .to_string(),
+                project_path: row
+                    .get("projectPath")
+                    .and_then(|p| p.as_str())
+                    .unwrap_or_default()
                     .to_string(),
                 unresolved,
                 healthy,

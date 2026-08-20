@@ -667,6 +667,9 @@ export interface FieldStatus {
  */
 export interface ProjectResolution {
   projectKey: string;
+  /** The project's path on disk, as the resident reports it — the exact join
+   *  key for a consumer that knows projects by path rather than by key. */
+  projectPath: string;
   unresolved: number;
   /** The refactoring guard, as the resident computes it — NOT derived here. */
   healthy: boolean;

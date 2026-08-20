@@ -228,6 +228,16 @@ impl Turn {
         self.narration.to_lowercase().contains("degrad")
     }
 
+    /// Does this turn owe a review?
+    ///
+    /// Decision-class only, per Harald's 2026-08-07 ruling: a message that asks
+    /// him for a word, when he did not ask first, and no reviewer ran. A REPLY
+    /// to his own question is out of scope — gating conversation triples his
+    /// waiting time for a failure mode conversation barely has.
+    pub fn owes_a_review(&self) -> bool {
+        self.asks_the_human && !self.user_asked && !self.communicator_ran()
+    }
+
     pub fn communicator_ran(&self) -> bool {
         self.launches.iter().any(ToolUse::is_communicator)
     }
@@ -278,7 +288,7 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
     // by doing the thing — which is the difference between a bounded gate and
     // a trap.
     if facts.already_bounced {
-        if facts.turn.communicator_ran() || facts.bounces >= MAX_UNJUDGED_BOUNCES {
+        if !facts.turn.owes_a_review() || facts.bounces >= MAX_UNJUDGED_BOUNCES {
             return StopVerdict::Allow;
         }
         return StopVerdict::Block {
@@ -344,15 +354,6 @@ the skip is recorded.",
     // The unjudged ask. Independent of autonomy: an ask is an ask — EXCEPT when
     // the human asked first, because then this is a reply and the 2026-08-07
     // ruling puts it outside the gate (studio#11).
-    if facts.turn.asks_the_human && !facts.turn.user_asked && !facts.turn.communicator_ran() {
-        return StopVerdict::Block {
-            reason: "UNJUDGED ASK: this message asks for a word, a ruling or a \
-                     decision, and no communicator subagent ran since the human's \
-                     last turn. Run the communicator on it, apply its verdict, \
-                     then stop."
-                .to_string(),
-        };
-    }
 
     // PORTED: the length budget. Harald's own suggestion, and stronger than a
     // phrase list because it does not depend on wording — which is exactly how
@@ -394,32 +395,34 @@ the skip is recorded.",
         };
     }
 
-    // RULE A — UNCONDITIONAL. Every stop must show a communicator pass.
+    // RULE A — SCOPED, and deliberately narrower than it was this morning.
     //
-    // It was gated on `Autonomy::Granted`, and production NEVER produces
-    // Granted (this crate's own wire test says so), so the rule had never
-    // fired once in 267 recorded stops. Harald, 2026-08-20: "Judge on always
-    // ... Enforcement everywhere."
+    // It ran UNCONDITIONALLY for one afternoon, on every turn including
+    // "yes, done". That was a wrong cure for a real problem: the rule had
+    // never fired in 267 recorded stops, and the cause was detection (autonomy
+    // is never reported; the window was being erased) rather than scope.
+    // Widening it treated a detection bug as a coverage gap and cost Harald
+    // three renderings of every message — the draft, the reviewer's exchange,
+    // and the correction — because a stop hook fires AFTER the text has
+    // already streamed to him and can only ever ADD a message, never replace
+    // one. An independent architect audit ruled the unconditional form a
+    // category error: an interception requirement built on an observe-only API.
     //
-    // The condition was not merely unnecessary, it was the thing that made the
-    // rule UNIMPLEMENTABLE. Every conditional form — too long, asks for a
-    // decision, undefined terms — must parse `final_text`, and `final_text` is
-    // the one part of the turn that is NOT in the transcript when Stop fires
-    // (jawata-studio#23: the message was stamped at the same second as the
-    // hook invocation, so `read_turn` built its window from the previous,
-    // already-flushed text block). An unconditional rule needs a single fact —
-    // did the subagent run — and tool calls ARE flushed before the stop. So
-    // this is the only rule in this function that is both always-relevant and
-    // always-answerable.
+    // So the scope returns to Harald's 2026-08-07 ruling — decision-class
+    // messages only, replies to his own questions exempt — and this rule is a
+    // BACKSTOP for a review-first discipline, not the trigger of review. The
+    // discipline: the reviewer runs FIRST, the draft exists only inside its
+    // prompt, and the readback is the only text that ever streams. When that
+    // holds, this rule never fires; when it fires, the discipline lapsed.
     //
-    // Placed LAST so that a turn failing a SPECIFIC rule still hears the
-    // specific reason; this is the catch-all, not a replacement for them.
-    if !facts.turn.communicator_ran() {
+    // What survives from the unconditional experiment, because both were real
+    // defects rather than scope: the bounce no longer erases the window it
+    // judges, and a CONTINUED reviewer counts as a review.
+    if facts.turn.owes_a_review() {
         return StopVerdict::Block {
-            reason: "UNJUDGED MESSAGE: this turn ends with a message the communicator \
-has not read. Hand it the draft; it returns what it understands in plain words. If that \
-matches what you meant, SEND ITS VERSION — your phrasing is the part that failed. If it \
-contradicts you, say what you meant and have it rephrase."
+            reason: "UNJUDGED MESSAGE: this message asks for a word, a ruling or a \
+decision, and the communicator has not read it. Hand it the draft FIRST — before writing \
+the answer — and send back what it understood, so the reader sees the text once."
                 .to_string(),
         };
     }
@@ -989,32 +992,46 @@ mod tests {
     }
 
     #[test]
-    fn every_stop_needs_a_communicator_pass_whatever_the_autonomy() {
-        // THE PREMISE THIS REPLACES: "an ordinary conversational session must be
-        // untouched — the rules are about autonomous runs." That exemption is
-        // exactly where the failure happened (jawata-studio#23 + the 2026-08-20
-        // dogfood: a misleading status sentence rode a REPLY, which the old scope
-        // exempted). Harald: "Judge on always."
-        //
-        // It is also the only rule that CAN fire, because it needs no `final_text`.
-        for a in [Autonomy::NotGranted, Autonomy::Unknown, Autonomy::Granted] {
-            match judge(&facts(a, vec![])) {
-                StopVerdict::Block { reason } => {
-                    assert!(reason.contains("UNJUDGED MESSAGE"), "{a:?}: {reason}")
-                }
-                StopVerdict::Allow => panic!("{a:?}: an unjudged message must not pass"),
-            }
-        }
-        // And a judged one passes, on every autonomy — the rule keys on the pass,
-        // never on the session's shape.
+    fn only_a_decision_class_message_owes_a_review() {
+        // SCOPE, twice corrected: decision-class (2026-08-07) -> UNCONDITIONAL
+        // for one afternoon -> back. Unconditional was the wrong cure for a rule
+        // that had never fired, and it cost the reader three renderings of every
+        // message.
+        // Granted is excluded here on purpose: Rule B (autonomy granted and
+        // nothing armed) is a separate concern and fires on its own terms.
         for a in [Autonomy::NotGranted, Autonomy::Unknown] {
-            assert_eq!(StopVerdict::Allow, judge(&facts(a, vec![communicator()])));
+            assert_eq!(
+                StopVerdict::Allow,
+                judge(&facts(a, vec![])),
+                "{a:?}: a routine turn must pass untouched"
+            );
         }
+        let mut asking = facts(Autonomy::Unknown, vec![]);
+        asking.turn.asks_the_human = true;
+        match judge(&asking) {
+            StopVerdict::Block { reason } => {
+                assert!(reason.contains("UNJUDGED MESSAGE"), "{reason}");
+                assert!(reason.contains("FIRST"), "it must teach review-FIRST: {reason}");
+            }
+            StopVerdict::Allow => panic!("a decision-class message owes a review"),
+        }
+        let mut replying = facts(Autonomy::Unknown, vec![]);
+        replying.turn.asks_the_human = true;
+        replying.turn.user_asked = true;
+        assert_eq!(
+            StopVerdict::Allow,
+            judge(&replying),
+            "a reply to his own question is exempt — gating conversation triples his wait"
+        );
     }
 
     #[test]
     fn autonomy_without_a_communicator_pass_blocks() {
-        let v = judge(&facts(Autonomy::Granted, vec![tool("Bash")]));
+        // Scope returned to decision-class on 2026-08-20, so the turn must ASK
+        // for something; autonomy alone no longer summons the review rule.
+        let mut f = facts(Autonomy::Granted, vec![tool("Bash")]);
+        f.turn.asks_the_human = true;
+        let v = judge(&f);
         match v {
             StopVerdict::Block { reason } => assert!(reason.contains("communicator")),
             StopVerdict::Allow => panic!("must block"),
@@ -1027,8 +1044,10 @@ mod tests {
     #[test]
     fn removing_only_the_communicator_call_flips_the_verdict() {
         let armed = ToolUse { name: "Agent".into(), subagent: Some("general-purpose".into()), backgrounded: false };
-        let with = facts(Autonomy::Granted, vec![communicator(), armed.clone()]);
-        let without = facts(Autonomy::Granted, vec![armed]);
+        let mut with = facts(Autonomy::Granted, vec![communicator(), armed.clone()]);
+        with.turn.asks_the_human = true;
+        let mut without = facts(Autonomy::Granted, vec![armed]);
+        without.turn.asks_the_human = true;
         assert_eq!(StopVerdict::Allow, judge(&with));
         assert!(matches!(judge(&without), StopVerdict::Block { .. }), "must flip");
     }
@@ -1060,8 +1079,9 @@ mod tests {
     /// The retry now excuses everything EXCEPT a missing review — and even
     /// that only until the ceiling, so it bounds rather than wedges.
     fn a_second_pass_excuses_everything_except_a_missing_review() {
-        // Retry, no review: still held.
+        // Retry, no review, and the turn ASKS for something: still held.
         let mut f = facts(Autonomy::Granted, vec![]);
+        f.turn.asks_the_human = true;
         f.already_bounced = true;
         match judge(&f) {
             StopVerdict::Block { reason } => {
@@ -1072,10 +1092,12 @@ mod tests {
         }
         // Retry, review done: allowed, and no other rule re-fires.
         let mut judged = facts(Autonomy::Granted, vec![communicator()]);
+        judged.turn.asks_the_human = true;
         judged.already_bounced = true;
         assert_eq!(StopVerdict::Allow, judge(&judged));
         // The ceiling: it gives up rather than wedging the session.
         let mut spent = facts(Autonomy::Granted, vec![]);
+        spent.turn.asks_the_human = true;
         spent.already_bounced = true;
         spent.bounces = MAX_UNJUDGED_BOUNCES;
         assert_eq!(
@@ -1201,7 +1223,7 @@ mod tests {
         let mut f = facts(Autonomy::Unknown, vec![]);
         f.turn.asks_the_human = true;
         match judge(&f) {
-            StopVerdict::Block { reason } => assert!(reason.contains("UNJUDGED ASK"), "{reason}"),
+            StopVerdict::Block { reason } => assert!(reason.contains("UNJUDGED MESSAGE"), "{reason}"),
             StopVerdict::Allow => panic!("an unjudged ask must block"),
         }
         f.turn.launches = vec![communicator()];
@@ -1308,18 +1330,12 @@ mod tests {
             turn,
             autonomy: Autonomy::Unknown,
         });
-        // The ASK rule's scope survives: a reply is not an unjudged ASK.
-        // The BLANKET exemption does not — Harald deleted it on 2026-08-20
-        // ("judge on always"), because the misleading status sentence that
-        // prompted the redesign rode a reply. So the catch-all still applies,
-        // and what this test pins is that the ask rule is not what caught it.
-        match verdict {
-            StopVerdict::Block { ref reason } => assert!(
-                !reason.contains("UNJUDGED ASK"),
-                "a reply must never be treated as an unjudged ASK: {reason}"
-            ),
-            StopVerdict::Allow => panic!("the catch-all applies to replies too"),
-        }
+        assert_eq!(
+            StopVerdict::Allow,
+            verdict,
+            "a reply is out of this gate's scope by the 2026-08-07 ruling, restored \
+             2026-08-20 after the unconditional experiment tripled every message"
+        );
     }
 
     #[test]

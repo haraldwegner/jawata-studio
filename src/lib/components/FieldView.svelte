@@ -220,6 +220,7 @@
           {#each unresolvedProjects as p (p.workspace + p.projectKey)}
             <li>
               <code>{p.projectKey}</code>
+              <span class="muted">{p.projectPath}</span>
               {#if p.healthy === false}
                 <span class="shape-count">cannot be read</span>
               {:else}

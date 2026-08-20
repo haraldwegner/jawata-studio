@@ -2514,6 +2514,7 @@ mod interruption_scans {
         // is reported by the residents tile, not twice.
         let resolution = serde_json::to_value(crate::manager_service::ProjectResolution {
             project_key: String::new(),
+            project_path: String::new(),
             unresolved: 0,
             healthy: true,
             problem: None,

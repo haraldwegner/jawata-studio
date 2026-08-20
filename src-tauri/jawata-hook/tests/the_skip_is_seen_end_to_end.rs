@@ -234,9 +234,13 @@ fn a_blocked_turn_still_records_the_skip() {
     let transcript = home.join("transcript.jsonl");
     std::fs::write(
         &transcript,
-        "{\"type\":\"user\",\"message\":{\"content\":\"why does it resolve nothing?\"}}\n\
+        // The human STATES rather than asks, so this is not a reply and the
+        // decision-class rule applies; the agent's own text then asks for a
+        // ruling. That combination is what must block, and a blocked turn is
+        // this test's whole subject.
+        "{\"type\":\"user\",\"message\":{\"content\":\"look at the importer\"}}\n\
          {\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\
-         \"text\":\"The importer never populates projectDependencies here.\"}]}}\n",
+         \"text\":\"The importer never populates projectDependencies here. Shall I fix it?\"}]}}\n",
     )
     .unwrap();
     let stop = serde_json::json!({

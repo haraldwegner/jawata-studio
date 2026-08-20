@@ -84,9 +84,9 @@ fn every_stop_rule_that_claims_rust_code_has_its_marker_in_judge() {
     let marker: std::collections::HashMap<&str, &str> = [
         ("anti_loop", "already_bounced"),
         ("audit_fix_loop", "AUDIT-FIX LOOP"),
-        ("unjudged_ask", "UNJUDGED ASK"),
+        ("unjudged_ask", "UNJUDGED MESSAGE"),
         ("unreported_degradation", "UNREPORTED DEGRADATION"),
-        ("communicator_rule_a", "UNJUDGED MESSAGE:"),
+        
         ("nothing_armed_rule_b", "RULE B:"),
         ("seat_discipline", "SEAT DISCIPLINE"),
         ("decision_test_length", "TOO LONG"),

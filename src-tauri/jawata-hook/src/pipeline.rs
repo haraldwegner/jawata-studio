@@ -1311,17 +1311,15 @@ mod tests {
             "transcript_path": p, "stop_hook_active": false
         }).to_string();
         let out = run(Role::Stop, &config("claude-code"), &payload, &Stub(Ok(Answer::Nothing)));
-        // Since 2026-08-20 the communicator rule is UNCONDITIONAL, so an unjudged
-        // turn is the case production actually meets — and the wire now carries a
-        // real decision rather than a recorded reason for not enforcing. Seeding
-        // the arm back to CannotInject still breaks this.
-        match out {
-            Outcome::Emitted(ref rendered) => assert!(
-                rendered.contains("UNJUDGED MESSAGE"),
-                "Stop must reach the gate and carry its decision: {rendered}"
-            ),
-            other => panic!("Stop must reach the gate and emit: {other:?}"),
-        }
+        // The review rule went back to decision-class scope on 2026-08-20, so a
+        // ROUTINE turn like this one is allowed and the honest outcome is the
+        // recorded reason. Seeding the arm back to CannotInject still breaks
+        // this, which is what the wire test is for.
+        assert_eq!(
+            Outcome::Silent(SilenceReason::AutonomyUnknown),
+            out,
+            "Stop must reach the gate and record why it did not enforce"
+        );
     }
 
     #[test]
@@ -1337,7 +1335,7 @@ mod tests {
         let facts = StopFacts {
             already_bounced: false,
             bounces: 0,
-            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: false, user_asked: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false },
+            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, user_asked: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false },
             autonomy: Autonomy::Granted,
         };
         let StopVerdict::Block { reason } = crate::stop::judge(&facts) else {
@@ -1350,7 +1348,7 @@ mod tests {
         .expect("claude renders a stop decision");
         let v: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
         assert_eq!("block", v["decision"], "got {rendered}");
-        assert!(v["reason"].as_str().unwrap().contains("communicator"));
+        assert!(v["reason"].as_str().unwrap().contains("UNJUDGED MESSAGE"));
     }
 
     /// Cursor has no Stop event, so the dialect must render to nothing at all

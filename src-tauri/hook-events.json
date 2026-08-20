@@ -125,9 +125,9 @@
         "what": "3+ refusals with no checkpoint reached -> run the architect"
       },
       "unjudged_ask": {
-        "bash": "present",
+        "bash": "absent",
         "rust": "present",
-        "what": "an upward ask with no communicator run since the human's turn"
+        "what": "THE review rule (2026-08-20): a decision-class message — asks him for a word, he did not ask first — with no communicator pass. Marker UNJUDGED MESSAGE. It absorbed communicator_rule_a when the unconditional experiment was reverted: the two were the same rule at different scopes, and one rule is what the code now has."
       },
       "unreported_degradation": {
         "bash": "absent",
@@ -136,8 +136,8 @@
       },
       "communicator_rule_a": {
         "bash": "absent",
-        "rust": "present",
-        "what": "every stop must show a communicator pass — UNCONDITIONAL since 2026-08-20. It was gated on autonomy, which production never reports, so it had never fired in 267 recorded stops; and that condition was also what made it unimplementable, because every conditional form must read a final message the transcript does not yet hold (studio#23). Keyed on whether the subagent ran, which IS recorded before the stop."
+        "rust": "absent",
+        "what": "MERGED into unjudged_ask on 2026-08-20. It existed as the unconditional form of the same rule for one afternoon; an architect audit ruled that form a category error (an interception requirement on an observe-only hook API), and the scope returned to decision-class. No separate rule remains."
       },
       "nothing_armed_rule_b": {
         "bash": "absent",
