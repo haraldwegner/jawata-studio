@@ -1245,11 +1245,17 @@ mod tests {
             "transcript_path": p, "stop_hook_active": false
         }).to_string();
         let out = run(Role::Stop, &config("claude-code"), &payload, &Stub(Ok(Answer::Nothing)));
-        assert_eq!(
-            Outcome::Silent(SilenceReason::AutonomyUnknown),
-            out,
-            "Stop must reach the gate and record why it did not enforce"
-        );
+        // Since 2026-08-20 the communicator rule is UNCONDITIONAL, so an unjudged
+        // turn is the case production actually meets — and the wire now carries a
+        // real decision rather than a recorded reason for not enforcing. Seeding
+        // the arm back to CannotInject still breaks this.
+        match out {
+            Outcome::Emitted(ref rendered) => assert!(
+                rendered.contains("UNJUDGED MESSAGE"),
+                "Stop must reach the gate and carry its decision: {rendered}"
+            ),
+            other => panic!("Stop must reach the gate and emit: {other:?}"),
+        }
     }
 
     #[test]
@@ -1535,7 +1541,13 @@ mod tests {
         let p = d.join("t.jsonl");
         std::fs::write(
             &p,
-            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}}\n",
+            // The catch-all rule (every stop needs a communicator pass) is not this
+            // test's subject — it is about WHICH allow gets logged — so the pass is
+            // part of the fixture.
+            concat!(
+                "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Agent\",\"input\":{\"subagent_type\":\"communicator\"}}]}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}}\n",
+            ),
         )
         .unwrap();
         let payload = serde_json::json!({"transcript_path": p, "stop_hook_active": false}).to_string();

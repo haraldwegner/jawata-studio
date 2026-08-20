@@ -337,15 +337,32 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
         };
     }
 
-    // RULE A. In an autonomous session the default inverts: EVERY stop must
-    // show a communicator pass. Keying on the message's SHAPE instead — the
-    // previous generation looked for "DECISION:" and similar tokens — is
-    // defeatable by wording, and the agent authors the wording.
-    if facts.autonomy == Autonomy::Granted && !facts.turn.communicator_ran() {
+    // RULE A — UNCONDITIONAL. Every stop must show a communicator pass.
+    //
+    // It was gated on `Autonomy::Granted`, and production NEVER produces
+    // Granted (this crate's own wire test says so), so the rule had never
+    // fired once in 267 recorded stops. Harald, 2026-08-20: "Judge on always
+    // ... Enforcement everywhere."
+    //
+    // The condition was not merely unnecessary, it was the thing that made the
+    // rule UNIMPLEMENTABLE. Every conditional form — too long, asks for a
+    // decision, undefined terms — must parse `final_text`, and `final_text` is
+    // the one part of the turn that is NOT in the transcript when Stop fires
+    // (jawata-studio#23: the message was stamped at the same second as the
+    // hook invocation, so `read_turn` built its window from the previous,
+    // already-flushed text block). An unconditional rule needs a single fact —
+    // did the subagent run — and tool calls ARE flushed before the stop. So
+    // this is the only rule in this function that is both always-relevant and
+    // always-answerable.
+    //
+    // Placed LAST so that a turn failing a SPECIFIC rule still hears the
+    // specific reason; this is the catch-all, not a replacement for them.
+    if !facts.turn.communicator_ran() {
         return StopVerdict::Block {
-            reason: "RULE A: autonomy is granted and this turn ends with a message \
-that the communicator has not judged. Run the communicator subagent on it, \
-apply its verdict, then stop."
+            reason: "UNJUDGED MESSAGE: this turn ends with a message the communicator \
+has not read. Hand it the draft; it returns what it understands in plain words. If that \
+matches what you meant, SEND ITS VERSION — your phrasing is the part that failed. If it \
+contradicts you, say what you meant and have it rephrase."
                 .to_string(),
         };
     }
@@ -717,8 +734,9 @@ mod tests {
         let turn = read_turn(&transcript).unwrap();
         assert_eq!("Done.", turn.final_text, "the last block is still the final message");
         assert_eq!(1, turn.degraded_consumed);
-        let mut f = facts(Autonomy::Unknown, vec![]);
+        let mut f = facts(Autonomy::Unknown, vec![communicator()]);
         f.turn = turn;
+        f.turn.launches.push(communicator()); // the catch-all rule is not this test's subject
         assert_eq!(
             StopVerdict::Allow,
             judge(&f),
@@ -803,12 +821,13 @@ mod tests {
     /// ACCEPTANCE 2: the same transcript, said out loud -> passes.
     #[test]
     fn saying_it_closes_the_rule() {
-        let mut f = facts(Autonomy::Unknown, vec![]);
+        let mut f = facts(Autonomy::Unknown, vec![communicator()]);
         f.turn = turn_of(
             "DEGRADED: experience store is serving a non-persistent in-memory copy",
             "Found 3 entries — but the store answered DEGRADED (in-memory copy), so \
              this count is not the persisted corpus.",
         );
+        f.turn.launches.push(communicator()); // the catch-all rule is not this test\'s subject
         assert_eq!(StopVerdict::Allow, judge(&f));
     }
 
@@ -817,12 +836,13 @@ mod tests {
     /// own design refuses to manufacture.
     #[test]
     fn the_word_not_the_token_is_what_closes_it() {
-        let mut f = facts(Autonomy::Unknown, vec![]);
+        let mut f = facts(Autonomy::Unknown, vec![communicator()]);
         f.turn = turn_of(
             "DEGRADED: store on the in-memory fallback",
             "Three entries, but note the degradation: the store is on its in-memory \
              fallback, so treat the number as a floor.",
         );
+        f.turn.launches.push(communicator()); // the catch-all rule is not this test\'s subject
         assert_eq!(StopVerdict::Allow, judge(&f));
     }
 
@@ -842,8 +862,9 @@ mod tests {
             0, turn.degraded_consumed,
             "a mid-line mention in a grep hit is not a degradation stamp"
         );
-        let mut f = facts(Autonomy::Unknown, vec![]);
+        let mut f = facts(Autonomy::Unknown, vec![communicator()]);
         f.turn = turn;
+        f.turn.launches.push(communicator()); // the catch-all rule is not this test's subject
         assert_eq!(StopVerdict::Allow, judge(&f));
     }
 
@@ -873,12 +894,26 @@ mod tests {
     }
 
     #[test]
-    fn without_autonomy_the_gate_allows() {
-        // An ordinary conversational session must be untouched — the rules are
-        // about autonomous runs, and a gate that fires in normal use would be
-        // turned off by the first person it annoyed.
+    fn every_stop_needs_a_communicator_pass_whatever_the_autonomy() {
+        // THE PREMISE THIS REPLACES: "an ordinary conversational session must be
+        // untouched — the rules are about autonomous runs." That exemption is
+        // exactly where the failure happened (jawata-studio#23 + the 2026-08-20
+        // dogfood: a misleading status sentence rode a REPLY, which the old scope
+        // exempted). Harald: "Judge on always."
+        //
+        // It is also the only rule that CAN fire, because it needs no `final_text`.
+        for a in [Autonomy::NotGranted, Autonomy::Unknown, Autonomy::Granted] {
+            match judge(&facts(a, vec![])) {
+                StopVerdict::Block { reason } => {
+                    assert!(reason.contains("UNJUDGED MESSAGE"), "{a:?}: {reason}")
+                }
+                StopVerdict::Allow => panic!("{a:?}: an unjudged message must not pass"),
+            }
+        }
+        // And a judged one passes, on every autonomy — the rule keys on the pass,
+        // never on the session's shape.
         for a in [Autonomy::NotGranted, Autonomy::Unknown] {
-            assert_eq!(StopVerdict::Allow, judge(&facts(a, vec![])));
+            assert_eq!(StopVerdict::Allow, judge(&facts(a, vec![communicator()])));
         }
     }
 
@@ -988,7 +1023,7 @@ mod tests {
     /// the binary before it existed would have stripped a working protection.
     #[test]
     fn the_audit_fix_loop_blocks_without_needing_autonomy() {
-        let mut f = facts(Autonomy::Unknown, vec![]);
+        let mut f = facts(Autonomy::Unknown, vec![communicator()]);
         f.turn.refusals_emitted = 3;
         match judge(&f) {
             StopVerdict::Block { reason } => {
@@ -1114,12 +1149,18 @@ mod tests {
             turn,
             autonomy: Autonomy::Unknown,
         });
-        assert_eq!(
-            StopVerdict::Allow,
-            verdict,
-            "a reply is out of this gate's scope by the 2026-08-07 ruling — gating it cost a \
-             full communicator round trip on a message the ruling exempts"
-        );
+        // The ASK rule's scope survives: a reply is not an unjudged ASK.
+        // The BLANKET exemption does not — Harald deleted it on 2026-08-20
+        // ("judge on always"), because the misleading status sentence that
+        // prompted the redesign rode a reply. So the catch-all still applies,
+        // and what this test pins is that the ask rule is not what caught it.
+        match verdict {
+            StopVerdict::Block { ref reason } => assert!(
+                !reason.contains("UNJUDGED ASK"),
+                "a reply must never be treated as an unjudged ASK: {reason}"
+            ),
+            StopVerdict::Allow => panic!("the catch-all applies to replies too"),
+        }
     }
 
     #[test]
@@ -1171,7 +1212,7 @@ mod tests {
 
     #[test]
     fn a_seat_without_its_gate_blocks() {
-        let mut f = facts(Autonomy::Unknown, vec![]);
+        let mut f = facts(Autonomy::Unknown, vec![communicator()]);
         f.turn.seats_invoked = vec!["/refactor".into()];
         f.turn.gate_ran = false;
         f.turn.changed_code = true;
@@ -1189,7 +1230,7 @@ mod tests {
     /// a correct run cannot satisfy teaches agents to narrate around gates.
     #[test]
     fn a_seat_that_changed_no_code_owes_no_gate() {
-        let mut f = facts(Autonomy::Unknown, vec![]);
+        let mut f = facts(Autonomy::Unknown, vec![communicator()]);
         f.turn.seats_invoked = vec!["/report".into()];
         f.turn.gate_ran = false;
         f.turn.changed_code = false;
@@ -1219,7 +1260,7 @@ mod tests {
 
     #[test]
     fn undefined_jargon_blocks_and_defined_jargon_does_not() {
-        let mut f = facts(Autonomy::Unknown, vec![]);
+        let mut f = facts(Autonomy::Unknown, vec![communicator()]);
         f.turn.final_text = "The TOCTOU in the SIGPIPE path broke the ETXTBSY retry.".into();
         match judge(&f) {
             StopVerdict::Block { reason } => assert!(reason.contains("UNDEFINED TERMS"), "{reason}"),
