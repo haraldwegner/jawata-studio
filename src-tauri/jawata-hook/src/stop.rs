@@ -42,6 +42,12 @@ use crate::safety::SilenceReason;
 /// Length is a trigger BECAUSE it is wording-independent.
 pub const LENGTH_BUDGET: usize = 2200;
 
+/// How many times a turn may be bounced for a missing review before the gate
+/// gives up and lets it through. Bounded on purpose: the valve this replaces
+/// existed so a gate could never wedge a session, and that concern is real —
+/// it is answered by a ceiling, not by allowing the first retry through.
+pub const MAX_UNJUDGED_BOUNCES: u32 = 3;
+
 /// Abbreviations a reader of this project already holds.
 const KNOWN_TERMS: &[&str] = &[
     "API","MCP","JDT","CPU","JVM","CI","PR","TDD","AST","JSON","HTTP","URL","ID",
@@ -218,6 +224,10 @@ pub struct StopFacts {
     /// The client's own anti-loop flag: true on a second pass, meaning we
     /// already blocked once. Blocking again would trap the session.
     pub already_bounced: bool,
+    /// How many times THIS session has already been bounced for a missing
+    /// review. Counted by the pipeline (a per-session file), never here —
+    /// `judge` stays pure.
+    pub bounces: u32,
     pub turn: Turn,
     pub autonomy: Autonomy,
 }
@@ -231,10 +241,39 @@ pub enum StopVerdict {
 
 /// The decision. Pure — no I/O, so every branch is reachable from a test.
 pub fn judge(facts: &StopFacts) -> StopVerdict {
-    // The anti-loop flag wins over everything. A gate that can block twice can
-    // wedge a session, and a wedged session is worse than an unjudged message.
+    // The anti-loop valve, NARROWED (Harald, 2026-08-20: "not acceptable").
+    //
+    // It used to allow EVERYTHING on the retry, which made every rule a single
+    // nag: block once, and the retry — which the harness marks as a retry —
+    // sailed through. Measured live on 3.12.2: block at 15:53:52, allowed
+    // 0.8 s later. A rule that can be walked past by doing nothing is not a
+    // gate.
+    //
+    // On the retry, exactly ONE thing may still hold the turn: the missing
+    // review. Every other rule keeps its old single-bounce behaviour, because
+    // those are advisory by design and re-firing them would change contracts
+    // this change has no business touching.
+    //
+    // The wedge risk the old valve existed for is answered by BOUNDING it
+    // rather than by surrendering: after MAX_UNJUDGED_BOUNCES the turn is let
+    // through and the giving-up is recorded. The agent can always exit sooner
+    // by doing the thing — which is the difference between a bounded gate and
+    // a trap.
     if facts.already_bounced {
-        return StopVerdict::Allow;
+        if facts.turn.communicator_ran() || facts.bounces >= MAX_UNJUDGED_BOUNCES {
+            return StopVerdict::Allow;
+        }
+        return StopVerdict::Block {
+            reason: format!(
+                "UNJUDGED MESSAGE (bounce {} of {}): the retry does not excuse this one. \
+Hand the draft to the communicator; it returns what it understands in plain words. Send \
+ITS version if that matches what you meant. After {} bounces the turn is let through and \
+the skip is recorded.",
+                facts.bounces + 1,
+                MAX_UNJUDGED_BOUNCES,
+                MAX_UNJUDGED_BOUNCES
+            ),
+        };
     }
 
     // PORTED FROM THE SCRIPT GENERATION, and deliberately NOT gated on
@@ -680,6 +719,7 @@ mod tests {
     fn facts(autonomy: Autonomy, launches: Vec<ToolUse>) -> StopFacts {
         StopFacts {
             already_bounced: false,
+            bounces: 0,
             turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, user_asked: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false },
             autonomy,
         }
@@ -889,6 +929,10 @@ mod tests {
     fn a_second_pass_never_blocks_on_degradation() {
         let mut f = facts(Autonomy::Unknown, vec![]);
         f.turn = turn_of("DEGRADED: store unavailable", "All good.");
+        // The review pass is the FIXTURE, not the subject: the narrowed valve
+        // still holds a retry for a missing review, and this test is about the
+        // degradation rule NOT re-firing on the second pass.
+        f.turn.launches.push(communicator());
         f.already_bounced = true;
         assert_eq!(StopVerdict::Allow, judge(&f));
     }
@@ -957,10 +1001,37 @@ mod tests {
     /// The anti-loop flag must win, or the gate can wedge a session — worse
     /// than the problem it solves.
     #[test]
-    fn a_second_pass_always_allows() {
+    /// THE PREMISE THIS REPLACES: "a second pass always allows". Harald,
+    /// 2026-08-20, on the live 3.12.2 measurement (block at 15:53:52, allowed
+    /// 0.8 s later): "not acceptable". A rule you can walk past by doing
+    /// nothing is not a gate.
+    ///
+    /// The retry now excuses everything EXCEPT a missing review — and even
+    /// that only until the ceiling, so it bounds rather than wedges.
+    fn a_second_pass_excuses_everything_except_a_missing_review() {
+        // Retry, no review: still held.
         let mut f = facts(Autonomy::Granted, vec![]);
         f.already_bounced = true;
-        assert_eq!(StopVerdict::Allow, judge(&f));
+        match judge(&f) {
+            StopVerdict::Block { reason } => {
+                assert!(reason.contains("UNJUDGED MESSAGE"), "{reason}");
+                assert!(reason.contains("bounce 1 of 3"), "it must say where it is: {reason}");
+            }
+            StopVerdict::Allow => panic!("the retry must not excuse a missing review"),
+        }
+        // Retry, review done: allowed, and no other rule re-fires.
+        let mut judged = facts(Autonomy::Granted, vec![communicator()]);
+        judged.already_bounced = true;
+        assert_eq!(StopVerdict::Allow, judge(&judged));
+        // The ceiling: it gives up rather than wedging the session.
+        let mut spent = facts(Autonomy::Granted, vec![]);
+        spent.already_bounced = true;
+        spent.bounces = MAX_UNJUDGED_BOUNCES;
+        assert_eq!(
+            StopVerdict::Allow,
+            judge(&spent),
+            "bounded, not a trap — the old valve's concern is answered by a ceiling"
+        );
     }
 
     // ---- read_turn ----
@@ -1146,6 +1217,7 @@ mod tests {
         assert!(turn.user_asked, "the human's message carries a question mark");
         let verdict = judge(&StopFacts {
             already_bounced: false,
+            bounces: 0,
             turn,
             autonomy: Autonomy::Unknown,
         });
@@ -1188,7 +1260,8 @@ mod tests {
         assert!(turn.asks_the_human);
         assert!(
             matches!(
-                judge(&StopFacts { already_bounced: false, turn, autonomy: Autonomy::Unknown }),
+                judge(&StopFacts { already_bounced: false,
+            bounces: 0, turn, autonomy: Autonomy::Unknown }),
                 StopVerdict::Block { .. }
             ),
             "a self-initiated ask must still be judged before it is sent"

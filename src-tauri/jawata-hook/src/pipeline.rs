@@ -686,6 +686,17 @@ fn string_at(value: &serde_json::Value, path: &[&str]) -> Option<String> {
 /// Fails OPEN on every unreadable condition (no payload, no path, no file),
 /// but RECORDS which one: the previous generation of this hook failed open
 /// silently, and a silent fail-open is indistinguishable from a pass.
+/// A session id reaches us from the client and becomes a FILE NAME, so it is
+/// reduced to characters that cannot escape the directory.
+fn sanitize_session(session: &str) -> String {
+    let cleaned: String = session
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .take(120)
+        .collect();
+    if cleaned.is_empty() { "unknown".to_string() } else { cleaned }
+}
+
 fn stop_gate(client: Client, payload: &str, autonomy: crate::stop::Autonomy) -> Outcome {
     use crate::stop::{self, StopFacts, StopVerdict};
 
@@ -759,7 +770,48 @@ fn stop_gate(client: Client, payload: &str, autonomy: crate::stop::Autonomy) -> 
         }
     }
 
-    match stop::judge(&StopFacts { already_bounced, turn, autonomy }) {
+    // How many times this session has already been bounced for a missing
+    // review. A file, because the harness tells us only "this is a retry" —
+    // a bool cannot bound a loop. Kept beside the other per-session state.
+    //
+    // NO SESSION ID, NO COUNTER — and therefore no holding. A payload without a
+    // session cannot be bounded (there is no episode to count against), and an
+    // unbounded hold is the wedge the old valve rightly feared. So the retry is
+    // treated as already spent: it passes. Better a missed review than a stuck
+    // session, and the client that omits the id is the one giving that up.
+    let bounce_dir = if session.is_empty() {
+        None
+    } else {
+        home_dir().map(|h| h.join(".claude").join("jawata-studio").join("bounces"))
+    };
+    let bounce_file = bounce_dir.as_ref().map(|d| d.join(sanitize_session(&session)));
+    let bounces: u32 = if bounce_file.is_none() {
+        stop::MAX_UNJUDGED_BOUNCES
+    } else {
+        bounce_file
+            .as_ref()
+            .and_then(|f| std::fs::read_to_string(f).ok())
+            .and_then(|t| t.trim().parse().ok())
+            .unwrap_or(0)
+    };
+
+    let verdict = stop::judge(&StopFacts { already_bounced, turn, autonomy, bounces });
+
+    // Count a bounce when we actually bounce; forget the count the moment the
+    // turn is let through, so the ceiling is per-episode and not per-session.
+    if let (Some(dir), Some(file)) = (bounce_dir.as_ref(), bounce_file.as_ref()) {
+        match verdict {
+            StopVerdict::Block { .. } => {
+                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::write(file, (bounces + 1).to_string());
+            }
+            StopVerdict::Allow => {
+                let _ = std::fs::remove_file(file);
+            }
+        }
+    }
+
+    match verdict {
         StopVerdict::Block { reason } => {
             match crate::emit::render(client, &crate::emit::Emission::StopDecision { reason }) {
                 Some(rendered) => Outcome::Emitted(rendered),
@@ -1284,6 +1336,7 @@ mod tests {
     fn a_block_renders_claudes_stop_dialect() {
         let facts = StopFacts {
             already_bounced: false,
+            bounces: 0,
             turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: false, user_asked: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false },
             autonomy: Autonomy::Granted,
         };
