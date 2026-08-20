@@ -49,15 +49,59 @@ pub const LENGTH_BUDGET: usize = 2200;
 pub const MAX_UNJUDGED_BOUNCES: u32 = 3;
 
 /// Abbreviations a reader of this project already holds.
+///
+/// Note what the second row USED to be: OK, DONE, STOP, NOT, AND, THE, ALL,
+/// NEW, YOUR, BOTH, RED, YES, NO — ordinary English words, added one at a time
+/// as the rule misfired on emphasis. A list that grows like that is a
+/// structural flaw being maintained by hand, so the fix went to the scanner
+/// (quoted and emphasised spans are redacted, runs of capitals are labels) and
+/// those words are no longer needed here.
+///
+/// What remains are genuine abbreviations, plus the studio's OWN badge labels —
+/// a reader of this project does hold those, which is exactly what this list
+/// means.
 const KNOWN_TERMS: &[&str] = &[
     "API","MCP","JDT","CPU","JVM","CI","PR","TDD","AST","JSON","HTTP","URL","ID",
-    "OK","DONE","STOP","NOT","AND","THE","ALL","NEW","YOUR","BOTH","RED","YES","NO",
     "MSI","NSIS","DMG","DEB","XML","SHIM","E2E","OS","UI","IDE","GUI","SDK","LTS",
+    // The studio's own status badges, as they appear on screen.
+    "RUNNING","STOPPED","STARTING","FAILED",
 ];
 
 /// Capitalised terms the message never defines. A term counts as defined when
 /// the text explains it in parentheses on either side.
 fn undefined_terms(text: &str) -> Vec<String> {
+    // REDACTING QUOTED SPANS WAS THE WRONG FIX, and mutation testing is what
+    // showed it: with the run rule below in place, blanking backticks and bold
+    // changed no verdict — the two were redundant — and it would have BLINDED
+    // the rule inside quotes, which is precisely where a genuine acronym
+    // (SIGPIPE out of a log, say) still needs explaining. Quoting does not make
+    // a term resolvable for the reader.
+    //
+    // A RUN of capitals is one label, not a list of abbreviations. "CANNOT BE
+    // READ" is a badge; reporting BE as an undefined term is the giveaway that
+    // the rule was matching shape rather than meaning. Tokens whose immediate
+    // neighbour (across spaces or hyphens only) is also capitalised are skipped.
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let is_caps = |w: &str| {
+        let core: String = w.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+        core.len() >= 2 && core.chars().all(|c| c.is_ascii_uppercase())
+    };
+    let mut in_run: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (i, w) in words.iter().enumerate() {
+        if !is_caps(w) {
+            continue;
+        }
+        let neighbour_caps = (i > 0 && is_caps(words[i - 1]))
+            || (i + 1 < words.len() && is_caps(words[i + 1]));
+        if neighbour_caps {
+            for part in w.split(|c: char| !c.is_ascii_alphanumeric()) {
+                if !part.is_empty() {
+                    in_run.insert(part.to_string());
+                }
+            }
+        }
+    }
+
     let mut out: Vec<String> = Vec::new();
     for raw in text.split(|c: char| !c.is_ascii_alphanumeric()) {
         // 2..=10, not 2..=5. The first version skipped TOCTOU, SIGPIPE and
@@ -66,6 +110,7 @@ fn undefined_terms(text: &str) -> Vec<String> {
         if raw.len() < 2 || raw.len() > 10 { continue; }
         if !raw.chars().all(|c| c.is_ascii_uppercase()) { continue; }
         if KNOWN_TERMS.contains(&raw) { continue; }
+        if in_run.contains(raw) { continue; }
         let defined = text.contains(&format!("{raw} (")) || text.contains(&format!("({raw}"));
         if !defined && !out.iter().any(|o| o == raw) {
             out.push(raw.to_string());
@@ -1474,6 +1519,48 @@ mod tests {
         let turn2 = read_turn(&invoked).expect("parses");
         assert_eq!(vec!["/refactor".to_string()], turn2.seats_invoked,
             "a line that OPENS with the command did invoke it");
+    }
+
+    #[test]
+    /// jawata-studio#25, both live misfires, verbatim.
+    ///
+    /// Quoting the exact label a user sees, or the exact text a tool returned,
+    /// is the OPPOSITE of jargon. The rule reported six abbreviations across two
+    /// messages that contained none — and `BE` was the giveaway.
+    #[test]
+    fn quoted_labels_and_tool_text_are_not_undefined_terms() {
+        // Case 1: a resident's own JSON, quoted.
+        let case1 = "The resident says `\"problem\": \"registered, but its directory \
+                     NO LONGER EXISTS on disk\"` and the row shows RUNNING.";
+        assert!(
+            undefined_terms(case1).is_empty(),
+            "quoted tool output is grounding, not jargon: {:?}",
+            undefined_terms(case1)
+        );
+
+        // Case 2: a dashboard badge, quoted in bold.
+        let case2 = "The row shows **CANNOT BE READ** in red beside the green RUNNING badge.";
+        assert!(
+            undefined_terms(case2).is_empty(),
+            "a badge is one label, and BE is not an abbreviation in any reading: {:?}",
+            undefined_terms(case2)
+        );
+
+        // The rule must still bite on what it exists for.
+        let real = "The TOCTOU window reopened and SIGPIPE killed the writer.";
+        let found = undefined_terms(real);
+        assert!(found.contains(&"TOCTOU".to_string()), "{found:?}");
+        assert!(found.contains(&"SIGPIPE".to_string()), "{found:?}");
+
+        // AND INSIDE QUOTES TOO. Quoting a log line does not make its acronym
+        // resolvable for the reader, so the rule must not go blind there — the
+        // reason the first draft's redaction of quoted spans was removed.
+        let quoted = "The log says `write failed: SIGPIPE` and the run died.";
+        assert!(
+            undefined_terms(quoted).contains(&"SIGPIPE".to_string()),
+            "a quoted acronym is still an acronym: {:?}",
+            undefined_terms(quoted)
+        );
     }
 
     #[test]
