@@ -1067,6 +1067,46 @@ impl ManagerService {
         health
     }
 
+    /// Re-ask ONLY "can you read your workspace?", and fold the answers in.
+    ///
+    /// studio#26: a workspace that broke while everything looked well waited up
+    /// to five minutes to say so, because the only thing that refreshed the
+    /// verdict was the deep canary and a green board buys the slow cadence.
+    /// This asks the one cheap question on its own timer.
+    ///
+    /// `None` means nothing was published — either no round has run yet (an
+    /// empty board is "not observed", which must never render as "broken") or
+    /// every workspace answered exactly as the board already said. Returning
+    /// the health only when it CHANGED keeps the tray from being repainted
+    /// every five seconds for no reason.
+    pub(crate) fn refresh_workspace_readability(
+        &self,
+        servers: &[ManagedDeployServer],
+    ) -> Option<crate::field_view::CanaryHealth> {
+        let mut board = self.canary_board();
+        if board.is_empty() {
+            return None;
+        }
+        let readings: Vec<(String, bool)> = servers
+            .iter()
+            .filter(|server| !server.url.is_empty() && !server.token.is_empty())
+            .map(|server| {
+                (
+                    server.workspace_name.clone(),
+                    workspace_readable_probe(&server.url, &server.token),
+                )
+            })
+            .collect();
+        if !crate::field_view::apply_readability(&mut board, &readings) {
+            return None;
+        }
+        let health = crate::field_view::canary_health(&board, crate::field_view::now_millis());
+        if let Ok(mut held) = self.canary.write() {
+            *held = board;
+        }
+        Some(health)
+    }
+
     /// One canary round against every reachable resident — BLOCKING, two real
     /// round-trips each. No `&self`, so the studio's timer thread can hold it
     /// without holding the service.
@@ -6133,13 +6173,7 @@ fn canary_probe(workspace: &str, url: &str, token: &str) -> crate::field_view::C
     // A resident that does not ANSWER this is left READABLE on purpose: "we
     // could not ask" is not "it said it is unwell", and the recall/compiler
     // probes above are what report an unreachable resident.
-    let workspace_readable = call_tool_json(url, token, "health_check", serde_json::json!({}), 5)
-        .ok()
-        .and_then(|body| {
-            body.pointer("/data/workspace/healthy")
-                .and_then(serde_json::Value::as_bool)
-        })
-        .unwrap_or(true);
+    let workspace_readable = workspace_readable_probe(url, token);
     crate::field_view::judge_canary(
         workspace,
         url,
@@ -6149,6 +6183,22 @@ fn canary_probe(workspace: &str, url: &str, token: &str) -> crate::field_view::C
         crate::field_view::now_millis(),
     )
     .with_workspace_readable(workspace_readable)
+}
+
+/// Can the resident READ its own workspace? Its own `workspace.healthy`.
+///
+/// ONE implementation, asked by two cadences — the deep canary every five
+/// minutes and the readability timer every five seconds. Measured against the
+/// twenty-nine project workspace: twenty milliseconds, process start included,
+/// which is why the fast cadence costs nothing worth counting.
+fn workspace_readable_probe(url: &str, token: &str) -> bool {
+    call_tool_json(url, token, "health_check", serde_json::json!({}), 5)
+        .ok()
+        .and_then(|body| {
+            body.pointer("/data/workspace/healthy")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(true)
 }
 
 /// The canary against an arbitrary endpoint — the seam the degraded-resident

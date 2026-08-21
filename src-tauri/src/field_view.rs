@@ -917,6 +917,39 @@ impl CanaryResult {
     }
 }
 
+/// Fold a fresh set of readability readings into an existing board.
+///
+/// studio#26: the deep canary asks each resident two real questions and is
+/// therefore spaced five minutes apart while everything looks well. Readability
+/// is not one of those questions — the resident keeps that verdict current and
+/// hands it over in about twenty milliseconds even on a twenty-nine project
+/// workspace — so it is re-asked on its own fast cadence and folded in here.
+///
+/// IT MAY ONLY EVER RAISE THE ALARM. A workspace that has become unreadable is
+/// marked so at once; a workspace that has recovered is NOT cleared here,
+/// because `green` is the verdict of two other questions this path never asked
+/// and restoring it would be inventing an answer. The recovery is already
+/// prompt: a board that is not green is re-checked every fifteen seconds.
+///
+/// Returns whether anything changed, so a caller can leave the board — and the
+/// tray — untouched on the overwhelmingly common quiet round.
+pub fn apply_readability(results: &mut [CanaryResult], readings: &[(String, bool)]) -> bool {
+    let mut changed = false;
+    for reading in readings {
+        if reading.1 {
+            continue; // readable: never clears a verdict this path did not set
+        }
+        for row in results.iter_mut() {
+            if row.workspace == reading.0 && row.workspace_readable {
+                row.workspace_readable = false;
+                row.green = false;
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
 /// The shared verdict. `now_millis` is needed because LOADING is only innocent
 /// while it is young — past the grace period an unfinished load is a fault.
 pub fn canary_health(results: &[CanaryResult], now_millis: u64) -> CanaryHealth {
@@ -1830,6 +1863,55 @@ mod tests {
             checked_at_millis: 0,
             recall_millis: millis,
         }
+    }
+
+    /// studio#26, the whole point of the fast lane: a workspace that was green
+    /// a moment ago and has just become unreadable is marked at once, without
+    /// waiting for the five-minute round that would otherwise carry the news.
+    #[test]
+    fn a_workspace_that_just_became_unreadable_is_marked_at_once() {
+        let mut board = vec![reading("alpha", true, 5, false)];
+        assert!(board[0].green, "the fixture must start green or this proves nothing");
+
+        let changed = apply_readability(&mut board, &[("alpha".to_string(), false)]);
+
+        assert!(changed, "an unreadable workspace is news; the tray must be repainted");
+        assert!(!board[0].workspace_readable);
+        assert!(!board[0].green, "unreadable is not green — this is what the tray reads");
+        assert_eq!(CanaryHealth::Degraded, canary_health(&board, 0));
+    }
+
+    /// The asymmetry, stated as a test because it is a decision and not an
+    /// oversight. This path asked ONE of the three questions behind `green`, so
+    /// it may take green away and must never hand it back — that would be
+    /// inventing answers to the two it never asked. Recovery is prompt anyway:
+    /// a board that is not green is re-checked every fifteen seconds.
+    #[test]
+    fn a_readable_answer_never_restores_a_verdict_this_path_did_not_take() {
+        let mut board = vec![reading("alpha", false, 5, false)];
+        board[0].workspace_readable = false;
+
+        let changed = apply_readability(&mut board, &[("alpha".to_string(), true)]);
+
+        assert!(!changed, "nothing to publish");
+        assert!(!board[0].green, "green is not this path's to restore");
+        assert!(!board[0].workspace_readable);
+    }
+
+    /// The quiet round, which is almost every round. Nothing changed, so
+    /// nothing is published and the tray is not touched — five seconds is only
+    /// affordable because a healthy machine does no work here.
+    #[test]
+    fn a_round_where_every_workspace_is_still_readable_publishes_nothing() {
+        let mut board = vec![reading("alpha", true, 5, false), reading("beta", true, 5, false)];
+
+        let changed = apply_readability(
+            &mut board,
+            &[("alpha".to_string(), true), ("beta".to_string(), true)],
+        );
+
+        assert!(!changed);
+        assert!(board.iter().all(|r| r.green && r.workspace_readable));
     }
 
     /// THE MEASURED INCIDENT, in the shape the tile has to catch. The store

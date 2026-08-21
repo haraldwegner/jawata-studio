@@ -9,7 +9,7 @@
 # WRITES the binary, it never RUNS it.
 [package]
 name = "jawata-hook"
-version = "3.12.6"
+version = "3.12.7"
 description = "The JAWATA client hook: one binary, every event, every platform."
 license = "AGPL-3.0-only"
 edition = "2021"

@@ -89,6 +89,17 @@ const CANARY_INTERVAL_SECS: u64 = 300;
 /// verdict is re-checked quickly and a happy one is not.
 const CANARY_RECHECK_SECS: u64 = 15;
 
+/// How often the studio re-asks the one CHEAP question: can each resident read
+/// its own workspace?
+///
+/// studio#26. Five seconds, and it is not a compromise between load and
+/// freshness — it is measured. The question costs about twenty milliseconds
+/// against the largest workspace on this machine (twenty-nine projects),
+/// because the resident keeps the answer current and merely hands it over. The
+/// five-minute spacing above protects the OTHER probe, which asks each resident
+/// two real questions to prove its engine still answers.
+const READABILITY_INTERVAL_SECS: u64 = 5;
+
 #[derive(Clone, Copy, Debug)]
 enum TrayIconVariant {
     /// The jawata arch mark (Sprint 22b brand) on the batik-indigo circle.
@@ -535,6 +546,31 @@ pub fn run() {
                         _ => CANARY_RECHECK_SECS,
                     };
                     let _ = wake_rx.recv_timeout(std::time::Duration::from_secs(wait));
+                }
+            });
+
+            // studio#26: the fast lane. It asks ONLY whether each resident can
+            // read its workspace, and it repaints only when that answer changed
+            // — so a healthy machine does no work here beyond one cheap
+            // question per resident per five seconds, and a workspace that goes
+            // bad is on screen within that.
+            let readability_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(
+                        READABILITY_INTERVAL_SECS,
+                    ));
+                    let state = readability_handle.state::<AppState>();
+                    let servers = state.manager_service.knowledge_servers();
+                    if servers.is_empty() {
+                        continue;
+                    }
+                    if let Some(health) = state
+                        .manager_service
+                        .refresh_workspace_readability(&servers)
+                    {
+                        apply_canary_health_to_tray(&readability_handle, health);
+                    }
                 }
             });
 
