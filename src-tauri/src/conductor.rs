@@ -364,7 +364,14 @@ STORE FIRST — call the jawata `experience` tool with `kind=record`, a fitting 
 (domain_fact / lesson / failure_mode / naming_convention), a one-line `summary`, and \
 an anchor (`symbol` for Java, `operation`+`language` otherwise). THEN write the \
 client's own file memory where one exists. The shared store is the authoritative \
-cross-client layer: what one client memorizes, every client recalls.",
+cross-client layer: what one client memorizes, every client recalls.\n\nA `lesson` or \
+a `failure_mode` is an EXPERIENCE and owes two more fields, or the store refuses it: \
+`situation` — when it applies, phrased as a condition (\"when amending an order that \
+is already partially filled\"), never a file path or a symbol; and `verdict` — how it \
+turned out: `worked`, `failed_avoid`, or `unproven` when it is genuinely still open. \
+A `domain_fact`, an `api_contract` or a `naming_convention` owes NEITHER — it never \
+turned out any way at all, and inventing an outcome for one makes retrieval rank on \
+fiction. Do not reach for a lesson when what you have is a fact.",
         // Single-sourced: the pipeline is far too long to inline, and a second
         // copy would drift from the one the seats' own process runs.
         "sprint" => include_str!("../../skills/sprint.md"),
