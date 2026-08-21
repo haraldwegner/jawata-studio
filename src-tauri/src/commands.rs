@@ -190,8 +190,16 @@ pub fn set_autostart_on_boot(
     state.manager_service.load_dashboard()
 }
 
+/// studio#27: `async` is load-bearing, not decoration.
+///
+/// Tauri runs a SYNCHRONOUS command on the main thread. Walking a
+/// `.code-workspace` that names ~200 modules takes 15-30 s, and for that whole
+/// time the window cannot repaint or respond — which is exactly how it was
+/// reported: "frozen for a couple of seconds (15-30)". An async command runs on
+/// the async runtime instead, so the UI thread stays free to show the
+/// progress the frontend now emits.
 #[tauri::command]
-pub fn discover_workspace_projects(
+pub async fn discover_workspace_projects(
     state: State<'_, AppState>,
     workspace_file: String,
 ) -> Result<Vec<WorkspaceProjectCandidate>, String> {
@@ -203,16 +211,20 @@ pub fn discover_workspace_projects(
 /// Sprint 16: autoscan — scan an arbitrary folder for Java projects
 /// (no `.code-workspace` seed). Feeds the same candidate-list UX as
 /// discover_workspace_projects.
+/// studio#27: async for the same reason as `discover_workspace_projects` — a
+/// recursive folder walk must not run on the thread that repaints the window.
 #[tauri::command]
-pub fn scan_folder_for_projects(
+pub async fn scan_folder_for_projects(
     state: State<'_, AppState>,
     folder: String,
 ) -> Result<Vec<WorkspaceProjectCandidate>, String> {
     state.manager_service.scan_folder_for_projects(&folder)
 }
 
+/// studio#27: async — importing ~200 modules is the longest of these walks, and
+/// it was the button the freeze was reported against.
 #[tauri::command]
-pub fn import_workspace_projects(
+pub async fn import_workspace_projects(
     state: State<'_, AppState>,
     input: WorkspaceImportInput,
 ) -> Result<WorkspaceImportResult, String> {

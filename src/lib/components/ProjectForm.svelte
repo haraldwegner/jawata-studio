@@ -41,13 +41,20 @@
    * two never fight. */
   let autoscan = false;
   let isScanning = false;
+  /** studio#27: true while a .code-workspace is being walked for projects. */
+  let isDiscovering = false;
   let scanMessage = "";
   let scannedFolder = "";
   let candidateSource: "" | "folder" | "workspace" = "";
 
+  // studio#27: `isDiscovering` was missing entirely, which is the whole bug.
+  // A .code-workspace naming ~200 modules takes 15-30s to walk, and during
+  // that time the button stayed enabled and unlabelled — so there was no sign
+  // anything was happening, and a second click started a second walk.
   $: canDiscover =
     !disabled &&
     !isImporting &&
+    !isDiscovering &&
     workspaceFile.trim().length > 0 &&
     workspaceFile.trim() !== lastDiscoveredFile;
 
@@ -187,17 +194,30 @@
       importMessage = "Choose a .code-workspace file first.";
       return;
     }
+    isDiscovering = true;
+    // studio#27: say something within the first frame. A workspace naming ~200
+    // modules takes 15-30s to walk, and an unchanged screen for that long is
+    // indistinguishable from a hung application — which is what it was
+    // reported as.
+    scanMessage = "Reading the workspace file and looking for Java projects…";
     try {
       candidates = await discoverWorkspaceProjects(path);
       selectedPaths = candidates.map((candidate) => candidate.projectPath);
       candidateSource = "workspace";
       scannedFolder = "";
       lastDiscoveredFile = path;
+      scanMessage =
+        candidates.length === 0
+          ? ""
+          : `Found ${candidates.length} project(s).`;
       if (candidates.length === 0) {
         importMessage = "No Maven/Gradle or Eclipse/PDE Java projects found.";
       }
     } catch (error) {
+      scanMessage = "";
       importMessage = String(error);
+    } finally {
+      isDiscovering = false;
     }
   }
 
@@ -428,7 +448,7 @@
       title="Scan the chosen .code-workspace file for Java projects (Maven/Gradle/Eclipse)"
       type="button"
     >
-      Discover
+      {isDiscovering ? "Discovering…" : "Discover"}
     </button>
 
     {#if candidateSource === "workspace" && candidates.length > 0}
