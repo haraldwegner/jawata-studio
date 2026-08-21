@@ -646,6 +646,9 @@
           saveMessage={$appStore.settingsSaveMessage}
           saveStatus={$appStore.settingsSaveStatus ?? "idle"}
           settings={$appStore.settings}
+          workspaceHeapSettings={$appStore.workspaceHeapSettings ?? []}
+          on:setWorkspaceHeapBound={(event) =>
+            appStore.setWorkspaceHeapBound(event.detail.workspaceName, event.detail.maxHeapMb)}
           on:cleanGeneratedData={() => appStore.cleanAllGeneratedData()}
           on:cleanLogs={() => appStore.cleanAllLogs()}
           on:cleanWorkspaces={() => appStore.cleanAllWorkspaces()}

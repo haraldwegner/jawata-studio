@@ -211,6 +211,19 @@ export interface ManagerDashboard {
    * means the UI falls back to a fresh name. */
   suggestedWorkspaceName?: string | null;
   servicesInventory: ServicesInventory;
+  /** studio#28: each workspace's resident heap ceiling. */
+  workspaceHeapSettings: WorkspaceHeapSetting[];
+}
+
+/** studio#28: one workspace's heap ceiling, as the Settings view needs it. */
+export interface WorkspaceHeapSetting {
+  workspaceName: string;
+  /** What the user chose, or null if they never chose. */
+  maxHeapMb?: number | null;
+  /** What the resident will actually launch with — the choice, or the default.
+   * Computed in the backend from the same function the launcher uses, so this
+   * number and the resident's `-Xmx` cannot drift apart. */
+  effectiveMaxHeapMb: number;
 }
 
 /** Inventory of available runtime services. */
@@ -352,6 +365,16 @@ export function renameWorkspace(input: RenameWorkspaceInput): Promise<ManagerDas
 /** Sprint 10 v0.10.4: delete a workspace entirely. Stops the workspace
  * process, deletes every member project record, and removes the JDT
  * data dir on disk. */
+/** studio#28: set a workspace's heap ceiling, or pass null to clear it back to
+ * the default. Takes effect at that workspace's NEXT start — a JVM's heap
+ * ceiling is fixed when the process launches. */
+export function setWorkspaceMaxHeap(
+  workspaceName: string,
+  maxHeapMb: number | null
+): Promise<ManagerDashboard> {
+  return invoke("set_workspace_max_heap", { workspaceName, maxHeapMb });
+}
+
 export function deleteWorkspace(workspaceName: string): Promise<ManagerDashboard> {
   return invoke("delete_workspace", { workspaceName });
 }

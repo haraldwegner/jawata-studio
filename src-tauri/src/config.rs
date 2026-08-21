@@ -958,6 +958,49 @@ impl ConfigStore {
         Ok(Some(removed))
     }
 
+    /// studio#28: set (or clear) a workspace's heap ceiling in megabytes.
+    ///
+    /// `None` clears the setting, which returns the workspace to
+    /// [`crate::resident::DEFAULT_MAX_HEAP_MB`] rather than to unbounded —
+    /// there is deliberately no way to ask for an unbounded resident from here,
+    /// because that is the state this issue exists to remove.
+    ///
+    /// Takes effect on the workspace's NEXT start: a JVM's heap ceiling is
+    /// fixed at launch and cannot be changed in a running process. The caller
+    /// is responsible for telling the user that.
+    pub fn set_workspace_max_heap(
+        &self,
+        workspace_name: &str,
+        max_heap_mb: Option<u32>,
+    ) -> Result<crate::resident::WorkspaceState, String> {
+        if let Some(mb) = max_heap_mb {
+            // A JVM refuses to start below roughly 2 MB, and anything under a
+            // couple of hundred cannot hold a JDT workspace — failing here
+            // beats a resident that dies at spawn with a stack trace.
+            if mb < 256 {
+                return Err(format!(
+                    "A heap ceiling of {mb} MB is too small to load a Java workspace; \
+                     use at least 256 MB, or clear the setting to take the \
+                     {} MB default.",
+                    crate::resident::DEFAULT_MAX_HEAP_MB
+                ));
+            }
+        }
+
+        let mut projects = self.projects.lock().expect("projects mutex poisoned");
+        let Some(state) = projects
+            .workspaces
+            .iter_mut()
+            .find(|w| w.workspace_name == workspace_name)
+        else {
+            return Err(format!("Unknown workspace '{workspace_name}'."));
+        };
+        state.max_heap_mb = max_heap_mb;
+        let updated = state.clone();
+        write_json(&self.paths.projects_file, &*projects)?;
+        Ok(updated)
+    }
+
     pub fn get_settings(&self) -> ManagerSettings {
         self.settings
             .lock()
@@ -2196,6 +2239,89 @@ mod tests {
             }),
             settings: Mutex::new(ManagerSettings::default_for_paths(&paths)),
         }
+    }
+
+    // ---- studio#28: the per-workspace heap ceiling ----
+
+    #[test]
+    fn a_heap_bound_is_set_cleared_and_survives_a_reload() {
+        let dir = unique_tempdir("heap-set");
+        let store = store_with_empty_state(&dir);
+        store
+            .get_or_allocate_workspace_state("alpha")
+            .expect("alpha");
+
+        let set = store
+            .set_workspace_max_heap("alpha", Some(4096))
+            .expect("set");
+        assert_eq!(set.max_heap_mb, Some(4096));
+        assert_eq!(set.effective_max_heap_mb(), 4096);
+
+        // It must be on DISK, not just in the lock — the launcher reads this
+        // after a manager restart, and a bound that lives only in memory is a
+        // bound that quietly disappears. Read the file back rather than the
+        // store's own cache, or this asserts nothing about persistence.
+        // Read the FILE, deliberately not `read_projects`: that reader prunes
+        // workspace states naming no current project (Sprint 16, bugs.md #11),
+        // and this fixture workspace holds none — it would be discarded as an
+        // orphan and the assertion would be about the pruner, not the bound.
+        let raw = fs::read_to_string(paths_in(&dir).projects_file).expect("read projects.json");
+        let on_disk: serde_json::Value = serde_json::from_str(&raw).expect("parse projects.json");
+        let alpha = on_disk["workspaces"]
+            .as_array()
+            .expect("workspaces array")
+            .iter()
+            .find(|w| w["workspaceName"] == "alpha")
+            .expect("alpha is written to disk");
+        assert_eq!(
+            alpha["maxHeapMb"], 4096,
+            "the bound must be persisted, not just held in memory"
+        );
+
+        let cleared = store.set_workspace_max_heap("alpha", None).expect("clear");
+        assert_eq!(cleared.max_heap_mb, None);
+        assert_eq!(
+            cleared.effective_max_heap_mb(),
+            crate::resident::DEFAULT_MAX_HEAP_MB,
+            "clearing returns to the default, never to unbounded"
+        );
+    }
+
+    #[test]
+    fn a_bound_too_small_to_hold_a_workspace_is_refused_with_a_reason() {
+        let dir = unique_tempdir("heap-tiny");
+        let store = store_with_empty_state(&dir);
+        store
+            .get_or_allocate_workspace_state("alpha")
+            .expect("alpha");
+
+        let err = store
+            .set_workspace_max_heap("alpha", Some(64))
+            .expect_err("64 MB cannot hold a JDT workspace");
+        assert!(
+            err.contains("256"),
+            "the refusal must say what would work, not just say no; got: {err}"
+        );
+
+        assert_eq!(
+            store
+                .get_workspace_state("alpha")
+                .expect("alpha")
+                .max_heap_mb,
+            None,
+            "a refused value must not be half-written"
+        );
+    }
+
+    #[test]
+    fn setting_a_bound_on_an_unknown_workspace_is_an_error_not_a_silent_no_op() {
+        let dir = unique_tempdir("heap-unknown");
+        let store = store_with_empty_state(&dir);
+
+        let err = store
+            .set_workspace_max_heap("does-not-exist", Some(2048))
+            .expect_err("an unknown workspace must not be silently accepted");
+        assert!(err.contains("does-not-exist"), "got: {err}");
     }
 
     #[test]

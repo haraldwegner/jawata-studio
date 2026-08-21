@@ -22,6 +22,22 @@ use std::net::TcpListener;
 pub const DEFAULT_PORT_RANGE_START: u16 = 8800;
 pub const DEFAULT_PORT_RANGE_END: u16 = 8999;
 
+/// The heap ceiling a resident gets when its workspace names no other.
+///
+/// studio#28: residents launched with no `-Xmx` at all, so each inherited the
+/// JVM's ergonomic default — a quarter of physical RAM, which on the 62 GB dev
+/// machine is 16 GB PER RESIDENT. Three residents were legally entitled to
+/// 48 GB of a 62 GB box, and two of them sat at ~8 GB.
+///
+/// 2 GB is chosen against measurement, not taste: forcing a full GC on those
+/// same two residents left live sets of 0.30 GB and 0.53 GB, and the
+/// 194-project pattern corpus settles at 0.33 GB live / 1.5 GB RSS. So the
+/// working set of the largest workspace we have is under a gigabyte, and 2 GB
+/// leaves room for the garbage a generational collector is supposed to keep
+/// around. A workspace that genuinely needs more says so per-workspace rather
+/// than raising the floor for everyone.
+pub const DEFAULT_MAX_HEAP_MB: u32 = 2048;
+
 /// One workspace's resident-JVM bookkeeping. Persisted in `projects.json`
 /// alongside the `ProjectRecord` collection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +46,16 @@ pub struct WorkspaceState {
     pub workspace_name: String,
     pub resident_port: u16,
     pub resident_token: String,
+    /// studio#28: this workspace's heap ceiling in megabytes, applied as
+    /// `-Xmx<n>m` on the resident's launch line. `None` means the workspace has
+    /// never been given one and takes [`DEFAULT_MAX_HEAP_MB`].
+    ///
+    /// Optional rather than defaulted-on-read so the two cases stay
+    /// distinguishable: a workspace that has never been configured, and one a
+    /// user deliberately set to the same number as the default. `serde(default)`
+    /// keeps every `projects.json` written before this field existed loadable.
+    #[serde(default)]
+    pub max_heap_mb: Option<u32>,
 }
 
 impl WorkspaceState {
@@ -38,7 +64,13 @@ impl WorkspaceState {
             workspace_name,
             resident_port,
             resident_token,
+            max_heap_mb: None,
         }
+    }
+
+    /// The bound this workspace's resident actually launches with.
+    pub fn effective_max_heap_mb(&self) -> u32 {
+        self.max_heap_mb.unwrap_or(DEFAULT_MAX_HEAP_MB)
     }
 }
 
@@ -127,6 +159,56 @@ fn hex_encode(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    // ===== studio#28: the per-workspace heap bound =====
+
+    #[test]
+    fn a_workspace_state_written_before_the_heap_field_still_loads() {
+        // Every projects.json on every installed copy predates this field. If
+        // it did not deserialize, the manager would lose its port/token
+        // allocations on upgrade and every deployed client config would point
+        // at a resident that no longer answers.
+        let legacy = r#"{
+            "workspaceName": "javata-dev",
+            "residentPort": 8800,
+            "residentToken": "abc123"
+        }"#;
+
+        let state: WorkspaceState =
+            serde_json::from_str(legacy).expect("a pre-studio#28 projects.json must still load");
+
+        assert_eq!(state.workspace_name, "javata-dev");
+        assert_eq!(state.resident_port, 8800);
+        assert_eq!(state.max_heap_mb, None, "an absent field is not a zero bound");
+        assert_eq!(
+            state.effective_max_heap_mb(),
+            DEFAULT_MAX_HEAP_MB,
+            "and it must launch bounded anyway"
+        );
+    }
+
+    #[test]
+    fn an_explicit_bound_round_trips_and_wins_over_the_default() {
+        let mut state = WorkspaceState::new("patterns".into(), 8802, "tok".into());
+        state.max_heap_mb = Some(4096);
+
+        let json = serde_json::to_string(&state).expect("serialize");
+        let back: WorkspaceState = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(back.max_heap_mb, Some(4096));
+        assert_eq!(back.effective_max_heap_mb(), 4096);
+        assert_eq!(back, state, "the round trip must lose nothing");
+    }
+
+    #[test]
+    fn a_new_workspace_starts_unconfigured_but_never_unbounded() {
+        let state = WorkspaceState::new("fresh".into(), 8801, "tok".into());
+        assert_eq!(
+            state.max_heap_mb, None,
+            "a new workspace has expressed no preference"
+        );
+        assert_eq!(state.effective_max_heap_mb(), DEFAULT_MAX_HEAP_MB);
+    }
 
     // ===== PortAllocator =====
 

@@ -44,6 +44,25 @@ pub struct ManagerDashboard {
     /// "workspace-default".
     pub suggested_workspace_name: Option<String>,
     pub services_inventory: ServicesInventory,
+    /// studio#28: each workspace's heap ceiling, for the Settings view.
+    ///
+    /// Deliberately NOT the `WorkspaceState` itself: that record carries the
+    /// resident's bearer token, and studio#14 was a credential reaching a place
+    /// it did not need to be. The UI needs two numbers and a name.
+    pub workspace_heap_settings: Vec<WorkspaceHeapSetting>,
+}
+
+/// studio#28: one workspace's heap ceiling as the UI needs to see it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceHeapSetting {
+    pub workspace_name: String,
+    /// What the user chose, or `None` if they never chose.
+    pub max_heap_mb: Option<u32>,
+    /// What the resident will actually launch with — the choice, or the
+    /// default. Computed here so the UI never re-derives the default and drifts
+    /// from the launcher.
+    pub effective_max_heap_mb: u32,
 }
 
 /// Represents a discovered project candidate in a workspace.
@@ -1356,6 +1375,7 @@ impl ManagerService {
             self.collect_runtime_statuses(&projects, &settings, installed_runtime.as_ref());
         let suggested_workspace_name = self.suggest_next_workspace_name();
         let services_inventory = self.get_services_inventory_with(installed_runtime.as_ref());
+        let workspace_heap_settings = self.workspace_heap_settings();
 
         Ok(ManagerDashboard {
             bootstrap,
@@ -1366,7 +1386,44 @@ impl ManagerService {
             runtime_statuses,
             suggested_workspace_name,
             services_inventory,
+            workspace_heap_settings,
         })
+    }
+
+    /// studio#28: every workspace's heap ceiling, for the Settings view.
+    ///
+    /// The effective number is computed HERE, from the same
+    /// `effective_max_heap_mb()` the launcher uses, so the UI cannot show one
+    /// default while the resident starts with another.
+    fn workspace_heap_settings(&self) -> Vec<WorkspaceHeapSetting> {
+        let mut rows: Vec<WorkspaceHeapSetting> = self
+            .config_store
+            .list_workspace_states()
+            .into_iter()
+            .map(|w| WorkspaceHeapSetting {
+                workspace_name: w.workspace_name.clone(),
+                max_heap_mb: w.max_heap_mb,
+                effective_max_heap_mb: w.effective_max_heap_mb(),
+            })
+            .collect();
+        rows.sort_by(|a, b| a.workspace_name.cmp(&b.workspace_name));
+        rows
+    }
+
+    /// studio#28: set or clear a workspace's heap ceiling.
+    ///
+    /// Takes effect at the workspace's NEXT start — a JVM's heap ceiling is
+    /// fixed when the process launches. The caller tells the user that; this
+    /// method does not restart anything on its own, because silently bouncing a
+    /// resident out from under a running agent is worse than a stale bound.
+    pub fn set_workspace_max_heap(
+        &self,
+        workspace_name: &str,
+        max_heap_mb: Option<u32>,
+    ) -> Result<ManagerDashboard, String> {
+        self.config_store
+            .set_workspace_max_heap(workspace_name, max_heap_mb)?;
+        self.load_dashboard()
     }
 
     /// Retrieves the inventory of available MCP services.
@@ -1716,6 +1773,10 @@ impl ManagerService {
             .config_store
             .get_or_allocate_workspace_state(&project.workspace_name)?;
 
+        // studio#28: resolved here, once, so both runtime-source arms below get
+        // the same answer and neither can construct a reference without one.
+        let max_heap_mb = workspace_state.effective_max_heap_mb();
+
         match &settings.global_runtime_source {
             RuntimeSource::Managed => {
                 let runtime = installed_runtime
@@ -1728,6 +1789,7 @@ impl ManagerService {
                     runtime_label: format!("Managed JAWATA {}", runtime.version),
                     resolved_jar_path: runtime.jar_path.clone(),
                     jvm_properties: knowledge_jvm_properties(settings),
+                    max_heap_mb,
                     resident_port: workspace_state.resident_port,
                     resident_token: workspace_state.resident_token,
                     // studio#14: a managed runtime knows its version, so the
@@ -1742,6 +1804,7 @@ impl ManagerService {
                 runtime_label: "Local JAWATA JAR".into(),
                 resolved_jar_path: jar_path.clone(),
                 jvm_properties: knowledge_jvm_properties(settings),
+                max_heap_mb,
                 resident_port: workspace_state.resident_port,
                 resident_token: workspace_state.resident_token,
                 // A hand-built jar's version is unknowable, so the token stays

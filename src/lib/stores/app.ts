@@ -21,6 +21,7 @@ import {
   setProjectWorkspace as setProjectWorkspaceApi,
   renameWorkspace as renameWorkspaceApi,
   deleteWorkspace as deleteWorkspaceApi,
+  setWorkspaceMaxHeap as setWorkspaceMaxHeapApi,
   renameProject as renameProjectApi,
   updateSettings,
   type AddProjectInput,
@@ -173,6 +174,19 @@ export function createAppStore() {
     update((state) => ({ ...state, isBusy: true, error: undefined }));
     try {
       syncDashboard(await deleteWorkspaceApi(workspaceName));
+    } catch (error) {
+      update((state) => ({ ...state, error: String(error) }));
+    } finally {
+      update((state) => ({ ...state, isBusy: false }));
+    }
+  }
+
+  /** studio#28: set a workspace's resident heap ceiling, or clear it with null.
+   * Syncs the whole dashboard so the launcher's view and the UI's cannot drift. */
+  async function setWorkspaceHeapBound(workspaceName: string, maxHeapMb: number | null) {
+    update((state) => ({ ...state, isBusy: true, error: undefined }));
+    try {
+      syncDashboard(await setWorkspaceMaxHeapApi(workspaceName, maxHeapMb));
     } catch (error) {
       update((state) => ({ ...state, error: String(error) }));
     } finally {
@@ -626,6 +640,7 @@ export function createAppStore() {
     setProjectWorkspaceEntry,
     renameWorkspaceEntry,
     deleteWorkspaceEntry,
+    setWorkspaceHeapBound,
     renameProjectEntry,
     deleteProjectEntry,
     deleteAllProjectEntries,

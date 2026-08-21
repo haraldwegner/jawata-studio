@@ -16,7 +16,8 @@
     RuntimeStatusRecord,
     ServiceProbeResult,
     UpdateSettingsInput,
-    UpdatePolicy
+    UpdatePolicy,
+    WorkspaceHeapSetting
   } from "../api/tauri";
 
   export let settings: ManagerSettings | undefined;
@@ -27,6 +28,27 @@
   export let lastServiceProbe: ServiceProbeResult | undefined;
   export let serviceProbeBusy = false;
   export let serviceProbeError: string | undefined;
+  /** studio#28: each workspace's resident heap ceiling. */
+  export let workspaceHeapSettings: WorkspaceHeapSetting[] = [];
+
+  // studio#28. Only the shape check lives here — the call itself goes through
+  // the store like every other operation, so one dashboard sync keeps the UI
+  // and the launcher's own view of the bound from drifting apart.
+  let heapError: Record<string, string> = {};
+
+  function applyHeapBound(workspaceName: string, raw: string) {
+    const trimmed = raw.trim();
+    if (trimmed !== "" && !/^\d+$/.test(trimmed)) {
+      heapError = { ...heapError, [workspaceName]: "Whole megabytes, or empty for the default." };
+      return;
+    }
+    heapError = { ...heapError, [workspaceName]: "" };
+    dispatch("setWorkspaceHeapBound", {
+      workspaceName,
+      maxHeapMb: trimmed === "" ? null : Number(trimmed)
+    });
+  }
+
   export let saveStatus: "idle" | "saving" | "success" | "error" = "idle";
   export let saveMessage: string | undefined;
   export let disabled = false;
@@ -65,6 +87,8 @@
     probeServices: void;
     clearServiceProbeError: void;
     redetectMcpPaths: void;
+    /** studio#28: `maxHeapMb: null` clears the bound back to the default. */
+    setWorkspaceHeapBound: { workspaceName: string; maxHeapMb: number | null };
   }>();
 
   const SUCCESS_FADE_MS = 3000;
@@ -739,6 +763,41 @@
             <input bind:checked={autostartOnBoot} disabled={interactionDisabled} on:change={handleBoundEdit} type="checkbox" />
             <span>Autostart on boot</span>
           </label>
+        </section>
+
+        <section class="machine-control-card compact-card stack">
+          <h4>Workspace Memory</h4>
+          <p class="muted">
+            Each workspace's resident gets this heap ceiling. Leave a box empty to use the
+            2048 MB default. Applies the next time that workspace starts — a running JVM's
+            ceiling cannot be changed.
+          </p>
+          {#if workspaceHeapSettings.length === 0}
+            <p class="muted">No workspaces yet.</p>
+          {:else}
+            {#each workspaceHeapSettings as row (row.workspaceName)}
+              <label class="field">
+                <span>{row.workspaceName}</span>
+                <div class="field-row">
+                  <input
+                    disabled={interactionDisabled}
+                    inputmode="numeric"
+                    on:change={(event) =>
+                      applyHeapBound(row.workspaceName, event.currentTarget.value)}
+                    placeholder="2048 (default)"
+                    title="Heap ceiling in megabytes for this workspace's resident, applied as -Xmx at its next start"
+                    value={row.maxHeapMb ?? ""}
+                  />
+                  <span class="muted">MB</span>
+                </div>
+                {#if heapError[row.workspaceName]}
+                  <span class="error-text">{heapError[row.workspaceName]}</span>
+                {:else}
+                  <span class="muted">Starts with {row.effectiveMaxHeapMb} MB{row.maxHeapMb == null ? " (default)" : ""}.</span>
+                {/if}
+              </label>
+            {/each}
+          {/if}
         </section>
 
         <section class="machine-control-card diagnostics-card stack">

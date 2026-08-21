@@ -266,6 +266,12 @@ pub struct RuntimeReference {
     /// Sprint 21a (item F): `-D` system properties handed to the resident JVM
     /// (knowledge-store mode, memory roots, crawl caps). MUST precede `-jar`.
     pub jvm_properties: Vec<String>,
+    /// studio#28: this resident's heap ceiling in megabytes, applied as
+    /// `-Xmx<n>m`. Always a number — the workspace's own setting when it has
+    /// one, otherwise `resident::DEFAULT_MAX_HEAP_MB`. Resolving the default at
+    /// the call site rather than here keeps "unbounded" unrepresentable: there
+    /// is no value of this field that launches a resident without a bound.
+    pub max_heap_mb: u32,
     /// Sprint 15 Stage 10: bind port for the resident-JVM HTTP transport.
     /// Allocated once per workspace via
     /// `ConfigStore::get_or_allocate_workspace_state` and stable across
@@ -873,6 +879,18 @@ impl RuntimeManager {
             args.push(agent);
         }
 
+        // studio#28: the heap ceiling. Like every JVM option it MUST precede
+        // -jar.
+        //
+        // Before this, residents carried no -Xmx and inherited the ergonomic
+        // default of a quarter of physical RAM — 16 GB each on the 62 GB dev
+        // machine, with two long-running residents measured at ~8 GB RSS. The
+        // bound is not a guess about a leak: forcing a full GC on those same
+        // residents left 0.30 GB and 0.53 GB live, so what they were holding
+        // was uncollected garbage that no one had ever asked them to return.
+        // An unbounded heap simply never has to.
+        args.push(format!("-Xmx{}m", reference.max_heap_mb));
+
         // Sprint 21a (item F): knowledge-store + memory-crawl configuration as system
         // properties — like -javaagent these MUST precede -jar.
         args.extend(reference.jvm_properties.iter().cloned());
@@ -1401,6 +1419,9 @@ mod tests {
                 runtime_label: "Managed JAWATA 1.4.0".into(),
                 resolved_jar_path: "/tools/jawata/jawata.jar".into(),
                 jvm_properties: vec!["-Djawata.experience.store=shared".into()],
+                // An explicit, non-default number so a test asserting the bound
+                // cannot pass by coincidence if the default were substituted.
+                max_heap_mb: 3072,
                 resident_port: 8800,
                 resident_token: "test-token".into(),
                 // Deliberately an OLD engine: this request drives the
@@ -1453,9 +1474,13 @@ mod tests {
         // Sprint 21a (item F): knowledge-store system properties precede -jar.
         // studio#14: this reference names an OLD engine, so the token still
         // travels on argv — see the token-file tests below for the current path.
+        // studio#28: the heap bound, also before -jar. This fixture names 3072
+        // explicitly, so a regression that dropped the workspace's setting and
+        // substituted the 2048 default would fail here rather than pass.
         assert_eq!(
             args,
             vec![
+                "-Xmx3072m",
                 "-Djawata.experience.store=shared",
                 "-jar",
                 "/tools/jawata/jawata.jar",
@@ -1471,6 +1496,75 @@ mod tests {
         // project loading inside jawata.
         assert!(spec.env.is_empty());
         assert!(spec.log_path.ends_with("test-ws.log"));
+    }
+
+    // ---- studio#28: no resident launches unbounded ----
+    //
+    // Measured 2026-08-21: with no -Xmx the JVM takes a quarter of physical RAM,
+    // which on the 62 GB dev machine is a 16 GB ceiling per resident. Three
+    // residents were entitled to 48 GB; two sat at ~8 GB RSS while holding only
+    // 0.30 and 0.53 GB live after a forced GC. Unbounded heaps are never asked
+    // to give anything back.
+
+    #[test]
+    fn a_workspace_with_no_setting_still_launches_bounded() {
+        let manager = RuntimeManager::new(fake_paths());
+        let mut launch_request = fake_launch_request();
+        launch_request.reference.max_heap_mb = crate::resident::DEFAULT_MAX_HEAP_MB;
+
+        let spec = manager.command_spec_for(&launch_request);
+
+        assert!(
+            spec.args.contains(&"-Xmx2048m".to_string()),
+            "a workspace that never set a bound must still get the default one; got {:?}",
+            spec.args
+        );
+    }
+
+    #[test]
+    fn a_workspace_bound_reaches_the_launch_line_verbatim() {
+        let manager = RuntimeManager::new(fake_paths());
+        let mut launch_request = fake_launch_request();
+        launch_request.reference.max_heap_mb = 6144;
+
+        let spec = manager.command_spec_for(&launch_request);
+
+        assert!(
+            spec.args.contains(&"-Xmx6144m".to_string()),
+            "the workspace's own number must reach the JVM, not a default; got {:?}",
+            spec.args
+        );
+        assert!(
+            !spec.args.iter().any(|a| a == "-Xmx2048m"),
+            "the default must not be passed alongside the explicit bound"
+        );
+    }
+
+    #[test]
+    fn the_heap_bound_precedes_jar_or_the_jvm_never_sees_it() {
+        // Position is not cosmetic: everything after -jar is the PROGRAM's
+        // argv, so an -Xmx placed there is silently handed to jawata as a
+        // nonsense argument and the JVM stays unbounded — the exact bug this
+        // stage exists to fix, wearing the costume of a fix.
+        let manager = RuntimeManager::new(fake_paths());
+        let spec = manager.command_spec_for(&fake_launch_request());
+
+        let xmx = spec
+            .args
+            .iter()
+            .position(|a| a.starts_with("-Xmx"))
+            .expect("a heap bound must be present at all");
+        let jar = spec
+            .args
+            .iter()
+            .position(|a| a == "-jar")
+            .expect("-jar must be present");
+
+        assert!(
+            xmx < jar,
+            "-Xmx must precede -jar; args were {:?}",
+            spec.args
+        );
     }
 
     // ---- studio#14: the token leaves argv ----
@@ -1672,6 +1766,7 @@ mod tests {
             runtime_label: "test-runtime".into(),
             resolved_jar_path: "/dev/null".into(),
             jvm_properties: vec![],
+            max_heap_mb: crate::resident::DEFAULT_MAX_HEAP_MB,
             resident_port: 8800,
             resident_token: "test-token".into(),
             // These lifecycle tests never spawn a real engine, so the token

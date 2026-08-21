@@ -112,6 +112,21 @@ pub fn rename_project(
     state.manager_service.rename_project(input)
 }
 
+/// studio#28: set (or clear, with `None`) a workspace's heap ceiling.
+///
+/// Applies at the workspace's next start — a JVM cannot be re-bounded while it
+/// runs, and the UI says so rather than implying an immediate effect.
+#[tauri::command]
+pub fn set_workspace_max_heap(
+    state: State<'_, AppState>,
+    workspace_name: String,
+    max_heap_mb: Option<u32>,
+) -> Result<ManagerDashboard, String> {
+    state
+        .manager_service
+        .set_workspace_max_heap(&workspace_name, max_heap_mb)
+}
+
 #[tauri::command]
 pub fn delete_workspace(
     state: State<'_, AppState>,
