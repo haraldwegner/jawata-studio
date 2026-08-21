@@ -5972,13 +5972,17 @@ emit() {
 # op, so a non-.java edit whose content merely contains the marker is not counted.
 # Sprint 21a (item J): the slip is also recorded into the experience store (candidate) —
 # the first conversation-level auto-learn path. Fail-safe: jawata down -> log-only.
+# Sprint 28c: the payload carries situation + verdict because the engine's form
+# gate holds a failure_mode to the experience form. This call discards its
+# result (>/dev/null || true), so a refusal here would be INVISIBLE — the slip
+# trail would just stop. Keep this payload identical to observer.rs's.
 emit_slip() {
   reason="$(printf '%s' "$flat" | sed -nE 's/.*[Jj][Aa][Ww][Aa][Tt][Aa]-[Ff][Aa][Ll][Ll][Bb][Aa][Cc][Kk]:[[:space:]]*([^"\\]*).*/\1/p' | head -n1 | sed -E 's/[[:space:]]*$//')"
   emit "slip" "$tool_name	$reason"
   if command -v curl >/dev/null 2>&1 && [ -n "$MCP_URL" ]; then
     sr="$(printf '%s: %s' "$tool_name" "$reason" | sed 's/["\\]/ /g' | tr -d '[:cntrl:]' | cut -c1-200)"
     curl -s --max-time 3 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-      -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"record","type":"failure_mode","operation":"jawata-fallback-slip","summary":"jawata-fallback slip: '"$sr"'","symptoms":["jawata fallback slip"]}}}' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"record","type":"failure_mode","operation":"jawata-fallback-slip","summary":"jawata-fallback slip: '"$sr"'","situation":"when a shell text tool is reached for on Java without jawata being tried first","verdict":"failed_avoid","symptoms":["jawata fallback slip"]}}}' \
       "$MCP_URL" >/dev/null 2>&1 || true
   fi
   printf '%s' "$slip_ctx"
@@ -10631,6 +10635,20 @@ mod tests {
         assert!(
             s.contains(r#"sed 's/["\\]/ /g'"#),
             "the interpolated summary is sanitized for the JSON payload"
+        );
+        // Sprint 28c: failure_mode is an EXPERIENCE type, so the engine's form
+        // gate refuses a payload without a situation and an outcome. The call
+        // above ends in `|| true` and discards its output, so a refusal here is
+        // INVISIBLE — the slip trail would simply stop being written, with
+        // nothing failing anywhere. This assertion is the only thing standing
+        // between that and a silent outage.
+        assert!(
+            s.contains(r#""situation":"#),
+            "the payload carries the situation the form gate requires"
+        );
+        assert!(
+            s.contains(r#""verdict":"failed_avoid""#),
+            "and the outcome — a slip is a failure_mode that cost you, not an open question"
         );
     }
 

@@ -175,17 +175,37 @@ fn nudge(client: Client, config: Option<&HookConfig>) -> Outcome {
     }
 }
 
+/// The store payload for a fallback slip.
+///
+/// Extracted from `slip` so it can be ASSERTED. It used to be built inline at
+/// the call site, where the only way to check it was to run a resident and look
+/// — and the call discards its result (`let _ =`), by design, so that a dead
+/// resident never breaks the hook. That fail-safe has a sharp edge: a payload
+/// the engine REFUSES fails exactly as quietly as a resident that is down, and
+/// the slip trail would simply stop being written with nothing to see.
+///
+/// Sprint 28c is where that edge became real. `failure_mode` is an EXPERIENCE
+/// type, so the engine's form gate requires the situation the entry arose in and
+/// how it turned out. Both are supplied here — not as padding to satisfy a gate,
+/// but because a slip genuinely has both, and naming the condition is what makes
+/// the row retrievable by it rather than only by resemblance.
+fn slip_record_args(tool: &str, reason: &str) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "record", "type": "failure_mode",
+        "operation": "jawata-fallback-slip",
+        "summary": format!("jawata-fallback slip: {tool}: {reason}"),
+        "situation": "when a shell text tool is reached for on Java without jawata being tried first",
+        "verdict": "failed_avoid",
+        "symptoms": ["jawata fallback slip"]
+    })
+}
+
 /// A slip: log it, bridge it to the store (fail-safe), answer the steering.
 fn slip(dir: &Path, client: Client, tool: &str, request: &str, config: Option<&HookConfig>) -> Outcome {
     let reason = reason_after_marker(request);
     emit(dir, "slip", &format!("{tool}\t{reason}"));
     if let Some(cfg) = config {
-        let summary = format!("jawata-fallback slip: {tool}: {reason}");
-        let args = serde_json::json!({
-            "kind": "record", "type": "failure_mode",
-            "operation": "jawata-fallback-slip", "summary": summary,
-            "symptoms": ["jawata fallback slip"]
-        });
+        let args = slip_record_args(tool, &reason);
         let _ = crate::query::ask(
             &crate::query::Endpoint {
                 url: cfg.url.clone(),
@@ -433,6 +453,36 @@ mod tests {
 
     fn dir(home: &Path) -> PathBuf {
         home.join(".claude").join("jawata-studio")
+    }
+
+    /// Sprint 28c. `failure_mode` is an EXPERIENCE type, so the engine refuses a
+    /// record with no situation and no outcome. This hook discards the store's
+    /// answer on purpose — a dead resident must never break the hook — which
+    /// means a refused payload and an absent resident look IDENTICAL from here:
+    /// the slip trail just stops, and nothing anywhere goes red. This assertion
+    /// is the only thing standing between that and a silent outage, so it is
+    /// written against the payload rather than against a live round trip.
+    #[test]
+    fn the_slip_payload_carries_the_form_the_engine_requires() {
+        let args = slip_record_args("Bash", "grep over a .java file");
+
+        assert_eq!(args["type"], "failure_mode", "a slip is a failure mode");
+        assert_eq!(
+            args["verdict"], "failed_avoid",
+            "and one that cost you — not an open question"
+        );
+        let situation = args["situation"].as_str().unwrap_or_default();
+        assert!(
+            situation.starts_with("when "),
+            "a situation states a CONDITION, not a location: {situation}"
+        );
+        assert!(
+            args["summary"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("grep over a .java file"),
+            "the reason still reaches the summary: {args}"
+        );
     }
 
     fn payload(tool: &str, input: serde_json::Value) -> String {
