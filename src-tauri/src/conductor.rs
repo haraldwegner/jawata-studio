@@ -204,7 +204,14 @@ fn lane1_contract(seat: &SeatDefinition, command: &str) -> String {
          5. RECORD — after the human verdict, record the outcome to the\n\
             experience store: `experience(kind=record, type=lesson|domain_fact,\n\
             operation=\"seat:{command}\", summary=<what was proposed, the gate\n\
-            results, the verdict>)`.\n\n\
+            results, the verdict>)`.\n\
+            A `lesson` is an EXPERIENCE and owes two more fields or the store\n\
+            REFUSES it: `situation` — when it applies, phrased as a condition\n\
+            (\"when a rename spans two bundles\"), never a path or a symbol —\n\
+            and `verdict`: `worked`, `failed_avoid`, or `unproven` while it is\n\
+            genuinely still open. A `domain_fact` owes neither; it never turned\n\
+            out any way at all, and inventing an outcome for one makes\n\
+            retrieval rank on fiction.\n\n\
          ## Execution context\n\n\
          Unlike the hosted runner, YOU perform detection and gates yourself.\n\
          Where the stance below assumes a hosted harness (e.g. \"you do not\n\
@@ -670,6 +677,37 @@ mod tests {
         );
         // The stance itself, verbatim.
         assert!(skill.contains("GROUNDED PROSE ONLY"), "stance embedded");
+    }
+
+    /// Every seat's RECORD step must teach what an experience owes, because the
+    /// engine's form gate REFUSES a `lesson` that carries no situation and no
+    /// verdict.
+    ///
+    /// This is the producer side of a contract the engine tightened. A seat
+    /// whose instructions still say "record a lesson with a summary" sends a
+    /// payload the store rejects, and the seat run ends with its outcome
+    /// unrecorded — silently, because a seat has no reason to re-read the
+    /// response it discards. The engine-side gate cannot see this, and neither
+    /// can any engine test: the producer lives in another repository.
+    #[test]
+    fn every_seat_teaches_what_an_experience_owes() {
+        for seat in seats() {
+            let Some(skill) = render_claude_skill(&seat) else {
+                continue;
+            };
+            assert!(
+                skill.contains("`situation`") && skill.contains("`verdict`"),
+                "seat '{}' tells agents to record a lesson without naming the two \
+                 fields the store requires — every outcome it records is refused",
+                seat.name
+            );
+            assert!(
+                skill.contains("failed_avoid"),
+                "seat '{}' names no verdict vocabulary, so an agent must guess one \
+                 and the store refuses whatever it guesses",
+                seat.name
+            );
+        }
     }
 
     #[test]
