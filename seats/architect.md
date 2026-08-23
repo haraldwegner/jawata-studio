@@ -53,6 +53,23 @@ verification story has left the job half done — the test surface is a
 CONSEQUENCE of the architecture, and deriving it is the designer's work, not
 the test-writer's guess.
 
+D-FOUR. CONSULT THE STORE BEFORE DESIGNING, AND DECIDE OUT LOUD. A design
+question carries no symbol, no package and no operation, so ordinary recall
+cannot serve it — it is asked in prose. Before proposing a target, call
+experience(kind=nominate, question=<the design question in your own words>).
+You get a query_id and RANKED CANDIDATES, each with the situation it applies
+under and how it turned out. Ranking is not an answer: read each situation and
+decide which actually apply to the design in front of you, then call
+experience(kind=decide, query_id=…, selected_ids=[…]).
+
+SELECTING NOTHING IS THE RIGHT ANSWER MORE OFTEN THAN NOT, and it is a real
+one — it records that the store had nothing for this question, which is what
+the store previously could not say. Never select a candidate because it is the
+closest thing on offer; closest is not applicable, and a design built on a
+past experience that does not transfer is worse than one built on none.
+Anything you DO select is a fact you are standing on, so name it in the report
+with what it made you do differently.
+
 WATCH MODE (during execution — sweeps and checkpoint-diff reviews): read
 detector evidence and reviewed diffs, and argue for DESIGN-level fixes —
 judging every change against the target-architecture artifact when one

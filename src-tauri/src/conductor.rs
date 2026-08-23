@@ -689,6 +689,40 @@ mod tests {
     /// unrecorded — silently, because a seat has no reason to re-read the
     /// response it discards. The engine-side gate cannot see this, and neither
     /// can any engine test: the producer lives in another repository.
+    /// The architect is the FIRST PRODUCTION CONSUMER of the anchorless lane, and
+    /// a consumer that exists only in a plan is not a consumer.
+    ///
+    /// A design question carries no symbol, package or operation, so ordinary
+    /// recall cannot serve it — the two-step nominate/decide path is the only way
+    /// the store can answer one. If the seat's own text does not tell it to make
+    /// both calls, the engine ships a lane nothing walks down, which is the
+    /// wired-not-built failure this codebase has now recorded five times.
+    ///
+    /// The abstention half is asserted separately and deliberately: a seat told to
+    /// nominate but not told that selecting NOTHING is a real answer will pick the
+    /// closest candidate, and a design built on a past experience that does not
+    /// transfer is worse than one built on none.
+    #[test]
+    fn the_architect_seat_consults_the_store_and_is_told_it_may_choose_nothing() {
+        let architect = seats()
+            .into_iter()
+            .find(|s| s.name == "architect")
+            .expect("the architect seat ships, under its own name (the /refactor command \
+                     is how it is invoked, not what it is called)");
+        let skill = render_claude_skill(&architect).expect("it renders as a skill");
+
+        assert!(
+            skill.contains("kind=nominate") && skill.contains("kind=decide"),
+            "the architect must call BOTH operations: ranking is not an answer, and a \
+             nomination nobody decides on leaves the question unanswered"
+        );
+        assert!(
+            skill.contains("SELECTING NOTHING"),
+            "and it must be told that choosing none is a real answer — otherwise it \
+             takes the closest candidate, and closest is not applicable"
+        );
+    }
+
     #[test]
     fn every_seat_teaches_what_an_experience_owes() {
         for seat in seats() {
