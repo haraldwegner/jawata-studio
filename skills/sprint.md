@@ -183,6 +183,35 @@ user's judgement, so check 13's product is a named decision for them, never a ve
    decide; 13 is the user's, and the auditor's job is to ensure it REACHES them
    instead of being settled quietly by whoever wrote the spec.
 
+14. **NO ACTIVITY REWRITTEN AS A PROPERTY.** For every verb in the RAW that names
+   WORK — design, investigate, decide, measure, benchmark, prototype — confirm the
+   clean version still names work, attached to something schedulable. **The failure
+   shape to refuse:** the raw says *a design is needed*; the clean says *the thing
+   exists and behaves correctly*. Nothing was deleted, the traceability row is
+   present, the measure is correct — and no stage will ever schedule the design,
+   because a property is something the delivery HAS, not something anyone does.
+
+   This is not caught by check 3 or check 6: the requirement is present, so it is
+   neither absent nor undisposed. It has changed grammatical category, and that is
+   invisible to every check that asks whether it is still there.
+
+   Proven live in Sprint 28c: the requirement said a design change was necessary,
+   the clean spec described the deliverable as loaded with the behaviour as a
+   measure clause, and roughly twenty gates passed with the work absent. Harald
+   found it; no gate did.
+
+   Two things must be distinguished or this check invents work. A verb legitimately
+   disappears when the question got SETTLED during the discussion — *investigate
+   which parser* became *uses this parser*. It illegitimately disappears when it
+   dissolved into a property nobody will build. The test is whether an answer
+   exists: if you cannot point at one, the verb was lost.
+
+   And the deeper fix this check only approximates: **nothing in the chain compares
+   the clean document against the raw directly.** Each audit compares a later
+   artifact to an earlier one, and each passes correctly. Where that comparison can
+   be added, add it; this check is the cheap proxy for it.
+
+
    Two guards. **Do not manufacture an alternative to look diligent** — if the
    solution is already the simple one, say so in a sentence and move on; a
    fabricated option spends the user's attention for nothing. And **cheaper is not

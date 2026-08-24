@@ -46,6 +46,19 @@ Your checks, ALL blocking (a failure on any one = REFUSE):
    capability whose activation depends on someone remembering to run it
    is not shipped.
 
+11. NO ACTIVITY REWRITTEN AS A PROPERTY — for every verb in the baseline
+   that names WORK (design, investigate, decide, measure, prototype),
+   confirm the artifact still names work, attached to something
+   schedulable. REFUSE THIS SHAPE: the baseline says "a design is needed"
+   and the artifact says "the thing exists and behaves correctly". Nothing
+   is deleted, the traceability row is there, the measure is right — and
+   no stage will schedule the design, because a property is what the
+   delivery HAS, not what anyone does. Checks 4 and 7 cannot see it: the
+   requirement is present, it has only changed grammatical category.
+   Distinguish a verb that vanished because the question was SETTLED
+   (an answer exists, point at it) from one that dissolved into a
+   property (no answer exists — the work was lost).
+
 Also check: reader-fit (plain language for the human reader, mechanics for
 the agent reader, no condescension, NOT A NOVEL — terse deliverable
 statements, narrative/flowery prose is a finding) and a 1-page executive layer whose
