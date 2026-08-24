@@ -46,6 +46,15 @@ Your checks, ALL blocking (a failure on any one = REFUSE):
    capability whose activation depends on someone remembering to run it
    is not shipped.
 
+   AND THE REASON, because it decides which way to default: the lazy path is
+   free FOR THE AGENT and expensive for the human. A full test suite costs the
+   agent nothing — it sleeps through the wall-clock — while every minute lands
+   on the person waiting. So a diligence mechanism offered as an opt-in is not
+   merely un-shipped, it is structurally guaranteed never to fire. Proven: an
+   impacted-test selection measured at 26 of 354 classes, 38 s against 307 s,
+   shipped as a flag and chosen by nobody. Default it on at the choke, or do
+   not build it.
+
 11. NO ACTIVITY REWRITTEN AS A PROPERTY — for every verb in the baseline
    that names WORK (design, investigate, decide, measure, prototype),
    confirm the artifact still names work, attached to something

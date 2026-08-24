@@ -120,6 +120,15 @@ user's judgement, so check 13's product is a named decision for them, never a ve
    it operates there UNPROMPTED, as a side effect of normal use. A
    capability whose activation depends on someone remembering to run it is
    not shipped.
+
+   AND THE REASON, because it decides which way to default: the lazy path is
+   free FOR THE AGENT and expensive for the human. A full test suite costs the
+   agent nothing — it sleeps through the wall-clock — while every minute lands
+   on the person waiting. So a diligence mechanism offered as an opt-in is not
+   merely un-shipped, it is structurally guaranteed never to fire. Proven: an
+   impacted-test selection measured at 26 of 354 classes, 38 s against 307 s,
+   shipped as a flag and chosen by nobody. Default it on at the choke, or do
+   not build it.
 10. **ENDS SHIPPED, NOT RECOMMENDED** — every terminal path of the sprint (including a
    spike's success path) must end in a SHIPPED STATE: "we switched" or "we stayed" —
    never "adopt, and a follow-up sprint does the switching". A success verdict whose
