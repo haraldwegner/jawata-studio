@@ -184,19 +184,24 @@ fn nudge(client: Client, config: Option<&HookConfig>) -> Outcome {
 /// the engine REFUSES fails exactly as quietly as a resident that is down, and
 /// the slip trail would simply stop being written with nothing to see.
 ///
-/// Sprint 28c is where that edge became real. `failure_mode` is an EXPERIENCE
-/// type, so the engine's form gate requires the situation the entry arose in and
-/// how it turned out. Both are supplied here — not as padding to satisfy a gate,
-/// but because a slip genuinely has both, and naming the condition is what makes
-/// the row retrievable by it rather than only by resemblance.
+/// Sprint 28c D9 moved the LANE. A slip used to be a `failure_mode` ENTRY in the
+/// knowledge lane, and there are thousands of them — each saying which tool was
+/// reached for and why, each competing for the eight slots a recall answer has,
+/// none of them telling a reader anything they could act on. Harald read his own
+/// store back and found them crowding real answers.
+///
+/// Nothing about their value changes: the capability-gap tally still reads them,
+/// through `kind=fallback_report`. What changes is that they live in the store's
+/// per-tool table, where an audit record belongs, instead of among the stories.
+///
+/// The sharp edge above is why the engine's `fallback` verb REFUSES loudly when
+/// its lane is missing rather than accepting quietly — a trail that just stops
+/// looks exactly like nobody ever slipping.
 fn slip_record_args(tool: &str, reason: &str) -> serde_json::Value {
     serde_json::json!({
-        "kind": "record", "type": "failure_mode",
-        "operation": "jawata-fallback-slip",
-        "summary": format!("jawata-fallback slip: {tool}: {reason}"),
-        "situation": "when a shell text tool is reached for on Java without jawata being tried first",
-        "verdict": "failed_avoid",
-        "symptoms": ["jawata fallback slip"]
+        "kind": "fallback",
+        "tool": tool,
+        "reason": reason
     })
 }
 
@@ -455,33 +460,30 @@ mod tests {
         home.join(".claude").join("jawata-studio")
     }
 
-    /// Sprint 28c. `failure_mode` is an EXPERIENCE type, so the engine refuses a
-    /// record with no situation and no outcome. This hook discards the store's
-    /// answer on purpose — a dead resident must never break the hook — which
-    /// means a refused payload and an absent resident look IDENTICAL from here:
-    /// the slip trail just stops, and nothing anywhere goes red. This assertion
-    /// is the only thing standing between that and a silent outage, so it is
-    /// written against the payload rather than against a live round trip.
+    /// Sprint 28c D9 moved the slip to the TOOL lane. This hook discards the
+    /// store's answer on purpose — a dead resident must never break the hook —
+    /// which means a payload the engine cannot route and an absent resident look
+    /// IDENTICAL from here: the slip trail just stops, and nothing anywhere goes
+    /// red. This assertion is the only thing standing between that and a silent
+    /// outage, so it is written against the payload rather than a live round trip.
     #[test]
-    fn the_slip_payload_carries_the_form_the_engine_requires() {
+    fn the_slip_payload_addresses_the_tool_lane_and_carries_its_reason() {
         let args = slip_record_args("Bash", "grep over a .java file");
 
-        assert_eq!(args["type"], "failure_mode", "a slip is a failure mode");
         assert_eq!(
-            args["verdict"], "failed_avoid",
-            "and one that cost you — not an open question"
+            args["kind"], "fallback",
+            "a slip is an audit record for the TOOL lane, not a story for the \
+             knowledge lane — thousands of them crowded real answers out of every recall"
         );
-        let situation = args["situation"].as_str().unwrap_or_default();
-        assert!(
-            situation.starts_with("when "),
-            "a situation states a CONDITION, not a location: {situation}"
+        assert_eq!(args["tool"], "Bash", "the report tallies gaps per tool");
+        assert_eq!(
+            args["reason"], "grep over a .java file",
+            "and the REASON is the whole capability-gap signal: a slip that records \
+             only which tool was used says that something happened and nothing about what"
         );
         assert!(
-            args["summary"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("grep over a .java file"),
-            "the reason still reaches the summary: {args}"
+            args.get("type").is_none() && args.get("summary").is_none(),
+            "and it must NOT still look like a knowledge-lane record: {args}"
         );
     }
 

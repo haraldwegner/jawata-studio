@@ -5972,17 +5972,24 @@ emit() {
 # op, so a non-.java edit whose content merely contains the marker is not counted.
 # Sprint 21a (item J): the slip is also recorded into the experience store (candidate) —
 # the first conversation-level auto-learn path. Fail-safe: jawata down -> log-only.
-# Sprint 28c: the payload carries situation + verdict because the engine's form
-# gate holds a failure_mode to the experience form. This call discards its
-# result (>/dev/null || true), so a refusal here would be INVISIBLE — the slip
-# trail would just stop. Keep this payload identical to observer.rs's.
+# Sprint 28c D9: the slip goes to the TOOL LANE, not the knowledge lane.
+# It used to be written as a failure_mode ENTRY, and there are thousands of
+# them — each saying which tool was reached for and why, each competing for the
+# eight slots a recall answer has, none of them telling a reader anything they
+# could act on. Harald read his own store back and found them crowding real
+# answers. Their capability-gap value is unchanged and is still read by
+# kind=fallback_report; only the lane moved.
+# This call still discards its result (>/dev/null || true), which is why the
+# engine's fallback verb REFUSES loudly rather than accepting quietly when its
+# lane is missing: a trail that just stops looks exactly like nobody slipping.
 emit_slip() {
   reason="$(printf '%s' "$flat" | sed -nE 's/.*[Jj][Aa][Ww][Aa][Tt][Aa]-[Ff][Aa][Ll][Ll][Bb][Aa][Cc][Kk]:[[:space:]]*([^"\\]*).*/\1/p' | head -n1 | sed -E 's/[[:space:]]*$//')"
   emit "slip" "$tool_name	$reason"
   if command -v curl >/dev/null 2>&1 && [ -n "$MCP_URL" ]; then
-    sr="$(printf '%s: %s' "$tool_name" "$reason" | sed 's/["\\]/ /g' | tr -d '[:cntrl:]' | cut -c1-200)"
+    sr="$(printf '%s' "$reason" | sed 's/["\\]/ /g' | tr -d '[:cntrl:]' | cut -c1-200)"
+    st="$(printf '%s' "$tool_name" | sed 's/["\\]/ /g' | tr -d '[:cntrl:]' | cut -c1-64)"
     curl -s --max-time 3 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-      -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"record","type":"failure_mode","operation":"jawata-fallback-slip","summary":"jawata-fallback slip: '"$sr"'","situation":"when a shell text tool is reached for on Java without jawata being tried first","verdict":"failed_avoid","symptoms":["jawata fallback slip"]}}}' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"fallback","tool":"'"$st"'","reason":"'"$sr"'"}}}' \
       "$MCP_URL" >/dev/null 2>&1 || true
   fi
   printf '%s' "$slip_ctx"
@@ -7850,7 +7857,13 @@ if reasons:
         subprocess.Popen(['curl','-s','--max-time','3','-X','POST',
             '-H','Authorization: Bearer ' + os.environ.get('JAWATA_TOKEN','__TOKEN__'),
             '-H','Content-Type: application/json',
-            '-d', json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'experience','arguments':{'kind':'record','type':'failure_mode','operation':'communication-audit','summary':'stop-gate bounce: ' + reason[:200],'status':'candidate'}}}),
+            # Sprint 28c: this payload had been REFUSED on every single call since the
+            # form gate shipped, and nobody could see it — the write is fire-and-forget
+            # inside a try/except, so a refusal fails exactly as quietly as a resident
+            # that is down. failure_mode is an EXPERIENCE type and owes the condition it
+            # arose under and how it turned out; both are supplied here because a bounce
+            # genuinely has both, not to satisfy a gate.
+            '-d', json.dumps({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'experience','arguments':{'kind':'record','type':'failure_mode','operation':'communication-audit','summary':'a message to the user was bounced by the stop gate: ' + reason[:200],'situation':'when an upward message is about to be sent and the stop gate judges it undeliverable','verdict':'failed_avoid','status':'candidate'}}}),
             '__MCP_URL__'])
     except Exception:
         pass
@@ -10651,26 +10664,33 @@ mod tests {
         let s = build_observer_script("http://127.0.0.1:8890/mcp", "sekret");
         assert!(s.contains(r#"MCP_URL="http://127.0.0.1:8890/mcp""#), "bakes the resident url");
         assert!(s.contains(r#"TOKEN="sekret""#), "bakes the bearer token");
-        assert!(s.contains(r#""kind":"record""#), "records into the store");
-        assert!(s.contains(r#""type":"failure_mode""#), "as a failure-mode candidate");
         assert!(s.contains("|| true"), "fail-safe: a dead resident never breaks the hook");
         assert!(
             s.contains(r#"sed 's/["\\]/ /g'"#),
-            "the interpolated summary is sanitized for the JSON payload"
+            "the interpolated reason is sanitized for the JSON payload"
         );
-        // Sprint 28c: failure_mode is an EXPERIENCE type, so the engine's form
-        // gate refuses a payload without a situation and an outcome. The call
-        // above ends in `|| true` and discards its output, so a refusal here is
-        // INVISIBLE — the slip trail would simply stop being written, with
-        // nothing failing anywhere. This assertion is the only thing standing
-        // between that and a silent outage.
+        // Sprint 28c D9: the slip goes to the TOOL lane. It used to be written as
+        // a failure_mode ENTRY in the knowledge lane, and there are thousands of
+        // them — each naming a tool and a reason, each competing for the eight
+        // slots a recall answer has, none of them telling a reader anything they
+        // could act on. The capability-gap value is unchanged and still read by
+        // kind=fallback_report; only the lane moved.
+        //
+        // The call above ends in `|| true` and discards its output, so a payload
+        // the engine cannot route fails exactly as quietly as a dead resident:
+        // the slip trail simply stops being written and nothing goes red. These
+        // assertions are the only thing standing between that and a silent
+        // outage, which is why they are on the payload rather than a round trip.
+        assert!(s.contains(r#""kind":"fallback""#), "records into the TOOL lane");
         assert!(
-            s.contains(r#""situation":"#),
-            "the payload carries the situation the form gate requires"
+            !s.contains(r#""type":"failure_mode""#),
+            "and must NOT still look like a knowledge-lane record"
         );
+        assert!(s.contains(r#""tool":"#), "the report tallies gaps per tool");
         assert!(
-            s.contains(r#""verdict":"failed_avoid""#),
-            "and the outcome — a slip is a failure_mode that cost you, not an open question"
+            s.contains(r#""reason":"#),
+            "and the REASON is the whole capability-gap signal — a slip carrying only \
+             the tool name records that something happened and nothing about what"
         );
     }
 
