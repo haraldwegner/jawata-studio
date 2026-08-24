@@ -1,0 +1,62 @@
+#!/bin/sh
+# Enforce the three standing commit rules mechanically, because they were being
+# enforced by an agent remembering them — and the recorded incident is what that
+# produces. The commit-msg hook already rejects attribution in the MESSAGE; this
+# covers the two rules nothing was checking.
+#
+#   1. Commits go under Harald's name.        -> identity check below
+#   2. No credentials leave the machine.      -> staged-content check below
+#   3. No agent attribution.                  -> commit-msg (message) + here (content)
+#
+# Never bypass with --no-verify. If this hook is wrong, fix the hook.
+
+fail=0
+AGENT='claude|anthropic|cursoragent|copilot|aider|devin|windsurf|codeium|openai|chatgpt|\[bot\]'
+
+# --- 1. identity: the commit is authored and committed by a person ------------
+for field in AUTHOR COMMITTER; do
+  who=$(git var "GIT_${field}_IDENT" | sed 's/ [0-9][0-9]* [-+][0-9]*$//')
+  if printf '%s' "$who" | grep -qiE "$AGENT"; then
+    echo "BLOCKED: the $field of this commit is an agent: $who" >&2
+    fail=1
+  fi
+done
+[ "$fail" = 1 ] && echo "  Commits go under your own name. Fix user.name / user.email." >&2
+
+# --- 2. attribution inside the staged CONTENT --------------------------------
+# The message hook cannot see this; release notes and docs are published prose.
+#
+# USE vs MENTION, and it is not academic: a first draft of this check flagged ten
+# files across the repos, and every one was the RULE ITSELF being discussed —
+# golden test fixtures holding store entries about the attribution ban, and a
+# support request quoting the offending trailer. A hook that blocks its own
+# documentation gets bypassed on its first day.
+#
+# The separator is mechanical: a real trailer sits at COLUMN 0 of a message or a
+# notes file. A quotation is indented, or embedded inside a JSON string, or
+# mid-sentence. So the pattern anchors to line start with no leading whitespace.
+hits=$(git diff --cached --no-color -U0 -- . \
+  | sed -n 's/^+//p' \
+  | grep -inE "^(co-authored-by:[[:space:]]*($AGENT)|🤖[[:space:]]*generated with|generated with[[:space:]]+\[?(claude|codex))" )
+if [ -n "$hits" ]; then
+  echo "BLOCKED: agent attribution in staged content:" >&2
+  printf '%s\n' "$hits" | head -5 | sed 's/^/  /' >&2
+  echo "  (a quotation of the rule is fine — indent it, or keep it inside a string.)" >&2
+  fail=1
+fi
+
+# --- 3. credentials in the staged content ------------------------------------
+# Deliberately NARROW: a secret-shaped literal assigned to a secret-named thing.
+# A broad entropy scan fires on fixtures and test data, and a hook that cries
+# wolf is a hook that gets turned off.
+secrets=$(git diff --cached --no-color -U0 -- . \
+  | sed -n 's/^+//p' \
+  | grep -inE '(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|password)[[:space:]]*[=:][[:space:]]*["'"'"'][A-Za-z0-9_/+=-]{20,}["'"'"']' )
+if [ -n "$secrets" ]; then
+  echo "BLOCKED: a credential-shaped literal is staged:" >&2
+  printf '%s\n' "$secrets" | head -5 | sed 's/^/  /' >&2
+  echo "  If this is a fixture, move it behind an env var or a test resource." >&2
+  fail=1
+fi
+
+exit $fail

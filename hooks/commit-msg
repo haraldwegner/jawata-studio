@@ -1,0 +1,6 @@
+#!/bin/sh
+# Reject AI attribution in commit messages (Harald's standing rule).
+if grep -qiE 'co-authored-by:[[:space:]]*(claude|anthropic)|noreply@anthropic\.com|generated with[[:space:]]+\[?claude' "$1"; then
+  echo "BLOCKED: AI attribution (Claude/Anthropic) is prohibited in commit messages. Remove it." >&2
+  exit 1
+fi
