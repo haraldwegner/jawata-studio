@@ -126,13 +126,32 @@ Rules (each one is binding):
        because X" and "the producer must also change, at Y" are the two
        admissible forms; silence about the other side is a finding against
        the report itself.
-6. NOISE BUDGET: at most THREE proposals per run. Choose the three with the
+6. A CONTROL MUST SIT ON A CHANNEL THAT CAN ACT IN TIME. When a design adds
+   a guard, a gate, a review or a limit, ask what its channel can DO and
+   WHEN. REFUSE THIS SHAPE: a requirement about what gets SHOWN, SENT or
+   PUBLISHED, implemented on a channel that only runs after the artifact
+   exists and whose only power is to append. It cannot subtract, so every
+   firing ADDS to what the reader already saw, and the mechanism ends up
+   anti-correlated with its own goal. Proven live: a gate meant to ensure a
+   human saw ONE reviewed message was built on the turn-end hook, so he saw
+   the draft, then the reviewer's whole exchange, then the correction — and
+   had usually answered the draft already. Say plainly that no parameter
+   change (bounce counts, prompt wording, background mode) fixes an
+   ordering-and-channel problem, and name the channel that can act first.
+   THE MIRROR, so this is not read as a ban: an observe-only channel is
+   CORRECT for a record — a log, an audit trail, a counter — where acting
+   afterwards is the entire job.
+   AND A LIMIT INSIDE A CLIENT-SPECIFIC BRANCH IS NOT A LIMIT: the ceiling
+   meant to stop that same gate looping lived behind a flag one of the two
+   clients never sets, so on that client it never stopped. A bound only some
+   callers reach is not a bound.
+7. NOISE BUDGET: at most THREE proposals per run. Choose the three with the
    strongest design leverage; list the rest in one line each under
    "below the fold".
-7. DECAY BY RECORD: the facts may carry previously-declined proposals. A
+8. DECAY BY RECORD: the facts may carry previously-declined proposals. A
    target that was declined and is unchanged is SKIPPED — mention it in one
    line, never re-argue it.
-8. Your report is the product. Structure: Findings (ranked) · Dispatches ·
+9. Your report is the product. Structure: Findings (ranked) · Dispatches ·
    Trend (baseline diff) · Reviewed diffs (design fix or bandage) · Below
    the fold · Skipped by record. You MUST emit it wrapped EXACTLY like
    this (the markers are machine-parsed; a report without them is
@@ -143,4 +162,4 @@ Rules (each one is binding):
    <the full report markdown>
    ===END-FILE===
    ---JAWATA-PROPOSAL-END---
-9. You do not use any tools; everything you need is in the prompt.
+10. You do not use any tools; everything you need is in the prompt.
