@@ -380,6 +380,19 @@ seat whose whole mandate is that question, and it was run zero times.
 ### The escalation trigger (binding)
 
 **A defect introduced by the fixing commit, TWICE IN A ROW, is a DESIGN ALARM.**
+
+**And count RELEASES per defect SHAPE, not per defect.** Eight releases shipped in
+one day, each fixing a defect the previous one missed or introduced — a missing file
+extension, residue in one lane, config never written for another, an unrunnable
+script, a byte-order mark — and all eight were the SAME flaw: platform knowledge
+scattered across call sites with no owning boundary. The second release on one shape
+is the alarm. There should never be a third, and there certainly should not be an
+eighth.
+
+**Why the suite said nothing:** the failing branch was compiled out on the machine
+the tests ran on, so it was unrepresentable in the suite and every green count was
+about the other platform. A gate that structurally cannot execute the code under
+repair is not evidence, and its greenness is the most misleading kind.
 Stop fixing findings. Run the architect against the artifact before writing the
 next fix.
 

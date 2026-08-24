@@ -68,6 +68,15 @@ Your checks, ALL blocking (a failure on any one = REFUSE):
    (an answer exists, point at it) from one that dissolved into a
    property (no answer exists — the work was lost).
 
+12. EVERY ACCEPTANCE CRITERION NAMES THE STAGE THAT PRODUCES IT. Walk the
+   acceptance list and, for each bullet, point at the stage that builds it and
+   the checkpoint that verifies it. REFUSE a criterion with neither. The
+   failure it catches: a plan derived entirely from the KNOWN BUGS, where every
+   stage fixes something observed and the headline goal — the refactor the
+   sprint was named for — has no stage at all. The document reads complete
+   because the acceptance bullet is present and correctly worded; nothing
+   produces it. Distinct from check 11: there the verb vanished from the
+   requirement, here the requirement is intact and unowned.
 Also check: reader-fit (plain language for the human reader, mechanics for
 the agent reader, no condescension, NOT A NOVEL — terse deliverable
 statements, narrative/flowery prose is a finding) and a 1-page executive layer whose
