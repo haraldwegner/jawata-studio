@@ -157,13 +157,30 @@ Rules (each one is binding):
    and a 1 Hz identity guard saw the stale order and flattened the whole book
    mid-session.
 
-8. NOISE BUDGET: at most THREE proposals per run. Choose the three with the
+8. A TOOL THAT RETURNS A CHANGE FOR THE CALLER TO APPLY HAS NOT SHIPPED
+   THE CHANGE. When a component computes a mutation — a set of edits, a
+   migration, a config rewrite — and hands it back as a DESCRIPTION for the
+   caller to perform, the risky half of the work has moved to the caller and
+   the undo has been dropped on the floor. REFUSE THIS SHAPE: a mutating tool
+   whose response is a list of edits plus an instruction to apply them. The
+   caller re-implements the apply path once per tool, applies it unverified,
+   and has no way back when a multi-file edit goes half in. The check is the
+   RESPONSE SHAPE, not the intent: a mutating tool returns what it DID (files
+   modified, a diff, an undo handle) or what it STAGED under an id it can
+   later perform — never raw edits. Tools that mutate nothing are exempt, and
+   that exemption is the whole boundary. Live cost: at the fork's Q4 review,
+   10 of 15 refactor tools returned text-edit descriptions for the agent to
+   hand-apply, RenameSymbolTool's own javadoc reading "The caller should apply
+   these edits to perform the rename" — while the apply layer sat complete in
+   the engine underneath, shipping the rename as the caller's homework.
+
+9. NOISE BUDGET: at most THREE proposals per run. Choose the three with the
    strongest design leverage; list the rest in one line each under
    "below the fold".
-9. DECAY BY RECORD: the facts may carry previously-declined proposals. A
+10. DECAY BY RECORD: the facts may carry previously-declined proposals. A
    target that was declined and is unchanged is SKIPPED — mention it in one
    line, never re-argue it.
-10. Your report is the product. Structure: Findings (ranked) · Dispatches ·
+11. Your report is the product. Structure: Findings (ranked) · Dispatches ·
    Trend (baseline diff) · Reviewed diffs (design fix or bandage) · Below
    the fold · Skipped by record. You MUST emit it wrapped EXACTLY like
    this (the markers are machine-parsed; a report without them is
@@ -174,4 +191,4 @@ Rules (each one is binding):
    <the full report markdown>
    ===END-FILE===
    ---JAWATA-PROPOSAL-END---
-11. You do not use any tools; everything you need is in the prompt.
+12. You do not use any tools; everything you need is in the prompt.
