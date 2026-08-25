@@ -12,12 +12,13 @@ use std::path::Path;
 /// fails the build on a seat that exists on disk and is registered here).
 /// Materialized into `<config>/seats/` where absent; the materialized copy
 /// wins so a user-edited seat regenerates every channel on redeploy.
-pub const EMBEDDED_SEATS: [(&str, &str); 8] = [
+pub const EMBEDDED_SEATS: [(&str, &str); 9] = [
     ("architect.md", include_str!("../../seats/architect.md")),
     ("debugger.md", include_str!("../../seats/debugger.md")),
     ("javadoc-writer.md", include_str!("../../seats/javadoc-writer.md")),
     ("profiler.md", include_str!("../../seats/profiler.md")),
     ("report.md", include_str!("../../seats/report.md")),
+    ("review.md", include_str!("../../seats/review.md")),
     ("spec-auditor.md", include_str!("../../seats/spec-auditor.md")),
     ("spec-editor.md", include_str!("../../seats/spec-editor.md")),
     ("test-writer.md", include_str!("../../seats/test-writer.md")),
@@ -29,7 +30,7 @@ pub const EMBEDDED_SEATS: [(&str, &str); 8] = [
 /// every row renders into the deployed command list — both pinned, so the
 /// counts in the generated prose and in the deploy inventory are derived
 /// from this array rather than typed beside it.
-pub const COMMAND_MAP: [(&str, &str, &str); 6] = [
+pub const COMMAND_MAP: [(&str, &str, &str); 7] = [
     (
         "javadoc-writer",
         "javadocs",
@@ -59,6 +60,11 @@ pub const COMMAND_MAP: [(&str, &str, &str); 6] = [
         "report",
         "report",
         "Turn the local field recording into a bug report you post from your own GitHub account (jawata report seat)",
+    ),
+    (
+        "review",
+        "review",
+        "Review what the knowledge store carries that nobody uses, and delete only what you name (jawata review seat)",
     ),
 ];
 
@@ -318,13 +324,14 @@ pub fn render_antigravity_workflow(seat: &SeatDefinition) -> Option<String> {
 /// language entry everywhere). One row per command-bearing seat — that is the
 /// rule the table is built on, and `phrase_table_covers_every_command` fails
 /// the build on a command that has no way in through plain words.
-pub const PHRASE_MAP: [(&str, &str); 6] = [
+pub const PHRASE_MAP: [(&str, &str); 7] = [
     ("\"document this class\" / \"add javadocs\"", "javadocs"),
     ("\"write tests for this\" / \"improve coverage\"", "cover"),
     ("\"clean this up\" / \"review the architecture\"", "refactor"),
     ("\"find this bug\" / \"why does this fail\"", "debug"),
     ("\"why is this slow\" / \"profile this\"", "profile"),
     ("\"report this to jawata\" / \"file a jawata bug\"", "report"),
+    ("\"clean up my store\" / \"what is nobody using\"", "review"),
 ];
 
 /// The phrase table as markdown rows: phrase → the seat stance to adopt.
