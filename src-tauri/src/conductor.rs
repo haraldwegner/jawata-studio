@@ -364,44 +364,84 @@ pub const UTILITY_MAP: [(&str, &str); 2] = [
 
 fn utility_body(command: &str) -> &'static str {
     match command {
-        "memorize" => "Bare `/memorize`: identify the durable lesson from the \
-current discussion, ROUTE it, and echo ONE line of where it went. `/memorize \
-<something>`: take exactly that.\n\nFIRST DECIDE WHERE IT GOES — nothing is \
-discarded, and the store is NOT the default. The question is WHEN IT MUST FIRE, \
-and there are four answers. Take the cheapest rung that still fires when it is \
-needed:\n\n1. **It can be decided from the artifact itself** -> a HOOK. Costs \
-nothing to read and fires at the act. An agent about to do the wrong thing is not \
-asking a question, so a store entry would be inert exactly when it is needed: the \
-rule against sweeping a whole directory into a commit sat in a store nobody was \
-querying at the moment `git add -A` was typed. Propose the hook as a diff and wait \
-for the yes; never install one silently.\n2. **It fires at a known point in the \
-process** — a review, a checkpoint, a sign-off -> A CHECK ON THE SEAT that owns \
-that point. Name the FAILURE SHAPE to refuse, not the outcome to want; a \
-description of the good outcome leaves the drift unnamed and prevents \
-nothing.\n3. **It must hold always and cannot be mechanised** -> A STANDING RULE. \
-SCARCE. Every rule is read on every task forever, so the instruction layer spends \
-attention, not disk: two hundred rules enforce nothing. Justify that cost \
-explicitly or drop to a lower rung.\n4. **Someone would have to ASK for it** -> \
-THE STORE. Unbounded — retrieval picks what is relevant and a weak entry costs \
-noise in one answer, not attention on every task.\n\nIf it went anywhere but the \
-store, name the file and show the diff. A lesson that reached no destination is a \
-lesson lost, and that is the failure this routing exists to stop.\n\nProtocol for \
-rung 4 (binding): STORE FIRST — call the jawata `experience` tool with \
-`kind=record`, a fitting `type` (domain_fact / lesson / failure_mode / \
-naming_convention), a one-line `summary`, and an anchor (`symbol` for Java, \
-`operation`+`language` otherwise). THEN write the client\'s own file memory where \
-one exists. The shared store is the authoritative cross-client layer: what one \
-client memorizes, every client recalls.\n\nA `lesson` or a `failure_mode` is an \
-EXPERIENCE and owes two more fields, or the store refuses it: `situation` — when \
-it applies, written as something a person would actually SAY (\"you already have a \
-partial fill and want to change the limit price — what do you put in the quantity \
-field?\"), never a file path, never a constructed sentence nobody would utter, and \
-never carrying the incident\'s own numbers (0.28, forty minutes) which filter on a \
-coincidence rather than on the problem; and `verdict` — how it turned out: \
-`worked`, `failed_avoid`, or `unproven` when it is genuinely still open. A \
-`domain_fact`, an `api_contract` or a `naming_convention` owes NEITHER — it never \
-turned out any way at all, and inventing an outcome for one makes retrieval rank \
-on fiction. Do not reach for a lesson when what you have is a fact.",
+        "memorize" => r#"Bare `/memorize`: find what this session learned that is durable and reusable, ROUTE it, and report. `/memorize <something>`: take exactly that as the candidate and start at step 1.
+
+**EXPECT ZERO.** A session of a million tokens commonly yields nothing storable, and *no candidates* is the right answer far more often than it has been given. The store reached ~2,500 entries; routed against these criteria about fifty survive. Whatever this command was doing, it stored roughly fifty times too much. Never produce an entry because producing one feels like working.
+
+A candidate is **durable** (still true next month), **reusable** (someone not in this session could hit it), and **not already known** — recall it first; if the store or a standing rule already has it, it is not a candidate.
+
+## STEP 1 — the story list, and this is the cheap gate
+
+Before writing anything, print ONE LINE per candidate saying what STORY it is:
+
+    1. the amend quantity is the total, not the remainder — from the rejected order
+    2. a superseded note does not know it was superseded
+    — nothing else worth storing from this session
+
+Then let him look. The expensive correction is the one that arrives after a full entry exists and turns out to be about the wrong thing: in one review session twenty of those landed, and almost every one was visible in a single line. Silence means proceed — this is a chance to redirect, not an approval loop.
+
+## STEP 2 — route it. The store is NOT the default
+
+Ask **when must this fire?** and take the cheapest rung that still fires:
+
+- **hook** — decidable from the artifact, enforceable with no judgement. Propose the diff.
+- **seat check** — fires at a known point (a design review, a spec audit, a checkpoint). Propose the wording, naming the FAILURE SHAPE to refuse rather than the outcome to want.
+- **standing rule** — must hold always and cannot be mechanised. SCARCE: every rule is read on every task forever. Justify the cost or drop a rung.
+- **store** — someone would ask for it, OR it is knowledge applied by judgement that nothing can enforce.
+
+**That last clause matters.** Most knowledge cannot be enforced and that is not a defect in it. You cannot hook *use this pattern*; a reader searches for applicable ones and which to take, or none, is an architecture decision. The store is that knowledge's home, not its consolation prize.
+
+A non-store destination produces a PROPOSAL with a diff and waits. Never a silent edit. Name the file.
+
+## STEP 3 — write it, against `docs/story-template.md`
+
+The rules that carry the most weight, so you do not have to open the file for an ordinary entry:
+
+- **Quote the claim from the source; do not restate it.** Every factual error in a fold came from paraphrase. Paraphrasing is confined to the situation.
+- **Widen the claim until a reader can no longer answer *is that me?* by inspection, then step back.** *On Alpaca, read the status with a REST GET* is evaluable. *Where acknowledgements go over a websocket with no delivery guarantee, read the status with a GET* is wider and still evaluable — the right rung. *Confirm state before acting* is a tautology that matches everything and helps nobody.
+- **Say the situation out loud.** Dictate it before typing it. If nobody would say the sentence, it is assembly.
+- **Keep the domain's own nouns and its real word.** Point at each noun and name the thing it replaced. *Cleanup pass, in-flight job, the map* were orders, a broker and our record of them.
+- **Keep the incident's numbers OUT of the situation.** 0.28 and forty minutes are evidence for the body.
+- **A principle owes a boundary that NAMES a neighbour and does not TEACH it.** If a reader would act on the paragraph, it is a second entry at a different scope.
+- **The why is a claim too.** It carries its provenance — the source, a document you can name, a measurement you ran, or the literal word *unsourced*. There is no fifth option, and a humbler invented why is still invented. Abstention means writing no why at all.
+- One CLAIM = one entry. A note carrying several claims at several scopes becomes several entries.
+
+## STEP 4 — review it
+
+Call `experience(kind=review, type=…, summary=…, situation=…, verdict=…, details=…, symptoms=[…])`.
+
+It returns what the deterministic gate says and a `prompt`. **Hand that prompt to an agent with NO session context and nothing else** — no background, no explanation, not your reasoning. Read its `VERDICT:` line.
+
+The reader CANNOT check a fact. An entry can be fluent, correctly scoped and false, and it will pass; that is what the provenance rule bounds, not this step.
+
+## STEP 5 — compare, and only one branch reaches him
+
+| you | the reader | what happens |
+|---|---|---|
+| keep | keep | record it. One line reported. |
+| drop | drop | drop it. One line reported. |
+| keep | drop | **ASK HIM** — the one-line story, both verdicts, one question |
+| drop | keep | **ASK HIM** — same |
+
+Two agents agreeing is the common case and costs him nothing. A disagreement is exactly where a human should look, which is why this gate is conditional and therefore affordable.
+
+## The record call
+
+STORE FIRST — `experience(kind=record)` with a fitting `type` (domain_fact / lesson / failure_mode / api_contract / naming_convention), the `summary`, and an anchor (`symbol` for Java, `operation`+`language` otherwise). THEN write the client's own file memory. The shared store is the authoritative cross-client layer.
+
+`lesson` and `failure_mode` are experiences: they owe a `situation` and a `verdict` (`worked` / `failed_avoid` / `unproven`), or the store refuses them. A `domain_fact` owes NEITHER, and nor does an `api_contract`, a `naming_convention` or a `reference` — they never turned out any way at all, and inventing a verdict for one makes retrieval rank on fiction.
+
+## What the run reports
+
+    ── 2 candidates from this session ──
+    1. the amend quantity is the total, not the remainder
+    2. a superseded note does not know it was superseded
+
+    stored   2  (the reader agreed on both)
+    proposed 1  hook: refuse a commit authored by an agent → hooks/pre-commit
+    asked    0
+
+An empty run reports `no candidates — nothing in this session was durable and reusable`, and stores nothing. That is a good outcome, not a failed one."#,
         // Single-sourced: the pipeline is far too long to inline, and a second
         // copy would drift from the one the seats' own process runs.
         "sprint" => include_str!("../../skills/sprint.md"),

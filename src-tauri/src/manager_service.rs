@@ -9954,6 +9954,49 @@ mod tests {
                         body.contains("failed_avoid") && body.contains("unproven"),
                         "{client}: /memorize must name the closed outcome vocabulary"
                     );
+                    // Sprint 28c: the five-step protocol. Each assertion pins one
+                    // step, because the whole design is that the cheap gates run
+                    // BEFORE the expensive ones and a silently dropped step puts
+                    // the cost back on Harald without anything going red.
+                    assert!(
+                        body.contains("EXPECT ZERO") && body.contains("no candidates"),
+                        "{client}: /memorize must be able to store NOTHING — a command \
+                         that always produces output because producing output feels \
+                         like working is how the store reached 2,500 entries of which \
+                         about fifty survive the criteria"
+                    );
+                    assert!(
+                        body.contains("ONE LINE per candidate"),
+                        "{client}: /memorize must show the story list BEFORE writing — \
+                         the expensive correction is the one arriving after a full \
+                         entry exists and turns out to be about the wrong thing"
+                    );
+                    assert!(
+                        body.contains("hook") && body.contains("seat check")
+                            && body.contains("standing rule"),
+                        "{client}: /memorize must route to all four destinations; the \
+                         store is not the default, and a rule kept there fires only \
+                         if somebody thinks to ask"
+                    );
+                    assert!(
+                        body.contains("consolation prize"),
+                        "{client}: /memorize must say the store IS the home of \
+                         knowledge nothing can enforce — you cannot hook 'use this \
+                         pattern', and without this clause the ladder reads as \
+                         find-a-binding-channel-or-it-is-worthless"
+                    );
+                    assert!(
+                        body.contains("experience(kind=review"),
+                        "{client}: /memorize must call the review verb — the cold \
+                         reader is the whole reason the human gate can be conditional"
+                    );
+                    assert!(
+                        body.contains("ASK HIM") && body.contains("NO session context"),
+                        "{client}: /memorize must name the ONE branch that reaches \
+                         Harald (editor and reader disagreeing) and must say the \
+                         reader gets no session context — a reader given the \
+                         reasoning grades the reasoning"
+                    );
                     assert!(
                         body.contains("owes NEITHER"),
                         "{client}: /memorize must also say a domain_fact owes no outcome — \
