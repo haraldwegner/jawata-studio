@@ -58,7 +58,14 @@ call() {
 }
 
 # Seed one entry the prompt below can only find through the real store.
+# The seed carries the FORM the engine requires since v3.14.0: a lesson owes a
+# situation and an outcome, and the form gate refuses one without them. This
+# gate found that out in production — the v3.14.1 release run failed here,
+# because the seed predated the gate it was seeding past. The seam gate exists
+# to catch exactly this cross-product drift; this time it caught its own.
 SEED='{"kind":"record","type":"lesson","operation":"seam-gate","language":"java",
+  "situation":"when a downshift is attempted without double declutching on this transmission",
+  "verdict":"worked",
   "summary":"The gearbox synchronizer needs double declutching before every downshift on this transmission."}'
 R="$(call "$SEED")"
 # The tool result arrives JSON-escaped inside the MCP envelope: \"stored\":true.
