@@ -8008,12 +8008,17 @@ emit_ctx() {
 # that cannot fail the way the thing fails is not a check of the thing.
 if [ "${JAWATA_HOOK_SELFTEST:-}" = "1" ]; then emit_ctx '[lesson] selftest canned line (accepted)\n[lesson] selftest second line — multi-answer is the normal case'; exit 0; fi
 command -v curl >/dev/null 2>&1 || exit 0
-# THE recall attempt (Sprint 22a dual-cue): $1 = arg key (symbol|symptom), $2 = cue.
-# On any non-empty answer it injects and exits 0; otherwise returns so the next-ranked
-# cue is tried. Absence is still absence — "No known knowledge" falls through.
+# THE recall attempt (Sprint 28c D8: ONE ask, every cue). $1 = the fully-formed
+# arguments object. The engine unions the cues and drops what this session has
+# already been shown; the hook no longer decides which single cue is allowed to win.
+#
+# What this replaced: one round trip per cue, EXITING on the first that answered. Four
+# of five cues were then never asked at all, and from the agent's side a cue that was
+# never asked looks exactly like a store that has nothing for it. That is not a ranking
+# decision — it is the first cue winning because it went first.
 try_recall() {
-  [ -n "$2" ] || return 1
-  req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"recall","format":"text","'"$1"'":"'"$2"'"}}}'
+  [ -n "$1" ] || return 1
+  req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":'"$1"'}}'
   resp="$(curl -s --max-time 2 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$req" "$MCP_URL" 2>/dev/null)"
   [ -n "$resp" ] || exit 0
   flat="$(printf '%s' "$resp" | tr -d '\n\r')"
@@ -8039,13 +8044,22 @@ flatin="$(printf '%s' "$input" | tr '\n\r' '  ')"
 prompt="$(printf '%s' "$flatin" | sed -n 's/.*"prompt"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
 [ -n "$prompt" ] || exit 0
 case "$prompt" in /*) exit 0 ;; esac
+# The session id, for the store's already-shown set. This hook fires on EVERY prompt,
+# so without it a long conversation about one subject re-injects the same lines every
+# turn until the agent learns to skim the block — and the one turn where the store has
+# something new looks exactly like the twenty before it. An older client that sends no
+# session_id simply gets no dedup: degrading open costs a repeat, degrading closed
+# would cost the injection.
+sid="$(printf '%s' "$flatin" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
 # Symbol cues (Sprint 22a dual-cue, precise-first): qualified/member identifiers that
 # name a type or member (Type#member, pkg.Type, Outer.Inner), from the ORIGINAL prompt
 # (case-sensitive). They fire kind=recall,symbol= BEFORE the symptom cues and are
 # independent of the >=2-content-word gate, so a bare `Foo#bar` prompt still recalls.
 symcues="$(printf '%s' "$prompt" | grep -oE '[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*#[A-Za-z0-9_]+|[a-z][A-Za-z0-9_]*(\.[a-z][A-Za-z0-9_]*)*\.[A-Z][A-Za-z0-9_]*|[A-Z][A-Za-z0-9_]*(\.[A-Z][A-Za-z0-9_]*)+' 2>/dev/null | head -n 2)"
-try_recall symbol "$(printf '%s\n' "$symcues" | sed -n 1p)"
-try_recall symbol "$(printf '%s\n' "$symcues" | sed -n 2p)"
+# Cues are COLLECTED here and asked ONCE at the end. Asking as we go is what made
+# four of them unreachable.
+sym1="$(printf '%s\n' "$symcues" | sed -n 1p)"
+sym2="$(printf '%s\n' "$symcues" | sed -n 2p)"
 # Normalize: lowercase, punctuation -> space; digits/hyphens/underscores survive (rarity marks).
 norm="$(printf '%s' "$prompt" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/ /g')"
 words=""
@@ -8082,11 +8096,36 @@ ngrams() {
 }
 tri="$(ngrams 3)"
 bi="$(ngrams 2)"
-# Symptom cues (unchanged tiering): best trigram once, then two bigrams — now routed
-# through the shared try_recall, AFTER the precise symbol cues above.
-try_recall symptom "$(printf '%s\n' "$tri" | sed -n 1p)"
-try_recall symptom "$(printf '%s\n' "$bi" | sed -n 1p)"
-try_recall symptom "$(printf '%s\n' "$bi" | sed -n 2p)"
+# Symptom cues (unchanged tiering): best trigram, then two bigrams. The tiering is a
+# PRECEDENCE the engine honours — symbol cues first, then these in order — not a
+# tournament in which one of them is allowed to silence the rest.
+sym3="$(printf '%s\n' "$tri" | sed -n 1p)"
+sym4="$(printf '%s\n' "$bi" | sed -n 1p)"
+sym5="$(printf '%s\n' "$bi" | sed -n 2p)"
+# Build the ONE argument object. jq is not assumed on any client, so the cues are
+# escaped by hand: a cue reaching here has already been through the tokenizer above,
+# which leaves only [a-z0-9_-] and spaces, and the symbol cues only identifier
+# characters, dots and '#'. Backslash and double-quote cannot survive that, so there
+# is nothing left to escape — stated rather than assumed, because "it cannot contain a
+# quote" is exactly the assumption that ships an injection.
+add_cue() {  # $1 = accumulator, $2 = cue -> prints the extended JSON array body
+  [ -n "$2" ] || { printf '%s' "$1"; return; }
+  if [ -n "$1" ]; then printf '%s,"%s"' "$1" "$2"; else printf '"%s"' "$2"; fi
+}
+symbols=""
+symbols="$(add_cue "$symbols" "$sym1")"
+symbols="$(add_cue "$symbols" "$sym2")"
+symptoms=""
+symptoms="$(add_cue "$symptoms" "$sym3")"
+symptoms="$(add_cue "$symptoms" "$sym4")"
+symptoms="$(add_cue "$symptoms" "$sym5")"
+[ -n "$symbols$symptoms" ] || exit 0
+args='{"kind":"recall","format":"text"'
+[ -n "$symbols" ] && args="$args,\"symbols\":[$symbols]"
+[ -n "$symptoms" ] && args="$args,\"symptoms\":[$symptoms]"
+[ -n "$sid" ] && args="$args,\"session\":\"$sid\""
+args="$args}"
+try_recall "$args"
 exit 0
 "#;
 
@@ -11292,11 +11331,20 @@ mod tests {
         let s = build_userprompt_script("http://127.0.0.1:8890/mcp", "sekret");
         assert!(s.contains(r#"MCP_URL="http://127.0.0.1:8890/mcp""#), "bakes the mcp url");
         assert!(s.contains(r#"TOKEN="sekret""#), "bakes the bearer token");
+        // Sprint 28c D8: ONE ask carrying every cue. The old shape was one round
+        // trip per cue, exiting on the first that answered — so four of five cues
+        // were never asked, and a cue that was never asked is indistinguishable
+        // from a store that has nothing for it.
         assert!(
             s.contains(r#""kind":"recall""#)
-                && s.contains("try_recall symptom")
-                && s.contains("try_recall symbol"),
-            "recalls by BOTH symbol and symptom cues (Sprint 22a dual-cue)"
+                && s.contains(r#"\"symbols\":["#)
+                && s.contains(r#"\"symptoms\":["#),
+            "recalls by BOTH symbol and symptom cues, in ONE ask"
+        );
+        assert!(
+            s.matches("try_recall").count() == 2,
+            "exactly one try_recall definition and one call — a per-cue loop is the \
+             defect this replaced, and it comes back the moment a second call appears"
         );
         assert!(s.contains(r#""prompt""#), "reads the prompt from hook stdin");
         assert!(
@@ -11403,10 +11451,18 @@ mod tests {
         // kind=recall,symbol= attempt BEFORE the symptom cues, via the shared helper.
         let s = build_userprompt_script("u", "t");
         assert!(s.contains("symcues="), "extracts symbol cues from the prompt");
-        assert!(s.contains("try_recall symbol"), "tries symbol cues");
+        // Sprint 28c D8: precise-first is now a PRECEDENCE inside one ask — the
+        // engine honours the order the cues are listed in — rather than a
+        // tournament in which one cue is allowed to silence the rest. The symbols
+        // array must therefore still be built before the symptoms array.
         assert!(
-            s.find("try_recall symbol").unwrap() < s.find("try_recall symptom").unwrap(),
-            "symbol cues are tried before symptom cues (precise-first)"
+            s.find(r#"\"symbols\":["#).unwrap() < s.find(r#"\"symptoms\":["#).unwrap(),
+            "symbol cues are listed before symptom cues (precise-first)"
+        );
+        assert!(
+            s.contains(r#"\"session\":"#),
+            "the ask carries the session id, or a long conversation re-injects the \
+             same lines every turn until the block stops being read"
         );
     }
 

@@ -46,6 +46,9 @@ pub const LENGTH_BUDGET: usize = 2200;
 /// gives up and lets it through. Bounded on purpose: the valve this replaces
 /// existed so a gate could never wedge a session, and that concern is real —
 /// it is answered by a ceiling, not by allowing the first retry through.
+/// Consecutive EMPTY turns under a granted autonomy before the gate lets go.
+pub const MAX_EMPTY_TURNS: u32 = crate::autonomy::MAX_EMPTY_TURNS;
+
 pub const MAX_UNJUDGED_BOUNCES: u32 = 3;
 
 /// Abbreviations a reader of this project already holds.
@@ -303,6 +306,13 @@ pub struct StopFacts {
     pub bounces: u32,
     pub turn: Turn,
     pub autonomy: Autonomy,
+    /// Consecutive turns under this grant that produced no tool calls.
+    ///
+    /// Counted by the pipeline, like `bounces`, so `judge` stays pure. It is a
+    /// property of the TURNS and not of the rulings: a session being pushed and
+    /// working is not a session being pushed and stuck, and only this number
+    /// tells them apart.
+    pub empty_turns: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -483,7 +493,25 @@ the answer — and send back what it understood, so the reader sees the text onc
 
     // RULE B, decisive direction only. "Launched nothing" proves nothing is
     // armed. The converse does not hold, so it is not asserted.
+    //
+    // THE CEILING COUNTS EMPTY TURNS, NOT BLOCKS — and that distinction is the
+    // design rather than a detail. Bounding the blocks would punish the working
+    // case and the wedged case identically: an agent that is pushed, starts the
+    // next piece of work, and gets pushed again is the mechanism succeeding, and
+    // it would hit a block ceiling on the third success. What a wedge actually
+    // looks like is consecutive turns that produce NOTHING — pushed, empty,
+    // pushed, empty. So a turn carrying tool calls resets the count and a turn
+    // carrying none advances it, which lets a working session run all night
+    // without ever approaching the bound while releasing a stuck one in two.
+    //
+    // The bound sits on the rule and not inside an `already_bounced` branch, for
+    // the reason the review rule learned the hard way: Cursor re-invokes with
+    // the retry flag unset, so a valve on that path was never entered and the
+    // rule blocked forever — measured at counter 11 and still climbing.
     if facts.autonomy == Autonomy::Granted && !facts.turn.armed_anything() {
+        if facts.empty_turns >= MAX_EMPTY_TURNS {
+            return StopVerdict::Allow;
+        }
         return StopVerdict::Block {
             reason: "RULE B: autonomy is granted and this turn armed no background \
 work, so ending here sleeps until the human returns. Start the next piece of \
@@ -826,6 +854,7 @@ mod tests {
     }
     fn facts(autonomy: Autonomy, launches: Vec<ToolUse>) -> StopFacts {
         StopFacts {
+            empty_turns: 0,
             already_bounced: false,
             bounces: 0,
             turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, user_asked: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false },
@@ -1412,6 +1441,7 @@ mod tests {
 
         assert!(turn.user_asked, "the human's message carries a question mark");
         let verdict = judge(&StopFacts {
+            empty_turns: 0,
             already_bounced: false,
             bounces: 0,
             turn,
@@ -1450,7 +1480,7 @@ mod tests {
         assert!(turn.asks_the_human);
         assert!(
             matches!(
-                judge(&StopFacts { already_bounced: false,
+                judge(&StopFacts { empty_turns: 0, already_bounced: false,
             bounces: 0, turn, autonomy: Autonomy::Unknown }),
                 StopVerdict::Block { .. }
             ),

@@ -103,8 +103,24 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
             Some(outcome) => outcome,
             None => recall(role, client, payload, store),
         },
-        Role::UserPrompt => recall(role, client, payload, store),
-        Role::Stop => stop_gate(client, payload, crate::stop::Autonomy::Unknown),
+        Role::UserPrompt => {
+            // His word is the only grant, and this is the only place it is
+            // readable: the Stop event carries no prompt. Noted before the
+            // recall so a payload that fails to yield cues still records it —
+            // the grant is not conditional on the store having anything to say.
+            note_autonomy_from_prompt(payload);
+            recall(role, client, payload, store)
+        }
+        // Sprint 28c: the autonomy signal, finally supplied. This line read
+        // `Autonomy::Unknown` since Sprint 26, which made Rule B — "do not stop
+        // when autonomy is granted and nothing is armed" — unreachable in the
+        // shipped binary: it never fired in 267 recorded stops, while twenty
+        // tests exercising `Granted` all passed. The rule was built, covered and
+        // never given its input.
+        Role::Stop => {
+            let autonomy = crate::pipeline::session_autonomy(payload);
+            stop_gate(client, payload, autonomy)
+        }
         // Sprint 28b D8: the ported observer arm (outcome capture, slip trail,
         // edit feed) — no longer the stub that read as a dead channel.
         Role::Observer => crate::observer::observe(client, payload, Some(config)),
@@ -688,13 +704,47 @@ fn string_at(value: &serde_json::Value, path: &[&str]) -> Option<String> {
 /// silently, and a silent fail-open is indistinguishable from a pass.
 /// A session id reaches us from the client and becomes a FILE NAME, so it is
 /// reduced to characters that cannot escape the directory.
-fn sanitize_session(session: &str) -> String {
+pub(crate) fn sanitize_session(session: &str) -> String {
     let cleaned: String = session
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
         .take(120)
         .collect();
     if cleaned.is_empty() { "unknown".to_string() } else { cleaned }
+}
+
+
+/// The autonomy this session is under, read from the human's own word.
+///
+/// Returns `Unknown` when there is no session to key on — the same honest
+/// position the counter takes: with no episode there is nothing to observe,
+/// and `NotGranted` would claim we looked.
+pub(crate) fn session_autonomy(payload: &str) -> crate::stop::Autonomy {
+    let session = session_id_in(payload).unwrap_or_default();
+    match studio_dir() {
+        Some(dir) => crate::autonomy::state(&dir, &session),
+        None => crate::stop::Autonomy::Unknown,
+    }
+}
+
+/// Record a grant or a revoke carried by this prompt.
+fn note_autonomy_from_prompt(payload: &str) {
+    let Ok(v) = parse_payload(payload) else { return };
+    let session = session_id_in(payload).unwrap_or_default();
+    let Some(prompt) = string_at(&v, &["prompt"]) else { return };
+    if let Some(dir) = studio_dir() {
+        if crate::autonomy::note_prompt(&dir, &session, &prompt) {
+            crate::observer::emit_signal(
+                &dir,
+                "autonomy-changed",
+                &format!("{:?}", crate::autonomy::state(&dir, &session)),
+            );
+        }
+    }
+}
+
+fn studio_dir() -> Option<std::path::PathBuf> {
+    home_dir().map(|h| h.join(".claude").join("jawata-studio"))
 }
 
 fn stop_gate(client: Client, payload: &str, autonomy: crate::stop::Autonomy) -> Outcome {
@@ -795,7 +845,26 @@ fn stop_gate(client: Client, payload: &str, autonomy: crate::stop::Autonomy) -> 
             .unwrap_or(0)
     };
 
-    let verdict = stop::judge(&StopFacts { already_bounced, turn, autonomy, bounces });
+    // The empty-turn count for Rule B's ceiling, and the turn recorded against
+    // it. Recorded BEFORE the verdict and whatever the verdict says: the number
+    // is about what this turn DID, and folding it into one verdict arm is how a
+    // measurement silently becomes conditional on the thing it measures.
+    let empty_turns = match (studio_dir(), autonomy) {
+        (Some(dir), stop::Autonomy::Granted) => {
+            let n = crate::autonomy::empty_turns(&dir, &session);
+            crate::autonomy::note_turn(&dir, &session, !turn.launches.is_empty());
+            n
+        }
+        _ => 0,
+    };
+
+    let verdict = stop::judge(&StopFacts {
+        already_bounced,
+        turn,
+        autonomy,
+        bounces,
+        empty_turns,
+    });
 
     // Count a bounce when we actually bounce; forget the count the moment the
     // turn is let through, so the ceiling is per-episode and not per-session.
@@ -1333,6 +1402,7 @@ mod tests {
     #[test]
     fn a_block_renders_claudes_stop_dialect() {
         let facts = StopFacts {
+            empty_turns: 0,
             already_bounced: false,
             bounces: 0,
             turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, user_asked: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false },
