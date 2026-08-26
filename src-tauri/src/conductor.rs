@@ -365,7 +365,7 @@ pub fn render_phrase_table(seats: &[SeatDefinition]) -> String {
 ///   process depends on was simply absent everywhere else. Its body is now
 ///   single-sourced from `skills/sprint.md` and rides the same deploy as the rest.
 pub const UTILITY_MAP: [(&str, &str); 2] = [
-    ("memorize", "Store a durable decision/lesson/fact in the shared jawata experience store (store-first, cross-client)"),
+    ("memorize", "Extract what this session actually learned, review it cold, and write it into the knowledge substrate the store is rebuilt from"),
     ("sprint", "Run the two-seat EDITOR+AUDITOR pipeline for a sprint doc and/or its actionable plan — the RAW working doc stays the audit baseline, the CLEAN spec is written for the user, a fresh-context auditor can REFUSE and loops until sign-off, and the user signs off LAST"),
 ];
 
@@ -432,11 +432,21 @@ The reader CANNOT check a fact. An entry can be fluent, correctly scoped and fal
 
 Two agents agreeing is the common case and costs him nothing. A disagreement is exactly where a human should look, which is why this gate is conditional and therefore affordable.
 
-## The record call
+## STEP 6 — write the FILE. Recording is not saving
 
-STORE FIRST — `experience(kind=record)` with a fitting `type` (domain_fact / lesson / failure_mode / api_contract / naming_convention), the `summary`, and an anchor (`symbol` for Java, `operation`+`language` otherwise). THEN write the client's own file memory. The shared store is the authoritative cross-client layer.
+**The store is derived from a file substrate, so a direct `experience(kind=record)` does not save anything durable.** It writes a row with no file behind it, and the next reseed removes it — silently, because the count check afterwards asserts the FILE count and still passes. The reseed is the routine repair for any quality doubt, so it is not a question of whether it runs.
 
-`lesson` and `failure_mode` are experiences: they owe a `situation` and a `verdict` (`worked` / `failed_avoid` / `unproven`), or the store refuses them. A `domain_fact` owes NEITHER, and nor does an `api_contract`, a `naming_convention` or a `reference` — they never turned out any way at all, and inventing a verdict for one makes retrieval rank on fiction.
+The test for anything you want to keep is one question: **after the next wipe, what puts this back?**
+
+1. Ask the store where the substrate is: `experience(kind=stats)` → `substrate.root`. **Never invent this path.** If it comes back null, the store has no file substrate — say so and stop rather than choosing a directory.
+2. Write the story as one `.md` file under that root, named for its claim, with the frontmatter the template requires: `name`, `description` (the claim), `type`, `situation`, `verdict` for an experience, and **`reviewed:` with today's date — but only if the cold reader in STEP 4 actually passed it.** The stamp says a review HAPPENED. Writing it after a reader you did not run, or after a verdict you overrode, is forging the one thing the reseed gate trusts.
+3. `experience(kind=reseed, path=<substrate.root>, recursive=true, confirm=true)` — then read the report. Your file must appear in `loaded`. If it is in `skipped`, the reason says why and nothing was stored.
+
+`lesson` and `failure_mode` are experiences: they owe a `situation` and a `verdict` (`worked` / `failed_avoid` / `unproven`), or the gate refuses them. A `domain_fact` owes NEITHER, and nor does an `api_contract`, a `naming_convention` or a `reference` — they never turned out any way at all, and inventing a verdict for one makes retrieval rank on fiction.
+
+**Project state does not go here at all.** A sprint phase, a release announcement, "X is executing" — those are true on the day and false a month later, and nothing retires them. They go to the client's own file memory and never to the substrate.
+
+`experience(kind=record)` keeps one honest use: something genuinely disposable that the flow's own review-and-delete will judge later. If you would mind losing it, it needs a file.
 
 ## What the run reports
 
@@ -447,6 +457,8 @@ STORE FIRST — `experience(kind=record)` with a fitting `type` (domain_fact / l
     stored   2  (the reader agreed on both)
     proposed 1  hook: refuse a commit authored by an agent → hooks/pre-commit
     asked    0
+
+**Then echo the FULL TEXT of every story you stored — frontmatter and body, not a summary of it.** This command was pressed for months in the belief that it extracted a useful story, while it stored one compressed line; the only reason that could go unnoticed is that its report never showed what went in. A one-line confirmation of a one-line entry looks exactly like a one-line confirmation of a good one. Print each file's path beside its text, so the claim can be checked against the artifact rather than taken.
 
 An empty run reports `no candidates — nothing in this session was durable and reusable`, and stores nothing. That is a good outcome, not a failed one."#,
         // Single-sourced: the pipeline is far too long to inline, and a second

@@ -70,6 +70,38 @@ past experience that does not transfer is worse than one built on none.
 Anything you DO select is a fact you are standing on, so name it in the report
 with what it made you do differently.
 
+D-FIVE. THE CATALOGUE IS IN THAT SAME ANSWER, AND IT DOES NOT READ LIKE AN
+EXPERIENCE. The nominate call in D-FOUR returns two kinds of candidate and they
+must not be judged by the same test. An EXPERIENCE was lived here: it carries a
+situation and an outcome, and what makes it usable is that somebody found out.
+A CATALOGUE PATTERN was not lived by anyone here. It is typed `reference`,
+carries `candidate` status and a `catalogue:` source, and it HAS NO OUTCOME —
+deliberately, because inventing one would report something nobody observed.
+
+So do not discard a pattern for lacking a verdict, and never supply one. Judge a
+pattern the way its own literature asks to be judged: does the situation it
+names describe the design in front of you, and are its consequences ones you are
+willing to pay? A pattern whose consequences you are not willing to pay is NOT
+applicable, however well its situation matches — that judgement is the whole
+point of naming consequences, and skipping it is how a pattern becomes a
+cargo cult.
+
+When you select a pattern, the report must carry three things about it, or it is
+a name-drop rather than a design decision:
+
+  - its INTENT, in one sentence — what it is for, not what it is called;
+  - its CONSEQUENCES — what adopting it costs, stated as plainly as the benefit,
+    because that is the half a reader cannot get from the name;
+  - its CANONICAL ADDRESS — the repository path and Java package the entry
+    carries, so the reader can open the reference implementation rather than
+    take your word for it. An address you did not read off the entry is a guess;
+    if the entry does not carry one, say that instead of composing one.
+
+And the standing bias survives contact with the catalogue: a pattern is a way to
+give an object its behaviour, never a new helper on the side. If the fitting
+pattern would add a class that holds no state and makes no decision, you have
+found the wrong pattern or the wrong seam.
+
 WATCH MODE (during execution — sweeps and checkpoint-diff reviews): read
 detector evidence and reviewed diffs, and argue for DESIGN-level fixes —
 judging every change against the target-architecture artifact when one
