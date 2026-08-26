@@ -19,8 +19,15 @@
 //!
 //! **It persists across his turns, which is the entire point.** A grant that
 //! expired when he next spoke would be revoked by the first question he asked,
-//! and answering a question is precisely where the agent has been stopping. It
-//! ends when he says so, or when the session does.
+//! and answering a question is precisely where the agent has been stopping.
+//!
+//! **It ends by itself the moment his answer is genuinely needed** — a decision,
+//! a release, anything the agent cannot settle alone. Harald's rule, and it is
+//! better than the typed revoke words this module first shipped with: a switch
+//! you have to remember to throw is off exactly when you are least able to throw
+//! it, which is while you are asleep. The condition is already computed by the
+//! gate as `Turn::asks_the_human`, so the grant ends on the same fact that makes
+//! the agent stop being able to proceed.
 //!
 //! # The wedge, and the shape of the bound
 //!
@@ -60,18 +67,6 @@ pub const MAX_EMPTY_TURNS: u32 = 2;
 /// The word that grants it. His, not a synonym set.
 const GRANT: &str = "autocontinue";
 
-/// The words that end it.
-///
-/// Spelled out rather than derived, because a revoke that the human types and
-/// the gate does not honour is the worse failure of the two: he would believe
-/// he had taken the leash off and the session would keep pushing itself.
-const REVOKES: [&str; 4] = [
-    "stop autocontinue",
-    "no autocontinue",
-    "end autocontinue",
-    "cancel autocontinue",
-];
-
 fn dir(base: &Path) -> PathBuf {
     base.join("autonomy")
 }
@@ -101,11 +96,6 @@ pub fn note_prompt(base: &Path, session: &str, prompt: &str) -> bool {
         return false;
     }
     let text = normalised(prompt);
-    // Revoke is checked FIRST and wins. "stop autocontinue" contains the grant
-    // word, so any other order grants on the message that was meant to end it.
-    if REVOKES.iter().any(|r| text.contains(r)) {
-        return std::fs::remove_file(file(base, session)).is_ok();
-    }
     if text.contains(GRANT) {
         let f = file(base, session);
         if f.exists() {
@@ -156,6 +146,16 @@ pub fn empty_turns(base: &Path, session: &str) -> u32 {
         .ok()
         .and_then(|t| t.trim().parse().ok())
         .unwrap_or(0)
+}
+
+/// End the grant.
+///
+/// Called when the agent's own message asks the human for something only he can
+/// settle — a decision, a release, a ruling. There is nothing to autocontinue
+/// past at that point: the next move is his, and a gate that kept pushing would
+/// be pushing an agent that is genuinely blocked.
+pub fn clear(base: &Path, session: &str) -> bool {
+    !session.is_empty() && std::fs::remove_file(file(base, session)).is_ok()
 }
 
 /// Record what this turn did: work resets the count, an empty turn advances it.
@@ -252,15 +252,22 @@ mod tests {
         assert_eq!(state(&d, "s"), Autonomy::Granted, "and the grant stands");
     }
 
+    /// It ends by itself when his answer is needed, with nothing to type.
+    ///
+    /// A typed revoke is off exactly when he is least able to throw it — while
+    /// he is asleep, which is the whole scenario this exists for.
     #[test]
-    fn revoke_wins_over_the_grant_word_it_contains() {
+    fn a_real_ask_ends_the_grant_with_nothing_typed() {
         let d = tmp();
         note_prompt(&d, "s", "autocontinue");
         assert_eq!(state(&d, "s"), Autonomy::Granted);
-        // "stop autocontinue" CONTAINS "autocontinue" — checked in the wrong
-        // order it re-grants on the message meant to end it.
-        note_prompt(&d, "s", "stop autocontinue please");
+        assert!(clear(&d, "s"), "the ask clears it");
         assert_eq!(state(&d, "s"), Autonomy::NotGranted);
+        // and it stays off until he grants it again
+        note_prompt(&d, "s", "Status?");
+        assert_eq!(state(&d, "s"), Autonomy::NotGranted);
+        note_prompt(&d, "s", "autocontinue");
+        assert_eq!(state(&d, "s"), Autonomy::Granted);
     }
 
     /// The bound counts EMPTY turns, not blocks — so a session that keeps

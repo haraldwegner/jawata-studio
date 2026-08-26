@@ -201,6 +201,13 @@ pub struct Turn {
     pub refusals_emitted: usize,
     /// Whether the final message asks the human for a word, ruling or decision.
     pub asks_the_human: bool,
+    /// Whether the human INTERRUPTED this window (Esc, or a stop mid-tool).
+    ///
+    /// His Esc must stop the work, full stop. A gate that answers an interrupt
+    /// by refusing the stop would be arguing with the one control he has that is
+    /// not a sentence — and it would do it while he is sitting there pressing
+    /// the key. Every blocking rule stands down on it.
+    pub interrupted: bool,
     /// Whether the human's own message OPENED this window with a question.
     ///
     /// studio#11: the 2026-08-07 ruling puts direct replies outside this gate —
@@ -512,6 +519,19 @@ the answer — and send back what it understood, so the reader sees the text onc
         if facts.empty_turns >= MAX_EMPTY_TURNS {
             return StopVerdict::Allow;
         }
+        // His Esc wins over autonomy, always. The grant covers his ABSENCE; an
+        // interrupt is the loudest possible evidence that he is present, and
+        // pushing an agent back into a turn he just stopped would be the gate
+        // arguing with the one control he has that is not a sentence.
+        if facts.turn.interrupted {
+            return StopVerdict::Allow;
+        }
+        // And nothing to autocontinue past when his answer is what is missing:
+        // the next move is genuinely his, and holding here would push an agent
+        // that is blocked rather than idle.
+        if facts.turn.asks_the_human {
+            return StopVerdict::Allow;
+        }
         return StopVerdict::Block {
             reason: "RULE B: autonomy is granted and this turn armed no background \
 work, so ending here sleeps until the human returns. Start the next piece of \
@@ -537,6 +557,19 @@ work, or state plainly that you are blocked on the human."
 ///
 /// The wrapper is the client's, not ours, which is why it is matched rather
 /// than the reason text: the human quotes the reason back in conversation.
+/// Did the human INTERRUPT — Esc, or stopping a tool mid-flight?
+///
+/// The harness writes these markers into the transcript itself, which is what
+/// makes them trustworthy here: the agent cannot write one to escape a gate and
+/// cannot omit one to keep a session running. Both spellings are matched because
+/// they are two different acts of the same key — stopping the reply, and
+/// stopping a tool that was already running.
+fn is_interruption(v: &serde_json::Value) -> bool {
+    let t = user_text(v);
+    t.contains("[Request interrupted by user]")
+        || t.contains("[Request interrupted by user for tool use]")
+}
+
 fn is_our_own_bounce(v: &serde_json::Value) -> bool {
     user_text(v).trim_start().starts_with("Stop hook feedback")
 }
@@ -576,6 +609,16 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
             // previous window — which is the safer direction: it can only make
             // the gate see MORE of the turn, never less.
             Some("user") if !is_tool_result(&v) && is_our_own_bounce(&v) => {}
+            Some("user") if !is_tool_result(&v) && is_interruption(&v) => {
+                // An interrupt is the human, so it opens a new window like any
+                // other turn of his — but it also STAMPS that window, because
+                // the fact that matters is not what he typed, it is that he
+                // reached for the key. Read from his own text: the harness
+                // writes the marker, so the agent cannot fake it and cannot
+                // suppress it.
+                turn = Turn::default();
+                turn.interrupted = true;
+            }
             Some("user") if !is_tool_result(&v) => {
                 turn = Turn::default();
                 // studio#11: remember whether the human ASKED. Everything after
@@ -857,7 +900,7 @@ mod tests {
             empty_turns: 0,
             already_bounced: false,
             bounces: 0,
-            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, user_asked: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false },
+            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, user_asked: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false },
             autonomy,
         }
     }

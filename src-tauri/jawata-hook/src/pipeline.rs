@@ -858,6 +858,25 @@ fn stop_gate(client: Client, payload: &str, autonomy: crate::stop::Autonomy) -> 
         _ => 0,
     };
 
+    // HIS ANSWER IS NEEDED -> THE GRANT ENDS, with nothing for him to type.
+    //
+    // Harald's rule, and better than the typed revoke this shipped with: a
+    // switch you have to remember to throw is off exactly when you are least
+    // able to throw it, which is while you are asleep. `asks_the_human` is
+    // already computed for the review rule, so the grant ends on the very fact
+    // that makes the agent unable to proceed — a decision, a release, a ruling.
+    //
+    // A REPLY to his own question is not an ask (`user_asked`), or every answer
+    // he asked for would switch his autonomy off.
+    let needs_him = turn.asks_the_human && !turn.user_asked;
+    if needs_him {
+        if let Some(dir) = studio_dir() {
+            if crate::autonomy::clear(&dir, &session) {
+                crate::observer::emit_signal(&dir, "autonomy-ended", "his answer is needed");
+            }
+        }
+    }
+
     let verdict = stop::judge(&StopFacts {
         already_bounced,
         turn,
@@ -1405,7 +1424,7 @@ mod tests {
             empty_turns: 0,
             already_bounced: false,
             bounces: 0,
-            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, user_asked: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false },
+            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, user_asked: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false },
             autonomy: Autonomy::Granted,
         };
         let StopVerdict::Block { reason } = crate::stop::judge(&facts) else {

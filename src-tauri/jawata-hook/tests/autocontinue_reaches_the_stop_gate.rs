@@ -235,22 +235,78 @@ fn two_empty_turns_release_the_session_rather_than_wedging_it() {
     );
 }
 
-/// And the revoke he can type. A revoke the gate does not honour is the worse
-/// failure of the two: he would believe the leash was off and the session would
-/// keep pushing itself.
+/// HIS ANSWER IS NEEDED — the grant ends by itself, with nothing typed.
+///
+/// A typed revoke is off exactly when he is least able to throw it: while he is
+/// asleep, which is the entire scenario this exists for. So the grant ends on
+/// the same fact that makes the agent unable to proceed.
 #[test]
-fn he_can_take_it_back() {
-    let home = scratch_home("revoke");
-    let t = transcript(&home, "ok", "Done with that.");
-    run("userprompt", &home, &prompt_payload("sess-d", "autocontinue"));
-    assert!(run("stop", &home, &stop_payload("sess-d", &t)).contains("RULE B"));
+fn a_message_that_needs_his_answer_ends_the_grant_by_itself() {
+    let home = scratch_home("needs-him");
+    let working = transcript(&home, "carry on", "Suite green, moving on.");
+    run("userprompt", &home, &prompt_payload("sess-e", "autocontinue"));
+    assert!(
+        run("stop", &home, &stop_payload("sess-e", &working)).contains("RULE B"),
+        "precondition: the grant is live"
+    );
 
-    run("userprompt", &home, &prompt_payload("sess-d", "stop autocontinue"));
-    let after = run("stop", &home, &stop_payload("sess-d", &t));
+    // The agent now asks him something only he can settle.
+    let asking = transcript(
+        &home,
+        "carry on",
+        "Both are ready. Do you want v3.13.0 released tonight, or held for M5?",
+    );
+    let at_the_ask = run("stop", &home, &stop_payload("sess-e", &asking));
+    assert!(
+        !at_the_ask.contains("RULE B"),
+        "the gate pushed an agent that is BLOCKED on him, not idle: {at_the_ask}"
+    );
+
+    // And it stays off afterwards — the next ordinary turn is free to end.
+    let after = run("stop", &home, &stop_payload("sess-e", &working));
     assert!(
         !after.contains("RULE B"),
-        "the revoke was not honoured — note that it CONTAINS the grant word, so \
-         checking the grant first re-grants on the message meant to end it. \
-         got: {after}"
+        "the grant survived a real ask; he would have to notice and type \
+         something, which is the design this replaced: {after}"
+    );
+}
+
+/// HIS ESC STOPS THE WORK. Always, and over the top of any grant.
+///
+/// The grant covers his ABSENCE. An interrupt is the loudest possible evidence
+/// that he is present — a gate that answered it by refusing the stop would be
+/// arguing with the one control he has that is not a sentence, while he sits
+/// there pressing the key.
+#[test]
+fn his_interrupt_beats_the_grant() {
+    let home = scratch_home("esc");
+    run("userprompt", &home, &prompt_payload("sess-f", "autocontinue"));
+    let ordinary = transcript(&home, "carry on", "Stage done.");
+    assert!(
+        run("stop", &home, &stop_payload("sess-f", &ordinary)).contains("RULE B"),
+        "precondition: the grant is live and pushing"
+    );
+
+    let stopped = transcript(
+        &home,
+        "[Request interrupted by user]",
+        "Stage done.",
+    );
+    let out = run("stop", &home, &stop_payload("sess-f", &stopped));
+    assert!(
+        !out.contains("RULE B"),
+        "his Esc was overridden by the grant — this is the one thing the gate \
+         must never do: {out}"
+    );
+
+    let mid_tool = transcript(
+        &home,
+        "[Request interrupted by user for tool use]",
+        "Running the suite.",
+    );
+    let out2 = run("stop", &home, &stop_payload("sess-f", &mid_tool));
+    assert!(
+        !out2.contains("RULE B"),
+        "stopping a tool mid-flight is the same key and the same answer: {out2}"
     );
 }
