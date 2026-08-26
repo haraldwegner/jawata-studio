@@ -852,8 +852,14 @@ fn stop_gate(client: Client, payload: &str, autonomy: crate::stop::Autonomy) -> 
     let empty_turns = match (studio_dir(), autonomy) {
         (Some(dir), stop::Autonomy::Granted) => {
             let n = crate::autonomy::empty_turns(&dir, &session);
-            crate::autonomy::note_turn(&dir, &session, !turn.launches.is_empty());
-            n
+            // A bound that could not be persisted is SPENT, not zero. Reporting
+            // it as zero would hold the session forever on a full disk or a
+            // read-only home — the Cursor loop by another road, and silent.
+            if crate::autonomy::note_turn(&dir, &session, !turn.launches.is_empty()) {
+                n
+            } else {
+                crate::autonomy::MAX_EMPTY_TURNS
+            }
         }
         _ => 0,
     };

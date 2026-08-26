@@ -164,16 +164,26 @@ pub fn clear(base: &Path, session: &str) -> bool {
 /// is about the TURN and not about the ruling. Deciding it inside one verdict
 /// arm is how a measurement silently becomes conditional on the thing it is
 /// supposed to be measuring.
-pub fn note_turn(base: &Path, session: &str, did_work: bool) {
+pub fn note_turn(base: &Path, session: &str, did_work: bool) -> bool {
     if session.is_empty() {
-        return;
+        return true;
     }
     let f = file(base, session);
     if !f.exists() {
-        return;
+        return true;
     }
     let next = if did_work { 0 } else { empty_turns(base, session) + 1 };
-    let _ = std::fs::write(&f, next.to_string());
+    // THE RETURN VALUE IS THE POINT, and the first version discarded it.
+    //
+    // The bound lives in this file. If the write fails — a full disk, a
+    // read-only home, a permission the installer did not expect — the count
+    // stays where it was and Rule B holds the session forever: the exact
+    // endless loop the Cursor incident was, reached by a different road and
+    // with nothing to see, because a discarded `Result` fails as quietly as a
+    // success. So the caller is told, and an unpersistable bound is treated as
+    // SPENT rather than as zero. The same direction the bounce counter takes
+    // for a missing session id: better a missed push than a stuck session.
+    std::fs::write(&f, next.to_string()).is_ok()
 }
 
 #[cfg(test)]
@@ -292,6 +302,32 @@ mod tests {
         assert_eq!(empty_turns(&d, "s"), MAX_EMPTY_TURNS, "wedged");
         note_turn(&d, "s", true);
         assert_eq!(empty_turns(&d, "s"), 0, "one real turn clears the wedge");
+    }
+
+    /// A bound that cannot be written is treated as SPENT, never as zero.
+    ///
+    /// The ceiling lives in this file. If the write fails, the count stops
+    /// advancing and Rule B holds forever — the Cursor endless loop reached by
+    /// a different road, and invisible, because a discarded Result fails
+    /// exactly as quietly as a success.
+    #[test]
+    fn an_unwritable_bound_reports_failure_rather_than_freezing_the_count() {
+        let d = tmp();
+        note_prompt(&d, "s", "autocontinue");
+        assert!(note_turn(&d, "s", false), "an ordinary write succeeds");
+
+        // Make the file unwritable and confirm the caller is TOLD.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let f = dir(&d).join("s");
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o444)).unwrap();
+            assert!(
+                !note_turn(&d, "s", false),
+                "a failed write must be reported, or the bound freezes in silence"
+            );
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
     }
 
     #[test]
