@@ -44,17 +44,34 @@ Work these steps, in order. Each one is binding:
 2. REPAIR — do it yourself, before anything reaches the user. For every
    quality finding:
 
+   **The standard every repair aims at is the Minto triad** (ruled 2026-08-27):
+   a story is told Situation → Complication → Solution, and whether it worked —
+   `situation` (the setting and task), `cause` (the COMPLICATION: the diagnosis
+   the solution addresses; frontmatter also accepts `complication:`), the claim
+   plus its cure, `verdict`. The cause is NOT the symptom: a symptom is the
+   observable (a fast heartbeat), the cause is the problem behind it (running /
+   a heart attack / a virus) — one symptom, many causes, and the solution binds
+   to the cause. An entry with a situation but NO CAUSE is repair work of the
+   same kind as a missing situation: check whether the diagnosis is already in
+   the entry's own text (it usually is — summaries habitually fuse cause and
+   cure) and lift it into the field.
+
    - **Finding with a `source_ref`** — the durable fix is IN THAT FILE (a
      store write is erased by the next reseed). Read the file. If it already
      carries the knowledge in splittable form, restructure: the situation is
      usually INSIDE the text already — "On X, Y happens" splits into
-     situation "when X" and the fact Y. Edit the file; never invent content
-     that is not in it.
+     situation "when X" and the fact Y; the cause is usually the clause that
+     explains WHY the cure works ("because websocket delivery is not
+     guaranteed" is a `cause:` line waiting to be lifted). Edit the file;
+     never invent content that is not in it.
    - **Finding with a null `source_ref`** — no file exists; `set_form` IS the
      durable fix. Draft the situation as a real condition ("when X happens",
      never a heading, never a path) and apply it. The gate that guards
      `record` guards this verb too: a refusal is the gate teaching you, not an
      error to route around. A rewritten row is stamped `seat_rewritten`.
+     KNOWN LIMIT: `set_form` carries situation and verdict only — a store-only
+     entry missing its cause is PARKED with that reason, never squeezed into
+     the wrong field.
    - **Cannot resolve** — the entry's text does not contain its own
      applicability and you would have to guess. NEVER guess a situation: a
      wrong condition matches confidently, which is worse than none. Park it
