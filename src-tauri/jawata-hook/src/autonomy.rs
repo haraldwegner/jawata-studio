@@ -190,14 +190,31 @@ pub fn note_turn(base: &Path, session: &str, did_work: bool) -> bool {
 mod tests {
     use super::*;
 
+    /// A scratch dir unique per CALL, not per clock tick.
+    ///
+    /// The counter is the fix for a Windows-only flake that reached the release
+    /// workflow (2026-08-27, studio v3.15.0): uniqueness came from
+    /// `process::id()` + `SystemTime` nanoseconds, and Windows' system clock is
+    /// coarse enough that two tests running on cargo's parallel threads — same
+    /// process, so same pid — can land in the SAME directory. Every test here
+    /// uses session `"s"`, so a collision lets one test's `clear` delete the
+    /// file another is counting, and `empty_turns` reads 0 where 2 was written.
+    /// It failed exactly that way: `left: 0, right: 2, at the ceiling`, while
+    /// the identical code had passed on Windows two hours earlier.
+    ///
+    /// Every sibling helper in this crate takes a per-test NAME and never had
+    /// the problem; a monotonic counter buys the same guarantee without
+    /// touching the call sites, and it cannot be defeated by clock resolution.
     fn tmp() -> PathBuf {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let d = std::env::temp_dir().join(format!(
-            "jawata-autonomy-{}-{}",
+            "jawata-autonomy-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&d).unwrap();
         d
