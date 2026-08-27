@@ -119,7 +119,7 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
         // never given its input.
         Role::Stop => {
             let autonomy = crate::pipeline::session_autonomy(payload);
-            stop_gate(client, payload, autonomy)
+            stop_gate(client, payload, autonomy, store)
         }
         // Sprint 28b D8: the ported observer arm (outcome capture, slip trail,
         // edit feed) — no longer the stub that read as a dead channel.
@@ -747,7 +747,12 @@ fn studio_dir() -> Option<std::path::PathBuf> {
     home_dir().map(|h| h.join(".claude").join("jawata-studio"))
 }
 
-fn stop_gate(client: Client, payload: &str, autonomy: crate::stop::Autonomy) -> Outcome {
+fn stop_gate(
+    client: Client,
+    payload: &str,
+    autonomy: crate::stop::Autonomy,
+    store: &dyn Store,
+) -> Outcome {
     use crate::stop::{self, StopFacts, StopVerdict};
 
     let v = match parse_payload(payload) {
@@ -891,13 +896,74 @@ fn stop_gate(client: Client, payload: &str, autonomy: crate::stop::Autonomy) -> 
         }
     }
 
-    let verdict = stop::judge(&StopFacts {
+    // THE ONLY STORE CALL THIS ROLE MAKES, and it is asked only when the turn
+    // actually wrote markdown — so an ordinary turn still ends with no round
+    // trip at all. The cost is paid by the turns that can owe something.
+    let substrate = if turn.wrote_markdown { substrate_drift(store) } else { None };
+
+    // COULD-NOT-VERIFY IS NOT CLEAN, and it must not be silent either. The rule
+    // fails open on purpose — a hook that wedged a session because a resident
+    // was down would be worse than the defect it fixes — but "I did not check"
+    // and "there was nothing to find" are different facts, and only the first
+    // one is a reason to look. Both known causes are live TODAY: the resident
+    // may be down, and an engine older than the drift check answers with a
+    // substrate block that has no drift number in it (v3.15.1 does exactly
+    // that — the check shipped one commit after the tag). Left unsaid, this
+    // gate would read as working while verifying nothing.
+    if turn.wrote_markdown && substrate.is_none() {
+        if let Some(dir) = studio_dir() {
+            crate::observer::emit_signal(
+                &dir,
+                "substrate-unverified",
+                "a story was written and the store could not say whether it arrived \
+                 (resident down, or an engine older than the drift check)",
+            );
+        }
+    }
+
+    // Its own counter, beside the review one. Same no-session rule: a payload
+    // without an id cannot be bounded, so the retry is treated as spent rather
+    // than held — better a missed reseed than a stuck session.
+    let reseed_file = bounce_dir
+        .as_ref()
+        .map(|d| d.join(format!("{}.reseed", sanitize_session(&session))));
+    let reseed_bounces: u32 = match reseed_file.as_ref() {
+        None => stop::MAX_RESEED_BOUNCES,
+        Some(f) => std::fs::read_to_string(f)
+            .ok()
+            .and_then(|t| t.trim().parse().ok())
+            .unwrap_or(0),
+    };
+
+    let facts = StopFacts {
         already_bounced,
         turn,
         autonomy,
         bounces,
         empty_turns,
-    });
+        substrate,
+        reseed_bounces,
+    };
+    let owed_a_reseed = facts.owes_a_reseed();
+    let verdict = stop::judge(&facts);
+
+    // Counted against THIS rule, not against every block: a turn held for an
+    // unjudged message has not spent a reseed chance, and charging it would let
+    // the story rule be walked past by tripping a different one twice.
+    if let (Some(dir), Some(file)) = (bounce_dir.as_ref(), reseed_file.as_ref()) {
+        match (&verdict, owed_a_reseed) {
+            (StopVerdict::Block { .. }, true) => {
+                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::write(file, (reseed_bounces + 1).to_string());
+            }
+            // Cleared the moment nothing is owed — including the release past
+            // the ceiling, so the next story starts with a full budget.
+            (_, false) => {
+                let _ = std::fs::remove_file(file);
+            }
+            _ => {}
+        }
+    }
 
     // Count a bounce when we actually bounce; forget the count the moment the
     // turn is let through, so the ceiling is per-episode and not per-session.
@@ -942,6 +1008,30 @@ fn stop_gate(client: Client, payload: &str, autonomy: crate::stop::Autonomy) -> 
             })
         }
     }
+}
+
+/// Ask the store whether anything under its file substrate is uningested.
+///
+/// A store that cannot answer yields `None`, and the gate then holds nothing.
+/// Failing OPEN is deliberate and is not the inference this rule exists to
+/// stop: "I could not ask" is recorded as not knowing, never as a clean store,
+/// because the caller distinguishes `None` from a zero count. A hook that
+/// wedged a session because a resident was down would be a worse defect than
+/// the one it is fixing.
+fn substrate_drift(store: &dyn Store) -> Option<crate::stop::SubstrateDrift> {
+    let data = store.ask_value(serde_json::json!({ "kind": "stats" })).ok()?;
+    let substrate = data.get("substrate")?;
+    // ABSENT means the store has no file substrate at all (nothing was ever
+    // ingested from a root), which is a different answer from zero drift — and
+    // it is the store's to give, not ours to assume.
+    let count = substrate.get("unloadedFiles")?.as_u64()? as usize;
+    let root = substrate.get("root").and_then(|r| r.as_str()).unwrap_or_default();
+    let named = substrate
+        .get("unloaded")
+        .and_then(|u| u.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    Some(crate::stop::SubstrateDrift { root: root.to_string(), count, named })
 }
 
 /// How much of a transcript's tail the stop gate reads. Generous enough to
@@ -1438,8 +1528,10 @@ mod tests {
             empty_turns: 0,
             already_bounced: false,
             bounces: 0,
-            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, user_asked: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false },
+            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, user_asked: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false },
             autonomy: Autonomy::Granted,
+            substrate: None,
+            reseed_bounces: 0,
         };
         let StopVerdict::Block { reason } = crate::stop::judge(&facts) else {
             panic!("must block");
@@ -1655,12 +1747,12 @@ mod tests {
         let first = serde_json::json!({"transcript_path": p, "stop_hook_active": false}).to_string();
         let again = serde_json::json!({"transcript_path": p, "stop_hook_active": true}).to_string();
 
-        let blocked = stop_gate(Client::ClaudeCode, &first, crate::stop::Autonomy::Granted);
+        let blocked = stop_gate(Client::ClaudeCode, &first, crate::stop::Autonomy::Granted, &Stub(Err(QueryError::Status(503))));
         assert!(
             matches!(blocked, Outcome::Emitted(_)),
             "first pass under autonomy must block: {blocked:?}"
         );
-        let allowed = stop_gate(Client::ClaudeCode, &again, crate::stop::Autonomy::Granted);
+        let allowed = stop_gate(Client::ClaudeCode, &again, crate::stop::Autonomy::Granted, &Stub(Err(QueryError::Status(503))));
         assert!(
             !matches!(allowed, Outcome::Emitted(_)),
             "a second pass must NOT block again — that wedges the session: {allowed:?}"
@@ -1722,12 +1814,12 @@ mod tests {
 
         assert_eq!(
             Outcome::Silent(SilenceReason::StopAllowed),
-            stop_gate(Client::ClaudeCode, &payload, crate::stop::Autonomy::NotGranted),
+            stop_gate(Client::ClaudeCode, &payload, crate::stop::Autonomy::NotGranted, &Stub(Err(QueryError::Status(503)))),
             "a KNOWN autonomy that allows must not claim it was unknown"
         );
         assert_eq!(
             Outcome::Silent(SilenceReason::AutonomyUnknown),
-            stop_gate(Client::ClaudeCode, &payload, crate::stop::Autonomy::Unknown),
+            stop_gate(Client::ClaudeCode, &payload, crate::stop::Autonomy::Unknown, &Stub(Err(QueryError::Status(503)))),
             "and unknown must still say unknown"
         );
     }

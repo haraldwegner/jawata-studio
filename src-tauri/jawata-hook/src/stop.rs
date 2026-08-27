@@ -51,6 +51,16 @@ pub const MAX_EMPTY_TURNS: u32 = crate::autonomy::MAX_EMPTY_TURNS;
 
 pub const MAX_UNJUDGED_BOUNCES: u32 = 3;
 
+/// How many times a turn may be held for a story it wrote and never reseeded.
+///
+/// BOUNDED, and the bound is load-bearing rather than decoration. A reseed
+/// admits stamped stories only, so a draft under the substrate root that has
+/// not earned its `reviewed:` stamp reports drift no reseed will clear — and an
+/// unbounded hold would wedge the session on a file nobody meant to store yet.
+/// Two, because the cure is one tool call: write, get held once, reseed. The
+/// second is for the case where the reseed refuses and the file needs fixing.
+pub const MAX_RESEED_BOUNCES: u32 = 2;
+
 /// Abbreviations a reader of this project already holds.
 ///
 /// Note what the second row USED to be: OK, DONE, STOP, NOT, AND, THE, ALL,
@@ -243,6 +253,13 @@ pub struct Turn {
     /// on the adjacent line already accumulates across blocks for exactly this
     /// reason.
     pub narration: String,
+    /// Whether this window WROTE a markdown file.
+    ///
+    /// The AUTHORING half of the substrate rule; the store owns the other half
+    /// (whether anything under its root is uningested). The two are kept apart
+    /// deliberately: this hook cannot know where the substrate lives, and the
+    /// store cannot know whether THIS turn was the one that wrote there.
+    pub wrote_markdown: bool,
     /// studio#4: tool RESULTS in this window that carried a degradation stamp.
     ///
     /// Counted from tool results only — never from the raw window and never
@@ -301,6 +318,23 @@ impl Turn {
     }
 }
 
+/// What the store says about its own file substrate.
+///
+/// Carried as an `Option` on the facts, and `None` is NOT "no drift": it means
+/// the question was not asked, or the store could not answer it. A resident
+/// that is down must never read as a clean store — that is the same inference
+/// this whole rule exists to stop, pointed at the store instead of the files.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubstrateDrift {
+    /// Where the substrate lives, as the store reports it — never guessed here.
+    pub root: String,
+    /// How many files under it no row cites.
+    pub count: usize,
+    /// Those files, as the store named them. It caps the list; this does not
+    /// re-cap it, so a truncated list stays the store's statement.
+    pub named: Vec<String>,
+}
+
 /// Everything the gate decides from.
 #[derive(Debug, Clone)]
 pub struct StopFacts {
@@ -320,6 +354,26 @@ pub struct StopFacts {
     /// working is not a session being pushed and stuck, and only this number
     /// tells them apart.
     pub empty_turns: u32,
+    /// The store's answer about its substrate, asked only when this turn wrote
+    /// markdown. Gathered by the pipeline, like `bounces`, so `judge` stays pure.
+    pub substrate: Option<SubstrateDrift>,
+    /// How many times THIS session has already been held for an unstored story.
+    /// A counter of its own rather than a share of `bounces`: a turn that spent
+    /// its budget arguing about a message must still be held for a story it
+    /// dropped on the floor.
+    pub reseed_bounces: u32,
+}
+
+impl StopFacts {
+    /// Did this turn write a story and leave it outside the store?
+    ///
+    /// BOTH halves are required. The write alone proves nothing (most markdown
+    /// in this repository is not a story), and drift alone is not this turn's
+    /// business — a stale draft someone left under the root would otherwise
+    /// hold every turn forever.
+    pub fn owes_a_reseed(&self) -> bool {
+        self.turn.wrote_markdown && self.substrate.as_ref().is_some_and(|s| s.count > 0)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -351,7 +405,7 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
     // a trap.
     // The anti-loop valve for every rule EXCEPT the review one, which carries
     // its own ceiling below.
-    if facts.already_bounced && !facts.turn.owes_a_review() {
+    if facts.already_bounced && !facts.turn.owes_a_review() && !facts.owes_a_reseed() {
         return StopVerdict::Allow;
     }
 
@@ -375,6 +429,50 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
                  architect seat as a watch-diff against the ARCHITECTURE artifact: \
                  design fix or bandage?",
                 facts.turn.refusals_emitted
+            ),
+        };
+    }
+
+    // THE SUBSTRATE RULE (2026-08-27). Writing the story file and reseeding it
+    // in are ONE job, and the second half lived only in instruction text. It
+    // was skipped: four stories were authored, cold-read, stamped, committed
+    // and reported as remembered while the store held none of them. Every
+    // surface agreed everything was fine, because every surface asked the store
+    // what it HAD rather than whether the files had ARRIVED.
+    //
+    // The first cure was a warning inside `stats`. That was the wrong channel
+    // and the codebase already knew it: a step that was never called cannot be
+    // caught by a report that is only seen when you call something. An agent
+    // routes around friction without narrating it, so the only channels that
+    // hold are the response, a hook, or a non-agent watcher. This is the same
+    // measurement moved onto one that ACTS — the turn does not end while a
+    // story it just wrote is still outside the store.
+    //
+    // Placed above the message rules on purpose: until the story is in, every
+    // sentence the turn wrote about having remembered it is false, and the
+    // communicator should judge the true text rather than the premature one.
+    if let Some(drift) = facts.substrate.as_ref().filter(|_| facts.owes_a_reseed()) {
+        // The ceiling sits on the RULE, not inside an `already_bounced` branch:
+        // Cursor re-invokes with the retry flag unset, so a valve on that path
+        // is never entered and the rule blocks forever — measured at counter 11
+        // and still climbing, on the review rule, on this machine.
+        if facts.reseed_bounces >= MAX_RESEED_BOUNCES {
+            return StopVerdict::Allow;
+        }
+        return StopVerdict::Block {
+            reason: format!(
+                "UNSTORED STORY ({} of {}): {} file(s) under the knowledge substrate at \
+{} are not in the store — {}. Writing the file and reseeding it in are ONE job; until the \
+second half runs, nothing you wrote is recallable and the next wipe takes it silently. Run \
+experience(kind=reseed, path={}, recursive=true, confirm=true) and READ the report: a file \
+that comes back under `skipped` was refused, and the reason says what it owes — most often \
+a `reviewed:` stamp it has actually earned from a cold reader.",
+                facts.reseed_bounces + 1,
+                MAX_RESEED_BOUNCES,
+                drift.count,
+                drift.root,
+                drift.named.join(", "),
+                drift.root
             ),
         };
     }
@@ -678,6 +776,19 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                                 .unwrap_or_default()
                                 .to_string();
                             let input = b.get("input");
+                            // Read from the call's own `file_path`, because a
+                            // tool NAME cannot carry this: writing a story and
+                            // editing a sprint doc are the same tool. WHICH of
+                            // the two it was is decided later, by the store,
+                            // from where the file actually sits.
+                            if matches!(name.as_str(), "Write" | "Edit" | "NotebookEdit")
+                                && input
+                                    .and_then(|i| i.get("file_path"))
+                                    .and_then(|p| p.as_str())
+                                    .is_some_and(|p| p.ends_with(".md"))
+                            {
+                                turn.wrote_markdown = true;
+                            }
                             turn.launches.push(ToolUse {
                                 subagent: input
                                     .and_then(|i| i.get("subagent_type"))
@@ -932,9 +1043,113 @@ mod tests {
             empty_turns: 0,
             already_bounced: false,
             bounces: 0,
-            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, user_asked: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false },
+            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, user_asked: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false },
             autonomy,
+            substrate: None,
+            reseed_bounces: 0,
         }
+    }
+
+    // -----------------------------------------------------------------
+    // THE SUBSTRATE RULE — a story written and never reseeded in
+    //
+    // The failure, 2026-08-27: four stories authored, cold-read, stamped,
+    // committed and reported as remembered, while the store held none of
+    // them. The first cure was a warning inside `stats` — a report on a
+    // channel nobody has to read, which cannot catch a step that was never
+    // called. These tests are about the CHANNEL, so each one drives `judge`
+    // and asserts a VERDICT rather than a message.
+    // -----------------------------------------------------------------
+
+    fn wrote_a_story(count: usize) -> StopFacts {
+        let mut f = facts(Autonomy::Unknown, vec![]);
+        f.turn.wrote_markdown = true;
+        f.substrate = Some(SubstrateDrift {
+            root: "/home/h/knowledge/stories".into(),
+            count,
+            named: vec!["the-cure-was-a-report.md".into()],
+        });
+        f
+    }
+
+    #[test]
+    fn a_story_written_and_never_reseeded_holds_the_turn() {
+        let StopVerdict::Block { reason } = judge(&wrote_a_story(1)) else {
+            panic!(
+                "the turn ended with a story on disk that the store does not have \u{2014} \
+                 the exact shape that was reported as remembered"
+            );
+        };
+        assert!(reason.contains("the-cure-was-a-report.md"), "{reason}");
+        assert!(
+            reason.contains("kind=reseed") && reason.contains("/home/h/knowledge/stories"),
+            "the hold must carry the CURE, with the store's own root: {reason}"
+        );
+        assert!(
+            reason.contains("skipped"),
+            "and must name the refusal case \u{2014} a reseed admits stamped stories \
+             only, and a silent skip is how the first cure failed: {reason}"
+        );
+    }
+
+    #[test]
+    fn a_turn_that_wrote_nothing_is_not_held_by_a_draft_someone_left() {
+        // Drift alone is not this turn's business. A half-written story under
+        // the root that has not earned its stamp would otherwise hold every
+        // turn of every session, forever, for a file nobody meant to store.
+        let mut f = wrote_a_story(3);
+        f.turn.wrote_markdown = false;
+        assert_eq!(StopVerdict::Allow, judge(&f));
+    }
+
+    #[test]
+    fn a_store_that_cannot_answer_holds_nothing() {
+        // `None` is "I could not ask", and must not be read as either answer.
+        // Holding on it would wedge every session whose resident is down;
+        // treating it as clean would be this rule's own defect, pointed at the
+        // store instead of the files.
+        let mut f = wrote_a_story(1);
+        f.substrate = None;
+        assert_eq!(StopVerdict::Allow, judge(&f));
+    }
+
+    #[test]
+    fn a_store_reporting_no_drift_holds_nothing() {
+        assert_eq!(StopVerdict::Allow, judge(&wrote_a_story(0)));
+    }
+
+    #[test]
+    fn the_retry_does_not_amnesty_an_unstored_story() {
+        // The anti-loop valve lets everything through on the retry. A rule that
+        // can be walked past by doing nothing is not a gate (measured on the
+        // review rule: block at 15:53:52, allowed 0.8 s later) \u{2014} and here
+        // doing nothing IS the failure being caught.
+        let mut f = wrote_a_story(1);
+        f.already_bounced = true;
+        assert!(matches!(judge(&f), StopVerdict::Block { .. }));
+    }
+
+    #[test]
+    fn the_hold_gives_up_at_the_ceiling() {
+        let mut f = wrote_a_story(1);
+        f.reseed_bounces = MAX_RESEED_BOUNCES;
+        assert_eq!(
+            StopVerdict::Allow,
+            judge(&f),
+            "past the ceiling the turn is RELEASED \u{2014} an unbounded hold is the wedge"
+        );
+    }
+
+    #[test]
+    fn a_markdown_write_is_seen_and_a_source_edit_is_not() {
+        // The authoring half, read from the transcript rather than assumed.
+        let md = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/k/stories/live/s10.md"}}]}}"#;
+        let rs = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/src/stop.rs"}}]}}"#;
+        assert!(read_turn(md).unwrap().wrote_markdown);
+        assert!(
+            !read_turn(rs).unwrap().wrote_markdown,
+            "an ordinary source edit must not arm a rule about stories"
+        );
     }
 
     // -----------------------------------------------------------------
@@ -1553,6 +1768,8 @@ mod tests {
             bounces: 0,
             turn,
             autonomy: Autonomy::Unknown,
+            substrate: None,
+            reseed_bounces: 0,
         });
         assert_eq!(
             StopVerdict::Allow,
@@ -1588,7 +1805,8 @@ mod tests {
         assert!(
             matches!(
                 judge(&StopFacts { empty_turns: 0, already_bounced: false,
-            bounces: 0, turn, autonomy: Autonomy::Unknown }),
+            bounces: 0, turn, autonomy: Autonomy::Unknown, substrate: None,
+            reseed_bounces: 0 }),
                 StopVerdict::Block { .. }
             ),
             "a self-initiated ask must still be judged before it is sent"
