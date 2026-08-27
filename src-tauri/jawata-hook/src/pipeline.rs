@@ -874,11 +874,19 @@ fn stop_gate(client: Client, payload: &str, autonomy: crate::stop::Autonomy) -> 
     //
     // A REPLY to his own question is not an ask (`user_asked`), or every answer
     // he asked for would switch his autonomy off.
+    //
+    // HIS ESC ENDS THE GRANT TOO (studio#33, measured live 2026-08-27). Before
+    // this line an interrupt released only the interrupted TURN — Rule B stood
+    // down once and pushed again on the very next stop, so he had to interrupt
+    // the same session repeatedly. The grant covers his absence; the Esc key is
+    // the loudest possible proof of presence, and a present human re-grants
+    // with one word when he actually wants the loop back.
     let needs_him = turn.asks_the_human && !turn.user_asked;
-    if needs_him {
+    if needs_him || turn.interrupted {
         if let Some(dir) = studio_dir() {
             if crate::autonomy::clear(&dir, &session) {
-                crate::observer::emit_signal(&dir, "autonomy-ended", "his answer is needed");
+                let why = if turn.interrupted { "he interrupted" } else { "his answer is needed" };
+                crate::observer::emit_signal(&dir, "autonomy-ended", why);
             }
         }
     }

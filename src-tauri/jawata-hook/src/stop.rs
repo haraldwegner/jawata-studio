@@ -532,6 +532,16 @@ the answer — and send back what it understood, so the reader sees the text onc
         if facts.turn.asks_the_human {
             return StopVerdict::Allow;
         }
+        // HIS OWN QUESTION OPENED THIS WINDOW -> the turn is conversation, not
+        // idle autonomy. The grant covers his ABSENCE, and a fresh question is
+        // the same evidence of presence an interrupt is. Measured live
+        // 2026-08-27 (studio#33): he asked "what are the dropped story
+        // situations?", the agent answered and stopped, and this rule pushed it
+        // into new work — which he then had to interrupt. Answering the human
+        // and waiting for his reaction IS the next piece of work.
+        if facts.turn.user_asked {
+            return StopVerdict::Allow;
+        }
         return StopVerdict::Block {
             reason: "RULE B: autonomy is granted and this turn armed no background \
 work, so ending here sleeps until the human returns. Start the next piece of \
@@ -812,15 +822,37 @@ fn user_asked(text: &str) -> bool {
 
 fn asks_the_human(text: &str) -> bool {
     let u = text.to_uppercase();
-    // Explicit requests for a ruling.
+    // The CANONICAL form: markdown emphasis, quotes and dashes flattened to
+    // single spaces. Every phrase below is matched against this, because the
+    // live misses of 2026-08-27 (studio#33) were not missing WORDS — they were
+    // punctuation: `say **go**` does not contain "SAY GO" as a substring, and
+    // an em-dash broke "yours to confirm" the same way. Matching the raw text
+    // made the rule depend on the agent's formatting habits.
+    let canon: String = u
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    // Explicit requests for a ruling — plus the imperative shapes measured
+    // live on 2026-08-27, each of which Rule B bounced straight past:
+    // "say go and I run exactly that sequence", "reseed is yours to confirm",
+    // "still blocked on you", "waiting on you: the toggle", and the very
+    // sentence Rule B itself instructs — "blocked on the human".
     const PHRASES: &[&str] = &[
-        "YOUR WORD", "NEEDS YOUR", "YOUR CALL", "YOUR RULING", "YOUR SIGN-OFF",
-        "YOUR DECISION", "SHALL I", "WANT ME TO", "DO YOU WANT", "MAY I",
-        "DECISION:", "LET ME KNOW", "UP TO YOU", "YOU DECIDE", "YOU CHOOSE",
-        "IF YOU'D RATHER", "IF YOU PREFER", "SAY THE WORD", "ON YOUR WORD",
-        "AWAITING", "AWAIT YOUR", "SHOULD I", "WOULD YOU LIKE", "PREFER THAT I",
+        "YOUR WORD", "NEEDS YOUR", "NEED YOUR", "YOUR CALL", "YOUR RULING",
+        "YOUR SIGN OFF", "YOUR DECISION", "SHALL I", "WANT ME TO", "DO YOU WANT",
+        "MAY I", "DECISION", "LET ME KNOW", "UP TO YOU", "YOU DECIDE",
+        "YOU CHOOSE", "IF YOU D RATHER", "IF YOU PREFER", "SAY THE WORD",
+        "ON YOUR WORD", "AWAITING", "AWAIT YOUR", "SHOULD I", "WOULD YOU LIKE",
+        "PREFER THAT I", "SAY GO", "SAY YES", "YOUR GO", "YOURS TO CONFIRM",
+        "YOURS TO", "BLOCKED ON YOU", "BLOCKED ON THE HUMAN", "WAITING ON YOU",
+        "WAITING ON YOUR", "WAITING FOR YOU", "WAITING FOR YOUR",
+        "YOUR APPROVAL", "APPROVE ME", "YOUR CLICK", "GIVE THE WORD",
+        "THE WORD IS YOURS", "ON YOUR YES", "YOUR CONFIRM",
     ];
-    if PHRASES.iter().any(|p| u.contains(p)) {
+    if PHRASES.iter().any(|p| canon.contains(p)) {
         return true;
     }
     // A DIRECT QUESTION to the reader. The phrase list above is what the agent
@@ -1147,6 +1179,38 @@ mod tests {
             judge(&f),
             "past the ceiling the turn is RELEASED — a safety valve on one path is not a \
              safety valve"
+        );
+    }
+
+    /// THE LIVE MISSES OF 2026-08-27 (studio#33), verbatim. Every sentence
+    /// below was a real decision ask that Rule B bounced straight past — the
+    /// words were there, the punctuation broke the match ("say **go**" does
+    /// not contain "SAY GO" as a raw substring). Revert the canonicalisation
+    /// or the widened phrases and these go red.
+    #[test]
+    fn the_live_missed_ask_shapes_are_detected() {
+        for s in [
+            "Reseed is yours to confirm — say **go** and I run exactly that sequence.",
+            "Still blocked on you, same two things: the toggle, and \"go\" for the reseed.",
+            "Blocked on the human.",
+            "Waiting on you: the toggle, the reseed word, and the hook fix.",
+            "Frozen. Waiting on you: the toggle and the go.",
+        ] {
+            assert!(asks_the_human(s), "missed live 2026-08-27 and must never miss again: {s:?}");
+        }
+    }
+
+    /// HIS QUESTION OPENED THE WINDOW -> answering it and stopping IS the work
+    /// (studio#33). Before this branch, Rule B pushed the answer-turn into new
+    /// work and he had to interrupt it — "I just asked a question!".
+    #[test]
+    fn a_window_his_question_opened_is_never_pushed() {
+        let mut f = facts(Autonomy::Granted, vec![]);
+        f.turn.user_asked = true;
+        assert_eq!(
+            StopVerdict::Allow,
+            judge(&f),
+            "the grant covers his absence; his question is proof of presence"
         );
     }
 
@@ -1594,7 +1658,6 @@ mod tests {
             "a line that OPENS with the command did invoke it");
     }
 
-    #[test]
     /// jawata-studio#25, both live misfires, verbatim.
     ///
     /// Quoting the exact label a user sees, or the exact text a tool returned,

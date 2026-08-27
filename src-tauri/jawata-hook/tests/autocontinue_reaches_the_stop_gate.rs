@@ -168,9 +168,14 @@ fn prompt_payload(session: &str, prompt: &str) -> String {
 #[test]
 fn his_word_turns_rule_b_on_and_its_absence_leaves_it_off() {
     let home = scratch_home("pair");
+    // "carry on", not "Status?" — the original fixture opened the window with
+    // a question, which the 2026-08-27 ruling (studio#33) exempts from the
+    // push: a question-window's answer is never bounced into new work. This
+    // test's subject is the autonomy WIRE, so its window must be a working
+    // word, or it would be testing the exemption instead.
     let t = transcript(
         &home,
-        "Status?",
+        "carry on",
         "Suite green, 2057 passing. That's the checkpoint done.",
     );
 
@@ -194,23 +199,35 @@ fn his_word_turns_rule_b_on_and_its_absence_leaves_it_off() {
     );
 }
 
-/// A grant must survive his questions. If it expired on his next turn it would
-/// be revoked by the very first thing he asked — and answering a question is
-/// precisely where the stopping has been happening.
+/// A grant must survive his questions — but it must NOT push their answers.
+///
+/// This test used to assert the opposite: that a turn answering his question
+/// still gets pushed into new work. Harald overruled that live on 2026-08-27
+/// (studio#33): "there is a loop that bounces you back to work all the time —
+/// even if I just ask a question". A question is proof he is PRESENT, and the
+/// grant covers his absence. So: no push while the window is his question;
+/// the grant itself stays, and the loop resumes on his next working word.
 #[test]
-fn the_grant_survives_the_questions_he_asks_afterwards() {
+fn the_grant_survives_his_questions_but_never_pushes_their_answers() {
     let home = scratch_home("survives");
-    let t = transcript(&home, "why did you stop", "Because I finished that piece.");
     run("userprompt", &home, &prompt_payload("sess-b", "autocontinue"));
 
-    for question in ["Status?", "I want a list of what is left", "what changed?"] {
-        run("userprompt", &home, &prompt_payload("sess-b", question));
-        let out = run("stop", &home, &stop_payload("sess-b", &t));
-        assert!(
-            out.contains("RULE B"),
-            "answering {question:?} ended the grant; got: {out}"
-        );
-    }
+    let answering = transcript(&home, "why did you stop", "Because I finished that piece.");
+    let out = run("stop", &home, &stop_payload("sess-b", &answering));
+    assert!(
+        !out.contains("RULE B"),
+        "his question opened this window; pushing its answer into new work is \
+         the measured defect, not the mechanism: {out}"
+    );
+
+    // The grant is still live: his next working word resumes the loop.
+    let working = transcript(&home, "carry on", "Stage done.");
+    let resumed = run("stop", &home, &stop_payload("sess-b", &working));
+    assert!(
+        resumed.contains("RULE B"),
+        "the grant should have survived his question and pushed the next \
+         ordinary turn: {resumed}"
+    );
 }
 
 /// The wedge, and the shape of the bound. Two consecutive turns that produce
@@ -308,5 +325,36 @@ fn his_interrupt_beats_the_grant() {
     assert!(
         !out2.contains("RULE B"),
         "stopping a tool mid-flight is the same key and the same answer: {out2}"
+    );
+}
+
+/// HIS ESC ENDS THE GRANT, NOT JUST THE TURN (studio#33, 2026-08-27).
+///
+/// Before this, an interrupt released only the interrupted turn: the grant
+/// survived, the very next stop pushed again, and he had to interrupt the same
+/// session over and over — measured live, in his words "you started to work
+/// afterwards". The Esc is the loudest proof of presence there is; a present
+/// human re-grants with one word when he wants the loop back.
+#[test]
+fn his_esc_ends_the_grant_not_just_the_turn() {
+    let home = scratch_home("esc-ends-grant");
+    run("userprompt", &home, &prompt_payload("sess-g", "autocontinue"));
+    let ordinary = transcript(&home, "carry on", "Stage done.");
+    assert!(
+        run("stop", &home, &stop_payload("sess-g", &ordinary)).contains("RULE B"),
+        "precondition: the grant is live and pushing"
+    );
+
+    let stopped = transcript(&home, "[Request interrupted by user]", "Stage done.");
+    assert!(
+        !run("stop", &home, &stop_payload("sess-g", &stopped)).contains("RULE B"),
+        "the interrupted turn itself must be released"
+    );
+
+    let after = run("stop", &home, &stop_payload("sess-g", &ordinary));
+    assert!(
+        !after.contains("RULE B"),
+        "the grant survived his Esc and pushed the next turn — the exact loop \
+         he had to keep interrupting: {after}"
     );
 }
