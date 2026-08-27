@@ -61,6 +61,16 @@ pub const MAX_UNJUDGED_BOUNCES: u32 = 3;
 /// second is for the case where the reseed refuses and the file needs fixing.
 pub const MAX_RESEED_BOUNCES: u32 = 2;
 
+/// How a hold for an unstored story identifies itself.
+///
+/// Shared with the pipeline because the counter must be charged to THIS rule
+/// and no other: a turn held by the audit-fix rule while a story also happens
+/// to be unstored has not spent a reseed chance, and charging it would let the
+/// story rule be walked past by tripping a different one twice. A constant
+/// rather than a repeated literal, so the two ends cannot drift apart in
+/// silence — `the_hold_names_itself_so_its_counter_cannot_be_miswired` pins it.
+pub const UNSTORED_STORY: &str = "UNSTORED STORY";
+
 /// Abbreviations a reader of this project already holds.
 ///
 /// Note what the second row USED to be: OK, DONE, STOP, NOT, AND, THE, ALL,
@@ -461,12 +471,13 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
         }
         return StopVerdict::Block {
             reason: format!(
-                "UNSTORED STORY ({} of {}): {} file(s) under the knowledge substrate at \
+                "{} ({} of {}): {} file(s) under the knowledge substrate at \
 {} are not in the store — {}. Writing the file and reseeding it in are ONE job; until the \
 second half runs, nothing you wrote is recallable and the next wipe takes it silently. Run \
 experience(kind=reseed, path={}, recursive=true, confirm=true) and READ the report: a file \
 that comes back under `skipped` was refused, and the reason says what it owes — most often \
 a `reviewed:` stamp it has actually earned from a cold reader.",
+                UNSTORED_STORY,
                 facts.reseed_bounces + 1,
                 MAX_RESEED_BOUNCES,
                 drift.count,
@@ -1089,6 +1100,30 @@ mod tests {
             reason.contains("skipped"),
             "and must name the refusal case \u{2014} a reseed admits stamped stories \
              only, and a silent skip is how the first cure failed: {reason}"
+        );
+    }
+
+    #[test]
+    fn the_hold_names_itself_so_its_counter_cannot_be_miswired() {
+        // The pipeline charges the reseed counter by this prefix. If the two
+        // drift apart, the counter is charged to the wrong rule — or never —
+        // and both failures are silent.
+        let StopVerdict::Block { reason } = judge(&wrote_a_story(1)) else {
+            panic!("must block")
+        };
+        assert!(reason.starts_with(UNSTORED_STORY), "{reason}");
+    }
+
+    #[test]
+    fn a_turn_held_by_another_rule_does_not_spend_a_reseed_chance() {
+        // An audit-fix loop outranks this rule and blocks first. The story is
+        // still unstored, and the chance to fix it must survive.
+        let mut f = wrote_a_story(1);
+        f.turn.refusals_emitted = 3;
+        let StopVerdict::Block { reason } = judge(&f) else { panic!("must block") };
+        assert!(
+            !reason.starts_with(UNSTORED_STORY),
+            "the higher rule must win, or the precedence this test pins is wrong: {reason}"
         );
     }
 

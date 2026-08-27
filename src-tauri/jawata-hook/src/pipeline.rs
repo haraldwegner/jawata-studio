@@ -952,7 +952,9 @@ fn stop_gate(
     // the story rule be walked past by tripping a different one twice.
     if let (Some(dir), Some(file)) = (bounce_dir.as_ref(), reseed_file.as_ref()) {
         match (&verdict, owed_a_reseed) {
-            (StopVerdict::Block { .. }, true) => {
+            (StopVerdict::Block { reason }, true)
+                if reason.starts_with(stop::UNSTORED_STORY) =>
+            {
                 let _ = std::fs::create_dir_all(dir);
                 let _ = std::fs::write(file, (reseed_bounces + 1).to_string());
             }
