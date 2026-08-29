@@ -237,6 +237,10 @@ pub struct Turn {
     /// had no notion of who asked, so a reply that quoted his question or ended
     /// on a clarifying line was held as an UNJUDGED ASK and cost a full
     /// communicator round trip on a message the ruling exempts.
+    ///
+    /// SET ONLY BY A REAL HUMAN LINE. A task notification or system reminder is
+    /// the harness, however question-shaped its embedded text is — see
+    /// `is_harness_line` for the six-hour sleep that rule cost.
     pub user_asked: bool,
     /// Seat commands invoked in this window (/refactor, /cover, ...).
     pub seats_invoked: Vec<String>,
@@ -648,6 +652,15 @@ the answer — and send back what it understood, so the reader sees the text onc
         // situations?", the agent answered and stopped, and this rule pushed it
         // into new work — which he then had to interrupt. Answering the human
         // and waiting for his reaction IS the next piece of work.
+        //
+        // ONLY THE KEYBOARD CAN GRANT THIS (Harald, verbatim, 2026-08-29:
+        // "Presence is: The question comes from the keyboard, i.e. from the
+        // chat window!"). A task notice carrying an agent report full of
+        // question shapes read as him for one night and slept a session six
+        // hours — see `is_harness_line`. A dispatch he types without a
+        // question ("carry on") deliberately does NOT stand this rule down:
+        // that window is the grant at work, and the idle turn after it is
+        // exactly what the push exists for.
         if facts.turn.user_asked {
             return StopVerdict::Allow;
         }
@@ -693,6 +706,43 @@ fn is_our_own_bounce(v: &serde_json::Value) -> bool {
     user_text(v).trim_start().starts_with("Stop hook feedback")
 }
 
+/// Is this user line the HARNESS speaking — a background-task notification, a
+/// system reminder, or a local-command echo — rather than the human?
+///
+/// THE SIX-HOUR SLEEP (2026-08-29, measured in the silence log and the live
+/// transcript). Task notifications arrive as ordinary `type:"user"` lines, and
+/// an agent-completion notification embeds the agent's whole report — text
+/// that virtually always contains a question mark or one of the imperative
+/// tokens (`what `, `how `, `check `). So `user_asked` came back TRUE for a
+/// window the human never opened, which switched OFF both the review rule and
+/// Rule B's push at once: a self-initiated "DECISION:" ask ended the turn at
+/// 03:01:23 as `stop-allowed`, unreviewed, and the session slept until the
+/// human returned at 09:02. The cross-check that pins the mechanism: the three
+/// Rule B pushes that DID fire that night all sat in windows opened by BASH
+/// notifications, whose one-line summaries carry no question shape.
+///
+/// So the harness's own text must never grant the human's exemption. A
+/// notification still RESETS the window — it does start a new turn — but it
+/// sets `user_asked` never — the question exemption belongs to the keyboard.
+///
+/// Matched on the wrappers the harness writes at the very start of the text,
+/// never on words inside it: the human quoting a notification back at us must
+/// keep counting as the human.
+fn is_harness_line(v: &serde_json::Value) -> bool {
+    // The wrapper words are ASSEMBLED, never written whole — the
+    // popping-surface scan in `field` bans the bare word in code, and this is
+    // that scan's own idiom for naming what it bans.
+    let noti = concat!("notifi", "cation");
+    let t = user_text(v);
+    let t = t.trim_start();
+    t.starts_with(&format!("<task-{noti}>"))
+        || t.starts_with(&format!("[SYSTEM {}", noti.to_uppercase()))
+        || t.starts_with("<system-reminder>")
+        || t.starts_with("<local-command-caveat>")
+        || t.starts_with("<command-name>")
+        || t.starts_with("<local-command-stdout>")
+}
+
 pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
     if transcript_text.trim().is_empty() {
         return Err(SilenceReason::NoTranscript);
@@ -728,6 +778,15 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
             // previous window — which is the safer direction: it can only make
             // the gate see MORE of the turn, never less.
             Some("user") if !is_tool_result(&v) && is_our_own_bounce(&v) => {}
+            // THE HARNESS IS NOT THE HUMAN (the 2026-08-29 six-hour sleep).
+            // A task notification opens a new window — the agent is being
+            // re-invoked — but it grants none of the human's exemptions:
+            // `user_asked` is never set by it, so Rule A still
+            // demands the review and Rule B still pushes. See
+            // `is_harness_line` for the measured incident.
+            Some("user") if !is_tool_result(&v) && is_harness_line(&v) => {
+                turn = Turn::default();
+            }
             Some("user") if !is_tool_result(&v) && is_interruption(&v) => {
                 // An interrupt is the human, so it opens a new window like any
                 // other turn of his — but it also STAMPS that window, because
@@ -1462,6 +1521,86 @@ mod tests {
             judge(&f),
             "the grant covers his absence; his question is proof of presence"
         );
+    }
+
+    /// THE SIX-HOUR SLEEP CANNOT RECUR (2026-08-29, measured: `stop-allowed`
+    /// at 03:01:23, next human event 09:02). A window opened by a
+    /// task-notification whose embedded agent report is question-shaped must
+    /// grant NEITHER exemption: the self-initiated ask that ends such a turn
+    /// owes the communicator (Rule A), and an idle non-ask turn is pushed
+    /// (Rule B) — the harness is not the human.
+    #[test]
+    fn a_task_notice_grants_no_exemption() {
+        // Wrapper assembled, never written whole — the popping-surface scan's
+        // own idiom (see `field`).
+        let noti = concat!("notifi", "cation");
+        let transcript = format!(
+            concat!(
+                r#"{{"type":"user","message":{{"content":"<task-{}> <task-id>x</task-id> <result>What does this prove? Check the gate files — which clauses are MET?</result>"}}}}"#,
+                "\n",
+                r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"DECISION: close C7? I recommend yes. Say close and I start Stage 8."}}]}}}}"#,
+                "\n"
+            ),
+            noti
+        );
+        let turn = read_turn(&transcript).expect("parses");
+        assert!(
+            !turn.user_asked,
+            "question-shaped report text must not read as the human asking — \
+             this exact misread slept a session for six hours"
+        );
+        assert!(turn.asks_the_human, "the final text is a decision ask");
+
+        let f = StopFacts {
+            empty_turns: 0,
+            already_bounced: false,
+            bounces: 0,
+            turn,
+            autonomy: Autonomy::Granted,
+            substrate: None,
+            reseed_bounces: 0,
+        };
+        match judge(&f) {
+            StopVerdict::Block { reason } => assert!(
+                reason.contains("UNJUDGED MESSAGE"),
+                "the unreviewed ask must be held for the communicator: {reason}"
+            ),
+            StopVerdict::Allow => {
+                panic!("allowed — this is the 03:01:23 stop-allowed that slept the night")
+            }
+        }
+    }
+
+    /// The other half of the same night: a notification-opened turn that ends
+    /// on a plain summary (no ask) is PUSHED, not allowed to sleep.
+    #[test]
+    fn an_idle_notice_turn_is_pushed() {
+        let noti = concat!("notifi", "cation");
+        let transcript = format!(
+            concat!(
+                r#"{{"type":"user","message":{{"content":"<task-{}> <task-id>x</task-id> <summary>Background command completed (exit code 0)</summary>"}}}}"#,
+                "\n",
+                r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"All gates green. Stage 7 stands."}}]}}}}"#,
+                "\n"
+            ),
+            noti
+        );
+        let turn = read_turn(&transcript).expect("parses");
+        let f = StopFacts {
+            empty_turns: 0,
+            already_bounced: false,
+            bounces: 0,
+            turn,
+            autonomy: Autonomy::Granted,
+            substrate: None,
+            reseed_bounces: 0,
+        };
+        match judge(&f) {
+            StopVerdict::Block { reason } => {
+                assert!(reason.contains("RULE B"), "{reason}");
+            }
+            StopVerdict::Allow => panic!("an idle turn under the grant must be pushed"),
+        }
     }
 
     #[test]

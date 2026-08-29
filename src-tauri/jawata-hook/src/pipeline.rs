@@ -886,7 +886,23 @@ fn stop_gate(
     // the same session repeatedly. The grant covers his absence; the Esc key is
     // the loudest possible proof of presence, and a present human re-grants
     // with one word when he actually wants the loop back.
-    let needs_him = turn.asks_the_human && !turn.user_asked;
+    //
+    // ONLY A JUDGED ASK ENDS THE GRANT (2026-08-29, "the workflow is broken").
+    // The ask detector cannot tell a decision from a checkpoint report wearing
+    // a decision's clothes, and the agent manufactures the second kind: a
+    // C7-close summary was sent as "DECISION: close?" while itself stating
+    // that nothing blocked. Keying the grant-kill on the raw detector meant ONE
+    // such message switched autocontinue off for the rest of the night — the
+    // checkpoint loop his workflow runs on ("the worker finishes the
+    // checkpoint, reports the abnormalities, and autocontinue answers the
+    // continue") died at its first checkpoint. The communicator is the
+    // instrument that separates the two — when it judged that very message, it
+    // answered "he did not ask for this" — and Rule A already forces it onto
+    // every unjudged ask before the ask can stand. So the grant now ends on an
+    // ask that SURVIVED review, or on his Esc; an unjudged ask gets bounced to
+    // the communicator with the grant intact, and either comes back real
+    // (grant ends, correctly) or dissolves (the work continues, correctly).
+    let needs_him = turn.asks_the_human && !turn.user_asked && turn.communicator_ran();
     if needs_him || turn.interrupted {
         if let Some(dir) = studio_dir() {
             if crate::autonomy::clear(&dir, &session) {
