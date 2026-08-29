@@ -951,6 +951,51 @@ fn stop_gate(
             .unwrap_or(0),
     };
 
+    // THE CONVERSATION-LOOP COUNTER (2026-08-29, Harald: "the conversation
+    // loop counter needs to be reset correctly. Double check!"). The audit-fix
+    // alarm counts REFUSE verdicts, but each verdict arrives via a background
+    // notification and a notification opens a new window — so the per-window
+    // count reset between every round and the alarm could never fire on the
+    // loop it was built for, while firing happily on prose. The carry lives in
+    // a per-session file and RESETS on exactly three things:
+    //   - a REAL keyboard window (the human is steering; a new conversation);
+    //   - a relayed "VERDICT: SIGN-OFF" (the loop converged);
+    //   - an architect-seat run (the action the alarm demands — the alarm
+    //     that cannot be answered is a wedge, not a gate).
+    // It does NOT clear on Allow: repair turns between refusals are allowed
+    // turns, and surviving them is the whole point of a loop counter.
+    // On a retry (`already_bounced`) the current window was already added, so
+    // the carry is used as-is rather than re-charged.
+    let refusal_file = bounce_dir
+        .as_ref()
+        .map(|d| d.join(format!("{}.refusals", sanitize_session(&session))));
+    let mut turn = turn;
+    {
+        let carried: usize = refusal_file
+            .as_ref()
+            .and_then(|f| std::fs::read_to_string(f).ok())
+            .and_then(|t| t.trim().parse().ok())
+            .unwrap_or(0);
+        let architect_ran = turn.seats_invoked.iter().any(|s| s == "/refactor");
+        let effective = if turn.human_window || turn.signoff_emitted || architect_ran {
+            turn.refusals_emitted
+        } else if already_bounced {
+            carried.max(turn.refusals_emitted)
+        } else {
+            carried + turn.refusals_emitted
+        };
+        if let (Some(dir), Some(file)) = (bounce_dir.as_ref(), refusal_file.as_ref()) {
+            if effective == 0 {
+                let _ = std::fs::remove_file(file);
+            } else if !already_bounced || turn.human_window || turn.signoff_emitted || architect_ran
+            {
+                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::write(file, effective.to_string());
+            }
+        }
+        turn.refusals_emitted = effective;
+    }
+
     let facts = StopFacts {
         already_bounced,
         turn,
@@ -985,15 +1030,28 @@ fn stop_gate(
 
     // Count a bounce when we actually bounce; forget the count the moment the
     // turn is let through, so the ceiling is per-episode and not per-session.
+    //
+    // AND ONLY WHEN THE REVIEW RULE ITSELF BOUNCED (2026-08-29, measured live:
+    // a Rule B push wrote bounce=1, and seven seconds later the review rule
+    // showed "(2 of 3)" for a first offence). Charging every block to the
+    // review ceiling let unrelated pushes SPEND it — three overnight Rule B
+    // pushes and the next unjudged decision-ask sails through at the cap,
+    // which is the exact leak the ceiling guards. The reseed counter earned
+    // its own-rule charging for the same reason; the review counter now has
+    // it too.
     if let (Some(dir), Some(file)) = (bounce_dir.as_ref(), bounce_file.as_ref()) {
-        match verdict {
-            StopVerdict::Block { .. } => {
+        match &verdict {
+            StopVerdict::Block { reason } if reason.starts_with("UNJUDGED MESSAGE") => {
                 let _ = std::fs::create_dir_all(dir);
                 let _ = std::fs::write(file, (bounces + 1).to_string());
             }
             StopVerdict::Allow => {
                 let _ = std::fs::remove_file(file);
             }
+            // A block by a DIFFERENT rule neither charges nor clears: an
+            // unrelated push between ask-bounces must not wipe the ask's
+            // episode either.
+            StopVerdict::Block { .. } => {}
         }
     }
 
@@ -1546,7 +1604,7 @@ mod tests {
             empty_turns: 0,
             already_bounced: false,
             bounces: 0,
-            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, user_asked: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false },
+            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false },
             autonomy: Autonomy::Granted,
             substrate: None,
             reseed_bounces: 0,

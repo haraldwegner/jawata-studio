@@ -242,6 +242,20 @@ pub struct Turn {
     /// the harness, however question-shaped its embedded text is — see
     /// `is_harness_line` for the six-hour sleep that rule cost.
     pub user_asked: bool,
+    /// Whether a REAL keyboard line opened this window (a typed message or an
+    /// interrupt) — as opposed to a harness notification. INTERNAL FACT for
+    /// the pipeline's counter resets ONLY: Rule B deliberately does NOT key on
+    /// it (a typed dispatch like "carry on" must still be pushed — see the
+    /// wire tests). The audit-loop counter persists across
+    /// notification-opened windows and resets when the human actually speaks;
+    /// without this flag the counter could not tell those windows apart, which
+    /// is how the AUDIT-FIX alarm spent months unable to fire on the very loop
+    /// it was built for (2026-08-29).
+    pub human_window: bool,
+    /// Whether this window's assistant text relayed a SIGN-OFF verdict line.
+    /// The audit loop CONVERGED — the pipeline resets the cross-window refusal
+    /// carry on it, so the next loop starts at zero.
+    pub signoff_emitted: bool,
     /// Seat commands invoked in this window (/refactor, /cover, ...).
     pub seats_invoked: Vec<String>,
     /// Whether a verification gate ran after them.
@@ -434,6 +448,16 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
     // for a CHECKPOINT marker, and a churn loop never produces one — so the
     // failure state and the trigger condition were mutually exclusive. This
     // counts the loop instead.
+    //
+    // THE COUNT SPANS WINDOWS (2026-08-29, Harald: "the conversation loop
+    // counter needs to be reset correctly"). Each audit verdict arrives as a
+    // background notification, and a notification opens a new window — so a
+    // per-window count reset between every round and the alarm could never
+    // fire on the very loop it measures. The pipeline persists the carry per
+    // session and resets it on a REAL keyboard window, a relayed
+    // "VERDICT: SIGN-OFF" (the loop converged), or an architect-seat run (the
+    // action this block demands). `refusals_emitted` here is that cumulative
+    // number; `judge` stays pure and never touches the file.
     if facts.turn.refusals_emitted >= 3 {
         return StopVerdict::Block {
             reason: format!(
@@ -750,6 +774,14 @@ fn is_harness_line(v: &serde_json::Value) -> bool {
         || t.starts_with("<local-command-stdout>")
 }
 
+/// Verdict lines at the START of a line, markdown decoration allowed — the
+/// DEGRADED_STAMP principle: reading or discussing a word is not emitting it.
+fn verdict_lines(text: &str, verdict: &str) -> usize {
+    text.lines()
+        .filter(|l| l.trim_start().trim_start_matches(['#', '*', ' ']).starts_with(verdict))
+        .count()
+}
+
 pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
     if transcript_text.trim().is_empty() {
         return Err(SilenceReason::NoTranscript);
@@ -803,9 +835,11 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                 // suppress it.
                 turn = Turn::default();
                 turn.interrupted = true;
+                turn.human_window = true;
             }
             Some("user") if !is_tool_result(&v) => {
                 turn = Turn::default();
+                turn.human_window = true;
                 // studio#11: remember whether the human ASKED. Everything after
                 // this line is a REPLY, and a reply is out of the ask gate's
                 // scope by the 2026-08-07 ruling.
@@ -858,14 +892,10 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                                 // "VERDICT: REFUSE", optionally behind
                                 // markdown heading or bold markers; prose
                                 // about refusing never starts a line that way.
-                                turn.refusals_emitted += t
-                                    .lines()
-                                    .filter(|l| {
-                                        l.trim_start()
-                                            .trim_start_matches(['#', '*', ' '])
-                                            .starts_with("VERDICT: REFUSE")
-                                    })
-                                    .count();
+                                turn.refusals_emitted += verdict_lines(t, "VERDICT: REFUSE");
+                                if verdict_lines(t, "VERDICT: SIGN-OFF") > 0 {
+                                    turn.signoff_emitted = true;
+                                }
                             }
                         }
                         Some("tool_use") => {
@@ -1142,7 +1172,7 @@ mod tests {
             empty_turns: 0,
             already_bounced: false,
             bounces: 0,
-            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, user_asked: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false },
+            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false },
             autonomy,
             substrate: None,
             reseed_bounces: 0,
