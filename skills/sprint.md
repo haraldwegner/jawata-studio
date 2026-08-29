@@ -560,6 +560,32 @@ user's explicit word; update the plan file when a user-approved change lands.
   it reports the failure with diagnostics and waits. Autocontinue removes the
   wait, never the gate.
 
+**THE AUDITOR'S SIGN-OFF CONSUMES THE CLOSE DECISION** (Harald, 2026-08-29,
+after a "DECISION: close?" ask slept a granted session six hours: *"Don't we
+have the auditor who is checking the gate? If he says go then there shouldn't
+have been any reason to stop."*). The checkpoint's own fresh-context audit IS
+the close authority; asking the user afterwards re-litigates a decided question
+in front of a judge with less information than the auditor had. THE WRONG SHAPE,
+REFUSE IT IN YOUR OWN DRAFT: a checkpoint summary dressed as a decision ask —
+"DECISION: close CN?", "say close and I continue" — especially one whose own
+text admits nothing blocks. Under the flag: gates green + audit sign-off →
+close, post the summary (abnormalities and the user's accumulated open items as
+a LEDGER, never a blocker), and continue. The only checkpoint asks that survive:
+a blocking residue the agent cannot repair, and outward-facing acts (release,
+push, public filings), which no auditor's sign-off ever covers.
+
+**A REPAIRABLE REFUSE IS REPAIRED, NEVER ASKED ABOUT** (Harald, same day,
+verbatim: *"A refuse from auditor which can be repaired by the agent has to be
+repaired. I don't want to be asked after each refuse."*). Inside the round cap
+(3, a 4th only if round 3 found something genuinely blocking — the same cap as
+Phase A, and the AUDIT-FIX LOOP tripwire in the stop gate backs it
+mechanically), the refuse→repair→re-audit loop is WORK and contains no user
+question. At the cap, two different outcomes and only one of them asks:
+non-blocking residue is accepted as-is and recorded as named open items — the
+close proceeds; BLOCKING residue still standing is the genuine stop, reported
+with diagnostics. An ask per refuse and an unbounded repair loop are both
+failures; the cap is what makes "no asks inside the loop" safe.
+
 **Then mind the turn boundary** (Harald 2026-08-07, Sprint 28: the sprint halted
 silently at a checkpoint summary and resumed only because an unrelated command
 woke the session). The agent runs only while a turn is active, and a turn starts
