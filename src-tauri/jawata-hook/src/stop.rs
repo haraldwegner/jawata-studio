@@ -655,7 +655,14 @@ the answer — and send back what it understood, so the reader sees the text onc
         //
         // ONLY THE KEYBOARD CAN GRANT THIS (Harald, verbatim, 2026-08-29:
         // "Presence is: The question comes from the keyboard, i.e. from the
-        // chat window!"). A task notice carrying an agent report full of
+        // chat window!" — and, same morning: "The keyboard is not the
+        // machine-wide keyboard. It is keyboard + focus on the chat window.
+        // Otherwise every esc will be regarded as such."). That constraint
+        // holds BY CONSTRUCTION and must stay so: this gate reads only the
+        // chat transcript, so the sole input it can ever see is what the chat
+        // window itself recorded — a keystroke or Esc anywhere else never
+        // reaches it. Any future presence signal that is not the transcript
+        // breaks his ruling. A task notice carrying an agent report full of
         // question shapes read as him for one night and slept a session six
         // hours — see `is_harness_line`. A dispatch he types without a
         // question ("carry on") deliberately does NOT stand this rule down:
