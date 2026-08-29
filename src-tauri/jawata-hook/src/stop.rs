@@ -843,7 +843,29 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                                 // assistant text only — never the raw window,
                                 // which made the script fire on any session
                                 // that merely READ the word.
-                                turn.refusals_emitted += t.matches("REFUSE").count();
+                                //
+                                // AND ONLY AS VERDICT LINES (2026-08-29): the
+                                // substring form fired on a turn that merely
+                                // DISCUSSED refusals — quoting the round cap,
+                                // the auditor's verdicts, the user's own
+                                // ruling — three mentions in a workflow
+                                // conversation read as three audit rounds and
+                                // the gate demanded an architect run against a
+                                // fix loop that did not exist. The same file
+                                // already states the cure, on DEGRADED_STAMP:
+                                // match at the start of a line, never anywhere
+                                // in the text. A relayed audit verdict is
+                                // "VERDICT: REFUSE", optionally behind
+                                // markdown heading or bold markers; prose
+                                // about refusing never starts a line that way.
+                                turn.refusals_emitted += t
+                                    .lines()
+                                    .filter(|l| {
+                                        l.trim_start()
+                                            .trim_start_matches(['#', '*', ' '])
+                                            .starts_with("VERDICT: REFUSE")
+                                    })
+                                    .count();
                             }
                         }
                         Some("tool_use") => {
@@ -1852,14 +1874,31 @@ mod tests {
     /// Refusals are counted from ASSISTANT TEXT, never the raw window. The
     /// script generation counted the whole transcript and fired on any session
     /// that merely READ the word — reading is not refusing.
+    ///
+    /// AND ONLY AS VERDICT LINES (2026-08-29): the substring form this test
+    /// used to pin ("round 1 REFUSE" counts) fired live on a turn that merely
+    /// DISCUSSED refusals with the user — three mentions of the word in a
+    /// workflow conversation read as three audit rounds, and the gate demanded
+    /// an architect run against a fix loop that did not exist. Talking about
+    /// refusing is not refusing, exactly as reading the word is not.
     #[test]
     fn refusals_are_counted_only_from_what_the_agent_emitted() {
         let quoted = "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"REFUSE REFUSE REFUSE\"}]}}\n{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"all green\"}]}}\n";
         let t = read_turn(quoted).expect("parses");
         assert_eq!(0, t.refusals_emitted, "quoted refusals are not emitted ones");
 
-        let emitted = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"round 1 REFUSE\"}]}}\n{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"round 2 REFUSE\"}]}}\n";
-        assert_eq!(2, read_turn(emitted).expect("parses").refusals_emitted);
+        // The live misfire, verbatim in shape: prose ABOUT the refuse loop.
+        let discussed = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Repairable REFUSE: repair, re-audit, no ask. C7 ran round 1 REFUSE then sign-off. The gate blocks after three REFUSEs in one window.\"}]}}\n";
+        assert_eq!(
+            0,
+            read_turn(discussed).expect("parses").refusals_emitted,
+            "discussing refusals with the user is not emitting them — this \
+             exact prose tripped the AUDIT-FIX LOOP live"
+        );
+
+        // What IS counted: relayed verdict lines, markdown decoration allowed.
+        let emitted = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"# VERDICT: REFUSE\\none blocking finding\"}]}}\n{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"**VERDICT: REFUSE** again\"}]}}\n{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"VERDICT: REFUSE\"}]}}\n";
+        assert_eq!(3, read_turn(emitted).expect("parses").refusals_emitted);
     }
 
     /// The ask detector must not key on a shape the agent authors freely. A
