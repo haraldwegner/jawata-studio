@@ -104,8 +104,9 @@ Work these steps, in order. Each one is binding:
 
 6. RECORD the run's outcome (`operation="seat:review"`). Anything that should
    OUTLIVE the run goes to the substrate as a story file first — a direct
-   record has no file behind it and the next reseed removes it silently. The
-   test is one question: after the next wipe, what puts this back?
+   record has no file behind it, so nothing can ever rebuild it (engines
+   before v3.17.0 removed it at the next reseed outright). The test is one
+   question: after the next wipe, what puts this back?
 
 Three things you never do. You never call `prune` — it is a threshold sweep
 with no id list, and it once removed 101 entries when seven were asked for.

@@ -102,6 +102,31 @@ give an object its behaviour, never a new helper on the side. If the fitting
 pattern would add a class that holds no state and makes no decision, you have
 found the wrong pattern or the wrong seam.
 
+D-SIX. REFUSE A SECOND IMPLEMENTATION OF A JOB THE SYSTEM ALREADY DOES.
+Before accepting any new source, reader, writer, importer or exporter into
+the target, ask whether the system already does that job for other material.
+If it does, the design that adds a second pipeline is REFUSED and the report
+says so — the material is re-authored into the existing form instead.
+
+THE FAILURE SHAPE TO REFUSE, because it never arrives announcing itself: the
+new material is not claimed to behave differently, only to FEEL different —
+narrower, simpler, ours rather than theirs — so it is given its own shape,
+and the shape forces its own reader, and the reader becomes its own
+lifecycle. Nobody chooses the second lifecycle; they choose the format, and
+everything else follows from that one sentence.
+
+And REFUSE THE REFLEX CURE TOO. Extracting the shared lifecycle into a helper
+both call is not the fix: a step a source can DECLINE is a step a source WILL
+decline. The fix is that the second format stops existing, so there is no
+step left on which a source can differ.
+
+Two cases where the second lane legitimately stays, and the report must name
+which one applies or refuse: the lanes genuinely BEHAVE differently (untrusted
+input needing quarantine, attribution or rate-limiting beside curated input —
+one pipeline would hide that difference rather than remove it), or the second
+format is not yours to re-author (a vendor feed), where deleting it is not
+available and the shared helper is the only cure left.
+
 WATCH MODE (during execution — sweeps and checkpoint-diff reviews): read
 detector evidence and reviewed diffs, and argue for DESIGN-level fixes —
 judging every change against the target-architecture artifact when one

@@ -435,7 +435,7 @@ Two agents agreeing is the common case and costs him nothing. A disagreement is 
 
 ## STEP 6 — write the FILE. Recording is not saving
 
-**The store is derived from a file substrate, so a direct `experience(kind=record)` does not save anything durable.** It writes a row with no file behind it, and the next reseed removes it — silently, because the count check afterwards asserts the FILE count and still passes. The reseed is the routine repair for any quality doubt, so it is not a question of whether it runs.
+**The store is derived from a file substrate, so a direct `experience(kind=record)` does not save anything durable.** It writes a row with no file behind it. Nothing can ever REBUILD such a row: engines before v3.17.0 removed it at the very next reseed, and even on a current engine — where the reseed keeps it — a bare wipe or a lost store file takes it permanently, with nothing to put it back.
 
 The test for anything you want to keep is one question: **after the next wipe, what puts this back?**
 

@@ -110,10 +110,18 @@
   }
 
   // Auto-reload while residents are unreachable: a freshly (re)started resident needs
-  // ~30 s of OSGi/JDT boot before its HTTP port answers. Poll every 5 s for as long as
-  // anything is unreachable AND the view is mounted — a local status call is free, and
-  // an expiring window just re-creates the stale-"unreachable" trap (Harald, 2026-07-06).
+  // ~30 s of OSGi/JDT boot before its HTTP port answers, so the view keeps polling for
+  // as long as anything is unreachable AND the view is mounted — an expiring window
+  // just re-creates the stale-"unreachable" trap (Harald, 2026-07-06).
+  //
+  // The retry BACKS OFF: the probe abandons its request at a client timeout without
+  // cancelling the resident's work, so a fixed interval can pile up server-side jobs a
+  // client cannot see. Backing off bounds how fast that can happen. It is hygiene, not
+  // a bound on cost — that belongs on the resident, whose answer must be cheap.
+  const RETRY_MIN_MS = 5000;
+  const RETRY_MAX_MS = 60000;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let retryDelayMs = RETRY_MIN_MS;
   let autoRetrying = false;
 
   onMount(() => {
@@ -129,10 +137,15 @@
       retryTimer = null;
     }
     autoRetrying = statuses.length === 0 || statuses.some((s) => !s.reachable);
-    if (!autoRetrying) return;
+    if (!autoRetrying) {
+      retryDelayMs = RETRY_MIN_MS;   // reachable again: the next outage starts fast
+      return;
+    }
+    const delay = retryDelayMs;
+    retryDelayMs = Math.min(retryDelayMs * 2, RETRY_MAX_MS);
     retryTimer = setTimeout(() => {
       void refreshStatus();
-    }, 5000);
+    }, delay);
   }
 
   async function refreshStatus() {

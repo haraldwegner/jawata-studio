@@ -9980,10 +9980,10 @@ mod tests {
                 if cmd == "memorize" {
                     // Sprint 28c D11: "STORE FIRST" was pinned here and is now WRONG.
                     // The store is rebuilt from a file substrate, so a direct record
-                    // writes a row with no file behind it and the next reseed removes
-                    // it — silently, because the count check afterwards asserts the
-                    // FILE count and still passes. The deployed text must send agents
-                    // to the substrate, and must not send them to a path they chose.
+                    // writes a row with no file behind it — engines before mcp v3.17.0
+                    // removed it at the very next reseed, and even now nothing can ever
+                    // REBUILD it. The deployed text must send agents to the substrate,
+                    // and must not send them to a path they chose.
                     assert!(
                         !body.contains("STORE FIRST"),
                         "{client}: the deployed /memorize still says STORE FIRST, which \
