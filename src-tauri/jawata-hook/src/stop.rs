@@ -431,9 +431,41 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
     // through and the giving-up is recorded. The agent can always exit sooner
     // by doing the thing — which is the difference between a bounded gate and
     // a trap.
-    // The anti-loop valve for every rule EXCEPT the review one, which carries
-    // its own ceiling below.
-    if facts.already_bounced && !facts.turn.owes_a_review() && !facts.owes_a_reseed() {
+    // The anti-loop valve for every rule EXCEPT the ones that carry their own
+    // ceiling: the review rule, the reseed rule, and RULE B.
+    //
+    // RULE B WAS ADDED 2026-08-29, and the defect it fixes was measured live in
+    // this gate's own log: `emitted, emitted, stop-allowed, stop-allowed`, where
+    // the last of those released a turn that ended on "here is what I will do
+    // next" with nothing armed. Harald: "you are in the middle of nowhere and
+    // just stop. This is even worse than with a hard cut at a checkpoint."
+    //
+    // The chain: a message trips the ask detector — OFTEN FALSELY, because the
+    // phrase list matches the bare substring DECISION inside ordinary words like
+    // "design decisions" — the turn is bounced, the agent rewrites without the
+    // trigger word, and the retry reaches this valve. `owes_a_review` is now
+    // false, so the valve returns Allow BEFORE Rule B is ever evaluated.
+    //
+    // So a false positive in the ask detector did not merely cost one bounce: it
+    // DISABLED THE AUTOCONTINUE PUSH for that turn. And it fires hardest exactly
+    // when the agent is discussing design, which is when it is deepest in a task
+    // and least able to afford being stranded.
+    //
+    // Rule B never needed this valve's protection: it is bounded by
+    // MAX_EMPTY_TURNS, which counts turns that produce NOTHING rather than blocks
+    // it issues, so a working session never approaches it and a wedged one is
+    // released in two. Excluding it here restores the push without reintroducing
+    // the wedge the valve exists to prevent.
+    let rule_b_would_push = facts.autonomy == Autonomy::Granted
+        && !facts.turn.armed_anything()
+        && !facts.turn.interrupted
+        && !facts.turn.user_asked
+        && facts.empty_turns < MAX_EMPTY_TURNS;
+    if facts.already_bounced
+        && !facts.turn.owes_a_review()
+        && !facts.owes_a_reseed()
+        && !rule_b_would_push
+    {
         return StopVerdict::Allow;
     }
 
@@ -1083,7 +1115,12 @@ fn asks_the_human(text: &str) -> bool {
     const PHRASES: &[&str] = &[
         "YOUR WORD", "NEEDS YOUR", "NEED YOUR", "YOUR CALL", "YOUR RULING",
         "YOUR SIGN OFF", "YOUR DECISION", "SHALL I", "WANT ME TO", "DO YOU WANT",
-        "MAY I", "DECISION", "LET ME KNOW", "UP TO YOU", "YOU DECIDE",
+        // "DECISION" is matched as its own WORD below, never as a substring:
+        // "design decisions", "the decision was made", "a decision path" are
+        // ordinary engineering prose and tripped this rule repeatedly on
+        // 2026-08-29 — and a false positive here does more than cost a bounce,
+        // it disables Rule B's push on the retry (see the valve in `judge`).
+        "MAY I", "LET ME KNOW", "UP TO YOU", "YOU DECIDE",
         "YOU CHOOSE", "IF YOU D RATHER", "IF YOU PREFER", "SAY THE WORD",
         "ON YOUR WORD", "AWAITING", "AWAIT YOUR", "SHOULD I", "WOULD YOU LIKE",
         "PREFER THAT I", "SAY GO", "SAY YES", "YOUR GO", "YOURS TO CONFIRM",
@@ -1094,6 +1131,32 @@ fn asks_the_human(text: &str) -> bool {
     ];
     if PHRASES.iter().any(|p| canon.contains(p)) {
         return true;
+    }
+    // THE AGENT'S OWN ASK FORMAT, always caught and checked FIRST. The upward
+    // contract says a decision ask opens with `DECISION:` on its own line, so a
+    // line starting that way is an ask whatever else the text contains — no
+    // pronoun test, no question mark needed.
+    if text.lines().any(|l| {
+        let t = l.trim_start().trim_start_matches(['#', '*', ' ']).to_uppercase();
+        t.starts_with("DECISION:") || t.starts_with("DECISION ")
+    }) {
+        return true;
+    }
+    // WORD-BOUNDED, not substring. "design decisions" inside a sentence about
+    // engineering is not an ask. The canonical form has already flattened
+    // punctuation to single spaces, so word matching is a token walk.
+    const BARE_WORDS: &[&str] = &["DECISION", "DECIDE", "RULING", "APPROVAL"];
+    if canon.split(' ').any(|w| BARE_WORDS.contains(&w)) {
+        // ...but only when the sentence is ABOUT the reader. "a decision path"
+        // and "the arms make no decision" are descriptions; "your decision" and
+        // "I need a decision" are asks. The pronoun is what separates them.
+        const ADDRESSED: &[&str] = &[
+            "YOUR", "YOU", "I NEED", "WE NEED", "NEEDS A", "AWAIT", "AWAITING",
+            "PENDING", "BLOCKED",
+        ];
+        if ADDRESSED.iter().any(|p| canon.contains(p)) {
+            return true;
+        }
     }
     // A DIRECT QUESTION to the reader. The phrase list above is what the agent
     // remembers; a question mark is what the agent cannot avoid while asking.
@@ -1580,6 +1643,73 @@ mod tests {
             judge(&f),
             "the grant covers his absence; his question is proof of presence"
         );
+    }
+
+    /// STRANDED MID-WORK CANNOT RECUR (2026-08-29). Measured in this gate's own
+    /// log — `emitted, emitted, stop-allowed, stop-allowed` — where the last
+    /// released a turn ending on "here is what I will do next" with nothing
+    /// armed. Harald: "you are in the middle of nowhere and just stop. This is
+    /// even worse than with a hard cut at a checkpoint."
+    ///
+    /// The chain was: an ask-detector FALSE POSITIVE bounces the turn, the agent
+    /// rewrites without the trigger word, and the retry hits the anti-loop valve
+    /// — which returned Allow before Rule B was ever evaluated. So one false
+    /// positive did not cost a bounce, it disabled the push.
+    #[test]
+    fn a_retry_still_gets_pushed_when_nothing_is_armed() {
+        let mut f = facts(Autonomy::Granted, vec![tool("Edit")]);
+        f.already_bounced = true; // the retry after an UNJUDGED MESSAGE bounce
+        assert!(!f.turn.armed_anything(), "precondition: an Edit arms no later wake-up");
+        match judge(&f) {
+            StopVerdict::Block { reason } => assert!(reason.contains("RULE B"), "{reason}"),
+            StopVerdict::Allow => panic!(
+                "the valve released a retry that armed nothing — this is the stranding: \
+                 the session ends mid-task and no job exists to wake it"
+            ),
+        }
+    }
+
+    /// The valve must still do its job for every rule that has no ceiling of its
+    /// own, or this fix trades a stranding for a wedge.
+    #[test]
+    fn the_valve_still_releases_a_retry_that_armed_work() {
+        let mut f = facts(Autonomy::Granted, vec![tool("Agent")]);
+        f.already_bounced = true;
+        assert_eq!(StopVerdict::Allow, judge(&f),
+            "a retry that DID arm work must pass — Rule B has nothing to complain about");
+    }
+
+    /// ORDINARY ENGINEERING PROSE IS NOT AN ASK. Every one of these tripped the
+    /// rule live on 2026-08-29 by containing DECISION as a bare substring, and
+    /// each false positive cost a bounce AND the push on the retry.
+    #[test]
+    fn describing_a_design_choice_is_not_asking_for_one() {
+        for s in [
+            "Two design decisions in the tool worth naming, and both are about \
+             whether the operation actually finishes.",
+            "It would add a class that holds no state and makes no decision.",
+            "Choosing whether a switch becomes a hierarchy is a judgement about \
+             the domain, not a property of the AST.",
+            "The decision path count is what cyclomatic complexity measures.",
+        ] {
+            assert!(!asks_the_human(s), "false positive, and it disables the push: {s:?}");
+        }
+    }
+
+    /// ...while a real ask still is one. The pair is asserted together because
+    /// either half alone passes for the wrong reason: a detector that never
+    /// fires satisfies the first, and today's satisfied the second.
+    #[test]
+    fn a_real_ask_is_still_caught_after_the_narrowing() {
+        for s in [
+            "DECISION: close C7? I recommend yes.",
+            "This one is your decision, not mine.",
+            "I need a decision on whether the default flips.",
+            "Blocked on your ruling about the cut line.",
+            "That needs your approval before it ships.",
+        ] {
+            assert!(asks_the_human(s), "a real ask must still be caught: {s:?}");
+        }
     }
 
     /// THE SIX-HOUR SLEEP CANNOT RECUR (2026-08-29, measured: `stop-allowed`

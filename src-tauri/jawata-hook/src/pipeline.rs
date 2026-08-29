@@ -860,7 +860,19 @@ fn stop_gate(
             // A bound that could not be persisted is SPENT, not zero. Reporting
             // it as zero would hold the session forever on a full disk or a
             // read-only home — the Cursor loop by another road, and silent.
-            if crate::autonomy::note_turn(&dir, &session, !turn.launches.is_empty()) {
+            // THE BOUND COUNTS WHAT THE RULE IS ABOUT (2026-08-29). It used to
+            // count turns with NO TOOL CALLS AT ALL, while Rule B fires on turns
+            // that ARMED NOTHING — and those are different sets. The stranding
+            // case measured that day sat exactly in the gap: a turn that edited
+            // files and started no job has launches, so it reset the counter,
+            // so the ceiling never advanced. With the valve no longer releasing
+            // such a turn, an unadvancing ceiling would be an unbounded block —
+            // the wedge the valve exists to prevent, arriving by another road.
+            //
+            // Counting `armed_anything()` aligns the bound with the rule: a
+            // session that keeps working (arming jobs) never approaches it, and
+            // one that keeps stopping with nothing running is released in two.
+            if crate::autonomy::note_turn(&dir, &session, turn.armed_anything()) {
                 n
             } else {
                 crate::autonomy::MAX_EMPTY_TURNS
@@ -1809,14 +1821,38 @@ mod tests {
     /// wedging a session could be deleted unnoticed. These two drive the same
     /// transcript through `stop_gate` under Granted, differing ONLY in the JSON
     /// key, and must disagree.
+    ///
+    /// THE FIXTURE CHANGED 2026-08-29, and the reason is the point. It used to
+    /// be a bare "done" with no tool calls, which disagreed via RULE B — and
+    /// Rule B is now EXCLUDED from the valve, because releasing a retry that
+    /// armed nothing is exactly how a session ends up stranded mid-task. Under
+    /// that contract both passes block, they agree, and this wire becomes
+    /// untestable.
+    ///
+    /// So the disagreement is driven through a rule the valve still covers: the
+    /// length budget. The turn ARMS WORK (a backgrounded Bash), so Rule B has
+    /// nothing to say, and its final text is over budget with no communicator —
+    /// which blocks on the first pass and is released on the retry. The guard's
+    /// purpose is unchanged; only the rule carrying it moved.
     #[test]
     fn the_anti_loop_flag_is_read_from_the_payload() {
         let d = std::env::temp_dir().join(format!("jawata-antiloop-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&d);
         let p = d.join("t.jsonl");
+        let long_text = "x".repeat(crate::stop::LENGTH_BUDGET + 200);
         std::fs::write(
             &p,
-            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n",
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "type": "assistant",
+                    "message": {"content": [
+                        {"type": "tool_use", "name": "Bash",
+                         "input": {"run_in_background": true}},
+                        {"type": "text", "text": long_text}
+                    ]}
+                })
+            ),
         )
         .unwrap();
 
