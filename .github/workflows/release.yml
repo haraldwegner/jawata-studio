@@ -475,7 +475,7 @@ jobs:
 
       - name: Upload artifacts to draft release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: 'jawata-studio ${{ github.ref_name }}'
@@ -553,7 +553,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Publish release as latest
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: 'jawata-studio ${{ github.ref_name }}'
