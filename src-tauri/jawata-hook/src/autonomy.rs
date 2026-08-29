@@ -117,6 +117,12 @@ pub fn note_prompt(base: &Path, session: &str, prompt: &str) -> bool {
     if file(base, session).exists() {
         let _ = std::fs::write(file(base, session), "0");
     }
+    // ...and the REVIEW-ROUND count with it, for the same reason. The ceiling
+    // bounds a loop the agent is running on its own; once he has spoken, the
+    // rounds after that are a new stretch and the old ones are not evidence
+    // about it. A round count that survived his input would spend a night's
+    // budget on the previous conversation.
+    let _ = std::fs::remove_file(rounds_file(base, session));
     false
 }
 
@@ -150,12 +156,87 @@ pub fn empty_turns(base: &Path, session: &str) -> u32 {
 
 /// End the grant.
 ///
-/// Called when the agent's own message asks the human for something only he can
-/// settle — a decision, a release, a ruling. There is nothing to autocontinue
-/// past at that point: the next move is his, and a gate that kept pushing would
-/// be pushing an agent that is genuinely blocked.
+/// HIS ESC, AND NOTHING ELSE. This used to be called on the agent's own message
+/// too, whenever a phrase list guessed it was asking for something — and on
+/// 2026-08-29 that guess fired on "SAY THE WORD" inside the sentence *"Nothing
+/// needed from you"*, destroyed the grant, and slept the session until he
+/// retyped the word. Harald's ruling, verbatim: *"you cannot by yourself change
+/// the autocontinue variable by yourself … I can switch off by ESC."*
+///
+/// The agent can still STOP — Rule B stands down on a declared `DECISION:`
+/// line. Stopping and revoking are different powers, and only the second one
+/// was ever his to give.
 pub fn clear(base: &Path, session: &str) -> bool {
+    let _ = std::fs::remove_file(rounds_file(base, session));
     !session.is_empty() && std::fs::remove_file(file(base, session)).is_ok()
+}
+
+/// The HARD CEILING on review rounds inside one autonomous stretch.
+///
+/// FOUR, not three, and Harald chose the shape (2026-08-29): *"3, or
+/// 3-with-the-blocking-exception → With the blocking exception."* His `/sprint`
+/// rule is "three, four at the outside if round three found something genuinely
+/// blocking". So three is the RULE and four is the CEILING: the agent judges
+/// whether round three's findings justify a fourth, and the gate guarantees
+/// there is never a fifth.
+///
+/// This exists because the other bound cannot see this loop. [`MAX_EMPTY_TURNS`]
+/// counts turns that did NOTHING, and every round of repair-then-re-review does
+/// real work — so a review that will not converge resets that counter forever.
+/// Measured on the hook as it stood: one bound, and it was blind to exactly the
+/// loop he asked about.
+pub const MAX_REVIEW_ROUNDS: u32 = 4;
+
+fn rounds_file(base: &Path, session: &str) -> PathBuf {
+    dir(base).join(format!(
+        "{}.rounds",
+        crate::pipeline::sanitize_session(session)
+    ))
+}
+
+/// Review rounds since he last spoke.
+pub fn review_rounds(base: &Path, session: &str) -> u32 {
+    if session.is_empty() {
+        return 0;
+    }
+    std::fs::read_to_string(rounds_file(base, session))
+        .ok()
+        .and_then(|t| t.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// Count this turn if it spawned a reviewer.
+///
+/// THE SIGNAL IS AN `Agent` LAUNCH THAT IS NOT THE COMMUNICATOR, and both
+/// halves were earned.
+///
+/// The precise signal — "an audit round" — is NOT available: the gate reads
+/// seats from HIS message (see `seats_in`), so a fresh-context auditor the
+/// AGENT spawns for itself is invisible to it. So the coarse signal it is, and
+/// overcounting is the safe direction for a ceiling: ordinary implementation
+/// work spawns no subagents at all, while a repair-then-re-review loop spawns
+/// one per round.
+///
+/// The carve-out is the half that nearly shipped wrong. Counting every `Agent`
+/// launch also counts the COMMUNICATOR, which runs once per judged message —
+/// four reviewed messages in one ordinary conversation would have hit the
+/// ceiling with no review loop anywhere near it. `ToolUse::arms_work` already
+/// excludes the reviewer for the same underlying reason: it judges the message
+/// being sent, it is not work that continues afterwards.
+///
+/// Harald found it by asking what the deviation actually cost (2026-08-29: *"I
+/// do not start any helper by myself. What is the problem here?"*) — which is
+/// worth recording, because the answer was a defect and not an explanation.
+pub fn note_review_round(base: &Path, session: &str, spawned_reviewer: bool) -> bool {
+    if session.is_empty() || !spawned_reviewer {
+        return true;
+    }
+    let f = rounds_file(base, session);
+    let next = review_rounds(base, session) + 1;
+    let _ = std::fs::create_dir_all(dir(base));
+    // Same direction as `note_turn`: an unpersistable bound is SPENT, never
+    // zero. A ceiling that silently fails to count is not a ceiling.
+    std::fs::write(&f, next.to_string()).is_ok()
 }
 
 /// Record what this turn did: work resets the count, an empty turn advances it.

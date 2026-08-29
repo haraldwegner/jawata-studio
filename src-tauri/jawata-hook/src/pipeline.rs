@@ -881,6 +881,41 @@ fn stop_gate(
         _ => 0,
     };
 
+    // THE SECOND BOUND, and it exists because the first one is blind to the
+    // loop Harald actually asked about (2026-08-29: "We need to avoid endless
+    // loops"). `empty_turns` counts turns that did NOTHING; a review that will
+    // not converge does real work every round and resets it forever.
+    let review_rounds = match (studio_dir(), autonomy) {
+        (Some(dir), stop::Autonomy::Granted) => {
+            // NOT THE COMMUNICATOR, and Harald's question found this before it
+            // shipped (2026-08-29: "I do not start any helper by myself. What
+            // is the problem here?"). The first version counted every `Agent`
+            // launch — and the message reviewer IS an `Agent` launch, run once
+            // per judged message. Four reviewed messages would have hit the
+            // ceiling with no review loop anywhere near it, in a single
+            // conversation. `arms_work` already carves the reviewer out for the
+            // same underlying reason: it judges the message being sent, it is
+            // not work that continues afterwards.
+            let spawned = turn
+                .launches
+                .iter()
+                .any(|l| l.name == "Agent" && !l.is_communicator());
+            let n = crate::autonomy::review_rounds(&dir, &session);
+            if crate::autonomy::note_review_round(&dir, &session, spawned) {
+                if spawned {
+                    n + 1
+                } else {
+                    n
+                }
+            } else {
+                // Unpersistable bound: SPENT, never zero. Same direction as
+                // every other ceiling here — a missed push beats a stuck night.
+                crate::autonomy::MAX_REVIEW_ROUNDS
+            }
+        }
+        _ => 0,
+    };
+
     // HIS ANSWER IS NEEDED -> THE GRANT ENDS, with nothing for him to type.
     //
     // Harald's rule, and better than the typed revoke this shipped with: a
@@ -914,12 +949,30 @@ fn stop_gate(
     // ask that SURVIVED review, or on his Esc; an unjudged ask gets bounced to
     // the communicator with the grant intact, and either comes back real
     // (grant ends, correctly) or dissolves (the work continues, correctly).
-    let needs_him = turn.asks_the_human && !turn.user_asked && turn.communicator_ran();
-    if needs_him || turn.interrupted {
+    // HIS ESC, AND NOTHING ELSE (Harald, 2026-08-29, verbatim: *"you cannot by
+    // yourself change the autocontinue variable by yourself … I can switch off
+    // by ESC"*).
+    //
+    // This line used to also end the grant on `needs_him` — an ASK INFERRED
+    // from the agent's own prose. On 2026-08-29 at 16:30:10Z it read "SAY THE
+    // WORD" inside *"Nothing needed from you — say the word only if you want
+    // one back."*, deleted the grant, and slept the session until he retyped
+    // the word 21 minutes later. He got no signal that it had happened.
+    //
+    // The design intended the communicator to separate a real ask from that
+    // kind of false positive, and the comment below still describes that
+    // intent — but the predicate only ever checked that the reviewer RAN, never
+    // what it CONCLUDED. On that very message it concluded "not a request for a
+    // decision", and the grant died anyway: running the reviewer is what
+    // completed the condition. The safeguard was the trigger.
+    //
+    // So the grant is now HIS alone. The agent can still STOP — Rule B stands
+    // down on a declared `DECISION:` line — but stopping and revoking are
+    // different powers, and only one of them was ever his to give.
+    if turn.interrupted {
         if let Some(dir) = studio_dir() {
             if crate::autonomy::clear(&dir, &session) {
-                let why = if turn.interrupted { "he interrupted" } else { "his answer is needed" };
-                crate::observer::emit_signal(&dir, "autonomy-ended", why);
+                crate::observer::emit_signal(&dir, "autonomy-ended", "he interrupted");
             }
         }
     }
@@ -1014,6 +1067,7 @@ fn stop_gate(
         autonomy,
         bounces,
         empty_turns,
+        review_rounds,
         substrate,
         reseed_bounces,
     };
@@ -1614,9 +1668,10 @@ mod tests {
     fn a_block_renders_claudes_stop_dialect() {
         let facts = StopFacts {
             empty_turns: 0,
+            review_rounds: 0,
             already_bounced: false,
             bounces: 0,
-            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false },
+            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, declares_a_decision: true, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false },
             autonomy: Autonomy::Granted,
             substrate: None,
             reseed_bounces: 0,

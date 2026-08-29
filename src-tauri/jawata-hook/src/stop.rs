@@ -220,7 +220,36 @@ pub struct Turn {
     /// merely READ a file containing the word; this counts assistant text only.
     pub refusals_emitted: usize,
     /// Whether the final message asks the human for a word, ruling or decision.
+    ///
+    /// HEURISTIC, and it may only cost a REVIEW. This is inferred from prose by
+    /// a phrase list, so it is wrong sometimes — and every wrong guess used to
+    /// be paid for twice: it stood Rule B down for the turn AND deleted the
+    /// autonomy grant. Both are now keyed on [`Turn::declares_a_decision`]
+    /// instead. See that field for Harald's ruling.
     pub asks_the_human: bool,
+    /// Whether the final message DECLARES a decision, in the one form his
+    /// upward contract mandates: a `DECISION:` line of its own.
+    ///
+    /// HARALD'S RULING, 2026-08-29, verbatim: *"you cannot by yourself change
+    /// the autocontinue variable by yourself. Only the conditions met is a way
+    /// to stop your work. … If I want you to stop at checkpoint I don't say
+    /// autocontinue. But you cannot on your own discretion just switch this."*
+    ///
+    /// The control lives entirely at GRANT time and it is his: he withholds the
+    /// word when he wants checkpoint stops. So the agent may not switch the
+    /// grant off, and may not stand the push down on an INFERENCE about its own
+    /// wording either — a phrase guessed out of prose is the agent's discretion
+    /// wearing a detector's clothes, and it slept a session for 21 minutes on
+    /// 2026-08-29 by matching "SAY THE WORD" inside the sentence *"Nothing
+    /// needed from you — say the word only if you want one back."*
+    ///
+    /// A DECLARATION is different in kind from a guess: it is unambiguous, it
+    /// is the agent's own deliberate act, and it is the form he already
+    /// requires for a real ask. Everything he named as a legitimate stop — a
+    /// design or spec direction, access only he has, something genuinely
+    /// broken, an unresolved dispute with the auditor, a release, the sprint
+    /// finished — is raised AS a decision, so one marker carries all of them.
+    pub declares_a_decision: bool,
     /// Whether the human INTERRUPTED this window (Esc, or a stop mid-tool).
     ///
     /// His Esc must stop the work, full stop. A gate that answers an interrupt
@@ -382,6 +411,9 @@ pub struct StopFacts {
     /// working is not a session being pushed and stuck, and only this number
     /// tells them apart.
     pub empty_turns: u32,
+    /// Review rounds since he last spoke — the ceiling on a loop that does
+    /// real work every round and therefore never advances `empty_turns`.
+    pub review_rounds: u32,
     /// The store's answer about its substrate, asked only when this turn wrote
     /// markdown. Gathered by the pipeline, like `bounces`, so `judge` stays pure.
     pub substrate: Option<SubstrateDrift>,
@@ -698,8 +730,46 @@ the answer — and send back what it understood, so the reader sees the text onc
         // And nothing to autocontinue past when his answer is what is missing:
         // the next move is genuinely his, and holding here would push an agent
         // that is blocked rather than idle.
-        if facts.turn.asks_the_human {
+        //
+        // KEYED ON THE DECLARATION, NOT ON THE GUESS (Harald, 2026-08-29). This
+        // read `asks_the_human` — a 42-phrase substring list over the agent's
+        // own prose — until it stood a session down for 21 minutes by matching
+        // "SAY THE WORD" inside the sentence *"Nothing needed from you — say
+        // the word only if you want one back."* His ruling: *"you cannot on
+        // your own discretion just switch this."* A phrase inferred from prose
+        // IS the agent's discretion wearing a detector's clothes; a `DECISION:`
+        // line is a deliberate act in the form his contract already mandates.
+        // Every stop reason he named — a design or spec direction, access only
+        // he has, something genuinely broken, an unresolved dispute with the
+        // auditor, a release, the sprint finished — is raised AS a decision, so
+        // one marker carries all of them and nothing else stops the push.
+        if facts.turn.declares_a_decision {
             return StopVerdict::Allow;
+        }
+        // THE REVIEW CEILING — the second bound, for the loop the first cannot
+        // see. `empty_turns` counts turns that did nothing; a review that will
+        // not converge does real work every round and resets it forever.
+        //
+        // Reaching it is not a new kind of stop: an unconverged review IS "a
+        // dispute with the auditor", one of the five reasons Harald named as
+        // legitimately his. So the gate does not fall silent here — it pushes
+        // ONE more time, telling the agent to state the dispute as a decision.
+        // That turn then declares, the rule above allows, and the loop ends
+        // visibly with a reason he can read, rather than by a counter running
+        // out in the dark.
+        if facts.review_rounds >= crate::autonomy::MAX_REVIEW_ROUNDS {
+            return StopVerdict::Block {
+                reason: format!(
+                    "REVIEW CEILING: {} review rounds since he last spoke, and the cap \
+is {}. His rule is three rounds, four at the outside when round three found something \
+genuinely blocking — past that, remaining findings are ACCEPTED AS-IS or written down as \
+named open items, never another round. If the review has genuinely not converged, that is \
+a dispute with the auditor and it is his to settle: say so on a line beginning DECISION, \
+and stop. Do not open another round.",
+                    facts.review_rounds,
+                    crate::autonomy::MAX_REVIEW_ROUNDS
+                ),
+            };
         }
         // HIS OWN QUESTION OPENED THIS WINDOW -> the turn is conversation, not
         // idle autonomy. The grant covers his ABSENCE, and a fresh question is
@@ -976,6 +1046,7 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
         }
     }
     turn.asks_the_human = asks_the_human(&turn.final_text);
+    turn.declares_a_decision = declares_a_decision(&turn.final_text);
     // (Seats are read from the human's own message where the window opens —
     // see `seats_in`. A `Skill` launch counts too: an agent may invoke a seat
     // on its own.)
@@ -1090,6 +1161,25 @@ fn user_asked(text: &str) -> bool {
         "COMPARE", "OPINION", "ADVISE", "ADVICE", "THOUGHTS",
     ];
     IMPERATIVES.iter().any(|p| u.contains(p))
+}
+
+/// THE DECLARED ASK — a `DECISION:` line of its own, and nothing else.
+///
+/// This is the ONLY thing that may stand the autonomy push down, and the only
+/// reason distinct from his Esc. It is deliberately not a heuristic: it matches
+/// a line the agent wrote on purpose, in the form his upward contract already
+/// mandates, so it cannot fire on prose that merely resembles an ask.
+///
+/// Kept separate from [`asks_the_human`] rather than folded into it, because
+/// the two now answer different questions and pay different prices. That one
+/// asks "might this be an ask?" and its cost is a communicator review — a
+/// false positive there is cheap. This one asks "did the agent declare that it
+/// is stopping?" and its cost is the session's evening.
+fn declares_a_decision(text: &str) -> bool {
+    text.lines().any(|l| {
+        let t = l.trim_start().trim_start_matches(['#', '*', '>', ' ']).to_uppercase();
+        t.starts_with("DECISION:") || t.starts_with("DECISION ")
+    })
 }
 
 fn asks_the_human(text: &str) -> bool {
@@ -1233,9 +1323,10 @@ mod tests {
     fn facts(autonomy: Autonomy, launches: Vec<ToolUse>) -> StopFacts {
         StopFacts {
             empty_turns: 0,
+            review_rounds: 0,
             already_bounced: false,
             bounces: 0,
-            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false },
+            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, declares_a_decision: false, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false },
             autonomy,
             substrate: None,
             reseed_bounces: 0,
@@ -1742,6 +1833,7 @@ mod tests {
 
         let f = StopFacts {
             empty_turns: 0,
+            review_rounds: 0,
             already_bounced: false,
             bounces: 0,
             turn,
@@ -1777,6 +1869,7 @@ mod tests {
         let turn = read_turn(&transcript).expect("parses");
         let f = StopFacts {
             empty_turns: 0,
+            review_rounds: 0,
             already_bounced: false,
             bounces: 0,
             turn,
@@ -1879,6 +1972,66 @@ mod tests {
     ///
     /// The retry now excuses everything EXCEPT a missing review — and even
     /// that only until the ceiling, so it bounds rather than wedges.
+    /// THE REVIEW CEILING, and the reason it exists rather than reusing the
+    /// other bound: every round of a repair-then-re-review loop DOES WORK, so
+    /// `empty_turns` resets to zero forever and never sees it.
+    #[test]
+    fn the_review_ceiling_ends_a_loop_that_does_work_every_round() {
+        // Below the cap: the push is unaffected. A session that spawns a
+        // reviewer now and then is ordinary work, not a loop.
+        let mut ok = facts(Autonomy::Granted, vec![]);
+        ok.review_rounds = crate::autonomy::MAX_REVIEW_ROUNDS - 1;
+        match judge(&ok) {
+            StopVerdict::Block { reason } => assert!(
+                reason.contains("RULE B"),
+                "below the cap the ordinary push must run: {reason}"
+            ),
+            StopVerdict::Allow => panic!("below the cap nothing should stand the push down"),
+        }
+        // PROOF OF LIFE for the counter itself: the empty-turn bound cannot
+        // reach this case, so if it could, this test would prove nothing.
+        assert_eq!(ok.empty_turns, 0, "every round did work, so the other bound is at zero");
+
+        // THE COMMUNICATOR IS NOT A REVIEW ROUND, and this nearly shipped
+        // wrong. It is an `Agent` launch like any other, and it runs once per
+        // judged message — so counting it would have spent the ceiling on four
+        // reviewed messages in one ordinary conversation, with no review loop
+        // anywhere near it. `arms_work` carves it out for the same reason.
+        assert!(
+            !communicator().arms_work(),
+            "the reviewer judges the message being sent; it is not work that continues"
+        );
+        assert!(
+            communicator().is_communicator(),
+            "the counter's carve-out keys on exactly this, so it must hold here"
+        );
+
+        // At the cap: pushed ONE more time, and told to state the dispute.
+        let mut spent = facts(Autonomy::Granted, vec![]);
+        spent.review_rounds = crate::autonomy::MAX_REVIEW_ROUNDS;
+        match judge(&spent) {
+            StopVerdict::Block { reason } => {
+                assert!(reason.contains("REVIEW CEILING"), "{reason}");
+                assert!(
+                    reason.contains("DECISION"),
+                    "it must name the way OUT, or the ceiling is a wall: {reason}"
+                );
+            }
+            StopVerdict::Allow => panic!("the ceiling must be reached, not passed"),
+        }
+
+        // ...and the loop then ENDS, visibly, on a declared decision.
+        let mut declared = facts(Autonomy::Granted, vec![]);
+        declared.review_rounds = crate::autonomy::MAX_REVIEW_ROUNDS;
+        declared.turn.declares_a_decision = true;
+        assert_eq!(
+            StopVerdict::Allow,
+            judge(&declared),
+            "an unconverged review is a dispute — his to settle, and a legitimate stop"
+        );
+    }
+
+    #[test]
     fn a_second_pass_excuses_everything_except_a_missing_review() {
         // Retry, no review, and the turn ASKS for something: still held.
         let mut f = facts(Autonomy::Granted, vec![]);
@@ -1891,11 +2044,38 @@ mod tests {
             }
             StopVerdict::Allow => panic!("the retry must not excuse a missing review"),
         }
-        // Retry, review done: allowed, and no other rule re-fires.
+        // Retry, review done, and the turn only LOOKS like an ask: Rule A is
+        // satisfied and Rule B now PUSHES ANYWAY.
+        //
+        // This asserts the 2026-08-29 contract change. It used to expect Allow,
+        // because `asks_the_human` — a phrase list over the agent's own prose —
+        // stood the push down. That is what slept a session for 21 minutes by
+        // matching "SAY THE WORD" inside "Nothing needed from you". Harald's
+        // ruling: the agent may not stop on its own inference. A heuristic ask
+        // still costs a REVIEW; only a DECLARATION stops the work.
         let mut judged = facts(Autonomy::Granted, vec![communicator()]);
         judged.turn.asks_the_human = true;
         judged.already_bounced = true;
-        assert_eq!(StopVerdict::Allow, judge(&judged));
+        match judge(&judged) {
+            StopVerdict::Block { reason } => assert!(
+                reason.contains("RULE B"),
+                "a heuristic ask must not stand the push down: {reason}"
+            ),
+            StopVerdict::Allow => {
+                panic!("an inferred ask stopped the session — the switch is the agent's again")
+            }
+        }
+        // ...and the DECLARED form does stop it, which is the other half: the
+        // agent keeps a way to halt, it just has to say so on purpose.
+        let mut declared = facts(Autonomy::Granted, vec![communicator()]);
+        declared.turn.asks_the_human = true;
+        declared.turn.declares_a_decision = true;
+        declared.already_bounced = true;
+        assert_eq!(
+            StopVerdict::Allow,
+            judge(&declared),
+            "a declared DECISION line is a legitimate stop"
+        );
         // The ceiling: it gives up rather than wedging the session.
         let mut spent = facts(Autonomy::Granted, vec![]);
         spent.turn.asks_the_human = true;
@@ -2144,6 +2324,7 @@ mod tests {
         assert!(turn.user_asked, "the human's message carries a question mark");
         let verdict = judge(&StopFacts {
             empty_turns: 0,
+            review_rounds: 0,
             already_bounced: false,
             bounces: 0,
             turn,
@@ -2184,7 +2365,7 @@ mod tests {
         assert!(turn.asks_the_human);
         assert!(
             matches!(
-                judge(&StopFacts { empty_turns: 0, already_bounced: false,
+                judge(&StopFacts { empty_turns: 0, review_rounds: 0, already_bounced: false,
             bounces: 0, turn, autonomy: Autonomy::Unknown, substrate: None,
             reseed_bounces: 0 }),
                 StopVerdict::Block { .. }
