@@ -215,6 +215,27 @@ pub struct Turn {
     pub final_text: String,
     /// Tool calls made since the last human message.
     pub launches: Vec<ToolUse>,
+    /// Did the agent do ANY work since the last time this gate pushed it?
+    ///
+    /// This is the empty-turn ceiling's input, and it must be measured from the
+    /// PUSH rather than from the human's last message. Two reasons, and the
+    /// second is why `launches.is_empty()` cannot serve:
+    ///
+    /// 1. The ceiling exists to release a WEDGE — pushed, produced nothing,
+    ///    pushed, produced nothing. Its question is therefore about what happened
+    ///    after a push, not about the window as a whole. Until 2026-08-30 it was
+    ///    fed [`Turn::armed_anything`], so a turn of thirty edits and a commit
+    ///    counted as EMPTY and two of them stood Rule B down — an unattended run
+    ///    on a two-turn leash, stopping exactly like a normal stop.
+    /// 2. But the window does NOT reset at a push: the client injects the block
+    ///    reason as a user line, and `is_our_own_bounce` deliberately keeps the
+    ///    previous window rather than resetting it. So "any tool call in the
+    ///    window" would count calls made BEFORE the push towards the attempt
+    ///    AFTER it — the counter would reset on every push, the ceiling would
+    ///    never be reached, and the wedge it guards against would become an
+    ///    endless push loop. Named by the fresh audit of 2026-08-30 as the reason
+    ///    the obvious version of this fix is not sufficient.
+    pub worked_since_push: bool,
     /// Refusals the AGENT ITSELF emitted in this window — not strings it read.
     /// The bash gate counted the raw transcript and fired on any session that
     /// merely READ a file containing the word; this counts assistant text only.
@@ -913,7 +934,14 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
             // message that genuinely opens with this exact prefix keeps the
             // previous window — which is the safer direction: it can only make
             // the gate see MORE of the turn, never less.
-            Some("user") if !is_tool_result(&v) && is_our_own_bounce(&v) => {}
+            Some("user") if !is_tool_result(&v) && is_our_own_bounce(&v) => {
+                // OUR OWN PUSH RESETS THE WORK CLOCK, and only that clock.
+                // The window itself deliberately survives (see above), so the
+                // ceiling would otherwise credit the attempt AFTER the push with
+                // the work done BEFORE it, never advance, and turn the wedge it
+                // guards into an endless push loop.
+                turn.worked_since_push = false;
+            }
             // THE HARNESS IS NOT THE HUMAN (the 2026-08-29 six-hour sleep).
             // A task notification opens a new window — the agent is being
             // re-invoked — but it grants none of the human's exemptions:
@@ -1015,6 +1043,10 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                             {
                                 turn.wrote_markdown = true;
                             }
+                            // ANY tool call is work — an edit, a build, a commit.
+                            // The old measure was "started a background job",
+                            // which made a turn of real work read as empty.
+                            turn.worked_since_push = true;
                             turn.launches.push(ToolUse {
                                 subagent: input
                                     .and_then(|i| i.get("subagent_type"))
@@ -1321,7 +1353,10 @@ mod tests {
             review_rounds: 0,
             already_bounced: false,
             bounces: 0,
-            turn: Turn { final_text: "done".into(), launches, refusals_emitted: 0, asks_the_human: false, declares_a_decision: false, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false },
+            // Mirrors reality rather than defaulting: a turn carrying tool calls
+            // HAS worked. A helper that always said `false` would let a test pass
+            // against a fixture that could not occur.
+            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, refusals_emitted: 0, asks_the_human: false, declares_a_decision: false, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false },
             autonomy,
             substrate: None,
             reseed_bounces: 0,
@@ -1465,6 +1500,29 @@ mod tests {
             serde_json::to_string(body).unwrap()
         )
     }
+    /// One user line carrying `text` — the human, or our own bounce, depending
+    /// on what the text is. Built with `serde_json` rather than an escaped
+    /// format string: the panic-guard scans this file's braces, and hand-escaped
+    /// JSON fixtures make its scan end mid-skip, which it reports honestly as
+    /// "every production line after that point went unexamined".
+    fn human_line(text: &str) -> String {
+        serde_json::json!({"type": "user", "message": {"content": text}}).to_string()
+    }
+
+    /// One assistant line carrying a single `Edit` tool call — foreground work
+    /// that arms nothing.
+    fn edit_line() -> String {
+        serde_json::json!({
+            "type": "assistant",
+            "message": {"content": [{
+                "type": "tool_use",
+                "name": "Edit",
+                "input": {"file_path": "/x/y.rs"}
+            }]}
+        })
+        .to_string()
+    }
+
     fn assistant_line(text: &str) -> String {
         format!(
             "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":{}}}]}}}}",
@@ -1480,6 +1538,72 @@ mod tests {
         read_turn(&t).unwrap()
     }
 
+
+    /// AN EDIT IS WORK — the two-turn leash, measured 2026-08-30.
+    ///
+    /// The empty-turn ceiling was fed `armed_anything()`: "did this turn start a
+    /// background job". So a turn of edits, a build and a commit counted as EMPTY,
+    /// two of them reached `MAX_EMPTY_TURNS`, and Rule B stood down — an unattended
+    /// run on a two-turn leash, ending exactly like an ordinary stop with nothing
+    /// in the log. Most turns are foreground work, so the leash was the common case.
+    #[test]
+    fn foreground_work_is_work() {
+        let t = format!(
+            "{}\n{}\n{}\n",
+            human_line("go"),
+            edit_line(),
+            assistant_line("edited it")
+        );
+        let turn = read_turn(&t).unwrap();
+        assert!(
+            !turn.armed_anything(),
+            concat!(
+                "precondition: an Edit starts no background job — this is exactly ",
+                "the turn the old measure called EMPTY"
+            )
+        );
+        assert!(
+            turn.worked_since_push,
+            "but it IS work, and the ceiling must not advance on it"
+        );
+    }
+
+    /// AND THE CLOCK RESTARTS AT THE PUSH — the half that keeps the ceiling real.
+    ///
+    /// The window deliberately survives our own block (`is_our_own_bounce` keeps
+    /// the previous window rather than resetting it), so "any tool call in the
+    /// window" would credit the attempt AFTER a push with work done BEFORE it. The
+    /// counter would then reset on every push, the ceiling would never be reached,
+    /// and the wedge it guards against — pushed, nothing, pushed, nothing — would
+    /// run forever. Named by the fresh audit as why the obvious fix is insufficient.
+    #[test]
+    fn work_before_the_push_does_not_count_for_the_attempt_after_it() {
+        // The client's own wrapper, at the START of the line — that is what
+        // `is_our_own_bounce` keys on, and a prefixed variant is read as the
+        // human, which resets the window instead of keeping it.
+        let t = format!(
+            "{}\n{}\n{}\n{}\n",
+            human_line("go"),
+            edit_line(),
+            human_line("Stop hook feedback:\nRULE B: autonomy is granted …"),
+            assistant_line("here is what I will do next")
+        );
+        let turn = read_turn(&t).unwrap();
+        assert!(
+            !turn.launches.is_empty(),
+            concat!(
+                "the window still holds the pre-push Edit — our own block does not ",
+                "reset it, and that is deliberate"
+            )
+        );
+        assert!(
+            !turn.worked_since_push,
+            concat!(
+                "but the attempt AFTER the push produced nothing, so the ceiling ",
+                "must advance — otherwise a wedge pushes forever"
+            )
+        );
+    }
 
     /// B1, from the C5 audit — and it was a LIVE block, not a hypothesis.
     ///

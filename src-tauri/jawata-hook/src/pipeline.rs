@@ -872,7 +872,15 @@ fn stop_gate(
             // Counting `armed_anything()` aligns the bound with the rule: a
             // session that keeps working (arming jobs) never approaches it, and
             // one that keeps stopping with nothing running is released in two.
-            if crate::autonomy::note_turn(&dir, &session, turn.armed_anything()) {
+            // 2026-08-30: was `turn.armed_anything()` — "started a background
+            // job". A turn of thirty edits, a build and a commit therefore
+            // counted as EMPTY, and two of them stood Rule B down: an unattended
+            // run on a two-turn leash, stopping exactly like a normal stop, with
+            // nothing in the log. Now it is work SINCE THE LAST PUSH, which is
+            // the question the ceiling actually asks — see `Turn::worked_since_push`
+            // for why "any call in the window" is not the same thing and would
+            // turn the wedge guard into an endless push loop.
+            if crate::autonomy::note_turn(&dir, &session, turn.worked_since_push) {
                 n
             } else {
                 crate::autonomy::MAX_EMPTY_TURNS
@@ -1671,7 +1679,7 @@ mod tests {
             review_rounds: 0,
             already_bounced: false,
             bounces: 0,
-            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, declares_a_decision: true, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false },
+            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, declares_a_decision: true, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, worked_since_push: false },
             autonomy: Autonomy::Granted,
             substrate: None,
             reseed_bounces: 0,
