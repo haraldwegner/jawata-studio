@@ -872,14 +872,32 @@ fn stop_gate(
             // Counting `armed_anything()` aligns the bound with the rule: a
             // session that keeps working (arming jobs) never approaches it, and
             // one that keeps stopping with nothing running is released in two.
-            // 2026-08-30: was `turn.armed_anything()` — "started a background
-            // job". A turn of thirty edits, a build and a commit therefore
-            // counted as EMPTY, and two of them stood Rule B down: an unattended
-            // run on a two-turn leash, stopping exactly like a normal stop, with
-            // nothing in the log. Now it is work SINCE THE LAST PUSH, which is
-            // the question the ceiling actually asks — see `Turn::worked_since_push`
-            // for why "any call in the window" is not the same thing and would
-            // turn the wedge guard into an endless push loop.
+            // `worked_since_push`, AND THE REASONING ABOVE IS SUPERSEDED — it
+            // argued the bound must count the rule's own predicate or the block is
+            // unbounded. That is true of a bound on BLOCKS. It is not true here,
+            // and the difference is what this ceiling is for.
+            //
+            // WHAT THE LOOP ACTUALLY COSTS. A push that produces real work is the
+            // mechanism succeeding; capping it caps the feature. The only loop
+            // worth stopping is push -> nothing -> push -> nothing, which burns
+            // money and produces no output. So the counter advances on turns that
+            // produced NOTHING and resets on turns that worked. An unbounded run
+            // of WORKING turns is not a wedge, it is an unattended session doing
+            // its job.
+            //
+            // MEASURED 2026-08-30 in v3.17.3's own log: six consecutive
+            // `block RULE B`, `empty=0` on every one — because every one of those
+            // turns did work, and every push produced more. Read as a runaway loop
+            // it looks alarming; read against what a push COSTS it is the design
+            // working. Harald's question is what settled it: "Why do you need this
+            // at a limit at all?"
+            //
+            // I reverted this to `armed_anything()` earlier the same evening and
+            // that was wrong — it reinstates the two-turn leash, where an
+            // unattended editing run is released after two turns of real work.
+            // The revert is recorded rather than hidden because the flip-flop is
+            // the interesting part: the first reasoning was sound about a bound on
+            // blocks and was applied to a bound on emptiness.
             if crate::autonomy::note_turn(&dir, &session, turn.worked_since_push) {
                 n
             } else {

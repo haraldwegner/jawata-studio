@@ -509,6 +509,10 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
     // it issues, so a working session never approaches it and a wedged one is
     // released in two. Excluding it here restores the push without reintroducing
     // the wedge the valve exists to prevent.
+    // THIS IS THE SECOND COPY of Rule B's condition and it must agree with the
+    // first, character for character. The v3.17.2 notes already recorded what
+    // happens otherwise: a fix taught to one copy and not the other, so the
+    // exemption switched itself off exactly where it was needed.
     let rule_b_would_push = facts.autonomy == Autonomy::Granted
         && !facts.turn.armed_anything()
         && !facts.turn.interrupted
@@ -736,6 +740,17 @@ the answer — and send back what it understood, so the reader sees the text onc
     // the reason the review rule learned the hard way: Cursor re-invokes with
     // the retry flag unset, so a valve on that path was never entered and the
     // rule blocked forever — measured at counter 11 and still climbing.
+    // THE PREDICATE STAYS `armed_anything`, and an attempt to change it to
+    // `worked_since_push` was REVERTED on 2026-08-30 because the tests below
+    // refused it — correctly.
+    //
+    // The two fields answer different questions and only one belongs here:
+    //   armed_anything      — will ANYTHING wake this session again?
+    //   worked_since_push   — did this turn accomplish anything?
+    // Rule B exists because a turn that edits, compiles and commits but starts no
+    // background job leaves NOTHING to wake the session: it ends mid-task and
+    // sleeps until he returns. That is Harald's "you are in the middle of nowhere
+    // and just stop", and it is a question about ARMING, not about effort.
     if facts.autonomy == Autonomy::Granted && !facts.turn.armed_anything() {
         if facts.empty_turns >= MAX_EMPTY_TURNS {
             return StopVerdict::Allow;
@@ -1539,15 +1554,21 @@ mod tests {
     }
 
 
-    /// AN EDIT IS WORK — the two-turn leash, measured 2026-08-30.
+    /// THE TWO FIELDS DISAGREE ON EXACTLY THE TURN THAT MATTERS, and which one
+    /// feeds which decision is the whole of tonight's defect.
     ///
-    /// The empty-turn ceiling was fed `armed_anything()`: "did this turn start a
-    /// background job". So a turn of edits, a build and a commit counted as EMPTY,
-    /// two of them reached `MAX_EMPTY_TURNS`, and Rule B stood down — an unattended
-    /// run on a two-turn leash, ending exactly like an ordinary stop with nothing
-    /// in the log. Most turns are foreground work, so the leash was the common case.
+    /// A turn of edits with no background job: `worked_since_push` true,
+    /// `armed_anything` false. Rule B fires on the second — correctly, because it
+    /// asks "will anything wake this session" and nothing will. `c259d44` then
+    /// pointed the CEILING at the first, so on this very turn the rule fired and
+    /// the counter reset, and the block became unbounded. Measured in v3.17.3's
+    /// own log the evening it shipped: six consecutive `block RULE B`, `empty=0`
+    /// on every one.
+    ///
+    /// This test exists to pin the DISAGREEMENT, so the next person who reaches
+    /// for the friendlier-sounding field has to read why.
     #[test]
-    fn foreground_work_is_work() {
+    fn the_two_work_measures_disagree_on_an_editing_turn() {
         let t = format!(
             "{}\n{}\n{}\n",
             human_line("go"),
@@ -1557,14 +1578,59 @@ mod tests {
         let turn = read_turn(&t).unwrap();
         assert!(
             !turn.armed_anything(),
-            concat!(
-                "precondition: an Edit starts no background job — this is exactly ",
-                "the turn the old measure called EMPTY"
-            )
+            "an Edit starts no background job, so nothing will wake this session"
         );
         assert!(
             turn.worked_since_push,
-            "but it IS work, and the ceiling must not advance on it"
+            "and yet the turn plainly did work — the two measures differ HERE"
+        );
+    }
+
+    /// THE CEILING RELEASES, AND IT IS REACHED BY EMPTINESS, NOT BY EFFORT.
+    ///
+    /// Two halves, and the second is the one this mechanism keeps losing.
+    ///
+    /// The rule must still push a working turn that armed nothing — that turn
+    /// leaves nothing to wake the session, and pushing it is the whole feature.
+    /// So the ceiling must NOT be reached by working: it is reached by producing
+    /// nothing, twice. An unbounded run of WORKING turns is an unattended session
+    /// doing its job; the only loop worth stopping is push, nothing, push,
+    /// nothing.
+    #[test]
+    fn the_ceiling_releases_but_only_emptiness_reaches_it() {
+        let mut f = facts(Autonomy::Granted, vec![tool("Edit")]);
+        assert!(!f.turn.armed_anything(), "precondition: nothing will wake this");
+        assert!(f.turn.worked_since_push, "precondition: but it did work");
+
+        f.empty_turns = MAX_EMPTY_TURNS - 1;
+        assert!(
+            matches!(judge(&f), StopVerdict::Block { .. }),
+            "below the ceiling it must push, or the mechanism does nothing at all"
+        );
+
+        f.empty_turns = MAX_EMPTY_TURNS;
+        assert!(
+            matches!(judge(&f), StopVerdict::Allow),
+            "at the ceiling it must let go, or a finished session is pushed forever"
+        );
+
+        // AND THE HALF THAT WAS MISSING: this working turn must not ADVANCE the
+        // counter toward that ceiling. Reverted to `armed_anything()` on
+        // 2026-08-30 and put back the same evening — under that spelling an
+        // unattended editing run is released after two turns of real work, which
+        // is the two-turn leash, not a wedge guard.
+        let empty = facts(Autonomy::Granted, vec![]);
+        assert!(
+            !empty.turn.worked_since_push,
+            "a turn with no calls at all is what the counter is for"
+        );
+        assert!(
+            f.turn.worked_since_push && !empty.turn.worked_since_push,
+            concat!(
+                "the counter's input must SEPARATE these two turns. Feeding it ",
+                "armed_anything() makes them identical — both false — and the ",
+                "editing run is then leashed to two turns"
+            )
         );
     }
 
