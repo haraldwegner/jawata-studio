@@ -134,6 +134,55 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
 /// block on the user's command. "I could not tell" must therefore be an
 /// explicit allow, which is the opposite of the default everywhere else in
 /// this binary — and is why it is written down here.
+/// Tools that CHANGE something, as opposed to reading it.
+///
+/// Deliberately the same list `Turn::changed_code` uses, plus the two ways a
+/// commit or a release actually happens here — a shell command and a file
+/// write. Reading is never refused: answering him often requires it.
+fn is_mutating_tool(tool: &str) -> bool {
+    matches!(
+        tool,
+        "Edit" | "Write" | "NotebookEdit" | "Bash"
+            | "rename_symbol" | "extract" | "inline" | "move" | "move_method"
+            | "move_in_hierarchy" | "change_method_signature" | "generate"
+            | "organize_imports" | "apply_cleanup" | "apply_null_annotations"
+            | "refactor_to_pattern" | "replace_duplicates" | "refactoring"
+            | "encapsulate_field" | "quick_fix" | "format"
+    )
+}
+
+/// `Some(reason)` when this call would turn an answer into a launch pad.
+///
+/// Two conditions, both read from the transcript rather than inferred from
+/// anything the agent says about itself: the window was opened by HIS OWN
+/// message (not a harness notification, not our own push), and a substantial
+/// answer has ALREADY been emitted inside it. The tool call now arriving is
+/// therefore the turn-around.
+///
+/// SILENT WHEN IT CANNOT SEE. No transcript, an unreadable one, a window he did
+/// not open — all return `None`. A guard that refuses on missing evidence would
+/// block every session whose transcript it failed to read, which is a worse
+/// failure than the one it prevents.
+fn answering_then_working(payload: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let path = v.get("transcript_path").and_then(|p| p.as_str())?;
+    let text = read_tail(path, TRANSCRIPT_TAIL_BYTES).ok()?;
+    let turn = crate::stop::read_turn(&text).ok()?;
+    if !turn.human_window || !turn.answered_substantially {
+        return None;
+    }
+    Some(format!(
+        "ANSWER FIRST OR WORK FIRST, NOT ANSWER THEN WORK. He is in this window \
+         — his own message opened it — and this turn has already emitted an \
+         answer of {}+ characters. A change now is the turn-around he named: \
+         \"You are not working on a plan but talking with me -> Hence, don't \
+         turn around and work on something.\" If this IS the work he asked for, \
+         make the change BEFORE the answer and let the answer be last. Reads are \
+         never refused here.",
+        crate::stop::ANSWER_LENGTH
+    ))
+}
+
 fn guard(client: Client, payload: &str) -> Outcome {
     // THE EDIT HALF, FIRST. Sprint 28's binary read only a shell command and
     // never looked at which tool fired, so a front-door `Edit` of a `.java`
@@ -168,6 +217,31 @@ fn guard(client: Client, payload: &str) -> Outcome {
             }
         }
     }
+    // DON'T TURN AROUND AND WORK — Harald, 2026-08-30, on the failure this
+    // refuses: *"in a conversation is the other way round. You are not working
+    // on a plan but talking with me -> Hence, don't turn around and work on
+    // something."*
+    //
+    // WHY IT LIVES HERE AND NOT AT THE STOP GATE. The stop gate fires when the
+    // turn is over: it can report a commit made mid-conversation, it cannot
+    // prevent one. A control that must stop something from happening, built on
+    // a channel that only runs afterwards, is the shape this project's own
+    // architecture rules say to refuse — so it sits before the tool call, where
+    // refusing still means something. Measured 2026-08-30 23:01:44: a commit
+    // landed in his repository while he was mid-question, and the gate's record
+    // for that window already read `NotGranted`.
+    //
+    // WRITES ONLY. Reading files to ANSWER him is exactly right and happened
+    // several times that evening; it is turning the answer into a launch pad
+    // that is refused.
+    if let Some(tool) = tool_name_in(payload) {
+        if is_mutating_tool(&tool) {
+            if let Some(reason) = answering_then_working(payload) {
+                return emit_permission(client, false, reason);
+            }
+        }
+    }
+
     let command = command_in(payload).unwrap_or_default();
     let emission = match crate::guard::judge(&command) {
         crate::guard::Verdict::Allow => Emission::Permission {
@@ -1734,7 +1808,7 @@ mod tests {
             review_rounds: 0,
             already_bounced: false,
             bounces: 0,
-            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, declares_a_decision: true, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, worked_since_push: false },
+            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, declares_a_decision: true, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, worked_since_push: false, answered_substantially: false },
             autonomy: Autonomy::Granted,
             substrate: None,
             reseed_bounces: 0,

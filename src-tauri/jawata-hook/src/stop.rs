@@ -42,6 +42,22 @@ use crate::safety::SilenceReason;
 /// Length is a trigger BECAUSE it is wording-independent.
 pub const LENGTH_BUDGET: usize = 2200;
 
+/// How long an assistant text block must be to count as AN ANSWER rather than
+/// narration between two tool calls.
+///
+/// SIX HUNDRED, AND IT IS A GUESS WITH A STATED FAILURE DIRECTION. There is no
+/// clean signal here: an answer and a running commentary are the same kind of
+/// object and differ only in size. Measured over the 2026-08-30 transcript that
+/// produced this rule — inter-tool narration ran 100–400 characters, answers to
+/// his questions 700–2400. The cut sits in the gap, which is the most that can
+/// honestly be claimed for it.
+///
+/// Over-firing costs one reorder: do the work first and answer last, which is
+/// the shape the rule is asking for anyway. Under-firing costs what happened
+/// that night — four questions, four answers, and an unrelated task opened
+/// inside each of them while he was still typing.
+pub const ANSWER_LENGTH: usize = 600;
+
 /// How many times a turn may be bounced for a missing review before the gate
 /// gives up and lets it through. Bounded on purpose: the valve this replaces
 /// existed so a gate could never wedge a session, and that concern is real —
@@ -302,6 +318,25 @@ pub struct Turn {
     /// is how the AUDIT-FIX alarm spent months unable to fire on the very loop
     /// it was built for (2026-08-29).
     pub human_window: bool,
+    /// Whether this window has already emitted a SUBSTANTIAL answer — a text
+    /// block at or above [`ANSWER_LENGTH`].
+    ///
+    /// HARALD, 2026-08-30, on the failure this exists for: *"in a conversation
+    /// is the other way round. You are not working on a plan but talking with
+    /// me -> Hence, don't turn around and work on something."* Measured the same
+    /// evening: he asked four questions in a row, and each answer was followed,
+    /// inside the same turn, by tool calls opening an unrelated task — once by a
+    /// commit to his repository at 23:01:44, with the gate's own record showing
+    /// him present.
+    ///
+    /// THIS IS A PROXY AND THE THRESHOLD IS A GUESS, stated rather than hidden.
+    /// Nothing distinguishes "a complete answer" from "narration between two
+    /// tool calls" except length, and no length is correct. Measured over that
+    /// evening's transcript: narration between tool calls ran 100–400
+    /// characters, real answers 700–2400. The cut sits between them, and the
+    /// failure direction is chosen: over-firing costs a reorder — do the work
+    /// first, answer last — while under-firing costs what happened that night.
+    pub answered_substantially: bool,
     /// Whether this window's assistant text relayed a SIGN-OFF verdict line.
     /// The audit loop CONVERGED — the pipeline resets the cross-window refusal
     /// carry on it, so the next loop starts at zero.
@@ -1005,6 +1040,15 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                         Some("text") => {
                             if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
                                 turn.final_text = t.to_string();
+                                // ORDER IS THE SIGNAL, and this is the only place
+                                // it can be read: the reader walks the window
+                                // forward, so "a substantial answer came first"
+                                // is simply "this flag is already set when the
+                                // next tool call arrives". Nothing later in the
+                                // pipeline can recover the ordering.
+                                if t.chars().count() >= ANSWER_LENGTH {
+                                    turn.answered_substantially = true;
+                                }
                                 // Ordered, not merely collected: `read_turn`
                                 // walks the window forward, so "after the
                                 // stamp" is simply "while the counter is
@@ -1371,7 +1415,7 @@ mod tests {
             // Mirrors reality rather than defaulting: a turn carrying tool calls
             // HAS worked. A helper that always said `false` would let a test pass
             // against a fixture that could not occur.
-            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, refusals_emitted: 0, asks_the_human: false, declares_a_decision: false, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false },
+            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, refusals_emitted: 0, asks_the_human: false, declares_a_decision: false, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, answered_substantially: false },
             autonomy,
             substrate: None,
             reseed_bounces: 0,
