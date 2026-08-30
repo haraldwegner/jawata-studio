@@ -491,7 +491,6 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
     let rule_b_would_push = facts.autonomy == Autonomy::Granted
         && !facts.turn.armed_anything()
         && !facts.turn.interrupted
-        && !facts.turn.user_asked
         && facts.empty_turns < MAX_EMPTY_TURNS;
     if facts.already_bounced
         && !facts.turn.owes_a_review()
@@ -771,32 +770,16 @@ and stop. Do not open another round.",
                 ),
             };
         }
-        // HIS OWN QUESTION OPENED THIS WINDOW -> the turn is conversation, not
-        // idle autonomy. The grant covers his ABSENCE, and a fresh question is
-        // the same evidence of presence an interrupt is. Measured live
-        // 2026-08-27 (studio#33): he asked "what are the dropped story
-        // situations?", the agent answered and stopped, and this rule pushed it
-        // into new work — which he then had to interrupt. Answering the human
-        // and waiting for his reaction IS the next piece of work.
-        //
-        // ONLY THE KEYBOARD CAN GRANT THIS (Harald, verbatim, 2026-08-29:
-        // "Presence is: The question comes from the keyboard, i.e. from the
-        // chat window!" — and, same morning: "The keyboard is not the
-        // machine-wide keyboard. It is keyboard + focus on the chat window.
-        // Otherwise every esc will be regarded as such."). That constraint
-        // holds BY CONSTRUCTION and must stay so: this gate reads only the
-        // chat transcript, so the sole input it can ever see is what the chat
-        // window itself recorded — a keystroke or Esc anywhere else never
-        // reaches it. Any future presence signal that is not the transcript
-        // breaks his ruling. A task notice carrying an agent report full of
-        // question shapes read as him for one night and slept a session six
-        // hours — see `is_harness_line`. A dispatch he types without a
-        // question ("carry on") deliberately does NOT stand this rule down:
-        // that window is the grant at work, and the idle turn after it is
-        // exactly what the push exists for.
-        if facts.turn.user_asked {
-            return StopVerdict::Allow;
-        }
+        // HIS QUESTION DOES NOT LIVE HERE. It used to: `user_asked` stood this
+        // rule down so a reply to "what is the defect?" would not get pushed
+        // (studio#33). That correlate is a substring over the LAST KEYBOARD
+        // LINE, sticky for the whole window. On 2026-08-29 at 22:54 it matched
+        // DISCUSS inside "We had a discussion before … autocontinue", eleven
+        // minutes after he had left, and released a turn that armed nothing.
+        // The Rule B sentence names two facts. A third fact about a question
+        // is not in that sentence. Presence is the grant file, written on
+        // UserPrompt: his word turns it on, Esc or his `?` turns it off.
+        // `user_asked` still exempts Rule A (a reply owes no communicator).
         return StopVerdict::Block {
             reason: "RULE B: autonomy is granted and this turn armed no background \
 work, so ending here sleeps until the human returns. Start the next piece of \
@@ -1722,18 +1705,27 @@ mod tests {
         }
     }
 
-    /// HIS QUESTION OPENED THE WINDOW -> answering it and stopping IS the work
-    /// (studio#33). Before this branch, Rule B pushed the answer-turn into new
-    /// work and he had to interrupt it — "I just asked a question!".
+    /// THE 22:54 SLEEP (2026-08-30). The window opened on his work-order
+    /// "We had a discussion before … autocontinue". `user_asked` is true
+    /// because DISCUSS sits inside "discussion". He was not at the machine.
+    /// The grant was on. Nothing was armed. Rule B's own sentence was true
+    /// and the hook returned Allow. `user_asked` must not stand the push down.
     #[test]
-    fn a_window_his_question_opened_is_never_pushed() {
-        let mut f = facts(Autonomy::Granted, vec![]);
+    fn a_stale_keyboard_line_that_is_not_a_question_does_not_silence_rule_b() {
+        let mut f = facts(Autonomy::Granted, vec![tool("Edit"), tool("Bash")]);
         f.turn.user_asked = true;
-        assert_eq!(
-            StopVerdict::Allow,
-            judge(&f),
-            "the grant covers his absence; his question is proof of presence"
-        );
+        f.turn.final_text =
+            "Both findings are homed to Sprint 28e. Continuing to S9a.2, the patch-streak gate."
+                .into();
+        match judge(&f) {
+            StopVerdict::Block { reason } => assert!(
+                reason.contains("RULE B"),
+                "the rule's two facts were true: {reason}"
+            ),
+            StopVerdict::Allow => panic!(
+                "user_asked silenced Rule B on a grant + no armed work — the 22:54 sleep"
+            ),
+        }
     }
 
     /// STRANDED MID-WORK CANNOT RECUR (2026-08-29). Measured in this gate's own

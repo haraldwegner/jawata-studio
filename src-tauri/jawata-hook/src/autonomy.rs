@@ -86,7 +86,27 @@ fn normalised(prompt: &str) -> String {
         .replace("auto continue", GRANT)
 }
 
-/// Read the human's prompt and update the grant if it says anything about one.
+/// Read the human's prompt and update the grant.
+///
+/// HIS ARRIVAL IS THE EVENT, AND NOTHING HERE READS WHAT HE MEANT. Harald,
+/// 2026-08-30, after four releases of narrowing one guess after another:
+/// *"I am sitting in front = I am typing = keyboard action into the chat
+/// window -> Autocontinue off"*, and *"You cannot just filter for keywords
+/// like Discuss"*.
+///
+/// So this function classifies nothing. It looks for ONE exact token and
+/// treats every other message he sends as him being at the machine. Whether
+/// he asked a question, gave an order, or thought out loud is not a fact this
+/// gate needs, has ever needed, or can determine — and every attempt to
+/// determine it has failed in a new way:
+///
+///   v3.14.2  the loop stands down "when the human is present" — inferred
+///   v3.16.1  the keyboard is the human; the harness is not — right channel
+///   v3.16.3  DECISION matched inside "design decisions" -> push disabled
+///   v3.17.1  only Esc revokes — which Cursor has no key for at all
+///   22:54    DISCUSS matched inside "We had a discussion" -> slept the night
+///
+/// Each release improved the guess. None removed it. This removes it.
 ///
 /// Returns `true` when the prompt changed the state, so the caller can log a
 /// state change rather than a no-op — a grant nobody can see happening is the
@@ -96,34 +116,34 @@ pub fn note_prompt(base: &Path, session: &str, prompt: &str) -> bool {
         return false;
     }
     let text = normalised(prompt);
+    // HIS WORD ARMS IT, in the same breath as anything else. 2026-08-29 22:43
+    // was exactly that shape: a past discussion named, an instruction given,
+    // and the word at the end. He is leaving and saying so, and the word is
+    // the saying — nothing else in the message is read.
+    //
+    // Re-arming is IDEMPOTENT and must stay so: the previous version returned
+    // early if the file already existed, which meant a re-arm never reset the
+    // empty-turn count. Writing "0" unconditionally is the whole point of the
+    // word — it is a fresh stretch, not a continuation of the last one.
     if text.contains(GRANT) {
         let f = file(base, session);
-        if f.exists() {
-            return false;
-        }
         let _ = std::fs::create_dir_all(dir(base));
         return std::fs::write(&f, "0").is_ok();
     }
-    // ANY turn of his clears the empty-turn count, and this is a correction to
-    // the first version of the bound rather than a convenience.
+    // EVERY OTHER MESSAGE OF HIS ENDS THE GRANT. He typed, so he is here, so
+    // the grant — which covers his ABSENCE and nothing else — is over. There
+    // is no question detector, no imperative list and no `?` check, because
+    // there is no longer any question being asked about his text.
     //
-    // The ceiling exists to release a session that is stuck: pushed, produced
-    // nothing, pushed, produced nothing. Three questions answered in prose look
-    // identical to that by the count alone — and the FIRST version released the
-    // grant on his third question, which is precisely the behaviour the whole
-    // mechanism was built to stop. A wedge is consecutive empty turns with NO
-    // human input between them; when he has spoken, there is new information in
-    // the session and the next empty turn is not evidence of anything.
-    if file(base, session).exists() {
-        let _ = std::fs::write(file(base, session), "0");
-    }
-    // ...and the REVIEW-ROUND count with it, for the same reason. The ceiling
-    // bounds a loop the agent is running on its own; once he has spoken, the
-    // rounds after that are a new stretch and the old ones are not evidence
-    // about it. A round count that survived his input would spend a night's
-    // budget on the previous conversation.
-    let _ = std::fs::remove_file(rounds_file(base, session));
-    false
+    // This also gives Cursor an off switch it never had. `clear` used to be
+    // reachable only from an Esc marker in the transcript, and Cursor has no
+    // Esc — it has a stop button that writes no marker — so on that client the
+    // grant could be turned on and never off. His typing reaches every client.
+    //
+    // The two counters go with the grant: `clear` removes the rounds file, and
+    // the empty-turn count lives in the grant file itself. Both measure a
+    // stretch of autonomy, and this is the end of one.
+    clear(base, session)
 }
 
 /// What the Stop gate should be told about this session.
@@ -156,8 +176,12 @@ pub fn empty_turns(base: &Path, session: &str) -> u32 {
 
 /// End the grant.
 ///
-/// HIS ESC, AND NOTHING ELSE. This used to be called on the agent's own message
-/// too, whenever a phrase list guessed it was asking for something — and on
+/// HIS ESC, OR ANY MESSAGE HE TYPES — and nothing of the agent's, ever. That
+/// second caller is new in v3.17.2 (see [`note_prompt`]): his arrival ends the
+/// grant, because the grant covers his absence. What has not changed, and is
+/// the part that matters, is who may call this: only him. This used to be
+/// called on the agent's own message too, whenever a phrase list guessed it was
+/// asking for something — and on
 /// 2026-08-29 that guess fired on "SAY THE WORD" inside the sentence *"Nothing
 /// needed from you"*, destroyed the grant, and slept the session until he
 /// retyped the word. Harald's ruling, verbatim: *"you cannot by yourself change
@@ -325,39 +349,107 @@ mod tests {
         }
     }
 
-    /// The failure this whole mechanism exists to fix: he asks a question, the
-    /// agent answers, and the session dies. A grant that expired on his next
-    /// turn would be revoked by the very first question he asked.
+    /// ANY MESSAGE OF HIS ENDS THE GRANT, and nothing about it is classified.
+    ///
+    /// The four shapes below are the ones four releases argued over — a
+    /// question, a work-order, a bare acknowledgement, and a sentence naming a
+    /// past discussion. Under this rule they are the same event: he typed.
+    /// A test that had to know which was which is the bug.
     #[test]
-    fn a_grant_survives_his_questions() {
-        let d = tmp();
-        note_prompt(&d, "s", "autocontinue");
-        for turn in ["Status?", "I want a list of what is left", "why did you stop"] {
-            note_prompt(&d, "s", turn);
+    fn every_message_of_his_ends_the_grant_and_only_his_word_restores_it() {
+        for his_line in [
+            "What is the defect?",
+            "I want a list of what is left",
+            "ok",
+            "We had a discussion before and I did not tell you to move on",
+        ] {
+            let d = tmp();
+            note_prompt(&d, "s", "autocontinue");
+            assert_eq!(state(&d, "s"), Autonomy::Granted, "armed before {his_line:?}");
+            assert!(
+                note_prompt(&d, "s", his_line),
+                "his arrival is a state change: {his_line:?}"
+            );
             assert_eq!(
                 state(&d, "s"),
-                Autonomy::Granted,
-                "answering {turn:?} must not end the grant"
+                Autonomy::NotGranted,
+                "he typed, so he is here: {his_line:?}"
             );
+            assert!(note_prompt(&d, "s", "carry on and autocontinue"));
+            assert_eq!(state(&d, "s"), Autonomy::Granted, "his word re-arms it");
         }
     }
 
-    /// His speaking clears the count. Without this the ceiling releases the
-    /// grant on his third question — the exact behaviour the mechanism exists
-    /// to prevent, produced by its own safety valve.
+    /// THE 22:43 LINE, VERBATIM — the one that slept the night. It names a past
+    /// discussion, gives an instruction, and ends with the word. Under the old
+    /// rule the substring DISCUSS made this "a question" and silenced the push
+    /// for the following eleven minutes. The word is the only thing read now.
     #[test]
-    fn a_turn_of_his_clears_the_empty_count() {
+    fn the_word_arms_it_however_the_rest_of_the_message_reads() {
+        let d = tmp();
+        note_prompt(
+            &d,
+            "s",
+            "We had a discussion before and I did not tell you to move on. \
+             Move on with the plan and autocontinue",
+        );
+        assert_eq!(
+            state(&d, "s"),
+            Autonomy::Granted,
+            "the word is the grant; nothing else in the message is read"
+        );
+    }
+
+    /// RE-ARMING IS A FRESH STRETCH. The previous version returned early when
+    /// the grant file already existed, so saying the word again left the
+    /// empty-turn count where it was — and a session already at the ceiling
+    /// stayed at the ceiling, silently, with the grant apparently on.
+    #[test]
+    fn saying_the_word_again_resets_the_empty_turn_count() {
         let d = tmp();
         note_prompt(&d, "s", "autocontinue");
         note_turn(&d, "s", false);
         note_turn(&d, "s", false);
         assert_eq!(empty_turns(&d, "s"), MAX_EMPTY_TURNS, "at the ceiling");
-        note_prompt(&d, "s", "Status?");
+        note_prompt(&d, "s", "autocontinue");
         assert_eq!(
-            empty_turns(&d, "s"), 0,
-            "he spoke, so the next empty turn is not evidence of a wedge"
+            empty_turns(&d, "s"),
+            0,
+            "the word starts a new stretch, not a continuation of the wedged one"
         );
-        assert_eq!(state(&d, "s"), Autonomy::Granted, "and the grant stands");
+    }
+
+    /// HIS SPEAKING TAKES THE COUNT WITH THE GRANT, and this test used to say
+    /// the opposite on its last line: *"and the grant stands"*.
+    ///
+    /// It was right for the rule it was written under, where a message of his
+    /// left the grant alone and only cleared the wedge counter — so the counter
+    /// had to be cleared separately or the ceiling would revoke the grant on
+    /// his third question. Under v3.17.2 his message ends the grant outright,
+    /// so the counter cannot outlive it: both live in the same file, and
+    /// `clear` removes it.
+    ///
+    /// KEPT RATHER THAN DELETED, because the property it guards still matters
+    /// — no count survives into a stretch it was not measured in. What changed
+    /// is which fact makes that true.
+    #[test]
+    fn a_turn_of_his_takes_the_count_with_the_grant() {
+        let d = tmp();
+        note_prompt(&d, "s", "autocontinue");
+        note_turn(&d, "s", false);
+        note_turn(&d, "s", false);
+        assert_eq!(empty_turns(&d, "s"), MAX_EMPTY_TURNS, "at the ceiling");
+        note_prompt(&d, "s", "carry on");
+        assert_eq!(
+            state(&d, "s"),
+            Autonomy::NotGranted,
+            "he typed, so the stretch is over — 'carry on' without the word is him arriving"
+        );
+        assert_eq!(
+            empty_turns(&d, "s"),
+            0,
+            "and no count survives the stretch it measured"
+        );
     }
 
     /// It ends by itself when his answer is needed, with nothing to type.

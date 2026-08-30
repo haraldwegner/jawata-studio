@@ -199,34 +199,61 @@ fn his_word_turns_rule_b_on_and_its_absence_leaves_it_off() {
     );
 }
 
-/// A grant must survive his questions — but it must NOT push their answers.
+/// studio#33 STILL HOLDS, AND NOW FOR A REASON THE GATE CAN OBSERVE.
 ///
-/// This test used to assert the opposite: that a turn answering his question
-/// still gets pushed into new work. Harald overruled that live on 2026-08-27
-/// (studio#33): "there is a loop that bounces you back to work all the time —
-/// even if I just ask a question". A question is proof he is PRESENT, and the
-/// grant covers his absence. So: no push while the window is his question;
-/// the grant itself stays, and the loop resumes on his next working word.
+/// The promise is unchanged and is his, from 2026-08-27: *"there is a loop that
+/// bounces you back to work all the time — even if I just ask a question"*. A
+/// turn answering him must not be pushed into new work.
+///
+/// WHAT CHANGED IS WHY. The old mechanism read his text at the END of the turn
+/// and stood Rule B down if it looked like a question. That correlate failed in
+/// both directions within three days: it matched DISCUSS inside "We had a
+/// discussion" and slept a night, and it went stale for the whole window, so a
+/// question at 22:43 silenced the push at 22:54 when he had long gone.
+///
+/// Now his message ends the grant when it ARRIVES, and Rule B simply finds no
+/// grant. Nothing reads what he wrote. The test therefore no longer asserts
+/// "the grant survives his question" — it asserts the opposite, because that
+/// was the defect: a grant that survived his presence had to be suppressed by
+/// guesswork later.
 #[test]
-fn the_grant_survives_his_questions_but_never_pushes_their_answers() {
+fn his_question_ends_the_grant_so_its_answer_is_never_pushed() {
     let home = scratch_home("survives");
     run("userprompt", &home, &prompt_payload("sess-b", "autocontinue"));
+
+    // His question, through the channel it really arrives on.
+    run("userprompt", &home, &prompt_payload("sess-b", "why did you stop"));
 
     let answering = transcript(&home, "why did you stop", "Because I finished that piece.");
     let out = run("stop", &home, &stop_payload("sess-b", &answering));
     assert!(
         !out.contains("RULE B"),
-        "his question opened this window; pushing its answer into new work is \
-         the measured defect, not the mechanism: {out}"
+        "answering him must not be pushed into new work — and the reason must \
+         be that the grant is gone, not that his words were parsed: {out}"
     );
 
-    // The grant is still live: his next working word resumes the loop.
+    // AND IT STAYS OFF until he says the word. "carry on" is him at the
+    // keyboard, so it is his arrival, not a resumption — under the old rule
+    // this line resumed the loop, which is how a conversation kept being
+    // treated as an absence.
     let working = transcript(&home, "carry on", "Stage done.");
+    run("userprompt", &home, &prompt_payload("sess-b", "carry on"));
+    let still_off = run("stop", &home, &stop_payload("sess-b", &working));
+    assert!(
+        !still_off.contains("RULE B"),
+        "only his word re-arms it; a work-order typed while he sits there is \
+         still him sitting there: {still_off}"
+    );
+
+    // His word, and the loop is back — the control that proves the two
+    // assertions above are the grant being OFF rather than the push being
+    // broken outright.
+    run("userprompt", &home, &prompt_payload("sess-b", "carry on and autocontinue"));
     let resumed = run("stop", &home, &stop_payload("sess-b", &working));
     assert!(
         resumed.contains("RULE B"),
-        "the grant should have survived his question and pushed the next \
-         ordinary turn: {resumed}"
+        "his word must re-arm the push, or this fix has disabled the feature \
+         instead of scoping it: {resumed}"
     );
 }
 
