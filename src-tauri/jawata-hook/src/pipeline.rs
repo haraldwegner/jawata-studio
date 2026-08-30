@@ -1082,6 +1082,43 @@ fn stop_gate(
     let owed_a_reseed = facts.owes_a_reseed();
     let verdict = stop::judge(&facts);
 
+    // EVERY VERDICT IS RECORDED, and this is the auditor's non-optional finding of
+    // 2026-08-30 rather than a nicety.
+    //
+    // This gate decides at every turn boundary and, until now, wrote nothing: not
+    // which rule fired, not the autonomy state, not the counter. So each of the six
+    // failures in this mechanism had to be reconstructed from the session transcript
+    // — the 22:54 sleep took a fresh auditor and a byte-offset dig to reach one `if`,
+    // and the counter's value at that moment could only be DEDUCED from source
+    // because no record of it exists. Worse, findings 6 and 7 of that audit together
+    // made "the fix was wrong" indistinguishable from "the fix was not the code
+    // running".
+    //
+    // The verdict's own first line is the rule's name — every Block reason starts
+    // with one ("RULE B:", "UNJUDGED MESSAGE", "TOO LONG:") — so no second list of
+    // rule names is introduced here that could drift from the rules themselves.
+    if let Some(dir) = studio_dir() {
+        let head = match &verdict {
+            StopVerdict::Allow => "allow".to_string(),
+            StopVerdict::Block { reason } => {
+                let first = reason.lines().next().unwrap_or_default();
+                format!("block {}", first.chars().take(48).collect::<String>())
+            }
+        };
+        crate::observer::emit_signal(
+            &dir,
+            "stop-verdict",
+            &format!(
+                "{head} · autonomy={:?} empty={} worked={} armed={} bounced={}",
+                facts.autonomy,
+                facts.empty_turns,
+                facts.turn.worked_since_push,
+                facts.turn.armed_anything(),
+                facts.already_bounced,
+            ),
+        );
+    }
+
     // Counted against THIS rule, not against every block: a turn held for an
     // unjudged message has not spent a reseed chance, and charging it would let
     // the story rule be walked past by tripping a different one twice.

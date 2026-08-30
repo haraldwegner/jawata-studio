@@ -199,6 +199,58 @@ fn his_word_turns_rule_b_on_and_its_absence_leaves_it_off() {
     );
 }
 
+/// EVERY VERDICT LEAVES A RECORD — and it took an outside auditor to say so.
+///
+/// This gate decides at every turn boundary and, until 2026-08-30, wrote nothing
+/// about that decision: not the rule, not the autonomy state, not the counter.
+/// Six failures in this one mechanism were therefore each reconstructed from the
+/// session transcript by hand. The 22:54 sleep needed a fresh auditor and a
+/// byte-offset dig to reach a single `if`, and the counter's value at that instant
+/// could only be DEDUCED from source, because nothing had recorded it.
+///
+/// The audit's verdict on adding this was "non-optional: without it a sixth fix
+/// cannot be verified any better than the last five".
+///
+/// Driven through the REAL BINARY on purpose. A unit test would assert that
+/// `emit_signal` was called; this asserts that a line arrives in the file a human
+/// reads afterwards — which is the whole claim, and the half this project has
+/// shipped broken before.
+#[test]
+fn every_stop_verdict_is_recorded() {
+    let home = scratch_home("verdict");
+    let log = home.join(".claude").join("jawata-studio").join("outcomes.log");
+
+    // A stop with NO grant: Rule B cannot fire, so this is the ALLOW path — the
+    // one that previously left no trace at all, and the one a silent gate and a
+    // working gate are indistinguishable on.
+    let t = transcript(&home, "have a look", "Here is what I found.");
+    run("stop", &home, &stop_payload("sess-v", &t));
+
+    let after_allow = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        after_allow.contains("stop-verdict"),
+        "an ALLOW must be recorded too — a gate that logs only its blocks cannot \
+         answer 'why did it not fire', which is every question asked this week: {after_allow}"
+    );
+    assert!(
+        after_allow.contains("autonomy=") && after_allow.contains("empty="),
+        "the record carries the FACTS the rule decided on, not just its name — \
+         the counter is exactly what had to be deduced from source last time: {after_allow}"
+    );
+
+    // And a BLOCK names the rule it came from.
+    run("userprompt", &home, &prompt_payload("sess-v", "work the plan and autocontinue"));
+    let idle = transcript(&home, "carry on", "Next I will look at the extractor.");
+    run("stop", &home, &stop_payload("sess-v", &idle));
+
+    let after_block = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        after_block.contains("block RULE B"),
+        "a push must name its rule in the record, or the log cannot tell which of \
+         them fired: {after_block}"
+    );
+}
+
 /// studio#33 STILL HOLDS, AND NOW FOR A REASON THE GATE CAN OBSERVE.
 ///
 /// The promise is unchanged and is his, from 2026-08-27: *"there is a loop that
