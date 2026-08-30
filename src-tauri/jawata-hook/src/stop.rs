@@ -844,12 +844,20 @@ fn is_our_own_bounce(v: &serde_json::Value) -> bool {
 /// Matched on the wrappers the harness writes at the very start of the text,
 /// never on words inside it: the human quoting a notification back at us must
 /// keep counting as the human.
-fn is_harness_line(v: &serde_json::Value) -> bool {
+/// THE MACHINE'S OWN LINES, tested on the TEXT — one list, both callers.
+///
+/// Split out of [`is_harness_line`] on 2026-08-30 because the grant code needs
+/// exactly this question and could not ask it: `is_harness_line` takes a
+/// transcript entry, `note_prompt` has a bare prompt string. The obvious
+/// shortcut was to copy the six prefixes into `autonomy.rs`. That is two lists
+/// nothing forces to agree, and this session has already been bitten twice by
+/// exactly that — Rule B's condition existing in two copies, and a fix landing
+/// in one of them. So the list lives here once and both sides call it.
+pub fn is_harness_text(t: &str) -> bool {
     // The wrapper words are ASSEMBLED, never written whole — the
     // popping-surface scan in `field` bans the bare word in code, and this is
     // that scan's own idiom for naming what it bans.
     let noti = concat!("notifi", "cation");
-    let t = user_text(v);
     let t = t.trim_start();
     t.starts_with(&format!("<task-{noti}>"))
         || t.starts_with(&format!("[SYSTEM {}", noti.to_uppercase()))
@@ -857,6 +865,10 @@ fn is_harness_line(v: &serde_json::Value) -> bool {
         || t.starts_with("<local-command-caveat>")
         || t.starts_with("<command-name>")
         || t.starts_with("<local-command-stdout>")
+}
+
+fn is_harness_line(v: &serde_json::Value) -> bool {
+    is_harness_text(&user_text(v))
 }
 
 /// Verdict lines at the START of a line, markdown decoration allowed — the

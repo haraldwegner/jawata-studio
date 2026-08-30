@@ -115,6 +115,33 @@ pub fn note_prompt(base: &Path, session: &str, prompt: &str) -> bool {
     if session.is_empty() {
         return false;
     }
+    // THE MACHINE IS NOT HIM, and this line is the whole of v3.17.2's defect.
+    //
+    // His rule named a CHANNEL — "I am sitting in front = I am typing = keyboard
+    // action into the chat window -> Autocontinue off" — and v3.17.2 implemented
+    // "any message", dropping the word that carried the requirement. But a
+    // background job's completion notice arrives HERE, through the same hook as
+    // his typing. So finishing a job cleared the grant, and any run that
+    // backgrounded anything died at its first wake-up: measured 2026-08-30, the
+    // grant went off at 11:59:23Z on a job completion and the session slept 21
+    // minutes until he came back.
+    //
+    // The predicate is `stop::is_harness_text` and NOT a copy of its prefixes.
+    // The stop side has had this check since an earlier overnight sleep; two
+    // lists nothing forces to agree is how the same fix lands in one of them,
+    // which happened twice in this crate this week.
+    if crate::stop::is_harness_text(prompt) {
+        // AND IT SAYS SO. The auditor's strongest finding on this change: a silent
+        // early return makes the NEXT failure exactly as invisible as this one was.
+        // Today was diagnosable to the second only because `autonomy-changed`
+        // happened to be logged; if this prefix ever stops matching — a harness
+        // change, another client's wrapper — a broken guard and a working one
+        // produce an identical log. The first characters are carried so a mismatch
+        // names itself instead of having to be reconstructed from a transcript.
+        let head: String = prompt.chars().take(40).collect();
+        crate::observer::emit_signal(base, "autonomy-harness-ignored", head.trim());
+        return false;
+    }
     let text = normalised(prompt);
     // HIS WORD ARMS IT, in the same breath as anything else. 2026-08-29 22:43
     // was exactly that shape: a past discussion named, an instruction given,
@@ -378,6 +405,74 @@ mod tests {
             assert!(note_prompt(&d, "s", "carry on and autocontinue"));
             assert_eq!(state(&d, "s"), Autonomy::Granted, "his word re-arms it");
         }
+    }
+
+    /// THE MACHINE IS NOT HIM — the v3.17.2 defect, measured 2026-08-30.
+    ///
+    /// His rule named a CHANNEL: *"I am sitting in front = I am typing = keyboard
+    /// action into the chat window -> Autocontinue off"*, and earlier the same day
+    /// *"The keyboard is not the machine-wide keyboard. It is keyboard + focus on
+    /// the chat window."* v3.17.2 implemented "any message", dropping the word that
+    /// carried the whole requirement — the release notes still say "any message you
+    /// TYPE"; the code said any message.
+    ///
+    /// **What that cost.** A background job's completion notice arrives through the
+    /// same prompt hook as his typing. So finishing a job cleared the grant, and any
+    /// run that backgrounded anything died at its first wake-up. Measured today: the
+    /// grant went off at 11:59:23Z on a job completion, and the session slept 21
+    /// minutes until he returned.
+    ///
+    /// **And the check already existed, in the same crate.** `is_harness_line` was
+    /// written after an overnight sleep for exactly this case. v3.17.2's own doc
+    /// comment lists that fix — *"the keyboard is the human; the harness is not"* —
+    /// four lines above the function that then treated the harness as him.
+    #[test]
+    fn the_harness_neither_arms_nor_clears_the_grant() {
+        let d = tmp();
+        note_prompt(&d, "s", "work the plan and autocontinue");
+        assert_eq!(state(&d, "s"), Autonomy::Granted, "armed");
+
+        // A background job finishing. THIS is the line that slept the session.
+        let noti = concat!("notifi", "cation");
+        for machine in [
+            format!("<task-{noti}>\n<status>completed</status>\n</task-{noti}>"),
+            "<system-reminder>\nan automated reminder\n</system-reminder>".to_string(),
+            "<local-command-stdout>output</local-command-stdout>".to_string(),
+        ] {
+            assert!(
+                !note_prompt(&d, "s", &machine),
+                "a machine line is not a state change: {machine:?}"
+            );
+            assert_eq!(
+                state(&d, "s"),
+                Autonomy::Granted,
+                "the grant SURVIVES the machine — he has not typed: {machine:?}"
+            );
+        }
+
+        // ...and the same text cannot ARM it either. The word can appear inside a
+        // tool result the harness relays; that is the machine quoting, not him
+        // granting.
+        note_prompt(&d, "s", "stop");
+        assert_eq!(state(&d, "s"), Autonomy::NotGranted, "his word ended it");
+        note_prompt(&d, "s", "<system-reminder>\nplease autocontinue\n</system-reminder>");
+        assert_eq!(
+            state(&d, "s"),
+            Autonomy::NotGranted,
+            "the machine cannot grant it either — only he can"
+        );
+
+        // THE CONTROL. If the guard over-reached to every message, the grant would
+        // be unclearable and this fix would be worse than the defect.
+        note_prompt(&d, "s", "carry on and autocontinue");
+        assert_eq!(state(&d, "s"), Autonomy::Granted);
+        note_prompt(&d, "s", "stop what you are doing");
+        assert_eq!(
+            state(&d, "s"),
+            Autonomy::NotGranted,
+            "HIS typing still ends it — the guard is about the channel, not about \
+             making the grant sticky"
+        );
     }
 
     /// THE 22:43 LINE, VERBATIM — the one that slept the night. It names a past
