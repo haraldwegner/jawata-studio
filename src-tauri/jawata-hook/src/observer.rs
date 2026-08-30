@@ -278,8 +278,21 @@ pub(crate) fn emit_signal(dir: &Path, signal: &str, detail: &str) {
 fn emit(dir: &Path, signal: &str, detail: &str) {
     let _ = std::fs::create_dir_all(dir);
     let ts = chrono_free_iso();
-    let ver = jawata_version().unwrap_or_default();
-    let line = format!("{ts}\t{ver}\t{signal}\t{detail}\n");
+    // THE HOOK'S OWN VERSION, baked in at compile time — not the engine's.
+    //
+    // This column read `jawata_version()`, which discovers the MCP ENGINE's
+    // version from a cache directory. Every line this binary ever wrote was
+    // therefore stamped with a DIFFERENT component's version, and on 2026-08-29
+    // it stamped "v3.17.2" onto lines written hours before that code existed —
+    // the two happened to share a number because the studio package does too.
+    //
+    // The cost is not cosmetic. Together with the missing verdict record it made
+    // "the fix was wrong" indistinguishable from "the fix was not the binary that
+    // ran", across five failed repairs of one mechanism. A version column that
+    // cannot be trusted is worse than none: it invites exactly the conclusion it
+    // cannot support. `CARGO_PKG_VERSION` is this crate's, resolved at build
+    // time, so a line can never claim a version its own writer did not have.
+    let line = format!("{ts}\tv{}\t{signal}\t{detail}\n", env!("CARGO_PKG_VERSION"));
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .append(true)
         .create(true)
@@ -312,20 +325,12 @@ fn chrono_free_iso() -> String {
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
 }
 
-fn jawata_version() -> Option<String> {
-    let cache = std::env::var("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .ok()
-        .or_else(|| crate::pipeline::home_dir().map(|h| h.join(".cache")))?;
-    let current = cache.join("jawata-studio").join("tools").join("jawata").join("current");
-    for entry in std::fs::read_dir(current).ok()? {
-        let name = entry.ok()?.file_name().to_string_lossy().to_string();
-        if let Some(v) = name.strip_prefix("jawata-") {
-            return Some(v.to_string());
-        }
-    }
-    None
-}
+// DELETED at 2026-08-30: `jawata_version()`, which read the MCP ENGINE's version
+// out of `~/.cache/jawata-studio/tools/jawata/current/` and stamped it on lines
+// written by THIS binary. It is not narrowed or kept behind a flag, because there
+// is no question it answers correctly here: the engine's version is not a fact
+// about who wrote the line. `env!("CARGO_PKG_VERSION")` is, and it cannot be
+// wrong. See `emit` for what the stale column cost across five failed repairs.
 
 fn read_is_grounded(dir: &Path, session: &str, java_path: &str) -> bool {
     if session.is_empty() {
