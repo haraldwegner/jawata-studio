@@ -58,6 +58,11 @@ pub const LENGTH_BUDGET: usize = 2200;
 /// inside each of them while he was still typing.
 pub const ANSWER_LENGTH: usize = 600;
 
+/// The first line of the turn-around refusal — the guard emits it, this reader
+/// keys on it, and sharing the constant is what keeps the two from drifting the
+/// way every duplicated condition in this crate has.
+pub const TURNAROUND_MARKER: &str = "ANSWER FIRST OR WORK FIRST";
+
 /// How many times a turn may be bounced for a missing review before the gate
 /// gives up and lets it through. Bounded on purpose: the valve this replaces
 /// existed so a gate could never wedge a session, and that concern is real —
@@ -1009,6 +1014,37 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
             // `user_asked` is never set by it, so Rule A still
             // demands the review and Rule B still pushes. See
             // `is_harness_line` for the measured incident.
+            // THE REFUSAL IS ONE-SHOT PER WINDOW (v3.17.6). The turn-around
+            // guard's denial comes back to the agent as a TOOL RESULT carrying
+            // TURNAROUND_MARKER, and seeing it clears the answered flag — so
+            // the NEXT attempt proceeds, on the record.
+            //
+            // Why a speed bump and not a wall, measured within an hour of
+            // v3.17.5 shipping: he dispatched work whose own protocol requires
+            // a list BEFORE the writes (/memorize's step 1). The list was a
+            // 600+ character answer, so every write after it was refused for
+            // the REST of the window — and the only reset lived on the stop
+            // gate's push, which cannot come while his typing holds the grant
+            // off. "Over-firing costs a reorder" was the design claim; mid-
+            // window a reorder is impossible, so the real cost was a deadlock
+            // between the dispatch and the guard. One denial interrupts the
+            // turn-around, names the rule, and leaves an auditable line;
+            // repeating it buys no compliance that the first refusal did not,
+            // only the deadlock.
+            Some("user") if is_tool_result(&v) => {
+                // Serialized-whole on purpose: a tool result's content can be a
+                // string or an array of blocks depending on the client, and the
+                // marker contains nothing JSON-escaping rewrites.
+                if v.to_string().contains(TURNAROUND_MARKER) {
+                    turn.answered_substantially = false;
+                }
+                // This arm SHADOWS the catch-all `Some("user")` below, which
+                // counts degraded stamps out of exactly these tool-result
+                // lines — the first build of this arm swallowed them and four
+                // degraded-rule tests went red at once, which is the shadowing
+                // announcing itself. Both jobs, one arm.
+                turn.degraded_consumed += degraded_stamps_in(&v);
+            }
             Some("user") if !is_tool_result(&v) && is_harness_line(&v) => {
                 turn = Turn::default();
             }

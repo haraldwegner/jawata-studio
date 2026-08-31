@@ -263,6 +263,42 @@ fn the_stop_gates_push_reopens_writing() {
     );
 }
 
+/// THE REFUSAL IS ONE-SHOT PER WINDOW (v3.17.6) — after the guard's own denial
+/// is on the record, the retry proceeds.
+///
+/// Why, measured within an hour of v3.17.5 shipping: a dispatched task's own
+/// protocol required an answer BEFORE its writes (/memorize's story list), the
+/// list tripped the 600-character bar, and every write for the rest of the
+/// window was refused — while the only reset lived on a stop-gate push that
+/// cannot come with the grant off. "Over-firing costs a reorder" turned out to
+/// cost the window. One denial interrupts the turn-around and names the rule;
+/// repeating it buys no compliance the first refusal did not, only the
+/// deadlock.
+#[test]
+fn the_refusal_is_one_shot_per_window() {
+    let home = scratch("oneshot");
+    let denial_result = serde_json::json!({"type":"user","message":{"content":[
+        {"type":"tool_result","content":
+            "ANSWER FIRST OR WORK FIRST, NOT ANSWER THEN WORK. He is in this window …"}
+    ]}})
+    .to_string();
+    let t = transcript(
+        &home,
+        "o",
+        &[human("why did you stop?"), assistant(&an_answer()), denial_result],
+    );
+    let target = home.join("notes.md");
+    std::fs::write(&target, "x").unwrap();
+
+    let out = guard_says(&payload("Write", &t, &target), &home);
+
+    assert!(
+        is_allow(&out),
+        "the denial is already on the record in this window — refusing again is the \
+         deadlock, not the rule. Got: {out}"
+    );
+}
+
 /// CONTROL 4 — no transcript means SILENT, never refuse.
 ///
 /// A guard that blocks when it cannot see would take out every session whose

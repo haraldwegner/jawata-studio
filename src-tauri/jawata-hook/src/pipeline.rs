@@ -192,14 +192,18 @@ fn answering_then_working(payload: &str) -> Option<String> {
         return None;
     }
     Some(format!(
-        "ANSWER FIRST OR WORK FIRST, NOT ANSWER THEN WORK. He is in this window \
+        "{}, NOT ANSWER THEN WORK. He is in this window \
          — his own message opened it — and this turn has already emitted an \
          answer of {}+ characters. A change now is the turn-around he named: \
          \"You are not working on a plan but talking with me -> Hence, don't \
          turn around and work on something.\" If this IS the work he asked for, \
          make the change BEFORE the answer and let the answer be last. \
          Tool-based reads (Read, searches, MCP queries) are never refused here; \
-         shell commands count as writes, because a commit is one.",
+         shell commands count as writes, because a commit is one. This refusal \
+         fires ONCE per window: proceeding past it is permitted and on the \
+         record — v3.17.5 repeated it and deadlocked a dispatch whose own \
+         protocol required the answer first.",
+        crate::stop::TURNAROUND_MARKER,
         crate::stop::ANSWER_LENGTH
     ))
 }
