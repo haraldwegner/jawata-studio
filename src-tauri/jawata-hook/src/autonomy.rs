@@ -86,6 +86,63 @@ fn normalised(prompt: &str) -> String {
         .replace("auto continue", GRANT)
 }
 
+/// QUOTES MEAN MENTION (v3.17.5) — the prompt with its quoted and backticked
+/// spans removed, so only what survives can ARM the grant.
+///
+/// This is not intent-reading, which five releases of this file failed at and
+/// which his ruling bans. Quoting is a SYNTAX he produces, not a meaning we
+/// guess — and his own corpus already separates cleanly along it, unprompted:
+/// every arming order is bare (*"resume the plan and autocontinue"*), every
+/// discussing message quotes (*'Update the "autocontinue" flag'*). That last
+/// one is the measured damage: on 2026-08-31 its quoted mention armed the
+/// grant and pushed the agent through a whole morning nobody had granted.
+///
+/// Pairs are removed pair-wise for `"…"`, `` `…` `` and the typographic
+/// `„…“` / `“…”`. An UNBALANCED opener removes nothing past itself — a lone
+/// quotation mark must not swallow the rest of the message, because whatever
+/// stands after it was not written inside quotes. The failure direction is the
+/// established one: a mention that goes unquoted still arms, which costs a
+/// push he can end by typing; the reverse — an order swallowed by a stray
+/// quote — would cost a night, and cannot happen pair-wise.
+///
+/// CLEARING IS NOT TOUCHED. Any message of his still ends the grant, quoted or
+/// not: the clear is about his presence, and a mention proves presence exactly
+/// as an order does.
+fn without_mentions(prompt: &str) -> String {
+    let mut out = String::with_capacity(prompt.len());
+    let mut chars = prompt.chars().peekable();
+    while let Some(c) = chars.next() {
+        let closer = match c {
+            '"' => Some('"'),
+            '`' => Some('`'),
+            '\u{201E}' /* „ */ => Some('\u{201C}'),
+            '\u{201C}' /* “ */ => Some('\u{201D}'),
+            _ => None,
+        };
+        let Some(closer) = closer else {
+            out.push(c);
+            continue;
+        };
+        // Look ahead for the matching closer. Found: drop the span. Not found:
+        // the opener was a stray character, so everything scanned is REAL text
+        // and goes back into the output.
+        let mut span = String::new();
+        let mut closed = false;
+        for d in chars.by_ref() {
+            if d == closer {
+                closed = true;
+                break;
+            }
+            span.push(d);
+        }
+        if !closed {
+            out.push(c);
+            out.push_str(&span);
+        }
+    }
+    out
+}
+
 /// Read the human's prompt and update the grant.
 ///
 /// HIS ARRIVAL IS THE EVENT, AND NOTHING HERE READS WHAT HE MEANT. Harald,
@@ -142,7 +199,10 @@ pub fn note_prompt(base: &Path, session: &str, prompt: &str) -> bool {
         crate::observer::emit_signal(base, "autonomy-harness-ignored", head.trim());
         return false;
     }
-    let text = normalised(prompt);
+    // Mentions are stripped BEFORE the spelling collapse: quotes are what he
+    // typed and survive lowercasing, so the order costs nothing — and only the
+    // ARM below reads this. The clear at the bottom still sees every message.
+    let text = normalised(&without_mentions(prompt));
     // HIS WORD ARMS IT, in the same breath as anything else. 2026-08-29 22:43
     // was exactly that shape: a past discussion named, an instruction given,
     // and the word at the end. He is leaving and saying so, and the word is
@@ -405,6 +465,66 @@ mod tests {
             assert!(note_prompt(&d, "s", "carry on and autocontinue"));
             assert_eq!(state(&d, "s"), Autonomy::Granted, "his word re-arms it");
         }
+    }
+
+    /// QUOTES MEAN MENTION — every line below is one of HIS real messages,
+    /// which is the only corpus this rule may be judged against.
+    ///
+    /// The damage case is verbatim from 2026-08-31: 'Update the "autocontinue"
+    /// flag as discussed above' armed the grant off its quoted mention and the
+    /// agent ran a whole morning under it. The control half is as important:
+    /// his arming orders are BARE, and stripping quotes must not touch them.
+    #[test]
+    fn a_quoted_mention_is_not_a_command() {
+        let d = tmp();
+        // His discussing messages — each contains the word ONLY inside quotes
+        // or backticks, and none may arm.
+        for mention in [
+            r#"Update the "autocontinue" flag as discussed above"#,
+            r#"If I say "autocontinue" then the hook puts the parameter to yes"#,
+            r#"How can we add the "autocontinue" flag that you don't read the word mention as a command?"#,
+            "the `autocontinue` grant file",
+            "er sagte \u{201E}autocontinue\u{201C} und ging", // the German quotes he types
+        ] {
+            assert!(
+                !note_prompt(&d, "s", mention),
+                "a QUOTED word is a mention, and this one armed a whole morning: {mention:?}"
+            );
+            assert_eq!(Autonomy::NotGranted, state(&d, "s"), "{mention:?}");
+        }
+
+        // His arming orders — bare, and they must still arm after the strip.
+        for order in [
+            "resume the plan and autocontinue",
+            "continue implementing the plan and autocontinue",
+            "carry on and auto-continue",
+        ] {
+            assert!(note_prompt(&d, "s", order), "a bare order must arm: {order:?}");
+            assert_eq!(Autonomy::Granted, state(&d, "s"), "{order:?}");
+            clear(&d, "s");
+        }
+    }
+
+    /// A STRAY QUOTE MUST NOT SWALLOW AN ORDER. Pair-wise stripping is the
+    /// load-bearing property: an unbalanced opener costs nothing, because the
+    /// reverse failure — an arming word eaten by a lone quotation mark earlier
+    /// in the message — would silently cost a night.
+    #[test]
+    fn an_unbalanced_quote_does_not_eat_the_order() {
+        let d = tmp();
+        assert!(
+            note_prompt(&d, "s", r#"fix the "flag and then autocontinue"#),
+            "one lone quote, the word outside any completed pair — it must arm"
+        );
+        assert_eq!(Autonomy::Granted, state(&d, "s"));
+
+        // And both in one message: a quoted mention does not shield a bare use.
+        clear(&d, "s");
+        assert!(
+            note_prompt(&d, "s", r#"the "autocontinue" fix is in — autocontinue"#),
+            "a bare use beside a quoted mention is still an order"
+        );
+        assert_eq!(Autonomy::Granted, state(&d, "s"));
     }
 
     /// THE MACHINE IS NOT HIM — the v3.17.2 defect, measured 2026-08-30.
