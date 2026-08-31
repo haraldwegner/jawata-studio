@@ -108,8 +108,21 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
             // readable: the Stop event carries no prompt. Noted before the
             // recall so a payload that fails to yield cues still records it —
             // the grant is not conditional on the store having anything to say.
-            note_autonomy_from_prompt(payload);
-            recall(role, client, payload, store)
+            let mode = note_autonomy_from_prompt(payload);
+            match (mode, recall(role, client, payload, store)) {
+                (None, out) => out,
+                // The mode line rides ON TOP of whatever the recall said…
+                (Some(line), Outcome::Emitted(rendered)) => {
+                    Outcome::Emitted(prepend_context(client, &rendered, &line))
+                }
+                // …and it does NOT depend on the recall saying anything. The
+                // store being silent, unreachable or empty is a fact about the
+                // store; the grant's state is a fact about this session, and
+                // tying the second to the first would make the synchronisation
+                // vanish exactly when the resident is down — a dependency
+                // nothing about the grant justifies.
+                (Some(line), Outcome::Silent(_)) => emit_body(client, Role::UserPrompt, line),
+            }
         }
         // Sprint 28c: the autonomy signal, finally supplied. This line read
         // `Autonomy::Unknown` since Sprint 26, which made Rule B — "do not stop
@@ -801,24 +814,88 @@ pub(crate) fn session_autonomy(payload: &str) -> crate::stop::Autonomy {
     }
 }
 
-/// Record a grant or a revoke carried by this prompt.
-fn note_autonomy_from_prompt(payload: &str) {
-    let Ok(v) = parse_payload(payload) else { return };
+/// Record a grant or a revoke carried by this prompt, and return the MODE LINE
+/// to inject into the model's context.
+///
+/// THE GRANT EXISTS TWICE, AND THIS LINE IS WHAT SYNCHRONISES THE COPIES.
+/// Harald's diagnosis, 2026-08-31, after a night of the two disagreeing: *"If I
+/// say 'autocontinue' then the hook puts the parameter to yes, but you still
+/// have it in your context. And this is independent of the hook -> If I restart
+/// the communication with a question you move on with the plan."*
+///
+/// The hook's copy is the file — cleared the instant he types. The agent's copy
+/// is its context — "he told me to autocontinue" — and NOTHING ever cleared it:
+/// measured that night, the file read NotGranted from 20:23 while the agent
+/// kept executing the sprint plan for hours on its remembered copy. So the file
+/// is now the single truth and its state is pushed into context on EVERY prompt
+/// event, not only on transitions: re-asserted beats remembered, because a
+/// remembered instruction is exactly what went stale.
+///
+/// `None` — inject nothing — when there is no session to have state about, or
+/// no readable prompt. A line asserting the mode of a session we cannot
+/// identify would be an invented fact in the model's context.
+fn note_autonomy_from_prompt(payload: &str) -> Option<String> {
+    let Ok(v) = parse_payload(payload) else { return None };
     let session = session_id_in(payload).unwrap_or_default();
-    let Some(prompt) = string_at(&v, &["prompt"]) else { return };
-    if let Some(dir) = studio_dir() {
-        if crate::autonomy::note_prompt(&dir, &session, &prompt) {
-            crate::observer::emit_signal(
-                &dir,
-                "autonomy-changed",
-                &format!("{:?}", crate::autonomy::state(&dir, &session)),
-            );
-        }
+    let prompt = string_at(&v, &["prompt"])?;
+    let dir = studio_dir()?;
+    if crate::autonomy::note_prompt(&dir, &session, &prompt) {
+        crate::observer::emit_signal(
+            &dir,
+            "autonomy-changed",
+            &format!("{:?}", crate::autonomy::state(&dir, &session)),
+        );
     }
+    if session.is_empty() {
+        return None;
+    }
+    // The line asserts the state AFTER this prompt was noted — a harness
+    // notification changes nothing and is told the standing state, which is
+    // precisely what a wake-up needs to know and used to have to remember.
+    Some(match crate::autonomy::state(&dir, &session) {
+        crate::stop::Autonomy::Granted => "AUTOCONTINUE: ON — plan-execution mode \
+            (this line is the hook's own state, re-asserted so your context cannot go \
+            stale). Work the plan; stop only at a checkpoint the plan itself numbers. \
+            A decision arising mid-stage is RECORDED and raised at that checkpoint, \
+            not a reason to stop; only a stage failing its written exit criteria \
+            stops earlier."
+            .to_string(),
+        _ => "AUTOCONTINUE: OFF — conversation/dispatch mode (the hook's own state: \
+            his typing clears the grant). Do what THIS message asks and stop there. \
+            Do not continue plan work beyond it, and do not turn an answer into the \
+            start of the next task — if he wants the plan resumed, his word arms it."
+            .to_string(),
+    })
 }
 
 fn studio_dir() -> Option<std::path::PathBuf> {
     home_dir().map(|h| h.join(".claude").join("jawata-studio"))
+}
+
+/// Put `line` at the TOP of an already-rendered context emission, in whichever
+/// dialect it was rendered.
+///
+/// FAIL-SAFE TOWARD THE RECALL: anything unparseable returns the original
+/// bytes untouched. Losing the mode line for one turn costs a re-assertion
+/// that the next prompt repeats anyway; corrupting a rendered emission would
+/// cost the recall AND the line.
+fn prepend_context(client: Client, rendered: &str, line: &str) -> String {
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(rendered) else {
+        return rendered.to_string();
+    };
+    let slot = match client {
+        Client::ClaudeCode => v
+            .get_mut("hookSpecificOutput")
+            .and_then(|o| o.get_mut("additionalContext")),
+        Client::Cursor => v.get_mut("additional_context"),
+    };
+    match slot {
+        Some(serde_json::Value::String(body)) => {
+            *body = format!("{line}\n\n{body}");
+            v.to_string()
+        }
+        _ => rendered.to_string(),
+    }
 }
 
 fn stop_gate(
