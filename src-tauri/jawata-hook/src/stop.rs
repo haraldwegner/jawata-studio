@@ -985,12 +985,23 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
             // previous window — which is the safer direction: it can only make
             // the gate see MORE of the turn, never less.
             Some("user") if !is_tool_result(&v) && is_our_own_bounce(&v) => {
-                // OUR OWN PUSH RESETS THE WORK CLOCK, and only that clock.
+                // OUR OWN PUSH RESETS THE TWO PER-ATTEMPT CLOCKS, and only those.
                 // The window itself deliberately survives (see above), so the
                 // ceiling would otherwise credit the attempt AFTER the push with
                 // the work done BEFORE it, never advance, and turn the wedge it
                 // guards into an endless push loop.
                 turn.worked_since_push = false;
+                // AND THE ANSWERED FLAG, measured the very morning v3.17.4
+                // shipped without this line: the flag set by one substantial
+                // answer stayed up for the REST of the window, so under a
+                // standing grant Rule B pushed the agent to work while the
+                // guard refused every write — a deadlock built from two fixes
+                // that each worked alone. A whole read-only morning of Stage 11
+                // ran inside it. The answer that raised the flag was DELIVERED
+                // before this push; the push starts a fresh attempt, and the
+                // turn-around rule is about answer-then-work inside ONE
+                // attempt, not about ever having answered.
+                turn.answered_substantially = false;
             }
             // THE HARNESS IS NOT THE HUMAN (the 2026-08-29 six-hour sleep).
             // A task notification opens a new window — the agent is being
@@ -1102,11 +1113,7 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                             {
                                 turn.wrote_markdown = true;
                             }
-                            // ANY tool call is work — an edit, a build, a commit.
-                            // The old measure was "started a background job",
-                            // which made a turn of real work read as empty.
-                            turn.worked_since_push = true;
-                            turn.launches.push(ToolUse {
+                            let launch = ToolUse {
                                 subagent: input
                                     .and_then(|i| i.get("subagent_type"))
                                     // A SendMessage names its recipient in `to`
@@ -1122,7 +1129,25 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                                     .and_then(|i| i.get("run_in_background"))
                                     .and_then(serde_json::Value::as_bool)
                                     .unwrap_or(false),
-                            });
+                            };
+                            // ANY tool call is work — an edit, a build, a commit.
+                            // The old measure was "started a background job",
+                            // which made a turn of real work read as empty.
+                            //
+                            // EXCEPT THE COMMUNICATOR, for the same reason
+                            // `arms_work` excepts it: it judges the message
+                            // being sent, it is not work that continues. Counted
+                            // as work it resets the emptiness ceiling — and a
+                            // session that must consult the communicator to say
+                            // "I am done" then never LOOKS idle, so the ceiling
+                            // that should release it never advances. Measured
+                            // 2026-08-31: a finished session needed one
+                            // communicator pass and three further pushes to be
+                            // let go, where two should have ended it.
+                            if !launch.is_communicator() {
+                                turn.worked_since_push = true;
+                            }
+                            turn.launches.push(launch);
                         }
                         _ => {}
                     }
@@ -1597,6 +1622,31 @@ mod tests {
         read_turn(&t).unwrap()
     }
 
+
+    /// THE COMMUNICATOR IS NOT WORK, on this counter either. Counted as work it
+    /// resets the emptiness ceiling, and a session that must consult the
+    /// communicator to say "I am done" then never looks idle — measured
+    /// 2026-08-31: a finished session took one communicator pass plus three
+    /// further pushes to be released, where two should have ended it.
+    #[test]
+    fn a_communicator_pass_does_not_reset_the_emptiness_clock() {
+        let t = format!(
+            "{}\n{}\n{}\n",
+            human_line("done?"),
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Agent","input":{"subagent_type":"communicator"}}]}}"#,
+            assistant_line("nothing left to do")
+        );
+        let turn = read_turn(&t).unwrap();
+        assert!(
+            !turn.worked_since_push,
+            "judging the goodbye is not doing work — counting it keeps a finished \
+             session un-releasable"
+        );
+        assert!(
+            turn.communicator_ran(),
+            "control: the call itself must still be seen, or Rule A breaks"
+        );
+    }
 
     /// THE TWO FIELDS DISAGREE ON EXACTLY THE TURN THAT MATTERS, and which one
     /// feeds which decision is the whole of tonight's defect.

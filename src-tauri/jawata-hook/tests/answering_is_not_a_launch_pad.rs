@@ -229,6 +229,40 @@ fn a_window_opened_by_the_harness_does_not_freeze_the_work() {
     );
 }
 
+/// CONTROL 5 — THE GATE'S OWN PUSH REOPENS WRITING.
+///
+/// Measured the morning v3.17.4 shipped: one substantial answer froze writes for
+/// the REST of the window, because the flag never reset — so under a standing
+/// grant, Rule B pushed the agent to work while this guard refused every write.
+/// A whole read-only morning ran inside that deadlock. The answer was DELIVERED
+/// before the push; the push starts a fresh attempt, and the turn-around rule is
+/// about answer-then-work inside ONE attempt.
+#[test]
+fn the_stop_gates_push_reopens_writing() {
+    let home = scratch("push");
+    let t = transcript(
+        &home,
+        "p",
+        &[
+            human("why did you stop?"),
+            assistant(&an_answer()),
+            // The stop gate's own bounce, exactly as the client injects it.
+            human("Stop hook feedback:\nRULE B: autonomy is granted and this turn armed …"),
+        ],
+    );
+    let target = home.join("notes.md");
+    std::fs::write(&target, "x").unwrap();
+
+    let out = guard_says(&payload("Write", &t, &target), &home);
+
+    assert!(
+        is_allow(&out),
+        "after the gate's own push the previous answer is history — refusing here \
+         deadlocks Rule B against this guard, which is exactly what happened live. \
+         Got: {out}"
+    );
+}
+
 /// CONTROL 4 — no transcript means SILENT, never refuse.
 ///
 /// A guard that blocks when it cannot see would take out every session whose
