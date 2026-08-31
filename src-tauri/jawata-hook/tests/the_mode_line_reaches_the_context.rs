@@ -26,6 +26,10 @@ use std::process::{Command, Stdio};
 const HOOK: &str = env!("CARGO_BIN_EXE_jawata-hook");
 
 fn userprompt_says(payload: &str, home: &std::path::Path) -> String {
+    userprompt_says_at(payload, home, "http://127.0.0.1:1/mcp")
+}
+
+fn userprompt_says_at(payload: &str, home: &std::path::Path, url: &str) -> String {
     let dir = home.join("bin");
     std::fs::create_dir_all(&dir).expect("scratch bin");
     let exe = dir.join(if cfg!(windows) {
@@ -49,7 +53,7 @@ fn userprompt_says(payload: &str, home: &std::path::Path) -> String {
     // on the store answering.
     std::fs::write(
         dir.join("hook_config.json"),
-        r#"{"url":"http://127.0.0.1:1/mcp","token":"t","client":"claude-code"}"#,
+        format!(r#"{{"url":"{url}","token":"t","client":"claude-code"}}"#),
     )
     .expect("write the hook config");
 
@@ -173,4 +177,47 @@ fn no_session_means_no_mode_line() {
         "without a session id there is no state to assert, and asserting one anyway \
          is fabrication. Got: {out}"
     );
+}
+
+/// A HANGING STORE CANNOT EAT THE MODE LINE — the Windows failure, reproduced
+/// on every platform.
+///
+/// v3.17.5's second CI attempt: both Windows runners, one test, output EMPTY,
+/// ~5.6 s wall. A dead localhost port there does not refuse instantly the way
+/// Linux does, so several sequential cue attempts at 1.5 s each walked past
+/// the 4 s watchdog and the process was killed with the mode line unsaid.
+/// Linux never reproduces that — a dead port refuses in microseconds — so the
+/// hang is manufactured honestly: a listener that ACCEPTS into its backlog and
+/// never answers stalls the request on any OS.
+///
+/// The bound under test: with a mode line waiting, the recall spends its
+/// budget plus at most ONE hanging attempt, then the line ships alone.
+#[test]
+fn a_hanging_store_cannot_eat_the_mode_line() {
+    let home = scratch("hang");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let url = format!("http://127.0.0.1:{}/mcp", listener.local_addr().unwrap().port());
+
+    let _ = userprompt_says_at(&payload("s-hang", "carry on and autocontinue"), &home, &url);
+    let started = std::time::Instant::now();
+    let out = userprompt_says_at(
+        &payload(
+            "s-hang",
+            "<system-reminder>\nthe background importer classifier regression job finished\n</system-reminder>",
+        ),
+        &home,
+        &url,
+    );
+    let elapsed = started.elapsed();
+
+    assert!(
+        out.contains("AUTOCONTINUE: ON"),
+        "the state line must ship even when every store attempt HANGS — on Windows it \
+         died with the watchdog instead, twice. Got: {out}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(3_500),
+        "budget + one hanging attempt must land inside the 4 s watchdog with margin; took {elapsed:?}"
+    );
+    drop(listener);
 }

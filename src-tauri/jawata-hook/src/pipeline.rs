@@ -101,7 +101,7 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
         // held and falls through; only in Block mode does it stop the call.
         Role::ToolRecall => match recall_gate(client, config, payload, store) {
             Some(outcome) => outcome,
-            None => recall(role, client, payload, store),
+            None => recall(role, client, payload, store, None),
         },
         Role::UserPrompt => {
             // His word is the only grant, and this is the only place it is
@@ -109,7 +109,14 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
             // recall so a payload that fails to yield cues still records it —
             // the grant is not conditional on the store having anything to say.
             let mode = note_autonomy_from_prompt(payload);
-            match (mode, recall(role, client, payload, store)) {
+            // With a line waiting, the recall gets a BUDGET rather than free
+            // rein: it may spend 800 ms starting cue attempts, plus at most one
+            // attempt's own timeout — comfortably inside the 4 s watchdog.
+            // Without a line (no session), nothing waits and nothing is capped.
+            let deadline = mode
+                .as_ref()
+                .map(|_| std::time::Instant::now() + std::time::Duration::from_millis(800));
+            match (mode, recall(role, client, payload, store, deadline)) {
                 (None, out) => out,
                 // The mode line rides ON TOP of whatever the recall said…
                 (Some(line), Outcome::Emitted(rendered)) => {
@@ -524,7 +531,21 @@ fn emit_gate_signal(signal: &str, detail: &str) {
     }
 }
 
-fn recall(role: Role, client: Client, payload: &str, store: &dyn Store) -> Outcome {
+/// `deadline`: stop STARTING new cue attempts once it has passed. Set only when
+/// a mode line is waiting to be emitted (see the UserPrompt arm) — the line's
+/// delivery must not be hostage to store latency. Measured on v3.17.5's second
+/// CI attempt, Windows only: a dead localhost port there does not refuse
+/// instantly the way Linux does, so several sequential cue attempts at 1.5 s
+/// each walked past the 4 s watchdog and the process died with the mode line
+/// unsaid — an EMPTY emission, the exact dependency this arm claims not to
+/// have. The deadline bounds the damage to ONE hanging attempt.
+fn recall(
+    role: Role,
+    client: Client,
+    payload: &str,
+    store: &dyn Store,
+    deadline: Option<std::time::Instant>,
+) -> Outcome {
     // Stage 5: the ledger is per session, so a skip is a property of ONE
     // conversation rather than of the machine.
     let session = session_id_in(payload).unwrap_or_default();
@@ -544,6 +565,15 @@ fn recall(role: Role, client: Client, payload: &str, store: &dyn Store) -> Outco
         .map(|c| ("symbol", c))
         .chain(cues.symptoms.iter().map(|c| ("symptom", c)))
     {
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            // Out of budget with a mode line waiting. Reported as a FAILURE,
+            // never as the store having nothing — cues were deliberately not
+            // asked, and "we did not look" must stay distinguishable from
+            // "we looked and found nothing".
+            return Outcome::Silent(SilenceReason::QueryFailed(
+                "mode-line budget spent; remaining cue attempts skipped".into(),
+            ));
+        }
         match store.ask(serde_json::json!({ "kind": "recall", "format": "text", key: cue })) {
             Ok(Answer::Text(text)) => {
                 return finish(
