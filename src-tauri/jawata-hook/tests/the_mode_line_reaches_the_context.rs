@@ -33,7 +33,17 @@ fn userprompt_says(payload: &str, home: &std::path::Path) -> String {
     } else {
         "jawata-hook-userprompt"
     });
-    std::fs::copy(HOOK, &exe).expect("copy the built binary to its role name");
+    // COPY ONCE, and this is the release-red fix, not a nicety: this file's
+    // arm-then-clear test calls the helper TWICE with one scratch home, and
+    // re-copying over an already-executed binary killed the second exec on
+    // macOS with a signal (code signature is cached per inode, so rewriting
+    // the inode invalidates the running image's identity) and broke the copy
+    // on Windows (sharing violation). Both Linux runners sailed through,
+    // which is why the local suite was green while three CI platforms went
+    // red at exit 101 — v3.17.5's first attempt, 2026-08-31.
+    if !exe.exists() {
+        std::fs::copy(HOOK, &exe).expect("copy the built binary to its role name");
+    }
     // Claude Code dialect — the client this line ships to first — and a DEAD
     // resident address, which is the point: the grant's state must not depend
     // on the store answering.
