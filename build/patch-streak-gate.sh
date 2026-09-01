@@ -98,10 +98,38 @@ fi
 
 CUTOFF=$(( TAG_EPOCH - WINDOW_DAYS * 86400 ))
 
-# --- every OTHER tag on this product inside the trailing window ---
+# --- the OTHER PATCHES ON THIS SAME MINOR inside the trailing window ---
+#
+# IT USED TO COUNT EVERY RELEASE, and that is not the thing it is named for.
+# This gate exists to catch "a run of patches where each one breaks something
+# DIFFERENT from the last" — a series of repairs circling one unfixed defect.
+# Counting neighbours makes a normal week of FEATURE work indistinguishable
+# from that, which is the same mistake the gate is meant to detect: the
+# reference measured is not the quantity meant.
+#
+# Measured 2026-09-01, which is why this changed. It refused v4.0.1 naming ten
+# neighbours — but those ten were four feature releases on four different
+# minors (3.14.0, 3.15.0, 3.16.0, 3.17.0), five patches spread across them, and
+# one major. No streak at all. Meanwhile jawata-studio ran v3.17.0 through
+# v3.17.6 — seven consecutive patches on ONE minor in three days — which is
+# exactly the shape this gate describes and would have caught under the rule
+# below.
+#
+# The predicate is now: patches sharing this tag's MAJOR.MINOR. A run is a run
+# only if the repairs are landing on the same thing; a patch after a feature
+# release is the system working, not a streak.
+STREAK_SERIES="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}."
 NEIGHBOURS=()
 while read -r t; do
     [ "$t" = "$TAG" ] && continue
+    # same MAJOR.MINOR, and a PATCH of it (v1.2.3 where v1.2. matches and the
+    # patch component is non-zero — v1.2.0 is the feature release the run would
+    # be circling, not a member of it).
+    case "$t" in
+        "v${STREAK_SERIES}"*) ;;
+        *) continue ;;
+    esac
+    [ "${t##*.}" = "0" ] && continue
     e=$(git log -1 --format=%ct "$t" 2>/dev/null) || continue
     [ -z "$e" ] && continue
     # Strictly BEFORE this tag, and inside the window. A later tag is not
@@ -117,7 +145,7 @@ if $EXPLAIN; then
 fi
 
 if [ "${#NEIGHBOURS[@]}" -eq 0 ]; then
-    echo "OK  $TAG is a patch with no other release inside ${WINDOW_DAYS} days."
+    echo "OK  $TAG is a patch with no other patch on v${STREAK_SERIES}x inside ${WINDOW_DAYS} days."
     exit 0
 fi
 
