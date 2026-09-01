@@ -574,6 +574,20 @@ impl ManagerService {
     }
 
     /// Starts runtimes for all configured projects.
+    ///
+    /// **Blocking, and must never be called from the main thread** — it sleeps
+    /// between workspace spawns so three residents do not begin cold imports in
+    /// the same second. Three workspaces is two gaps; at the default ten seconds
+    /// that is twenty seconds of wall clock.
+    ///
+    /// v3.18.0 shipped this stagger from a SYNCHRONOUS Tauri command, which put
+    /// those twenty seconds on the thread that repaints the window — the CPU
+    /// spike traded for a longer freeze, which is the opposite of the point,
+    /// since what the stagger protects is the machine feeling usable. The marker
+    /// above is the same one `sync_releases_now` carries for the same reason,
+    /// and `ui_thread_is_not_a_sleeping_place` now enforces it rather than
+    /// trusting it to be read.
+    ///
     /// Sprint 10 v0.10.4: writes `workspace.json` once per workspace
     /// before spawning any jawata process. Multiple projects sharing
     /// a `workspace_name` collapse into one spawn per workspace; the

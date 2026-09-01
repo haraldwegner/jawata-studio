@@ -143,8 +143,28 @@ pub fn delete_project(
     state.manager_service.delete_project(&project_id)
 }
 
+/// studio#27 again, and this time I caused it. `async` is load-bearing here.
+///
+/// Tauri runs a SYNCHRONOUS command on the main thread — the comment on
+/// `discover_workspace_projects` above says so, and names the symptom in the
+/// words it was reported in: "for that whole time the window cannot repaint or
+/// respond". v3.18.0 added a stagger to `start_all_runtimes` so three residents
+/// stop starting in the same second, and implemented it as a blocking sleep
+/// between spawns. On a sync command that sleep lands on the repaint thread:
+/// three workspaces, two gaps, twenty seconds of "jawata does not respond" on
+/// every fleet start.
+///
+/// The stagger was right and the thread was wrong. Async moves the call to the
+/// async runtime, so the window stays live while the spawns are spaced out —
+/// which is the whole point of spacing them, since the thing being protected is
+/// the machine feeling usable.
+///
+/// The rule was written down two lines above this function and I still walked
+/// into it, because I was reasoning about CPU contention and never asked which
+/// thread the sleep was on. `ui_thread_is_not_a_sleeping_place` now asks
+/// mechanically what a comment could only ask of a reader.
 #[tauri::command]
-pub fn start_all_runtimes(state: State<'_, AppState>) -> Result<ManagerDashboard, String> {
+pub async fn start_all_runtimes(state: State<'_, AppState>) -> Result<ManagerDashboard, String> {
     let dashboard = state.manager_service.start_all_runtimes();
     // studio#21: residents just changed state — ask the canary now instead of
     // wearing a verdict from before they existed.
