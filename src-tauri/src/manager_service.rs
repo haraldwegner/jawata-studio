@@ -592,7 +592,42 @@ impl ManagerService {
             }
         }
 
+        // STAGGERED, because starting them together is what made the machine
+        // unusable. Measured 2026-09-01, seventeen minutes after v4.0.0
+        // published: studio restarted all three residents onto the new engine
+        // at the same instant and each began a cold workspace import — 189%,
+        // 211% and 133% CPU plus children, roughly ten of twenty cores, load
+        // average 17, and a machine its owner described as stuck for minutes.
+        //
+        // The total work is unchanged; only its CONCENTRATION is. That is the
+        // whole point — the peak is what a person feels, and three cold imports
+        // beginning in the same second is a peak nobody asked for. It scales
+        // the wrong way too: the more workspaces a user has, the worse the
+        // simultaneous start, and this machine holds three against 290
+        // repositories.
+        //
+        // The delay is between DISTINCT WORKSPACES, not projects: several
+        // projects sharing a workspace collapse into one spawn, and the ones
+        // that merely join a running process cost nothing to wait for.
+        //
+        // Studio is only half of this. The engine's own fix (jawata-mcp) makes
+        // each re-import cheap by remembering resolved classpaths across a
+        // restart; this stops the cheap-but-not-free work from landing all at
+        // once. Neither alone is enough: staggering three expensive imports
+        // still burns the cores in sequence, and three cheap ones starting
+        // together still spike.
+        let stagger = std::time::Duration::from_millis(
+            std::env::var("JAWATA_STUDIO_START_STAGGER_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(10_000),
+        );
+        let mut spawned_workspaces: HashSet<String> = HashSet::new();
         for project in projects {
+            let first_of_its_workspace = spawned_workspaces.insert(project.workspace_name.clone());
+            if first_of_its_workspace && spawned_workspaces.len() > 1 && !stagger.is_zero() {
+                std::thread::sleep(stagger);
+            }
             match self.resolve_launch_request(&project) {
                 Ok(launch_request) => {
                     if let Err(error) = self.runtime_manager.start_runtime(&launch_request) {
