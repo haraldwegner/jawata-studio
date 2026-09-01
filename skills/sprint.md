@@ -242,6 +242,44 @@ user's judgement, so check 13's product is a named decision for them, never a ve
    raw (see the one-directional immutability rule above), so its absence there
    means the editor skipped a step. REFUSE, and the fix is to append the user's
    words to the raw and re-derive, not to argue the deliverable's merits.
+15. **A QUANTITY MUST REACH A DELIVERABLE THAT PRODUCES IT.** (Harald,
+   2026-09-01, after Sprint 28d.) When the raw states a scope quantity — "build
+   the missing 45", "15 → 60", "all six" — extract it VERBATIM and carry the
+   NUMBER into its traceability row. Then, for every deliverable, state the SIZE
+   OF ITS OUTPUT and compare the two arithmetically.
+
+   **REFUSE THIS SHAPE:** the raw says *build the missing N*; a deliverable says
+   *survey / rank / select which ones are needed*, and its measure is about the
+   survey being well-evidenced; the measure is then met, honestly and exactly,
+   over a population far smaller than N. Nothing is absent, nothing is
+   unmeasured, no clause was softened — the requirement was replaced by a
+   selection step whose output size nobody stated.
+
+   Three rules make it decidable rather than a judgement:
+
+   - **A selecting deliverable owes a FLOOR.** How many of the candidates ship?
+     Unstated is not "to be determined", it is UNBOUNDED, and unbounded is the
+     finding. A ranking is a priority order, never a commitment.
+   - **A selection step's INPUT sets its output.** If that input is drawn from
+     another part of the sprint, say so plainly: that part is now the
+     scope-setter for this one, and the quantity has been handed to it silently.
+   - **A quantity in the TITLE or the task sentence must be traced to a
+     deliverable that produces it**, even where no selection step exists. A
+     headline number with no owning deliverable is a REFUSE on its own.
+
+   A measure being correct is not a defence. Ask what POPULATION it is measured
+   over, and whether that is the population the quantity named.
+
+   **Live cost, and it is why this check exists.** Sprint 28d was named *Fowler*
+   and its spec said, in its own summary, *"jawata performs about 15 of Fowler's
+   ~60 refactorings… This sprint builds the missing atomic operations
+   ourselves."* Its first deliverable then scoped the survey to *"the reachable
+   catalogue entries' 'after' shapes"* — the OTHER half of the sprint. The survey
+   returned 8 candidates; 4 shipped; coverage moved from ~15 to ~18 of 60. Every
+   checkpoint passed, and the survey's measure was met exactly as written,
+   because it was evidenced over a population the requirement never named. The
+   number was on the page, three paragraphs above the deliverable that shrank it.
+
 
 ## THE ROUND CAP — three, four at the outside (Harald, 2026-08-11, BINDING)
 
@@ -282,7 +320,7 @@ auditor returns these as blocking, the editor fixes what is cheap and IGNORES th
 
 ## The traceability matrix — anchored to the RAW
 
-| RAW requirement (verbatim) | Where the CLEAN satisfies it + its measure | kept / deferred-with-home / **DROPPED → refuse** |
+| RAW requirement (verbatim) | **Its quantity, if it states one** | Where the CLEAN satisfies it + its measure | **That deliverable's output size** | kept / deferred-with-home / **DROPPED → refuse** |
 
 Left column = the raw items verbatim, one row each — never the clean's self-declared
 goals. Principle-shaped requirements get a mechanical form (in the plan), never demotion

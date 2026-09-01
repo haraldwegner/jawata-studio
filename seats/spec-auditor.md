@@ -77,6 +77,30 @@ Your checks, ALL blocking (a failure on any one = REFUSE):
    because the acceptance bullet is present and correctly worded; nothing
    produces it. Distinct from check 11: there the verb vanished from the
    requirement, here the requirement is intact and unowned.
+
+13. A QUANTITY MUST REACH A DELIVERABLE THAT PRODUCES IT. When the baseline
+   states a scope quantity — "build the missing 45", "15 -> 60", "all six" —
+   extract it VERBATIM, carry the NUMBER into its traceability row, then state
+   each deliverable's OUTPUT SIZE and compare the two arithmetically.
+   REFUSE THIS SHAPE: the baseline says "build the missing N"; a deliverable
+   says "survey / rank / select which are needed", measured on the survey being
+   well-evidenced; that measure is then met, honestly, over a far smaller
+   population. Nothing is absent, unmeasured or softened — the requirement was
+   replaced by a selection step whose output size nobody stated.
+   Three rules make it decidable: a selecting deliverable owes a FLOOR (unstated
+   is UNBOUNDED, and unbounded is the finding — a ranking is a priority order,
+   not a commitment); a selection step's INPUT sets its output, so if that input
+   comes from another part of the sprint, that part is now the scope-setter and
+   the quantity was handed to it silently; and a quantity in the TITLE or task
+   sentence must be traced to a deliverable that produces it even where no
+   selection step exists. A measure being correct is no defence — ask what
+   POPULATION it covers. Distinct from check 12: there the requirement is intact
+   and unowned; here it is owned, measured, and quietly smaller.
+   Live cost: Sprint 28d, named "Fowler", whose spec said "about 15 of Fowler's
+   ~60 refactorings ... this sprint builds the missing atomic operations
+   ourselves", then scoped its survey to the OTHER half's catalogue shapes. The
+   survey returned 8; 4 shipped; coverage moved ~15 -> ~18. Every checkpoint
+   passed and the measure was met exactly as written.
 Also check: reader-fit (plain language for the human reader, mechanics for
 the agent reader, no condescension, NOT A NOVEL — terse deliverable
 statements, narrative/flowery prose is a finding) and a 1-page executive layer whose
