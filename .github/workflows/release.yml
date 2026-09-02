@@ -8,43 +8,17 @@ on:
   workflow_dispatch:
 
 jobs:
-  # THE PATCH-STREAK GATE — Sprint 28d S9a.2.
+  # THE PATCH-STREAK GATE IS NOT HERE ANY MORE, AND ITS ABSENCE IS A DECISION
+  # (Harald, 2026-09-02): "A quality gate like too many patches is a dev quality
+  # gate which stays on this machine and should not be part of the CI."
   #
-  # STANDALONE, with NO `needs`, so it starts in the first second and runs while
-  # the five-platform matrix builds. Its only job is to gate `publish`, and it
-  # costs nothing to have the answer ready early. Put inside `publish` it would
-  # fire only after every runner had built, notarized and uploaded — the same
-  # verdict, an hour later, having wasted the build it exists to precede.
-  #
-  # WHAT IT REFUSES: a patch release with any other release inside seven days.
-  # Two runs in this repo have been exactly that — 2026-08-13 (nine tags) and
-  # 2026-08-29 (four) — and each was one design flaw being moved around, with
-  # every fix breaking something DIFFERENT from the last.
-  #
-  # A red here leaves the DRAFT release in place with its assets, and
-  # `/releases/latest` does not advance. install.sh reads that pointer, so
-  # nobody is served a half-gated release; the draft is the recoverable state.
-  streak-gate:
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-        with:
-          # The gate reads tag dates. A shallow, tagless clone would give it an
-          # empty window and it would pass everything, silently.
-          fetch-depth: 0
-
-      # STREAK_OVERRIDE is a repository variable HARALD sets — never anything
-      # the releasing agent can write. The first design cleared a red streak on
-      # a line of markdown in the release notes, which the releasing agent
-      # writes itself every release: a hatch the gated party controls is a
-      # formality. The notes line stays, as the record of what the architect
-      # said; it is no longer the key that it ran.
-      - name: Patch-streak gate
-        env:
-          STREAK_OVERRIDE: ${{ vars.STREAK_OVERRIDE }}
-        run: bash build/patch-streak-gate.sh "${GITHUB_REF_NAME}" --explain
+  # The gate stays in build/patch-streak-gate.sh and runs ON THE DEV MACHINE
+  # before a tag is pushed — the one place its question can be answered: the
+  # agent doing the tagging is stopped, the streak is put in front of Harald in
+  # conversation, and his word clears it. The CI copy fired AFTER that decision
+  # and could be cleared only through a repository-settings page — a channel
+  # that cannot carry the answer to the question the gate asks. Proven the same
+  # evening in jawata-mcp, on his own release, mid-flight.
 
   release:
     permissions:
@@ -566,11 +540,7 @@ jobs:
   # /releases/latest) handed every installer the OLD app. The final verify
   # step fails the release loudly if the pointer does not advance.
   publish:
-    # `streak-gate` joins `release` here (S9a.2b): a red streak must block
-    # PUBLICATION, which is the outward-facing, hard-to-undo act. The matrix may
-    # still build and upload to the draft — that costs nothing and keeps the
-    # assets ready for the moment Harald clears it.
-    needs: [release, streak-gate]
+    needs: release
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-22.04
     permissions:
