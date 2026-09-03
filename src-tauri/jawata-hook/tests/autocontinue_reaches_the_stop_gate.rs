@@ -337,7 +337,7 @@ fn two_empty_turns_release_the_session_rather_than_wedging_it() {
 /// asleep, which is the entire scenario this exists for. So the grant ends on
 /// the same fact that makes the agent unable to proceed.
 #[test]
-fn a_message_that_needs_his_answer_ends_the_grant_by_itself() {
+fn a_message_that_needs_his_answer_reaches_the_judge_and_the_verdict_ends_it() {
     let home = scratch_home("needs-him");
     let working = transcript(&home, "carry on", "Suite green, moving on.");
     run("userprompt", &home, &prompt_payload("sess-e", "autocontinue"));
@@ -346,7 +346,11 @@ fn a_message_that_needs_his_answer_ends_the_grant_by_itself() {
         "precondition: the grant is live"
     );
 
-    // The agent now asks him something only he can settle.
+    // The agent now asks him something only he can settle. v4.0.0: SAYING SO
+    // IS NOT ENOUGH ANY MORE. Until today the ask stood the push down by
+    // itself; two stops on 2026-09-03 were exactly this shape, correctly
+    // worded, and neither carried a decision — a release the plan schedules
+    // five stages later, and a refused review the agent had already fixed.
     let asking = transcript(
         &home,
         "carry on",
@@ -354,17 +358,47 @@ fn a_message_that_needs_his_answer_ends_the_grant_by_itself() {
     );
     let at_the_ask = run("stop", &home, &stop_payload("sess-e", &asking));
     assert!(
-        !at_the_ask.contains("RULE B"),
-        "the gate pushed an agent that is BLOCKED on him, not idle: {at_the_ask}"
+        at_the_ask.contains("RULE B") && at_the_ask.contains("autocontinue"),
+        "an ask must now reach the judge rather than end the turn on its own wording: \
+         {at_the_ask}"
     );
 
-    // And it stays off afterwards — the next ordinary turn is free to end.
-    let after = run("stop", &home, &stop_payload("sess-e", &working));
+    // ...and the judge's RESERVED verdict is what ends it. THROUGH THE REAL
+    // BINARY, which is this file's whole reason to exist: the verdict is read
+    // out of the harness's own tool-result record, so the join between the
+    // subagent's answer and the rule is exercised rather than assumed.
+    // A DIFFERENT FILE. `transcript()` always writes `transcript.jsonl`, so
+    // building this one there would overwrite the working fixture the last
+    // assertion re-reads — and that assertion would then be judging this
+    // transcript while claiming to judge that one.
+    let judged = home.join("judged.jsonl");
+    std::fs::write(
+        &judged,
+        format!(
+            "{}\n{}\n{}\n{}\n",
+            serde_json::json!({"type":"user","message":{"role":"user","content":"carry on"}}),
+            serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[
+                {"type":"tool_use","name":"Agent","input":{"subagent_type":"autocontinue"}}]}}),
+            serde_json::json!({"type":"user","message":{"role":"user","content":[
+                {"type":"tool_result","tool_use_id":"t1",
+                 "content":"The plan reserves the release.\nVERDICT: RESERVED"}]}}),
+            serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[
+                {"type":"text","text":"Do you want v3.13.0 released tonight, or held?"}]}}),
+        ),
+    )
+    .unwrap();
+    let settled = run("stop", &home, &stop_payload("sess-e", &judged));
     assert!(
-        !after.contains("RULE B"),
-        "the grant survived a real ask; he would have to notice and type \
-         something, which is the design this replaced: {after}"
+        !settled.contains("RULE B"),
+        "a RESERVED verdict must end the turn: {settled}"
     );
+
+    // THE GRANT SURVIVED THE ASK, and that is already proven above rather than
+    // here: the ask's own stop came back with RULE B, which only fires under a
+    // live grant. A further stop cannot add to it — by this point the
+    // empty-turn ceiling has been spent by the two blocks, so the gate
+    // correctly lets go, and asserting a block there would be asserting that
+    // the wedge valve does not work.
 }
 
 /// HIS ESC STOPS THE WORK. Always, and over the top of any grant.

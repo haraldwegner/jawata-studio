@@ -508,71 +508,55 @@ approval, after auditor sign-off.** STOP.
 
 ## The communication audit (ENFORCED — not the agent's choice)
 
-**Every SELF-INITIATED upward message — decision ask, checkpoint summary,
-sprint result, unprompted status/alarm — passes through the COMMUNICATOR AGENT
-before it is sent.** Replies to the user's OWN questions are DIRECT, fast,
-bottom-line-first — never routed through the agent (ruled 2026-08-07: gating
-conversation triples his waiting time for a failure mode conversation barely
-has). Invoke the agent named `communicator` (defined at
-`~/.claude/agents/communicator.md`; a missing definition is re-created from
-this section's rules, never skipped) with the draft, a one-paragraph
-true-state statement, and — for any ask — the one-sentence answer to "what
-does this achieve?". Send its PASS or its REWRITE — never the refused draft,
-never an ask it returns as DROP-THE-ASK. This is an executed step with the
-invocation visible in the transcript; "I kept it in mind" is the recorded
-failure it exists to end.
+**Every upward message answers three questions before it is sent.** They are
+Harald's, ruled 2026-09-03, and they replaced the communicator agent that used
+to read every draft:
 
-The agent judges by THREE TESTS (Harald's criteria, ruled 2026-08-07): the
-IMPRESSION TEST — what does a zero-context reader conclude (broken? blocked?
-am I needed?), refused when impression ≠ reality in EITHER direction, so false
-alarms are refused AND muffled real showstoppers are escalated; the NECESSITY
-TEST — an ask lives only if its purpose names a real consequence, and dies if
-it lies inside granted authority (autocontinue, tightenings), if every answer
-leads to the same action, or if the sender could answer it itself; the
-SEVERITY MATCH — the agent assigns showstopper / needs-a-ruling /
-progress-note / not-worth-sending from the reader's side, and the draft's
-urgency must match. Fresh context is the instrument: the agent knows only what
-the reader knows, plus the true-state facts it verifies against.
+1. **Can he OPEN every fact in it?** A repo file, a command he can run, a URL.
+   Never a path under `~/.claude`, never a store id, never a count only you can
+   see. If a fact fails this, either give him the thing that carries it or cut
+   the fact.
+2. **Has this conversation DEFINED every term?** Not "is it a common word" —
+   has it been introduced here, in words, with what it means. An abbreviation
+   is defined at first use or it does not appear.
+3. **Is the implementation detail BELOW the point?** The answer, the decision
+   or the state comes first. Mechanics follow it, and only what he needs to
+   judge the answer.
 
-Two rulings bind it (both Harald's, verbatim anchors in the store):
-2026-07-18 "This needs to be enforced. I don't want you to decide if you do or
-leave" — and 2026-08-07, after an unintelligible ask stalled an authorized
-full-night sprint while every fix was already green: "I wanted a communication
-agent." The Sprint-26 stop-gate hook is SHAPE enforcement only (trigger words,
-length, abbreviations) and is never an argument against the communicator pass;
-the mechanical block-until-communicator-pass lands in the hook binary (Sprint
-28 D-SHIM), and the product-side communicator seat for all clients is Sprint
-29.
-
-Core content rules the communicator applies: bottom line first (green/red,
+Plus the content rules that carry the meaning: bottom line first (green/red,
 moving/blocked-on-what, in the first two lines); the decision test — what is
-broken (or that NOTHING is, explicitly), what yes changes, what no costs, one
-recommendation; no loop interior (same-session found-and-fixed is never
-reported as an open problem); every abbreviation defined; a gate reported as
-what it proves, never as how it ran.
+broken, or explicitly that NOTHING is; what yes changes; what no costs; one
+recommendation; no loop interior (a same-session found-and-fixed is never
+reported as an open problem); a gate reported as what it PROVES, never as how
+it ran.
 
-## The communicator is ENFORCED, not remembered
+## Why this is a ruling and not an agent
 
-Every self-initiated upward message — decision ask, checkpoint summary,
-unprompted status — passes the fresh-context communicator agent BEFORE sending.
-His own questions are answered directly and fast; the gate is for what the agent
-initiates.
+The `communicator` subagent read every self-initiated message from 2026-08-07
+until v4.0.0. What it actually caught, measured over a full session, was three
+things — a reference he could not open, a count with no object, an undefined
+term — and every one is a checklist item rather than a judgement. What it cost
+was its whole readback rendered to him beside the message it was reviewing.
+Harald: *"The communicator is annoying. I see the same output twice. It is not
+far away from what is originally said. Can we instead add a ruling."*
 
-**This is not a rule the agent keeps by reading it.** It lived as prose for
-months and was skipped three times in one session, the third an hour after being
-recorded as a lesson. Harald: *"A rule in claude.md is optional and will not be
-applied anywhere else. Have I told you to leave it optional?"*
+**And the reason a ruling is enough HERE, when it was not enough for stopping.**
+A rule the agent applies to itself holds only where the agent has no motive to
+break it. There is no reward in writing an unclear message — so the three
+questions above bind. There IS a reward in ending a turn, which is why the stop
+gate does not ask the agent to judge its own stop: it puts that to the
+`autocontinue` seat, a fresh context reading the transcript itself. Judge where
+there is a motive; rule where there is not.
 
-It is now enforced by the deployed Stop hook: a message asking for a word, a
-ruling, a decision or a sign-off BLOCKS unless a communicator subagent ran since
-the human's last turn. The transcript is written by the HARNESS, so that is a
-fact the agent cannot fake by writing a marker — which is the whole reason the
-check can exist at all.
+The mechanical residual stays in the hook, because both halves are decidable
+from the text with nothing to consult: a message over the length budget is
+blocked with the three questions attached, and an undefined abbreviation is
+named back.
 
 **The general form, and the reason it keeps mattering:** a fix is GENERAL only
 in a BINDING layer. The experience store carries knowledge and is a recall
 NOMINEE. Skill text binds the agent that reads it. Only a hook enforces. Every
-rule broken during Sprint 28's night — the turn boundary, the communicator, the
+rule broken during Sprint 28's night — the turn boundary, the review pass, the
 architect at every checkpoint — lived in exactly one of the first two layers.
 
 ## Execution discipline (after GATE 2)

@@ -173,11 +173,22 @@ fn a_keyboard_window_resets_the_alarm() {
     );
 }
 
-/// A Rule B push must NOT spend the review ceiling. Measured live: push wrote
-/// bounce=1, and the review rule's first offence seven seconds later read
-/// "(2 of 3)". Three pushes and an unjudged ask would sail through at the cap.
+/// A `DECISION:` LINE BUYS NOTHING — through the real binary, end to end.
+///
+/// This test measured a different thing until v4.0.0: that a Rule B push must
+/// not spend the REVIEW ceiling, a bound belonging to the reviewer rule that is
+/// now retired. Its lesson — one rule's bounce must never charge another rule's
+/// ceiling — is not lost; it is asserted against the rule that still has a
+/// per-bounce bound, in `a_turn_held_by_another_rule_does_not_spend_a_reseed_chance`.
+///
+/// What it pins now is the change itself, at the only layer where it matters.
+/// Harald, 2026-09-03: *"YOU WANT TO STOP ALL THE TIME AND ARE TRAINED ON THE
+/// QUICK RESULT."* The gate used to let a stop through on a line the agent
+/// wrote itself, and an agent that wants the turn to end writes that line on
+/// the first attempt — no adaptation, nothing to detect. Here the same line is
+/// typed and the gate holds.
 #[test]
-fn an_unrelated_push_does_not_spend_the_review_ceiling() {
+fn a_self_declared_decision_no_longer_ends_the_turn() {
     let home = scratch_home("ceiling");
     let idle = window_transcript(&home, NOTICE, "All gates green. Continuing.");
     run(
@@ -192,8 +203,8 @@ fn an_unrelated_push_does_not_spend_the_review_ceiling() {
     let ask = window_transcript(&home, NOTICE, "DECISION: ship it? Say go and I run it.");
     let out = run("stop", &home, &stop_payload("sess-ceil", &ask));
     assert!(
-        out.contains("UNJUDGED MESSAGE (1 of 3)"),
-        "the review rule's FIRST offence must read 1 of 3 — a Rule B push \
-         charged the ceiling before this fix: {out}"
+        out.contains("RULE B") && out.contains("autocontinue"),
+        "a decision the agent declares about itself must route to the judge, not \
+         end the turn: {out}"
     );
 }

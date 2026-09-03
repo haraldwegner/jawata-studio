@@ -63,6 +63,34 @@ pub const ANSWER_LENGTH: usize = 600;
 /// way every duplicated condition in this crate has.
 pub const TURNAROUND_MARKER: &str = "ANSWER FIRST OR WORK FIRST";
 
+/// The subagent that judges a stop under a live grant.
+pub const JUDGE_SEAT: &str = "autocontinue";
+
+/// What the [`JUDGE_SEAT`] said about this stop.
+///
+/// It replaces [`Turn::declares_a_decision`] as Rule B's exemption, and the
+/// reason is the defect measured on 2026-09-03. That field keyed the exemption
+/// on a `DECISION:` line the AGENT writes. The gate's own doc had already named
+/// the risk — "the agent's discretion wearing a detector's clothes" — and
+/// answered it by demanding a deliberate marker instead of a guess. But a
+/// declaration is still the agent's text, and an agent whose training rewards
+/// ending a turn produces the mandated format on the first attempt, with no
+/// adaptation and nothing to detect. Two stops that night, both formatted
+/// correctly, neither carrying a decision: a release the plan schedules for a
+/// later stage, and a refused review whose findings the agent had already fixed
+/// and simply not re-run.
+///
+/// So the exemption moves onto text the agent does NOT author: a verdict a
+/// fresh-context seat wrote, read out of the harness's own tool-result record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JudgeVerdict {
+    /// The plan reserves this for the human. The stop stands.
+    Reserved,
+    /// The agent can resolve it — carrying the seat's own next action, so the
+    /// block that follows tells it what to do rather than merely to continue.
+    Resolvable(String),
+}
+
 /// How many times a turn may be bounced for a missing review before the gate
 /// gives up and lets it through. Bounded on purpose: the valve this replaces
 /// existed so a gate could never wedge a session, and that concern is real —
@@ -199,13 +227,27 @@ impl ToolUse {
     /// armed", so a turn that ends with a judged summary and nothing running
     /// would pass both. That is precisely the stop this gate exists to catch.
     pub fn arms_work(&self) -> bool {
-        if self.is_communicator() {
+        if self.is_communicator() || self.is_autocontinue_judge() {
             return false;
         }
         self.name == "Agent" || self.backgrounded
     }
 
     /// Was this the communicator judging an upward message?
+    /// A run of the `autocontinue` judge — the seat that decides whether a stop
+    /// under a live grant is the human's to make.
+    ///
+    /// Like the communicator it is NOT work and does NOT arm anything: it judges
+    /// the turn that is trying to end. Counting it either way would hand the
+    /// agent a way to satisfy Rule B by consulting the very judge Rule B
+    /// demands, and — worse — would reset the empty-turn ceiling that is this
+    /// rule's only release valve, so a session that spun on the judge could
+    /// never be let go.
+    pub fn is_autocontinue_judge(&self) -> bool {
+        (self.name == "Agent" || self.name == "SendMessage")
+            && self.subagent.as_deref() == Some(JUDGE_SEAT)
+    }
+
     pub fn is_communicator(&self) -> bool {
         // A SPAWN...
         if self.name == "Agent" && self.subagent.as_deref() == Some("communicator") {
@@ -292,6 +334,23 @@ pub struct Turn {
     /// broken, an unresolved dispute with the auditor, a release, the sprint
     /// finished — is raised AS a decision, so one marker carries all of them.
     pub declares_a_decision: bool,
+    /// Whether the [`JUDGE_SEAT`] was spawned in this window.
+    ///
+    /// Kept separate from the verdict so the two failures are distinguishable:
+    /// never run (block, asking for it) and run-but-answered-nothing (block,
+    /// saying the seat returned no verdict line). Collapsing them would report
+    /// a seat that answered badly as a seat that was skipped.
+    pub judge_ran: bool,
+    /// The verdict, read from the HARNESS's tool-result record rather than from
+    /// the agent's own prose.
+    ///
+    /// That distinction is the whole mechanism. `verdict_lines` already reads
+    /// relayed audit verdicts out of assistant text, and for those it is right:
+    /// the agent is reporting someone else's finding and has no motive to
+    /// misreport it. Here it has exactly that motive — the verdict decides
+    /// whether its turn may end — so the line is taken from the tool result the
+    /// harness wrote, which the agent did not author.
+    pub judge_verdict: Option<JudgeVerdict>,
     /// Whether the human INTERRUPTED this window (Esc, or a stop mid-tool).
     ///
     /// His Esc must stop the work, full stop. A gate that answers an interrupt
@@ -553,10 +612,7 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
     // first, character for character. The v3.17.2 notes already recorded what
     // happens otherwise: a fix taught to one copy and not the other, so the
     // exemption switched itself off exactly where it was needed.
-    let rule_b_would_push = facts.autonomy == Autonomy::Granted
-        && !facts.turn.armed_anything()
-        && !facts.turn.interrupted
-        && facts.empty_turns < MAX_EMPTY_TURNS;
+    let rule_b_would_push = rule_b_engaged(facts);
     if facts.already_bounced
         && !facts.turn.owes_a_review()
         && !facts.owes_a_reseed()
@@ -674,12 +730,21 @@ a `reviewed:` stamp it has actually earned from a cold reader.",
     // PORTED: the length budget. Harald's own suggestion, and stronger than a
     // phrase list because it does not depend on wording — which is exactly how
     // the ten-phrase ask detector failed on its first live outing.
-    if facts.turn.final_text.len() > LENGTH_BUDGET && !facts.turn.communicator_ran() {
+    // v4.0.0: THE RULING REPLACED THE REVIEWER, and this rule survives the
+    // change because it never needed one. Its subject is length, which is
+    // measurable here; and it CLEARS ITSELF — the agent cuts the message and
+    // the next attempt passes — so retiring the reviewer costs it nothing.
+    // What changed is the instruction: it now names the three questions Harald
+    // ruled on rather than demanding a subagent whose readback he then had to
+    // read as well.
+    if facts.turn.final_text.len() > LENGTH_BUDGET {
         return StopVerdict::Block {
             reason: format!(
-                "TOO LONG: {} characters, and the communicator has not judged it. \
-                 Length is noise. Cut to what the reader needs, run the \
-                 communicator, then send.",
+                "TOO LONG: {} characters. Length is noise. Cut it, and check the three \
+things before sending: is every fact one he can OPEN — a repo file, a command he can \
+run — rather than a path or a store only you can see? Is every term one this \
+conversation has already defined? Is the implementation detail below the point instead \
+of in front of it?",
                 facts.turn.final_text.len()
             ),
         };
@@ -743,25 +808,32 @@ a `reviewed:` stamp it has actually earned from a cold reader.",
     // counter at 11 and still climbing. A safety valve on one path is not a
     // safety valve; the bound now sits on the rule itself, so it holds however
     // the client re-invokes.
-    if facts.turn.owes_a_review() {
-        // Past the ceiling the turn is RELEASED OUTRIGHT rather than falling
-        // through to the rules below. Falling through would let a different
-        // rule bounce the same turn the review rule just gave up on — a second
-        // loop wearing another rule's name, which is the incident again with a
-        // different label.
-        if facts.bounces >= MAX_UNJUDGED_BOUNCES {
-            return StopVerdict::Allow;
-        }
-        return StopVerdict::Block {
-            reason: format!(
-                "UNJUDGED MESSAGE ({} of {}): this message asks for a word, a ruling or a \
-decision, and the communicator has not read it. Hand it the draft FIRST — before writing \
-the answer — and send back what it understood, so the reader sees the text once.",
-                facts.bounces + 1,
-                MAX_UNJUDGED_BOUNCES
-            ),
-        };
-    }
+    // THE UNJUDGED-ASK RULE IS RETIRED (Harald, 2026-09-03): *"The communicator
+    // is annoying. I see the same output twice. It is not far away from what is
+    // originally said. Can we instead add a ruling."*
+    //
+    // It demanded a fresh-context reviewer read every decision-class message
+    // before it was sent. What it bought, measured over this session, was three
+    // real catches — a phantom "on your word", a count with no object, an
+    // undefined term — and every one of them is a CHECKLIST item, not a
+    // judgement. What it cost was a whole readback rendered to him alongside
+    // the message it was reviewing, which is the "twice" in his sentence: a
+    // channel defect, since only the findings were ever meant to reach the
+    // agent.
+    //
+    // So the check moves into the ruling now carried in the deployed
+    // instructions and in the length rule's own reason — what he can open, what
+    // this conversation has defined, detail after the point. A self-applied
+    // ruling loses the fresh eyes, and that trade is acceptable HERE and was
+    // not acceptable for Rule B: the agent has no motive to write an unclear
+    // message, and every motive to end a turn. Where there is a motive, there
+    // is a judge; where there is not, a rule is enough.
+    //
+    // The mechanical residual stays: length above, and the jargon check, both
+    // decidable from the text with nothing to consult.
+
+    // RULE B, decisive direction only. "Launched nothing" proves nothing is
+    // armed. The converse does not hold, so it is not asserted.
 
     // RULE B, decisive direction only. "Launched nothing" proves nothing is
     // armed. The converse does not hold, so it is not asserted.
@@ -792,33 +864,29 @@ the answer — and send back what it understood, so the reader sees the text onc
     // sleeps until he returns. That is Harald's "you are in the middle of nowhere
     // and just stop", and it is a question about ARMING, not about effort.
     if facts.autonomy == Autonomy::Granted && !facts.turn.armed_anything() {
-        if facts.empty_turns >= MAX_EMPTY_TURNS {
-            return StopVerdict::Allow;
-        }
-        // His Esc wins over autonomy, always. The grant covers his ABSENCE; an
-        // interrupt is the loudest possible evidence that he is present, and
-        // pushing an agent back into a turn he just stopped would be the gate
-        // arguing with the one control he has that is not a sentence.
-        if facts.turn.interrupted {
-            return StopVerdict::Allow;
-        }
-        // And nothing to autocontinue past when his answer is what is missing:
-        // the next move is genuinely his, and holding here would push an agent
-        // that is blocked rather than idle.
+        // THE CEILING AND HIS INTERRUPT, read through the same predicate the
+        // valve above uses. They were two explicit `Allow` guards here and a
+        // hand-copied condition there, with a comment warning that the copies
+        // must agree "character for character" — which is not a mechanism, and
+        // this crate has now twice shipped a fix taught to one copy of a pair.
+        // One function, two callers, nothing to keep in step.
         //
-        // KEYED ON THE DECLARATION, NOT ON THE GUESS (Harald, 2026-08-29). This
-        // read `asks_the_human` — a 42-phrase substring list over the agent's
-        // own prose — until it stood a session down for 21 minutes by matching
-        // "SAY THE WORD" inside the sentence *"Nothing needed from you — say
-        // the word only if you want one back."* His ruling: *"you cannot on
-        // your own discretion just switch this."* A phrase inferred from prose
-        // IS the agent's discretion wearing a detector's clothes; a `DECISION:`
-        // line is a deliberate act in the form his contract already mandates.
-        // Every stop reason he named — a design or spec direction, access only
-        // he has, something genuinely broken, an unresolved dispute with the
-        // auditor, a release, the sprint finished — is raised AS a decision, so
-        // one marker carries all of them and nothing else stops the push.
-        if facts.turn.declares_a_decision {
+        // The two facts it folds in: `empty_turns` at the ceiling releases a
+        // wedged session, and his Esc wins over autonomy always — the grant
+        // covers his ABSENCE, and an interrupt is the loudest possible evidence
+        // that he is present.
+        if !rule_b_engaged(facts) {
+            return StopVerdict::Allow;
+        }
+        // A RESERVED VERDICT IS HONOURED BEFORE EVERY OTHER BOUND, and the
+        // ordering is load-bearing rather than tidy. The review ceiling below
+        // pushes ONE more time and tells the agent to put the dispute to the
+        // judge — so if the ceiling ran first unconditionally, the turn that
+        // did exactly that would be blocked by the same ceiling again and the
+        // loop it exists to end could never end. Its own exit would be walled
+        // off by itself. Caught by the ceiling's test, which asserts the loop
+        // terminates visibly rather than by a counter running out.
+        if facts.turn.judge_verdict == Some(JudgeVerdict::Reserved) {
             return StopVerdict::Allow;
         }
         // THE REVIEW CEILING — the second bound, for the loop the first cannot
@@ -827,11 +895,10 @@ the answer — and send back what it understood, so the reader sees the text onc
         //
         // Reaching it is not a new kind of stop: an unconverged review IS "a
         // dispute with the auditor", one of the five reasons Harald named as
-        // legitimately his. So the gate does not fall silent here — it pushes
-        // ONE more time, telling the agent to state the dispute as a decision.
-        // That turn then declares, the rule above allows, and the loop ends
-        // visibly with a reason he can read, rather than by a counter running
-        // out in the dark.
+        // legitimately his. It stays ahead of the REST of the judge branch
+        // because it is a fact about the session rather than about this
+        // message — the judge would have to be told the round count to see it,
+        // and telling it things is exactly what the design refuses.
         if facts.review_rounds >= crate::autonomy::MAX_REVIEW_ROUNDS {
             return StopVerdict::Block {
                 reason: format!(
@@ -839,29 +906,75 @@ the answer — and send back what it understood, so the reader sees the text onc
 is {}. His rule is three rounds, four at the outside when round three found something \
 genuinely blocking — past that, remaining findings are ACCEPTED AS-IS or written down as \
 named open items, never another round. If the review has genuinely not converged, that is \
-a dispute with the auditor and it is his to settle: say so on a line beginning DECISION, \
-and stop. Do not open another round.",
+a dispute with the auditor and it is his to settle: put THAT to the `{}` seat as the stop, \
+and its verdict decides. Do not open another round.",
                     facts.review_rounds,
-                    crate::autonomy::MAX_REVIEW_ROUNDS
+                    crate::autonomy::MAX_REVIEW_ROUNDS,
+                    JUDGE_SEAT
                 ),
             };
         }
-        // HIS QUESTION DOES NOT LIVE HERE. It used to: `user_asked` stood this
-        // rule down so a reply to "what is the defect?" would not get pushed
-        // (studio#33). That correlate is a substring over the LAST KEYBOARD
-        // LINE, sticky for the whole window. On 2026-08-29 at 22:54 it matched
-        // DISCUSS inside "We had a discussion before … autocontinue", eleven
-        // minutes after he had left, and released a turn that armed nothing.
-        // The Rule B sentence names two facts. A third fact about a question
-        // is not in that sentence. Presence is the grant file, written on
-        // UserPrompt: his word turns it on, Esc or his `?` turns it off.
-        // `user_asked` still exempts Rule A (a reply owes no communicator).
-        return StopVerdict::Block {
-            reason: "RULE B: autonomy is granted and this turn armed no background \
-work, so ending here sleeps until the human returns. Start the next piece of \
-work, or state plainly that you are blocked on the human."
-                .to_string(),
-        };
+        // THE JUDGE DECIDES, NOT THE AGENT'S OWN WORDING (Harald, 2026-09-03).
+        //
+        // This read `declares_a_decision`: a line beginning `DECISION:`, which
+        // replaced a 42-phrase substring list after that list slept a session
+        // for 21 minutes. The declaration was better than the guess and it was
+        // still the agent's own text, so it failed the same way one level up —
+        // an agent trained to end turns well writes the mandated format on the
+        // first attempt. Measured that night: a release ask at a stage the plan
+        // schedules the release five stages later, and a "checkpoint refused"
+        // whose findings the agent had already fixed and simply not re-run.
+        // Both correctly formatted, both allowed, neither a decision. His
+        // words: *"YOU WANT TO STOP ALL THE TIME AND ARE TRAINED ON THE QUICK
+        // RESULT."*
+        //
+        // A rule the agent can satisfy by phrasing is not a rule, so the
+        // exemption moves onto a fact it does not author: a fresh-context seat
+        // reads the transcript ITSELF — the plan's reserved-decision list, the
+        // gate results, the checkpoint reached — and answers one question. The
+        // verdict is taken from the harness's tool-result record, so the agent
+        // cannot supply it by writing the line in its own prose.
+        //
+        // Note what is NOT claimed. The transcript is writable by the uid the
+        // agent runs as, so a forged result line would pass. That is a
+        // different act from phrasing a stop to fit a rule — it is not the
+        // failure that has ever occurred here — and the honest bound is the one
+        // this module's own header already draws for Rule A.
+        match facts.turn.judge_verdict.as_ref() {
+            Some(JudgeVerdict::Reserved) => return StopVerdict::Allow,
+            Some(JudgeVerdict::Resolvable(next)) => {
+                return StopVerdict::Block {
+                    reason: format!(
+                        "THE JUDGE SAYS THIS IS YOURS TO RESOLVE, not his. It read the \
+plan and the transcript with no session context and found no reserved decision here. Its \
+next action: {next}\n\nDo that and keep working. If you believe it is wrong, the dispute \
+itself is a decision — put it to the judge again with what it missed."
+                    ),
+                }
+            }
+            None if facts.turn.judge_ran => {
+                return StopVerdict::Block {
+                    reason: format!(
+                        "THE {JUDGE_SEAT} SEAT RAN AND RETURNED NO VERDICT. Its answer \
+must end with a line of its own reading `VERDICT: RESERVED` or `VERDICT: RESOLVABLE — \
+<next action>`; nothing else in it is read. Run it again and pass the verdict through, or \
+say what stopped it from answering."
+                    ),
+                }
+            }
+            None => {
+                return StopVerdict::Block {
+                    reason: format!(
+                        "RULE B: autonomy is granted and this turn armed no background \
+work, so ending here sleeps until he returns. Whether that is his call is not yours to \
+decide — spawn the `{JUDGE_SEAT}` subagent and give it ONE line, the transcript this \
+session is writing:\n\n    TRANSCRIPT: <this session's transcript path>\n\nIt reads the \
+plan and the facts itself; do not summarise them for it, and do not argue your case. Its \
+verdict decides: RESERVED lets this stop through, RESOLVABLE names what you do next."
+                    ),
+                }
+            }
+        }
     }
 
     StopVerdict::Allow
@@ -955,6 +1068,71 @@ fn verdict_lines(text: &str, verdict: &str) -> usize {
         .count()
 }
 
+/// Every string a tool-result line carries, joined so it can be read by LINE.
+///
+/// The neighbouring turn-around check serializes the whole value and looks for
+/// a marker with `contains`, and says why: a result's content is a string on
+/// one client and an array of blocks on another. That works for a marker. It
+/// does NOT work here, because a verdict is only a verdict when it STARTS a
+/// line — the discipline `verdict_lines` exists to enforce — and in a
+/// serialized value every newline is the two characters `\` and `n`, so there
+/// are no lines left to start.
+///
+/// So this walks the value and collects the strings, whatever shape they came
+/// in, and hands back something with real newlines in it.
+fn tool_result_text(v: &serde_json::Value) -> String {
+    fn walk(v: &serde_json::Value, out: &mut String) {
+        match v {
+            serde_json::Value::String(s) => {
+                out.push_str(s);
+                out.push('\n');
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|i| walk(i, out)),
+            serde_json::Value::Object(map) => map.values().for_each(|i| walk(i, out)),
+            _ => {}
+        }
+    }
+    let mut out = String::new();
+    walk(v, &mut out);
+    out
+}
+
+/// The judge's verdict line, or None when it said nothing decidable.
+///
+/// RESERVED IS CHECKED FIRST and the order is deliberate. A judge that answers
+/// RESOLVABLE writes its next action on the same line, so the two spellings
+/// cannot collide — but a report that discussed both would otherwise be read as
+/// whichever appeared first in the text, and between "stop stands" and "keep
+/// going" the safe misreading is the one that lets the human see it.
+fn verdict_in(text: &str) -> Option<JudgeVerdict> {
+    for line in text.lines() {
+        let l = line.trim_start().trim_start_matches(['#', '*', ' ']);
+        if l.starts_with("VERDICT: RESERVED") {
+            return Some(JudgeVerdict::Reserved);
+        }
+        if let Some(rest) = l.strip_prefix("VERDICT: RESOLVABLE") {
+            let next = rest.trim_start_matches(['—', '-', ':', ' ']).trim();
+            return Some(JudgeVerdict::Resolvable(next.to_string()));
+        }
+    }
+    None
+}
+
+/// Is Rule B live for this turn — granted, nothing armed, not interrupted, and
+/// the wedge ceiling not yet reached?
+///
+/// ONE DEFINITION, TWO CALLERS. The rule and the anti-loop valve each held a
+/// hand-written copy of this condition, under a comment saying they must agree
+/// "character for character". They did, and the comment was still the wrong
+/// instrument: this crate shipped a fix taught to one copy of a pair twice in
+/// one week, most recently on the streak gate. A shared function cannot drift.
+fn rule_b_engaged(facts: &StopFacts) -> bool {
+    facts.autonomy == Autonomy::Granted
+        && !facts.turn.armed_anything()
+        && !facts.turn.interrupted
+        && facts.empty_turns < MAX_EMPTY_TURNS
+}
+
 pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
     if transcript_text.trim().is_empty() {
         return Err(SilenceReason::NoTranscript);
@@ -1044,6 +1222,18 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                 // degraded-rule tests went red at once, which is the shadowing
                 // announcing itself. Both jobs, one arm.
                 turn.degraded_consumed += degraded_stamps_in(&v);
+                // THE JUDGE'S ANSWER, and it is read HERE rather than from the
+                // agent's own text on purpose — see `Turn::judge_verdict`.
+                //
+                // Gated on `judge_ran` because the reader walks the window
+                // forward: the spawn is already recorded when its result
+                // arrives, so this is simply "a result that followed a judge
+                // launch". Without the gate any tool result quoting the verdict
+                // line would count — reading this very file, for instance, which
+                // contains both spellings.
+                if turn.judge_ran && turn.judge_verdict.is_none() {
+                    turn.judge_verdict = verdict_in(&tool_result_text(&v));
+                }
             }
             Some("user") if !is_tool_result(&v) && is_harness_line(&v) => {
                 turn = Turn::default();
@@ -1180,8 +1370,19 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                             // 2026-08-31: a finished session needed one
                             // communicator pass and three further pushes to be
                             // let go, where two should have ended it.
-                            if !launch.is_communicator() {
+                            // AND NOT THE JUDGE, for the same reason and one
+                            // sharper: the empty-turn ceiling is Rule B's only
+                            // release valve, and Rule B is the rule that
+                            // DEMANDS the judge. Counted as work, consulting it
+                            // would reset the ceiling that exists to let a
+                            // wedged session go, so a session stuck in the
+                            // judge loop could never be released — the rule
+                            // arguing itself into a corner it built.
+                            if !launch.is_communicator() && !launch.is_autocontinue_judge() {
                                 turn.worked_since_push = true;
+                            }
+                            if launch.is_autocontinue_judge() {
+                                turn.judge_ran = true;
                             }
                             turn.launches.push(launch);
                         }
@@ -1464,6 +1665,86 @@ mod tests {
     fn tool(name: &str) -> ToolUse {
         ToolUse { name: name.into(), subagent: None, backgrounded: false }
     }
+    /// The whole verdict path, read out of a transcript rather than assembled
+    /// from struct fields — this is where the two halves meet, and either one
+    /// alone would pass while the pair was broken.
+    #[test]
+    fn the_verdict_is_read_from_the_harnesss_record_and_not_from_our_own_prose() {
+        let spawn = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\
+\"name\":\"Agent\",\"input\":{\"subagent_type\":\"autocontinue\"}}]}}\n";
+
+        // PROOF OF LIFE first: without it the negative cases below would pass
+        // over a parser that reads nothing at all.
+        let t = read_turn(&format!(
+            "{spawn}{}",
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\
+\"tool_result\",\"tool_use_id\":\"x\",\"content\":\"read the plan.\\nVERDICT: RESOLVABLE \
+— re-run the two reviews\"}]}}\n"
+        ))
+        .unwrap();
+        assert!(t.judge_ran, "the spawn must register");
+        assert_eq!(
+            Some(JudgeVerdict::Resolvable("re-run the two reviews".into())),
+            t.judge_verdict,
+            "the next action travels with the verdict, or the block cannot name it"
+        );
+
+        // THE POINT OF THE WHOLE DESIGN. The same line in the AGENT's own text
+        // buys nothing: that is the text it authors, and authoring the exemption
+        // is exactly what `declares_a_decision` allowed.
+        let ours = read_turn(&format!(
+            "{spawn}{}",
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\
+\"VERDICT: RESERVED\"}]}}\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            None, ours.judge_verdict,
+            "writing the verdict ourselves must not satisfy the gate — that is the defect"
+        );
+
+        // And a result with no judge behind it is not a verdict either, so a
+        // tool result that merely QUOTES the line (reading this very file, say)
+        // cannot stand a stop down.
+        let unasked = read_turn(
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\
+\"tool_result\",\"tool_use_id\":\"x\",\"content\":\"VERDICT: RESERVED\"}]}}\n",
+        )
+        .unwrap();
+        assert_eq!(None, unasked.judge_verdict, "no judge ran, so there is no verdict");
+
+        // RESERVED is checked before RESOLVABLE: a report discussing both must
+        // fail toward the human seeing it, never toward the turn continuing.
+        assert_eq!(
+            Some(JudgeVerdict::Reserved),
+            verdict_in("VERDICT: RESERVED\nVERDICT: RESOLVABLE — go on"),
+        );
+    }
+
+    /// The judge is not work and does not arm — the two carve-outs that keep
+    /// Rule B from arguing itself into a corner, since consulting the judge
+    /// would otherwise both satisfy the rule and reset its release valve.
+    #[test]
+    fn the_judge_neither_arms_work_nor_counts_as_it() {
+        let j = ToolUse {
+            name: "Agent".into(),
+            subagent: Some(JUDGE_SEAT.into()),
+            backgrounded: false,
+        };
+        assert!(j.is_autocontinue_judge());
+        assert!(!j.arms_work(), "judging the turn is not work that continues after it");
+        let t = read_turn(
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\
+\"name\":\"Agent\",\"input\":{\"subagent_type\":\"autocontinue\"}}]}}\n",
+        )
+        .unwrap();
+        assert!(
+            !t.worked_since_push,
+            "counted as work it would reset the empty-turn ceiling, and a session \
+stuck in the judge loop could never be released"
+        );
+    }
+
     fn communicator() -> ToolUse {
         ToolUse { name: "Agent".into(), subagent: Some("communicator".into()), backgrounded: false }
     }
@@ -1476,7 +1757,7 @@ mod tests {
             // Mirrors reality rather than defaulting: a turn carrying tool calls
             // HAS worked. A helper that always said `false` would let a test pass
             // against a fixture that could not occur.
-            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, refusals_emitted: 0, asks_the_human: false, declares_a_decision: false, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, answered_substantially: false },
+            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, refusals_emitted: 0, asks_the_human: false, declares_a_decision: false, judge_ran: false, judge_verdict: None, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, answered_substantially: false },
             autonomy,
             substrate: None,
             reseed_bounces: 0,
@@ -1996,27 +2277,27 @@ mod tests {
     /// A client that never sets the flag must still be released.
     #[test]
     fn a_client_that_never_marks_a_retry_is_still_released() {
+        // THE RULE THIS MEASURED IS RETIRED (v4.0.0), but its LESSON is not,
+        // and that is why this test survives instead of being deleted: a ceiling
+        // must sit on the RULE, never inside an `already_bounced` branch, because
+        // Cursor re-invokes with the retry flag unset and never enters that
+        // branch. Measured live at counter 11 and still climbing.
+        //
+        // The rule that still carries a per-bounce ceiling is the substrate
+        // rule, so the invariant is asserted there now. Here the assertion is
+        // the retirement itself: an ask, no reviewer, no autonomy, any bounce
+        // count — and nothing holds it.
         let mut f = facts(Autonomy::Unknown, vec![]);
         f.turn.asks_the_human = true;
         f.already_bounced = false; // Cursor: every invocation looks like the first
-
-        for n in 0..MAX_UNJUDGED_BOUNCES {
+        for n in 0..=MAX_UNJUDGED_BOUNCES {
             f.bounces = n;
-            match judge(&f) {
-                StopVerdict::Block { reason } => {
-                    assert!(reason.contains(&format!("{} of {}", n + 1, MAX_UNJUDGED_BOUNCES)),
-                        "each bounce must say where it is: {reason}");
-                }
-                StopVerdict::Allow => panic!("bounce {n} must still hold"),
-            }
+            assert_eq!(
+                StopVerdict::Allow,
+                judge(&f),
+                "bounce {n}: the reviewer is retired, so no count of it can hold a turn"
+            );
         }
-        f.bounces = MAX_UNJUDGED_BOUNCES;
-        assert_eq!(
-            StopVerdict::Allow,
-            judge(&f),
-            "past the ceiling the turn is RELEASED — a safety valve on one path is not a \
-             safety valve"
-        );
     }
 
     /// THE LIVE MISSES OF 2026-08-27 (studio#33), verbatim. Every sentence
@@ -2167,8 +2448,9 @@ mod tests {
         };
         match judge(&f) {
             StopVerdict::Block { reason } => assert!(
-                reason.contains("UNJUDGED MESSAGE"),
-                "the unreviewed ask must be held for the communicator: {reason}"
+                reason.contains("RULE B"),
+                "v4.0.0: the ask is held by Rule B and released by the judge, not by a \
+reviewer — but it is still HELD, which is this test's whole subject: {reason}"
             ),
             StopVerdict::Allow => {
                 panic!("allowed — this is the 03:01:23 stop-allowed that slept the night")
@@ -2224,15 +2506,17 @@ mod tests {
                 "{a:?}: a routine turn must pass untouched"
             );
         }
+        // v4.0.0: a decision-class message owes NOTHING here any more. The
+        // scope argument this test recorded — decision-class, then
+        // unconditional for one afternoon, then back — ended by the rule being
+        // retired rather than re-scoped.
         let mut asking = facts(Autonomy::Unknown, vec![]);
         asking.turn.asks_the_human = true;
-        match judge(&asking) {
-            StopVerdict::Block { reason } => {
-                assert!(reason.contains("UNJUDGED MESSAGE"), "{reason}");
-                assert!(reason.contains("FIRST"), "it must teach review-FIRST: {reason}");
-            }
-            StopVerdict::Allow => panic!("a decision-class message owes a review"),
-        }
+        assert_eq!(
+            StopVerdict::Allow,
+            judge(&asking),
+            "the reviewer is retired; the ruling carries what it checked"
+        );
         let mut replying = facts(Autonomy::Unknown, vec![]);
         replying.turn.asks_the_human = true;
         replying.turn.user_asked = true;
@@ -2245,13 +2529,19 @@ mod tests {
 
     #[test]
     fn autonomy_without_a_communicator_pass_blocks() {
-        // Scope returned to decision-class on 2026-08-20, so the turn must ASK
-        // for something; autonomy alone no longer summons the review rule.
+        // v4.0.0: it still blocks, and for a DIFFERENT rule. The reviewer is
+        // retired, so what holds this turn is Rule B — granted, nothing armed —
+        // and the way out is the judge, not a readback.
         let mut f = facts(Autonomy::Granted, vec![tool("Bash")]);
         f.turn.asks_the_human = true;
-        let v = judge(&f);
-        match v {
-            StopVerdict::Block { reason } => assert!(reason.contains("communicator")),
+        match judge(&f) {
+            StopVerdict::Block { reason } => {
+                assert!(reason.contains("RULE B"), "{reason}");
+                assert!(
+                    !reason.contains("communicator"),
+                    "no gate may still send him to the retired reviewer: {reason}"
+                );
+            }
             StopVerdict::Allow => panic!("must block"),
         }
     }
@@ -2261,13 +2551,20 @@ mod tests {
     /// always allowed would pass every other test here.
     #[test]
     fn removing_only_the_communicator_call_flips_the_verdict() {
+        // INVERTED v4.0.0. It was the discriminator for a rule that no longer
+        // exists, so it now pins the retirement: the reviewer's presence must
+        // change NOTHING. A gate still keyed on it would fail here.
+        //
+        // The discriminating role passes to the judge — see
+        // `the_verdict_is_read_from_the_harnesss_record_and_not_from_our_own_prose`,
+        // where one fixture differs only by the verdict and flips the verdict.
         let armed = ToolUse { name: "Agent".into(), subagent: Some("general-purpose".into()), backgrounded: false };
         let mut with = facts(Autonomy::Granted, vec![communicator(), armed.clone()]);
         with.turn.asks_the_human = true;
         let mut without = facts(Autonomy::Granted, vec![armed]);
         without.turn.asks_the_human = true;
-        assert_eq!(StopVerdict::Allow, judge(&with));
-        assert!(matches!(judge(&without), StopVerdict::Block { .. }), "must flip");
+        assert_eq!(judge(&with), judge(&without), "the reviewer must not decide anything");
+        assert_eq!(StopVerdict::Allow, judge(&without), "and work is armed, so the turn may end");
     }
 
     #[test]
@@ -2337,36 +2634,55 @@ mod tests {
             StopVerdict::Block { reason } => {
                 assert!(reason.contains("REVIEW CEILING"), "{reason}");
                 assert!(
-                    reason.contains("DECISION"),
+                    reason.contains(JUDGE_SEAT),
                     "it must name the way OUT, or the ceiling is a wall: {reason}"
                 );
             }
             StopVerdict::Allow => panic!("the ceiling must be reached, not passed"),
         }
 
-        // ...and the loop then ENDS, visibly, on a declared decision.
+        // ...and the loop then ENDS, visibly, when the judge agrees the dispute
+        // is his. It used to end on the agent DECLARING that; it now ends on a
+        // fresh-context seat saying so, which is the whole change.
+        //
+        // THIS IS ALSO THE ORDERING CONTROL. The ceiling is checked before the
+        // rest of the judge branch, so without the Reserved short-circuit above
+        // it the turn that obeys the ceiling — put the dispute to the seat —
+        // would be blocked by the ceiling again, forever. Move that
+        // short-circuit below the ceiling and this assertion goes red.
+        let mut settled = facts(Autonomy::Granted, vec![]);
+        settled.review_rounds = crate::autonomy::MAX_REVIEW_ROUNDS;
+        settled.turn.judge_ran = true;
+        settled.turn.judge_verdict = Some(JudgeVerdict::Reserved);
+        assert_eq!(
+            StopVerdict::Allow,
+            judge(&settled),
+            "an unconverged review is a dispute — his to settle, and a legitimate stop"
+        );
+        // And the agent cannot end it by saying so itself.
         let mut declared = facts(Autonomy::Granted, vec![]);
         declared.review_rounds = crate::autonomy::MAX_REVIEW_ROUNDS;
         declared.turn.declares_a_decision = true;
-        assert_eq!(
-            StopVerdict::Allow,
-            judge(&declared),
-            "an unconverged review is a dispute — his to settle, and a legitimate stop"
+        assert!(
+            matches!(judge(&declared), StopVerdict::Block { .. }),
+            "the loop must not end on the agent's own declaration"
         );
     }
 
     #[test]
     fn a_second_pass_excuses_everything_except_a_missing_review() {
-        // Retry, no review, and the turn ASKS for something: still held.
+        // Retry, and the turn ASKS for something: still held — by RULE B now,
+        // since the reviewer that used to hold it is retired. The valve's
+        // subject is unchanged: a second pass must not excuse a turn that is
+        // about to sleep with nothing armed.
         let mut f = facts(Autonomy::Granted, vec![]);
         f.turn.asks_the_human = true;
         f.already_bounced = true;
         match judge(&f) {
             StopVerdict::Block { reason } => {
-                assert!(reason.contains("UNJUDGED MESSAGE"), "{reason}");
-                assert!(reason.contains("1 of 3"), "it must say where it is: {reason}");
+                assert!(reason.contains("RULE B"), "{reason}");
             }
-            StopVerdict::Allow => panic!("the retry must not excuse a missing review"),
+            StopVerdict::Allow => panic!("the retry must not excuse a turn that armed nothing"),
         }
         // Retry, review done, and the turn only LOOKS like an ask: Rule A is
         // satisfied and Rule B now PUSHES ANYWAY.
@@ -2389,22 +2705,61 @@ mod tests {
                 panic!("an inferred ask stopped the session — the switch is the agent's again")
             }
         }
-        // ...and the DECLARED form does stop it, which is the other half: the
-        // agent keeps a way to halt, it just has to say so on purpose.
+        // ...AND NEITHER DOES THE DECLARED FORM ANY MORE (2026-09-03). This
+        // asserted the opposite until today: `declares_a_decision` was the
+        // exemption, on the reasoning that a deliberate marker is different in
+        // kind from an inferred phrase. It is — and it failed the same way one
+        // level up, because the marker is still the agent's own text and an
+        // agent that wants the turn to end simply writes it. Two stops that
+        // night were correctly formatted and carried no decision at all.
+        //
+        // So the declaration now buys NOTHING, and this is the control for
+        // that: revert the exemption to `declares_a_decision` and this
+        // assertion goes red.
         let mut declared = facts(Autonomy::Granted, vec![communicator()]);
         declared.turn.asks_the_human = true;
         declared.turn.declares_a_decision = true;
         declared.already_bounced = true;
+        match judge(&declared) {
+            StopVerdict::Block { reason } => assert!(
+                reason.contains(JUDGE_SEAT),
+                "the agent's own DECISION line must now route to the judge: {reason}"
+            ),
+            StopVerdict::Allow => {
+                panic!("a self-declared decision stopped the session — the switch is the agent's again")
+            }
+        }
+        // And the judge's verdict IS the switch, both ways. RESERVED lets the
+        // same stop through; RESOLVABLE holds it and carries the next action.
+        let mut reserved = facts(Autonomy::Granted, vec![communicator()]);
+        reserved.turn.judge_ran = true;
+        reserved.turn.judge_verdict = Some(JudgeVerdict::Reserved);
+        reserved.already_bounced = true;
         assert_eq!(
             StopVerdict::Allow,
-            judge(&declared),
-            "a declared DECISION line is a legitimate stop"
+            judge(&reserved),
+            "a fresh-context seat saying the plan reserves this is a legitimate stop"
         );
-        // The ceiling: it gives up rather than wedging the session.
+        let mut resolvable = facts(Autonomy::Granted, vec![communicator()]);
+        resolvable.turn.judge_ran = true;
+        resolvable.turn.judge_verdict =
+            Some(JudgeVerdict::Resolvable("re-run the two reviews".into()));
+        resolvable.already_bounced = true;
+        match judge(&resolvable) {
+            StopVerdict::Block { reason } => assert!(
+                reason.contains("re-run the two reviews"),
+                "the block must carry the seat's own next action, not a bare 'continue': {reason}"
+            ),
+            StopVerdict::Allow => panic!("a resolvable stop must not end the turn"),
+        }
+        // The ceiling: it gives up rather than wedging the session. Rule B's
+        // bound is the EMPTY-TURN count, not a bounce count — a turn that does
+        // real work resets it, so a working session never approaches it while a
+        // wedged one is released in two.
         let mut spent = facts(Autonomy::Granted, vec![]);
         spent.turn.asks_the_human = true;
         spent.already_bounced = true;
-        spent.bounces = MAX_UNJUDGED_BOUNCES;
+        spent.empty_turns = MAX_EMPTY_TURNS;
         assert_eq!(
             StopVerdict::Allow,
             judge(&spent),
@@ -2525,14 +2880,26 @@ mod tests {
     /// PORTED RULE 2, likewise ungated by autonomy: an ask is an ask.
     #[test]
     fn an_unjudged_ask_blocks_and_a_judged_one_does_not() {
+        // RETIRED v4.0.0, and this is the control for it. It asserted the
+        // opposite: an ask blocked until a reviewer had read it. Harald,
+        // 2026-09-03: *"The communicator is annoying. I see the same output
+        // twice."* Restore the rule and this goes red.
+        //
+        // What the reviewer caught was a checklist — an unopenable reference, a
+        // count with no object, an undefined term — and a checklist is a ruling,
+        // not a subagent. What it cost was the readback rendered to him beside
+        // the message it judged.
         let mut f = facts(Autonomy::Unknown, vec![]);
         f.turn.asks_the_human = true;
-        match judge(&f) {
-            StopVerdict::Block { reason } => assert!(reason.contains("UNJUDGED MESSAGE"), "{reason}"),
-            StopVerdict::Allow => panic!("an unjudged ask must block"),
-        }
+        assert_eq!(
+            StopVerdict::Allow,
+            judge(&f),
+            "an ask no longer owes a reviewer — the ruling replaced it"
+        );
+        // And the reviewer buys nothing now, which is the other half: no path
+        // through this gate is shortened by running it.
         f.turn.launches = vec![communicator()];
-        assert_eq!(StopVerdict::Allow, judge(&f), "a judged ask must pass");
+        assert_eq!(StopVerdict::Allow, judge(&f));
     }
 
     /// Refusals are counted from ASSISTANT TEXT, never the raw window. The
@@ -2687,14 +3054,27 @@ mod tests {
 
         assert!(!turn.user_asked, "an instruction is not a question");
         assert!(turn.asks_the_human);
+        // v4.0.0: WITHOUT AUTONOMY, nothing holds this any more. The reviewer
+        // that did is retired, and Rule B is not engaged because he never gave
+        // the word — he is present, and a turn that ends while he is present
+        // ends. The ask detector survives only as an input other rules may read.
+        assert_eq!(
+            StopVerdict::Allow,
+            judge(&StopFacts { empty_turns: 0, review_rounds: 0, already_bounced: false,
+                bounces: 0, turn: turn.clone(), autonomy: Autonomy::Unknown, substrate: None,
+                reseed_bounces: 0 }),
+            "with no grant in force, an ask is just a message"
+        );
+        // ...and WITH the grant it is held, by Rule B, until the judge speaks.
+        // That is where a self-initiated ask is now examined.
         assert!(
             matches!(
                 judge(&StopFacts { empty_turns: 0, review_rounds: 0, already_bounced: false,
-            bounces: 0, turn, autonomy: Autonomy::Unknown, substrate: None,
-            reseed_bounces: 0 }),
+                    bounces: 0, turn, autonomy: Autonomy::Granted, substrate: None,
+                    reseed_bounces: 0 }),
                 StopVerdict::Block { .. }
             ),
-            "a self-initiated ask must still be judged before it is sent"
+            "under a grant, a self-initiated ask must reach the judge"
         );
     }
 
@@ -2707,10 +3087,16 @@ mod tests {
             StopVerdict::Block { reason } => assert!(reason.contains("TOO LONG"), "{reason}"),
             StopVerdict::Allow => panic!("a wall of text must be judged first"),
         }
-        // A judged one passes — the check must be satisfiable by judging, not
-        // only by staying quiet.
+        // v4.0.0: it is satisfied by CUTTING it, and by nothing else. The
+        // reviewer used to be the other way out, which made a long message
+        // sendable by consulting someone about it rather than by shortening it.
         f.turn.launches = vec![communicator()];
-        assert_eq!(StopVerdict::Allow, judge(&f));
+        assert!(
+            matches!(judge(&f), StopVerdict::Block { .. }),
+            "running the retired reviewer must not buy length back"
+        );
+        f.turn.final_text = "Committed and green.".into();
+        assert_eq!(StopVerdict::Allow, judge(&f), "cutting it is the way through");
     }
 
     #[test]

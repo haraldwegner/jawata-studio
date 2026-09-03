@@ -126,8 +126,8 @@
       },
       "unjudged_ask": {
         "bash": "absent",
-        "rust": "present",
-        "what": "THE review rule (2026-08-20): a decision-class message — asks him for a word, he did not ask first — with no communicator pass. Marker UNJUDGED MESSAGE. It absorbed communicator_rule_a when the unconditional experiment was reverted: the two were the same rule at different scopes, and one rule is what the code now has."
+        "rust": "absent",
+        "what": "RETIRED v4.0.0 (Harald, 2026-09-03: 'The communicator is annoying. I see the same output twice... Can we instead add a ruling'). It required a fresh-context reviewer to read every decision-class message before it was sent. What it caught was a checklist — an unopenable reference, a count with no object, an undefined term — and a checklist is a ruling, not a subagent; what it cost was the whole readback rendered to him beside the message it judged. The check now lives in the deployed instructions and in decision_test_length's own reason. The mechanical residual — length, undefined terms — stays, because both are decidable from the text with nothing to consult."
       },
       "unreported_degradation": {
         "bash": "absent",
@@ -141,8 +141,13 @@
       },
       "nothing_armed_rule_b": {
         "bash": "absent",
-        "rust": "present-but-inert",
-        "what": "Rule B; same gate, same reason"
+        "rust": "present",
+        "what": "Rule B: autonomy granted and nothing armed. LIVE since v3.14.1, and no longer inert — the grant reaches it from autonomy.rs. v4.0.0 replaced its exemption: a stop is cleared by the autocontinue seat's VERDICT: RESERVED, read out of the harness's tool-result record, and never by the agent writing a DECISION: line of its own."
+      },
+      "autocontinue_judge": {
+        "bash": "absent",
+        "rust": "present",
+        "what": "v4.0.0. Under a live grant, a stop with nothing armed is put to a fresh-context subagent that reads the transcript and the plan ITSELF and answers RESERVED or RESOLVABLE. It is a bounce-and-verify rule, so it shares Rule B's marker rather than owning one — the block that demands the seat, and the block that carries the seat's next action, are both RULE B outcomes. Bound: the empty-turn ceiling, which the judge deliberately does not reset."
       },
       "seat_discipline": {
         "bash": "present",

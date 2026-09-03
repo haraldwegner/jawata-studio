@@ -230,17 +230,20 @@ fn a_blocked_turn_still_records_the_skip() {
     let emitted = run_as("userprompt", &home, &url, &prompt);
     assert!(emitted.contains("additionalContext"), "the offer must reach the session: {emitted}");
 
-    // No communicator pass anywhere in the window, and no disposition either.
+    // A BLOCKED TURN IS THIS TEST'S SUBJECT, and which rule blocks it is not.
+    // It used to be the reviewer rule, retired in v4.0.0; the length rule
+    // serves exactly as well and is better suited — it needs no autonomy grant,
+    // so this test stays about the skip observation rather than about Rule B.
     let transcript = home.join("transcript.jsonl");
+    let long_answer = "The importer never populates projectDependencies here. ".repeat(60);
     std::fs::write(
         &transcript,
-        // The human STATES rather than asks, so this is not a reply and the
-        // decision-class rule applies; the agent's own text then asks for a
-        // ruling. That combination is what must block, and a blocked turn is
-        // this test's whole subject.
-        "{\"type\":\"user\",\"message\":{\"content\":\"look at the importer\"}}\n\
-         {\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\
-         \"text\":\"The importer never populates projectDependencies here. Shall I fix it?\"}]}}\n",
+        format!(
+            "{}\n{}\n",
+            serde_json::json!({"type":"user","message":{"content":"look at the importer"}}),
+            serde_json::json!({"type":"assistant","message":{"content":[
+                {"type":"text","text": long_answer}]}}),
+        ),
     )
     .unwrap();
     let stop = serde_json::json!({
@@ -252,7 +255,7 @@ fn a_blocked_turn_still_records_the_skip() {
     let stop_out = run_as("stop", &home, &url, &stop);
 
     assert!(
-        stop_out.contains("UNJUDGED MESSAGE"),
+        stop_out.contains("TOO LONG"),
         "this turn must indeed be blocked, or the test proves nothing: {stop_out:?}"
     );
     let log = outcomes(&home);

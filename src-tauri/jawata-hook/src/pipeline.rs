@@ -1920,7 +1920,7 @@ mod tests {
             review_rounds: 0,
             already_bounced: false,
             bounces: 0,
-            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, declares_a_decision: true, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, worked_since_push: false, answered_substantially: false },
+            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, declares_a_decision: true, judge_ran: false, judge_verdict: None, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, worked_since_push: false, answered_substantially: false },
             autonomy: Autonomy::Granted,
             substrate: None,
             reseed_bounces: 0,
@@ -1935,7 +1935,10 @@ mod tests {
         .expect("claude renders a stop decision");
         let v: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
         assert_eq!("block", v["decision"], "got {rendered}");
-        assert!(v["reason"].as_str().unwrap().contains("UNJUDGED MESSAGE"));
+        // v4.0.0: the blocking rule for this fixture is Rule B — granted, and
+        // nothing armed. The subject here is the DIALECT, not which rule fired,
+        // so it pins that a reason reaches the client at all.
+        assert!(v["reason"].as_str().unwrap().contains("RULE B"), "got {rendered}");
     }
 
     /// Cursor has no Stop event, so the dialect must render to nothing at all

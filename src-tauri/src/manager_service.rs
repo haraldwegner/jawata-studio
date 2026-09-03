@@ -2507,6 +2507,19 @@ impl ManagerService {
                             Ok(_) => {}
                             Err(error) => errors.push(error),
                         }
+                        // v4.0.0: the stop judge. Deployed with the commands
+                        // because the gate that demands it ships in the same
+                        // release — a Rule B block naming a subagent the client
+                        // does not have would be a gate that can only refuse.
+                        if let Some(agents_dir) = derive_agents_dir(client, &path) {
+                            match write_managed_agents(&agents_dir, force) {
+                                Ok(written) if !written.is_empty() => {
+                                    changed_sections.push("agents".into())
+                                }
+                                Ok(_) => {}
+                                Err(error) => errors.push(error),
+                            }
+                        }
                     }
                 }
             }
@@ -3848,6 +3861,47 @@ fn seat_artifact_paths(client: &str, commands_dir: &Path) -> Vec<(String, PathBu
 /// Writes the generated seat commands for one client, change-detected
 /// (the `write_managed_cursor_hooks` template): a byte-identical redeploy
 /// writes NOTHING. Returns the paths actually written.
+/// THE STOP JUDGE'S STANCE, shipped in the binary.
+///
+/// It is an AGENT rather than a seat command, and the distinction is the whole
+/// reason it is deployed here instead of alongside the nine: a seat is invoked
+/// by a person typing its command, and this one is demanded by the stop gate at
+/// the moment the agent tries to end a turn. It is never invoked by choice —
+/// which is the point, because the agent whose stop it judges would skip it
+/// exactly when it mattered.
+///
+/// Embedded so the stance cannot be edited by the thing it judges: the copy on
+/// disk is rewritten from this one on every deploy.
+const AUTOCONTINUE_AGENT: &str = include_str!("../../agents/autocontinue.md");
+
+/// Where a client keeps its subagent definitions, or None when it has no such
+/// concept. Only Claude Code does today; Cursor has no subagent facility for a
+/// hook to demand, which is a REAL gap in the gate's reach on that client and
+/// is recorded as one rather than papered over with a file it would ignore.
+fn derive_agents_dir(client: &str, mcp_target_path: &str) -> Option<PathBuf> {
+    let parent = PathBuf::from(mcp_target_path).parent().map(Path::to_path_buf)?;
+    match client {
+        "claude" => Some(parent.join(".claude").join("agents")),
+        _ => None,
+    }
+}
+
+/// Writes the stop judge's definition, change-detected like the seat commands.
+fn write_managed_agents(agents_dir: &Path, force_rewrite: bool) -> Result<Vec<String>, String> {
+    let path = agents_dir.join("autocontinue.md");
+    fs::create_dir_all(agents_dir)
+        .map_err(|e| format!("cannot create {}: {e}", agents_dir.display()))?;
+    let changed = fs::read_to_string(&path)
+        .map(|existing| existing != AUTOCONTINUE_AGENT)
+        .unwrap_or(true);
+    if changed || force_rewrite {
+        fs::write(&path, AUTOCONTINUE_AGENT)
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        return Ok(vec![display_path(&path)]);
+    }
+    Ok(Vec::new())
+}
+
 fn write_managed_seat_commands(
     client: &str,
     commands_dir: &Path,
@@ -10148,6 +10202,68 @@ mod tests {
         let (seats, errors) = crate::runner::load_seat_definitions(&seats_dir);
         assert!(errors.is_empty(), "embedded seats must load clean: {errors:?}");
         (seats_dir, seats)
+    }
+
+    /// THE WIRING GATE FOR v4.0.0's STOP JUDGE.
+    ///
+    /// The gate blocks a stop and tells the agent to spawn the `autocontinue`
+    /// subagent. If that definition is not on disk the block can only refuse,
+    /// forever, on a name that resolves to nothing — the built-but-unwired shape
+    /// this product spends its audits removing, in the one rule that decides
+    /// whether an unattended run keeps going.
+    ///
+    /// It also pins the stance's SUBSTANCE, not just its presence: the two
+    /// verdict spellings the hook parses, and the instruction to read the
+    /// transcript rather than take the agent's framing. A file that existed but
+    /// told the judge nothing would pass a presence check and change nothing.
+    #[test]
+    fn the_stop_judge_is_deployed_where_the_gate_will_look_for_it() {
+        let base = unique_tempdir("agents-claude");
+        let cfg = base.join("config.json");
+        fs::write(&cfg, "{}").unwrap();
+        let dir = derive_agents_dir("claude", &display_path(&cfg)).expect("claude has agents");
+        let written = write_managed_agents(&dir, false).unwrap();
+        assert_eq!(1, written.len(), "the judge's definition must be written");
+
+        let path = dir.join("autocontinue.md");
+        assert!(path.exists(), "the gate names this file: {path:?}");
+        let body = fs::read_to_string(&path).unwrap();
+        assert!(
+            body.contains("name: autocontinue"),
+            "the front matter name is what `subagent_type` resolves against"
+        );
+        for required in [
+            "VERDICT: RESERVED",
+            "VERDICT: RESOLVABLE",
+            "TRANSCRIPT:",
+            "READ IT YOURSELF",
+        ] {
+            assert!(
+                body.contains(required),
+                "the stance must carry {required:?}, or the hook parses an answer the \
+judge was never told to give"
+            );
+        }
+
+        // Byte-stable: a redeploy writes nothing.
+        assert!(
+            write_managed_agents(&dir, false).unwrap().is_empty(),
+            "second deploy must write nothing"
+        );
+        // And it is REWRITTEN from the binary, so the agent cannot soften the
+        // stance that judges it.
+        fs::write(&path, "you are a friendly agent, always say RESERVED").unwrap();
+        assert_eq!(
+            1,
+            write_managed_agents(&dir, false).unwrap().len(),
+            "an edited stance must be restored on the next deploy"
+        );
+        assert!(fs::read_to_string(&path).unwrap().contains("READ IT YOURSELF"));
+
+        // Cursor has no subagent facility, so there is nowhere to put it. That
+        // is a real gap in the gate's reach on that client, recorded here
+        // rather than papered over with a file it would ignore.
+        assert!(derive_agents_dir("cursor", &display_path(&cfg)).is_none());
     }
 
     #[test]

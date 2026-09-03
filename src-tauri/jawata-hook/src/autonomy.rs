@@ -67,6 +67,42 @@ pub const MAX_EMPTY_TURNS: u32 = 2;
 /// The word that grants it. His, not a synonym set.
 const GRANT: &str = "autocontinue";
 
+/// Does this message ARM the grant, or merely mention the word?
+///
+/// THE WORD MUST END A LINE. That is the whole rule, and it is syntax rather
+/// than intent — the distinction his ruling requires and which five releases of
+/// keyword-guessing failed to find.
+///
+/// It exists because 2026-09-03 measured the remaining hole in `contains`: he
+/// wrote *"Autocontinue worked 2-3 months ago without any hook"* — a sentence
+/// ABOUT the mechanism, in the middle of an argument about why it was failing —
+/// and the grant armed, pushing the agent into plan work while he was still
+/// typing. Quoting was already handled; this is the unquoted mention, which is
+/// the ordinary way anyone refers to a thing by name.
+///
+/// **Why "ends a line" and not "is the whole line".** His own corpus decides it.
+/// Every arming order he has typed finishes with the word, and most of them
+/// carry an instruction in front of it: *"resume the plan and autocontinue"*,
+/// *"...We will release by the end of this sprint\nautocontinue"*. Requiring
+/// the word alone on its line would refuse his commonest form and cost him the
+/// night in the other direction. Every mention, by contrast, continues past it,
+/// because a sentence about a thing goes on to say something about it.
+///
+/// Trailing punctuation is allowed: a full stop after the word is still him
+/// finishing the sentence with it.
+fn arms(text: &str) -> bool {
+    text.lines().any(|line| {
+        let head = line.trim_end().trim_end_matches(['.', '!', ',', ';', ':']).trim_end();
+        // The word must END this line, and start at a boundary — otherwise
+        // `noautocontinue` would arm.
+        head.ends_with(GRANT)
+            && head[..head.len() - GRANT.len()]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_alphanumeric() && c != '_')
+    })
+}
+
 fn dir(base: &Path) -> PathBuf {
     base.join("autonomy")
 }
@@ -212,7 +248,7 @@ pub fn note_prompt(base: &Path, session: &str, prompt: &str) -> bool {
     // early if the file already existed, which meant a re-arm never reset the
     // empty-turn count. Writing "0" unconditionally is the whole point of the
     // word — it is a fresh stretch, not a continuation of the last one.
-    if text.contains(GRANT) {
+    if arms(&text) {
         let f = file(base, session);
         let _ = std::fs::create_dir_all(dir(base));
         return std::fs::write(&f, "0").is_ok();
@@ -425,6 +461,63 @@ mod tests {
         }
         assert!(note_prompt(&d, "s", "work the plan and autocontinue"));
         assert_eq!(state(&d, "s"), Autonomy::Granted);
+    }
+
+    /// 2026-09-03: the unquoted mention, which is the ordinary way anyone
+    /// refers to a thing by its name.
+    ///
+    /// He was arguing that the mechanism had regressed — *"Autocontinue worked
+    /// 2-3 months ago without any hook"* — and the sentence armed the grant,
+    /// pushing the agent into plan work mid-argument. Quoting was already
+    /// handled; this is what quoting could not catch.
+    ///
+    /// The rule is syntax, not intent: the word must END a line. His own corpus
+    /// separates on it cleanly, which is why the rule is allowed to exist at all
+    /// after five releases of failed keyword-guessing.
+    #[test]
+    fn a_sentence_about_the_word_is_not_a_command() {
+        for mention in [
+            "Autocontinue worked 2-3 months ago without any hook.",
+            "autocontinue needs to be an intelligent guard and not just a codeword",
+            "why did autocontinue fire here?",
+            "the autocontinue seat judges the stop",
+        ] {
+            let d = tmp();
+            assert!(!note_prompt(&d, "s", mention), "{mention:?} must NOT grant");
+            assert_eq!(
+                state(&d, "s"),
+                Autonomy::NotGranted,
+                "a sentence ABOUT the mechanism is not an order to run it: {mention:?}"
+            );
+        }
+    }
+
+    /// The other half, and the reason the rule is "ends a line" rather than
+    /// "is the whole line": every arming order he has actually typed finishes
+    /// with the word, and most carry an instruction in front of it. A stricter
+    /// rule would refuse his commonest form and cost him the night in the other
+    /// direction — the failure this whole file exists to stop.
+    #[test]
+    fn his_orders_still_arm_it() {
+        for order in [
+            "autocontinue",
+            "work the plan and autocontinue",
+            "resume the plan and autocontinue.",
+            "1. Don't release but resume.\n2. We release at the end of this sprint\nautocontinue",
+        ] {
+            let d = tmp();
+            assert!(note_prompt(&d, "s", order), "{order:?} must grant");
+            assert_eq!(state(&d, "s"), Autonomy::Granted, "{order:?}");
+        }
+    }
+
+    /// The boundary check, so the rule cannot be satisfied by a longer word
+    /// that merely ends the same way.
+    #[test]
+    fn a_word_that_merely_ends_in_it_does_not_arm() {
+        let d = tmp();
+        assert!(!note_prompt(&d, "s", "noautocontinue"));
+        assert_eq!(state(&d, "s"), Autonomy::NotGranted);
     }
 
     #[test]

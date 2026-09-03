@@ -84,7 +84,21 @@ fn every_stop_rule_that_claims_rust_code_has_its_marker_in_judge() {
     let marker: std::collections::HashMap<&str, &str> = [
         ("anti_loop", "already_bounced"),
         ("audit_fix_loop", "AUDIT-FIX LOOP"),
-        ("unjudged_ask", "UNJUDGED MESSAGE"),
+        // `unjudged_ask` is gone from this table with the rule (v4.0.0). The
+        // contract row survives as "absent" carrying the reason, which is what
+        // keeps a retirement distinguishable from a deletion nobody explained.
+        //
+        // The judge shares Rule B's marker rather than owning one, and that is
+        // a fact about its SHAPE: bounce-and-verify means both of its outcomes
+        // — demand the seat, and carry the seat's next action — are Rule B
+        // blocks. A second marker would claim a second rule.
+        // THE CONSTANT, not the string it expands to. Every branch names the
+        // seat through `JUDGE_SEAT` so the deployed file, the block reason and
+        // the launch detector cannot drift to three different spellings — which
+        // means the literal "autocontinue" does not appear in `judge` at all,
+        // and a marker of that word would fail here while the rule was present
+        // and working.
+        ("autocontinue_judge", "JUDGE_SEAT"),
         ("unreported_degradation", "UNREPORTED DEGRADATION"),
         
         ("nothing_armed_rule_b", "RULE B:"),
