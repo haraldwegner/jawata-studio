@@ -334,6 +334,25 @@ pub struct Turn {
     /// broken, an unresolved dispute with the auditor, a release, the sprint
     /// finished — is raised AS a decision, so one marker carries all of them.
     pub declares_a_decision: bool,
+    /// The `tool_use` ids of the [`JUDGE_SEAT`] spawns in this window.
+    ///
+    /// THE VERDICT IS BOUND TO THE CALL THAT ASKED FOR IT (v4.0.2). Until this
+    /// existed the reader took the first verdict line out of ANY tool result
+    /// that followed a judge spawn, and the line-start discipline was the only
+    /// thing standing between that and a quotation — which it does not survive,
+    /// because the reader trims indentation before matching and the files that
+    /// carry the line indented are exactly the ones an agent has reason to
+    /// open: the judge's own stance, and the release notes describing it.
+    ///
+    /// Measured against the shipped v4.0.1 binary: spawn the judge, let it
+    /// answer nothing, then read `~/.claude/agents/autocontinue.md`, and the
+    /// stop was ALLOWED.
+    ///
+    /// A client that omits `id` on a tool call yields an empty list here, and
+    /// then no verdict is ever read and the turn is held until the empty-turn
+    /// ceiling releases it. That is the safe direction: holding a turn costs
+    /// two pushes, accepting a quoted line costs the whole rule.
+    pub judge_call_ids: Vec<String>,
     /// Whether the [`JUDGE_SEAT`] was spawned in this window.
     ///
     /// Kept separate from the verdict so the two failures are distinguishable:
@@ -1109,6 +1128,29 @@ fn tool_result_text(v: &serde_json::Value) -> String {
     out
 }
 
+/// Is this tool-result line the answer to one of `ids`?
+///
+/// The whole defence of the verdict rests here. `judge_ran` was the previous
+/// test and it is not one: it says a judge was spawned SOMEWHERE in the window,
+/// so every later tool result inherited the judge's authority — including a
+/// file read. Binding to the call's own id makes the answer unforgeable by
+/// quotation, because the id is minted by the harness per call.
+fn answers_one_of(v: &serde_json::Value, ids: &[String]) -> bool {
+    if ids.is_empty() {
+        return false;
+    }
+    v.get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+        .is_some_and(|blocks| {
+            blocks.iter().any(|b| {
+                b.get("tool_use_id")
+                    .and_then(|i| i.as_str())
+                    .is_some_and(|id| ids.iter().any(|k| k == id))
+            })
+        })
+}
+
 /// The judge's verdict line, or None when it said nothing decidable.
 ///
 /// RESERVED IS CHECKED FIRST and the order is deliberate. A judge that answers
@@ -1243,7 +1285,7 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                 // launch". Without the gate any tool result quoting the verdict
                 // line would count — reading this very file, for instance, which
                 // contains both spellings.
-                if turn.judge_ran && turn.judge_verdict.is_none() {
+                if turn.judge_verdict.is_none() && answers_one_of(&v, &turn.judge_call_ids) {
                     turn.judge_verdict = verdict_in(&tool_result_text(&v));
                 }
             }
@@ -1395,6 +1437,10 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                             }
                             if launch.is_autocontinue_judge() {
                                 turn.judge_ran = true;
+                                // The id is what binds the answer to the ask.
+                                if let Some(id) = b.get("id").and_then(|i| i.as_str()) {
+                                    turn.judge_call_ids.push(id.to_string());
+                                }
                             }
                             turn.launches.push(launch);
                         }
@@ -1682,15 +1728,17 @@ mod tests {
     /// alone would pass while the pair was broken.
     #[test]
     fn the_verdict_is_read_from_the_harnesss_record_and_not_from_our_own_prose() {
+        // The spawn CARRIES ITS ID, because since v4.0.2 the id is what binds a
+        // result to this call — see `Turn::judge_call_ids`.
         let spawn = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\
-\"name\":\"Agent\",\"input\":{\"subagent_type\":\"autocontinue\"}}]}}\n";
+\"id\":\"toolu_J\",\"name\":\"Agent\",\"input\":{\"subagent_type\":\"autocontinue\"}}]}}\n";
 
         // PROOF OF LIFE first: without it the negative cases below would pass
         // over a parser that reads nothing at all.
         let t = read_turn(&format!(
             "{spawn}{}",
             "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\
-\"tool_result\",\"tool_use_id\":\"x\",\"content\":\"read the plan.\\nVERDICT: RESOLVABLE \
+\"tool_result\",\"tool_use_id\":\"toolu_J\",\"content\":\"read the plan.\\nVERDICT: RESOLVABLE \
 — re-run the two reviews\"}]}}\n"
         ))
         .unwrap();
@@ -1724,6 +1772,48 @@ mod tests {
         )
         .unwrap();
         assert_eq!(None, unasked.judge_verdict, "no judge ran, so there is no verdict");
+
+        // THE v4.0.2 DEFECT: a judge DID run, answered nothing, and a LATER
+        // tool result quotes the line. Measured against the shipped v4.0.1
+        // binary by reading `~/.claude/agents/autocontinue.md` — whose own
+        // stance carries `VERDICT: RESERVED` indented by four spaces — and the
+        // stop was ALLOWED.
+        //
+        // Indentation is why the line-start discipline did not save it: the
+        // reader trims leading whitespace before matching, and every file that
+        // documents this mechanism indents its example. So the binding is to
+        // the CALL, not to the text.
+        let quoted = read_turn(&format!(
+            "{}{}{}",
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\
+\"id\":\"toolu_JUDGE\",\"name\":\"Agent\",\"input\":{\"subagent_type\":\"autocontinue\"}}]}}\n",
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\
+\"tool_result\",\"tool_use_id\":\"toolu_JUDGE\",\"content\":\"I could not read it.\"}]}}\n",
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\
+\"tool_result\",\"tool_use_id\":\"toolu_READ\",\"content\":\"the stance reads:\\n    VERDICT: RESERVED\"}]}}\n",
+        ))
+        .unwrap();
+        assert!(quoted.judge_ran, "the judge did run");
+        assert_eq!(
+            None, quoted.judge_verdict,
+            "a file read cannot answer for the judge — the verdict binds to the CALL id"
+        );
+
+        // ...and the same shape with the id MATCHING is accepted, or the
+        // assertion above would pass on a reader that accepts nothing at all.
+        let answered = read_turn(&format!(
+            "{}{}",
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\
+\"id\":\"toolu_JUDGE\",\"name\":\"Agent\",\"input\":{\"subagent_type\":\"autocontinue\"}}]}}\n",
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\
+\"tool_result\",\"tool_use_id\":\"toolu_JUDGE\",\"content\":\"    VERDICT: RESERVED\"}]}}\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            Some(JudgeVerdict::Reserved),
+            answered.judge_verdict,
+            "the judge's OWN result is still read, indentation and all"
+        );
 
         // RESERVED is checked before RESOLVABLE: a report discussing both must
         // fail toward the human seeing it, never toward the turn continuing.
@@ -1834,7 +1924,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
             // Mirrors reality rather than defaulting: a turn carrying tool calls
             // HAS worked. A helper that always said `false` would let a test pass
             // against a fixture that could not occur.
-            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, refusals_emitted: 0, asks_the_human: false, declares_a_decision: false, judge_ran: false, judge_verdict: None, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, answered_substantially: false },
+            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, refusals_emitted: 0, asks_the_human: false, declares_a_decision: false, judge_ran: false, judge_verdict: None, judge_call_ids: vec![], user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, answered_substantially: false },
             autonomy,
             substrate: None,
             reseed_bounces: 0,
