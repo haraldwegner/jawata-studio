@@ -483,10 +483,16 @@ impl Turn {
     /// him for a word, when he did not ask first, and no reviewer ran. A REPLY
     /// to his own question is out of scope — gating conversation triples his
     /// waiting time for a failure mode conversation barely has.
-    pub fn owes_a_review(&self) -> bool {
-        self.asks_the_human && !self.user_asked && !self.communicator_ran()
-    }
-
+    /// Did a reviewer subagent run in this window?
+    ///
+    /// NOTHING IN `judge` READS THIS ANY MORE (v4.0.1). It survives as a probe
+    /// over the parser — the window-reset tests use it to ask whether a subagent
+    /// launch was seen at all, which is live behaviour that
+    /// [`ToolUse::is_autocontinue_judge`] now depends on.
+    ///
+    /// The predicate it used to feed, `owes_a_review`, is deleted rather than
+    /// left unused: an unread predicate beside a retired rule is how the valve
+    /// kept consulting the reviewer for a whole release.
     pub fn communicator_ran(&self) -> bool {
         self.launches.iter().any(ToolUse::is_communicator)
     }
@@ -612,12 +618,18 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
     // first, character for character. The v3.17.2 notes already recorded what
     // happens otherwise: a fix taught to one copy and not the other, so the
     // exemption switched itself off exactly where it was needed.
+    // v4.0.1: `!facts.turn.owes_a_review()` IS GONE FROM HERE, and its survival
+    // is what this patch exists for. v4.0.0 retired the reviewer rule and left
+    // this reader — so on a retry the retired subagent still decided a verdict:
+    // spawn it, and a message this valve would otherwise hold was released.
+    // Measured against the SHIPPED binary, one fixture, two runs differing only
+    // by the communicator call: without it TOO LONG, with it allowed.
+    //
+    // The release note said no gate consults it. That was false, and the shape
+    // is the one this repository has shipped before — the rule removed from one
+    // implementation and left in a second reader that no test covered.
     let rule_b_would_push = rule_b_engaged(facts);
-    if facts.already_bounced
-        && !facts.turn.owes_a_review()
-        && !facts.owes_a_reseed()
-        && !rule_b_would_push
-    {
+    if facts.already_bounced && !facts.owes_a_reseed() && !rule_b_would_push {
         return StopVerdict::Allow;
     }
 
@@ -1742,6 +1754,71 @@ mod tests {
             !t.worked_since_push,
             "counted as work it would reset the empty-turn ceiling, and a session \
 stuck in the judge loop could never be released"
+        );
+    }
+
+    /// THE v4.0.1 DEFECT, as the discriminator that would have caught it.
+    ///
+    /// v4.0.0 retired the reviewer rule and left one reader: the anti-loop
+    /// valve still called `owes_a_review()`, so on a retry the retired subagent
+    /// still decided a verdict. Nothing covered that path, because every test
+    /// of the retirement looked at the RULE and the valve is a different site.
+    ///
+    /// Found by dogfooding the shipped binary rather than by a test, which is
+    /// the whole argument for the dogfood stage: one fixture, two runs
+    /// differing only by the communicator call, and they disagreed.
+    ///
+    /// The shape to hold: on ANY path, spawning the retired reviewer must not
+    /// change the verdict. Restore the valve term and this goes red.
+    #[test]
+    fn the_retired_reviewer_cannot_change_a_verdict_on_any_path() {
+        let long_ask = "Stage 3 is committed and every gate is green. ".repeat(60);
+        let mut without = facts(Autonomy::Unknown, vec![]);
+        without.turn.final_text = long_ask.clone();
+        without.turn.asks_the_human = true;
+        without.already_bounced = true;
+
+        let mut with = facts(Autonomy::Unknown, vec![communicator()]);
+        with.turn.final_text = long_ask;
+        with.turn.asks_the_human = true;
+        with.already_bounced = true;
+
+        assert_eq!(
+            judge(&without),
+            judge(&with),
+            "spawning the retired reviewer must not release a message the gate would \
+otherwise hold — this is the v4.0.0 defect, measured against the shipped binary"
+        );
+        // PROOF OF LIFE, and it has to be taken OFF the retry path.
+        //
+        // The equality above is now two Allows: with the valve's reviewer term
+        // gone, a retry that owes no reseed and would not be pushed is released
+        // outright, which is exactly what the valve is for. So the equality
+        // cannot also demonstrate that the fixture is block-worthy — that is
+        // shown here, on the same message with the retry flag down, where the
+        // length rule does reach it.
+        //
+        // Before the fix these two paths disagreed: the valve fell through, the
+        // length rule fired, and spawning the reviewer was what turned the block
+        // into an Allow.
+        let mut first_pass = facts(Autonomy::Unknown, vec![]);
+        first_pass.turn.final_text = "Stage 3 is committed and every gate is green. ".repeat(60);
+        first_pass.turn.asks_the_human = true;
+        match judge(&first_pass) {
+            StopVerdict::Block { reason } => assert!(reason.contains("TOO LONG"), "{reason}"),
+            StopVerdict::Allow => {
+                panic!("the fixture must be over budget, or the equality proves nothing")
+            }
+        }
+        // ...and the reviewer does not change THAT verdict either.
+        let mut first_pass_judged = facts(Autonomy::Unknown, vec![communicator()]);
+        first_pass_judged.turn.final_text =
+            "Stage 3 is committed and every gate is green. ".repeat(60);
+        first_pass_judged.turn.asks_the_human = true;
+        assert_eq!(
+            judge(&first_pass),
+            judge(&first_pass_judged),
+            "and length is cut, never consulted away"
         );
     }
 

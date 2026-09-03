@@ -1354,19 +1354,15 @@ fn stop_gate(
     // which is the exact leak the ceiling guards. The reseed counter earned
     // its own-rule charging for the same reason; the review counter now has
     // it too.
-    if let (Some(dir), Some(file)) = (bounce_dir.as_ref(), bounce_file.as_ref()) {
-        match &verdict {
-            StopVerdict::Block { reason } if reason.starts_with("UNJUDGED MESSAGE") => {
-                let _ = std::fs::create_dir_all(dir);
-                let _ = std::fs::write(file, (bounces + 1).to_string());
-            }
-            StopVerdict::Allow => {
-                let _ = std::fs::remove_file(file);
-            }
-            // A block by a DIFFERENT rule neither charges nor clears: an
-            // unrelated push between ask-bounces must not wipe the ask's
-            // episode either.
-            StopVerdict::Block { .. } => {}
+    // v4.0.1: THE CHARGE ARM IS GONE. It matched on a reason string — "UNJUDGED
+    // MESSAGE" — that no rule has emitted since v4.0.0 retired the reviewer, so
+    // the counter it maintained could only ever read zero. Keeping it left a
+    // dead literal in the binary and a counter file that looked like live state.
+    //
+    // The clear-on-allow is gone with it: there is nothing left to clear.
+    if let Some(file) = bounce_file.as_ref() {
+        if matches!(verdict, StopVerdict::Allow) {
+            let _ = std::fs::remove_file(file);
         }
     }
 

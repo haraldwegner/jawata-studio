@@ -511,6 +511,25 @@ mod tests {
         }
     }
 
+    /// SLASH-PREFIXED, because he will type it that way.
+    ///
+    /// `/autocontinue` is NOT a registered command — nothing in `conductor.rs`
+    /// generates a skill for it — so a client that passes an unknown slash
+    /// command through as ordinary text lands here, and a client that refuses
+    /// it never reaches this function at all. This pins the half that is ours:
+    /// if the text arrives, the slash is punctuation in front of the word and
+    /// the word still ends the line, so it arms.
+    ///
+    /// Which is the behaviour to want either way — he means it as an order when
+    /// he types it with a slash, and the boundary check below is what keeps
+    /// that from also accepting `noautocontinue`.
+    #[test]
+    fn the_slash_spelling_arms_it_too() {
+        let d = tmp();
+        assert!(note_prompt(&d, "s", "/autocontinue"));
+        assert_eq!(state(&d, "s"), Autonomy::Granted);
+    }
+
     /// The boundary check, so the rule cannot be satisfied by a longer word
     /// that merely ends the same way.
     #[test]
