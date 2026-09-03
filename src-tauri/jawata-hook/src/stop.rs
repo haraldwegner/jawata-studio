@@ -353,13 +353,24 @@ pub struct Turn {
     /// ceiling releases it. That is the safe direction: holding a turn costs
     /// two pushes, accepting a quoted line costs the whole rule.
     pub judge_call_ids: Vec<String>,
-    /// Whether the [`JUDGE_SEAT`] was spawned in this window.
+    /// Has the agent done work since the current verdict was recorded?
     ///
-    /// Kept separate from the verdict so the two failures are distinguishable:
-    /// never run (block, asking for it) and run-but-answered-nothing (block,
-    /// saying the seat returned no verdict line). Collapsing them would report
-    /// a seat that answered badly as a seat that was skipped.
-    pub judge_ran: bool,
+    /// THE VERDICT HAS A LIFETIME, AND WORK IS WHAT ENDS IT (Harald, 2026-09-03,
+    /// on the C3 stop: *"We had the agent saying I can fix and he did not move
+    /// on."*). v4.0.2 kept the first verdict of the window for the window's
+    /// whole life, which failed both ways at once. An agent told "fix X" that
+    /// fixed X and stopped again was re-served the stale instruction forever —
+    /// and because fixing X is a tool call, the idle valve never released it.
+    /// An agent told "fix X" that did NOT fix X and re-spawned the judge until
+    /// it heard something kinder would, under the obvious last-wins fix, have
+    /// been let through.
+    ///
+    /// One flag answers both. A fresh verdict is accepted only when there is no
+    /// verdict yet OR this flag is set, so re-rolling without working changes
+    /// nothing; and a verdict with this flag set is SPENT — it neither blocks
+    /// with its stale next action nor allows on a stale reservation, it demands
+    /// a fresh consultation that will see the work.
+    pub verdict_spent: bool,
     /// The verdict, read from the HARNESS's tool-result record rather than from
     /// the agent's own prose.
     ///
@@ -517,6 +528,39 @@ impl Turn {
     }
     pub fn armed_anything(&self) -> bool {
         self.launches.iter().any(ToolUse::arms_work)
+    }
+
+    /// Was the [`JUDGE_SEAT`] spawned in this window — with an id the harness
+    /// minted, so that its answer can be bound to the call?
+    ///
+    /// Derived, not stored. It was a separate boolean until v4.1.0, set by the
+    /// spawn whether or not an id was present, so a client omitting ids left
+    /// the two facts disagreeing: "ran" true, ids empty, no verdict ever
+    /// readable, and the turn held on "RAN AND RETURNED NO VERDICT" with no
+    /// way out. One source, and a spawn without an id is honestly not a run.
+    pub fn judge_ran(&self) -> bool {
+        !self.judge_call_ids.is_empty()
+    }
+
+    /// The verdict that still governs this stop — None once work has spent it.
+    pub fn live_verdict(&self) -> Option<&JudgeVerdict> {
+        if self.verdict_spent {
+            None
+        } else {
+            self.judge_verdict.as_ref()
+        }
+    }
+
+    /// Is the agent holding an instruction it has not acted on?
+    ///
+    /// This is the one state in which idling must NOT release the turn. The
+    /// idle valve exists to free a session that is wedged with nothing to do;
+    /// an agent that has been told what to do and is doing nothing is not
+    /// wedged, it is refusing. Measured before this existed: spawn the judge
+    /// three times, do nothing else, and the valve let the turn end without a
+    /// verdict ever being read.
+    pub fn holds_an_unspent_fix(&self) -> bool {
+        matches!(self.live_verdict(), Some(JudgeVerdict::Resolvable(_)))
     }
 }
 
@@ -909,42 +953,20 @@ of in front of it?",
         if !rule_b_engaged(facts) {
             return StopVerdict::Allow;
         }
-        // A RESERVED VERDICT IS HONOURED BEFORE EVERY OTHER BOUND, and the
-        // ordering is load-bearing rather than tidy. The review ceiling below
-        // pushes ONE more time and tells the agent to put the dispute to the
-        // judge — so if the ceiling ran first unconditionally, the turn that
-        // did exactly that would be blocked by the same ceiling again and the
-        // loop it exists to end could never end. Its own exit would be walled
-        // off by itself. Caught by the ceiling's test, which asserts the loop
-        // terminates visibly rather than by a counter running out.
-        if facts.turn.judge_verdict == Some(JudgeVerdict::Reserved) {
-            return StopVerdict::Allow;
-        }
-        // THE REVIEW CEILING — the second bound, for the loop the first cannot
-        // see. `empty_turns` counts turns that did nothing; a review that will
-        // not converge does real work every round and resets it forever.
+        // THE REVIEW CEILING IS GONE FROM HERE (v4.1.0), and so is the early
+        // `Reserved` return that used to sit above it.
         //
-        // Reaching it is not a new kind of stop: an unconverged review IS "a
-        // dispute with the auditor", one of the five reasons Harald named as
-        // legitimately his. It stays ahead of the REST of the judge branch
-        // because it is a fact about the session rather than about this
-        // message — the judge would have to be told the round count to see it,
-        // and telling it things is exactly what the design refuses.
-        if facts.review_rounds >= crate::autonomy::MAX_REVIEW_ROUNDS {
-            return StopVerdict::Block {
-                reason: format!(
-                    "REVIEW CEILING: {} review rounds since he last spoke, and the cap \
-is {}. His rule is three rounds, four at the outside when round three found something \
-genuinely blocking — past that, remaining findings are ACCEPTED AS-IS or written down as \
-named open items, never another round. If the review has genuinely not converged, that is \
-a dispute with the auditor and it is his to settle: put THAT to the `{}` seat as the stop, \
-and its verdict decides. Do not open another round.",
-                    facts.review_rounds,
-                    crate::autonomy::MAX_REVIEW_ROUNDS,
-                    JUDGE_SEAT
-                ),
-            };
-        }
+        // The ceiling blocked with a message and no exit — both fresh reviews
+        // of v4.0.2 named it as the reason a stuck review was unbounded — and
+        // its job is now the judge's: the seat counts the refusals itself when
+        // it reads the transcript, and past his cap it takes the architect's
+        // position on the dispute (fixable → name the fix; not → reserved).
+        // Harald's three situations, 2026-09-03; the third is exactly this.
+        //
+        // The early return was a second reader of the same fact as the match
+        // below — the v4.0.1 defect's shape, in the file that defect was about.
+        // One reader now.
+        //
         // THE JUDGE DECIDES, NOT THE AGENT'S OWN WORDING (Harald, 2026-09-03).
         //
         // This read `declares_a_decision`: a line beginning `DECISION:`, which
@@ -971,19 +993,39 @@ and its verdict decides. Do not open another round.",
         // different act from phrasing a stop to fit a rule — it is not the
         // failure that has ever occurred here — and the honest bound is the one
         // this module's own header already draws for Rule A.
-        match facts.turn.judge_verdict.as_ref() {
+        match facts.turn.live_verdict() {
             Some(JudgeVerdict::Reserved) => return StopVerdict::Allow,
             Some(JudgeVerdict::Resolvable(next)) => {
+                // UNSPENT: the agent was told what to do and has not done it.
+                // This is the C3 stop — "I can fix" followed by not fixing —
+                // and the message does not change until work happens. Nor
+                // does re-asking: a fresh verdict is only accepted once this
+                // one is spent, so the judge cannot be re-rolled from here.
                 return StopVerdict::Block {
                     reason: format!(
                         "THE JUDGE SAYS THIS IS YOURS TO RESOLVE, not his. It read the \
-plan and the transcript with no session context and found no reserved decision here. Its \
-next action: {next}\n\nDo that and keep working. If you believe it is wrong, the dispute \
-itself is a decision — put it to the judge again with what it missed."
+plan and the transcript with no session context and found nothing reserved here. Its next \
+action: {next}\n\nDo that. Nothing else ends this turn: not re-asking the judge, not \
+idling — the next verdict is read only after you have worked. If you believe it is wrong, \
+do the part you can and say what you cannot; the judge will see both."
                     ),
                 }
             }
-            None if facts.turn.judge_ran => {
+            None if facts.turn.verdict_spent => {
+                // SPENT: work happened since the last verdict, so it no longer
+                // describes the situation. Reserved or resolvable, it is stale
+                // in either direction — a reservation from before the fix must
+                // not end the turn any more than a stale instruction should
+                // hold it. Consult again; the judge will see the work.
+                return StopVerdict::Block {
+                    reason: format!(
+                        "THE JUDGE'S LAST VERDICT HAS BEEN ACTED ON, so it no longer \
+governs this stop. Spawn the `{JUDGE_SEAT}` subagent again with the same one line — the \
+transcript path — and it will judge what you did."
+                    ),
+                }
+            }
+            None if facts.turn.judge_ran() => {
                 return StopVerdict::Block {
                     reason: format!(
                         "THE {JUDGE_SEAT} SEAT RAN AND RETURNED NO VERDICT. Its answer \
@@ -1153,23 +1195,35 @@ fn answers_one_of(v: &serde_json::Value, ids: &[String]) -> bool {
 
 /// The judge's verdict line, or None when it said nothing decidable.
 ///
-/// RESERVED IS CHECKED FIRST and the order is deliberate. A judge that answers
-/// RESOLVABLE writes its next action on the same line, so the two spellings
-/// cannot collide — but a report that discussed both would otherwise be read as
-/// whichever appeared first in the text, and between "stop stands" and "keep
-/// going" the safe misreading is the one that lets the human see it.
+/// THE LAST MATCHING LINE WINS. The seat is told to put its verdict last, and
+/// this is why: it reasons in prose first, and prose about a plan that has
+/// already produced verdicts quotes them — "the audit's VERDICT: REFUSE was
+/// on…", "one could argue VERDICT: RESOLVABLE — but…". The first build took the
+/// first match, so a judge that cited a verdict before giving its own was read
+/// as having given the cited one. Both fresh reviews of v4.0.2 named it.
+///
+/// The word is matched as a whole — `RESERVED` followed by end-of-line or
+/// whitespace — so `VERDICT: RESERVED is not warranted` and
+/// `VERDICT: RESERVEDLY` are not reservations.
 fn verdict_in(text: &str) -> Option<JudgeVerdict> {
+    let mut found = None;
     for line in text.lines() {
-        let l = line.trim_start().trim_start_matches(['#', '*', ' ']);
-        if l.starts_with("VERDICT: RESERVED") {
-            return Some(JudgeVerdict::Reserved);
+        let l = line.trim_start().trim_start_matches(['#', '*', '>', '-', ' ']);
+        if let Some(rest) = l.strip_prefix("VERDICT: RESERVED") {
+            if rest.trim().is_empty() {
+                found = Some(JudgeVerdict::Reserved);
+            }
+            continue;
         }
         if let Some(rest) = l.strip_prefix("VERDICT: RESOLVABLE") {
-            let next = rest.trim_start_matches(['—', '-', ':', ' ']).trim();
-            return Some(JudgeVerdict::Resolvable(next.to_string()));
+            let boundary_ok = rest.chars().next().is_none_or(|c| !c.is_alphanumeric());
+            if boundary_ok {
+                let next = rest.trim_start_matches(['—', '-', ':', ' ']).trim();
+                found = Some(JudgeVerdict::Resolvable(next.to_string()));
+            }
         }
     }
-    None
+    found
 }
 
 /// Is Rule B live for this turn — granted, nothing armed, not interrupted, and
@@ -1184,7 +1238,12 @@ fn rule_b_engaged(facts: &StopFacts) -> bool {
     facts.autonomy == Autonomy::Granted
         && !facts.turn.armed_anything()
         && !facts.turn.interrupted
-        && facts.empty_turns < MAX_EMPTY_TURNS
+        // The idle valve — UNLESS the agent is sitting on an instruction it
+        // has not acted on. See `Turn::holds_an_unspent_fix`: an agent that
+        // has been told what to do and does nothing is not wedged, and the
+        // valve that frees a wedged session must not free that one. His
+        // interrupt above still wins over everything.
+        && (facts.empty_turns < MAX_EMPTY_TURNS || facts.turn.holds_an_unspent_fix())
 }
 
 pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
@@ -1285,8 +1344,19 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                 // launch". Without the gate any tool result quoting the verdict
                 // line would count — reading this very file, for instance, which
                 // contains both spellings.
-                if turn.judge_verdict.is_none() && answers_one_of(&v, &turn.judge_call_ids) {
-                    turn.judge_verdict = verdict_in(&tool_result_text(&v));
+                // A FRESH VERDICT IS ACCEPTED ONLY WHEN THE OLD ONE IS SPENT.
+                // With no verdict, or with work done since the last, the new
+                // answer governs. With an unspent verdict standing, a new one
+                // is a re-roll — the agent asked again without doing anything
+                // — and it is ignored. Re-spawning the judge cannot change what
+                // the agent was told; only doing it can.
+                if answers_one_of(&v, &turn.judge_call_ids)
+                    && (turn.judge_verdict.is_none() || turn.verdict_spent)
+                {
+                    if let Some(verdict) = verdict_in(&tool_result_text(&v)) {
+                        turn.judge_verdict = Some(verdict);
+                        turn.verdict_spent = false;
+                    }
                 }
             }
             Some("user") if !is_tool_result(&v) && is_harness_line(&v) => {
@@ -1434,10 +1504,20 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                             // arguing itself into a corner it built.
                             if !launch.is_communicator() && !launch.is_autocontinue_judge() {
                                 turn.worked_since_push = true;
+                                // WORK SPENDS THE VERDICT — see `Turn::verdict_spent`.
+                                // Any real tool call after a verdict is the agent
+                                // acting on it (or on something), and the next
+                                // stop must be judged against what that work
+                                // produced, not against the instruction that
+                                // preceded it.
+                                if turn.judge_verdict.is_some() {
+                                    turn.verdict_spent = true;
+                                }
                             }
                             if launch.is_autocontinue_judge() {
-                                turn.judge_ran = true;
-                                // The id is what binds the answer to the ask.
+                                // The id is what binds the answer to the ask. A
+                                // spawn without one is not a run — `judge_ran`
+                                // derives from this list on purpose.
                                 if let Some(id) = b.get("id").and_then(|i| i.as_str()) {
                                     turn.judge_call_ids.push(id.to_string());
                                 }
@@ -1742,7 +1822,7 @@ mod tests {
 — re-run the two reviews\"}]}}\n"
         ))
         .unwrap();
-        assert!(t.judge_ran, "the spawn must register");
+        assert!(t.judge_ran(), "the spawn must register");
         assert_eq!(
             Some(JudgeVerdict::Resolvable("re-run the two reviews".into())),
             t.judge_verdict,
@@ -1793,7 +1873,7 @@ mod tests {
 \"tool_result\",\"tool_use_id\":\"toolu_READ\",\"content\":\"the stance reads:\\n    VERDICT: RESERVED\"}]}}\n",
         ))
         .unwrap();
-        assert!(quoted.judge_ran, "the judge did run");
+        assert!(quoted.judge_ran(), "the judge did run");
         assert_eq!(
             None, quoted.judge_verdict,
             "a file read cannot answer for the judge — the verdict binds to the CALL id"
@@ -1815,12 +1895,21 @@ mod tests {
             "the judge's OWN result is still read, indentation and all"
         );
 
-        // RESERVED is checked before RESOLVABLE: a report discussing both must
-        // fail toward the human seeing it, never toward the turn continuing.
+        // THE LAST LINE WINS (v4.1.0). It was first-match, and both reviews
+        // named the failure: a judge that cites an earlier verdict in its
+        // reasoning was read as having given the cited one. The seat is told
+        // to put its verdict last; this is the reader honouring that.
         assert_eq!(
-            Some(JudgeVerdict::Reserved),
-            verdict_in("VERDICT: RESERVED\nVERDICT: RESOLVABLE — go on"),
+            Some(JudgeVerdict::Resolvable("go on".into())),
+            verdict_in("the audit's VERDICT: RESERVED was premature.\nVERDICT: RESOLVABLE — go on"),
         );
+        // And a whole word: a reservation that is being argued AGAINST is not one.
+        assert_eq!(None, verdict_in("VERDICT: RESERVED is not warranted here"));
+        assert_eq!(None, verdict_in("VERDICT: RESERVEDLY"));
+        // Bulleted and quoted forms parse; a judge that lists its conclusion
+        // must not be read as having said nothing.
+        assert_eq!(Some(JudgeVerdict::Reserved), verdict_in("- VERDICT: RESERVED"));
+        assert_eq!(Some(JudgeVerdict::Reserved), verdict_in("> VERDICT: RESERVED"));
     }
 
     /// The judge is not work and does not arm — the two carve-outs that keep
@@ -1924,7 +2013,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
             // Mirrors reality rather than defaulting: a turn carrying tool calls
             // HAS worked. A helper that always said `false` would let a test pass
             // against a fixture that could not occur.
-            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, refusals_emitted: 0, asks_the_human: false, declares_a_decision: false, judge_ran: false, judge_verdict: None, judge_call_ids: vec![], user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, answered_substantially: false },
+            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, refusals_emitted: 0, asks_the_human: false, declares_a_decision: false, judge_verdict: None, judge_call_ids: vec![], verdict_spent: false, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, answered_substantially: false },
             autonomy,
             substrate: None,
             reseed_bounces: 0,
@@ -2760,80 +2849,134 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
     ///
     /// The retry now excuses everything EXCEPT a missing review — and even
     /// that only until the ceiling, so it bounds rather than wedges.
-    /// THE REVIEW CEILING, and the reason it exists rather than reusing the
-    /// other bound: every round of a repair-then-re-review loop DOES WORK, so
-    /// `empty_turns` resets to zero forever and never sees it.
+    /// THE REVIEW CEILING IS THE JUDGE'S NOW (v4.1.0). It was a rule here that
+    /// blocked with a message and no exit; the seat reads the refusal count
+    /// itself and takes the architect's position past the cap. What this test
+    /// pins is that the gate no longer walls anything off on the count alone,
+    /// and that the verdict — not the count — decides.
     #[test]
     fn the_review_ceiling_ends_a_loop_that_does_work_every_round() {
-        // Below the cap: the push is unaffected. A session that spawns a
-        // reviewer now and then is ordinary work, not a loop.
-        let mut ok = facts(Autonomy::Granted, vec![]);
-        ok.review_rounds = crate::autonomy::MAX_REVIEW_ROUNDS - 1;
-        match judge(&ok) {
-            StopVerdict::Block { reason } => assert!(
-                reason.contains("RULE B"),
-                "below the cap the ordinary push must run: {reason}"
-            ),
-            StopVerdict::Allow => panic!("below the cap nothing should stand the push down"),
-        }
-        // PROOF OF LIFE for the counter itself: the empty-turn bound cannot
-        // reach this case, so if it could, this test would prove nothing.
-        assert_eq!(ok.empty_turns, 0, "every round did work, so the other bound is at zero");
-
-        // THE COMMUNICATOR IS NOT A REVIEW ROUND, and this nearly shipped
-        // wrong. It is an `Agent` launch like any other, and it runs once per
-        // judged message — so counting it would have spent the ceiling on four
-        // reviewed messages in one ordinary conversation, with no review loop
-        // anywhere near it. `arms_work` carves it out for the same reason.
-        assert!(
-            !communicator().arms_work(),
-            "the reviewer judges the message being sent; it is not work that continues"
-        );
-        assert!(
-            communicator().is_communicator(),
-            "the counter's carve-out keys on exactly this, so it must hold here"
-        );
-
-        // At the cap: pushed ONE more time, and told to state the dispute.
-        let mut spent = facts(Autonomy::Granted, vec![]);
-        spent.review_rounds = crate::autonomy::MAX_REVIEW_ROUNDS;
-        match judge(&spent) {
+        // At the cap with no verdict: the ordinary push — spawn the judge — and
+        // nothing about "REVIEW CEILING". The judge will see the rounds.
+        let mut at_cap = facts(Autonomy::Granted, vec![]);
+        at_cap.review_rounds = crate::autonomy::MAX_REVIEW_ROUNDS;
+        match judge(&at_cap) {
             StopVerdict::Block { reason } => {
-                assert!(reason.contains("REVIEW CEILING"), "{reason}");
-                assert!(
-                    reason.contains(JUDGE_SEAT),
-                    "it must name the way OUT, or the ceiling is a wall: {reason}"
-                );
+                assert!(reason.contains("RULE B"), "{reason}");
+                assert!(!reason.contains("REVIEW CEILING"), "the count-only wall is gone: {reason}");
             }
-            StopVerdict::Allow => panic!("the ceiling must be reached, not passed"),
+            StopVerdict::Allow => panic!("at the cap the judge is still owed"),
         }
-
-        // ...and the loop then ENDS, visibly, when the judge agrees the dispute
-        // is his. It used to end on the agent DECLARING that; it now ends on a
-        // fresh-context seat saying so, which is the whole change.
-        //
-        // THIS IS ALSO THE ORDERING CONTROL. The ceiling is checked before the
-        // rest of the judge branch, so without the Reserved short-circuit above
-        // it the turn that obeys the ceiling — put the dispute to the seat —
-        // would be blocked by the ceiling again, forever. Move that
-        // short-circuit below the ceiling and this assertion goes red.
+        // At the cap with the judge's reservation: the stop stands. This is
+        // his situation 3 — the architect took the dispute and called it not
+        // fixable — and it ends the loop visibly, on a verdict.
         let mut settled = facts(Autonomy::Granted, vec![]);
         settled.review_rounds = crate::autonomy::MAX_REVIEW_ROUNDS;
-        settled.turn.judge_ran = true;
+        settled.turn.judge_call_ids = vec!["toolu_J".into()];
         settled.turn.judge_verdict = Some(JudgeVerdict::Reserved);
-        assert_eq!(
-            StopVerdict::Allow,
-            judge(&settled),
-            "an unconverged review is a dispute — his to settle, and a legitimate stop"
-        );
+        assert_eq!(StopVerdict::Allow, judge(&settled));
         // And the agent cannot end it by saying so itself.
         let mut declared = facts(Autonomy::Granted, vec![]);
         declared.review_rounds = crate::autonomy::MAX_REVIEW_ROUNDS;
         declared.turn.declares_a_decision = true;
-        assert!(
-            matches!(judge(&declared), StopVerdict::Block { .. }),
-            "the loop must not end on the agent's own declaration"
+        assert!(matches!(judge(&declared), StopVerdict::Block { .. }));
+    }
+
+    /// THE C3 STOP, AND THE TWO ABUSES ON EITHER SIDE OF IT (Harald, 2026-09-03:
+    /// *"We had the agent saying I can fix and he did not move on."*).
+    ///
+    /// Three claims, each with its control:
+    /// 1. told to fix, did nothing → held with the SAME instruction, however
+    ///    many times it asks, however many times it re-spawns the judge;
+    /// 2. told to fix, did the work → the instruction is SPENT and a fresh
+    ///    consultation is demanded — never the stale one re-served (the
+    ///    v4.0.2 wedge), never a stale reservation honoured either;
+    /// 3. holding an unspent instruction, idling → the idle valve does NOT
+    ///    release the turn (the v4.0.2 self-disarm: three judge spawns and out).
+    #[test]
+    fn an_instruction_is_held_until_work_spends_it() {
+        let spawn = |id: &str| {
+            format!(
+                "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"tool_use\",\
+\"id\":\"{id}\",\"name\":\"Agent\",\"input\":{{\"subagent_type\":\"autocontinue\"}}}}]}}}}\n"
+            )
+        };
+        let answer = |id: &str, text: &str| {
+            format!(
+                "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\
+\"tool_result\",\"tool_use_id\":\"{id}\",\"content\":\"{text}\"}}]}}}}\n"
+            )
+        };
+        let work = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\
+\"id\":\"toolu_E\",\"name\":\"Edit\",\"input\":{\"file_path\":\"/x/A.rs\"}}]}}\n";
+        let fix = "VERDICT: RESOLVABLE — re-run the two reviews";
+
+        // 1. Told, did nothing, re-asked: the re-roll is IGNORED and the same
+        //    instruction stands. A kinder second judge changes nothing.
+        let t = read_turn(&format!(
+            "{}{}{}{}",
+            spawn("J1"),
+            answer("J1", fix),
+            spawn("J2"),
+            answer("J2", "VERDICT: RESERVED")
+        ))
+        .unwrap();
+        assert_eq!(
+            Some(JudgeVerdict::Resolvable("re-run the two reviews".into())),
+            t.judge_verdict,
+            "re-spawning without working must not replace the instruction"
         );
+        assert!(!t.verdict_spent);
+        let mut f = facts(Autonomy::Granted, vec![]);
+        f.turn = t;
+        match judge(&f) {
+            StopVerdict::Block { reason } => assert!(reason.contains("re-run the two reviews"), "{reason}"),
+            StopVerdict::Allow => panic!("an unacted instruction must hold the turn"),
+        }
+        // ...and idling does not release it either — the idle valve is off
+        // while an instruction is unspent. This is the self-disarm control.
+        f.empty_turns = MAX_EMPTY_TURNS;
+        assert!(
+            matches!(judge(&f), StopVerdict::Block { .. }),
+            "three judge spawns and nothing else used to trip the idle valve and end the turn"
+        );
+
+        // 2. Told, DID THE WORK, stopped: the instruction is spent. Not the
+        //    stale message (the wedge), and not a stale reservation either.
+        let t = read_turn(&format!("{}{}{}", spawn("J1"), answer("J1", fix), work)).unwrap();
+        assert!(t.verdict_spent, "an Edit after the verdict spends it");
+        assert!(!t.holds_an_unspent_fix());
+        let mut f = facts(Autonomy::Granted, vec![]);
+        f.turn = t;
+        match judge(&f) {
+            StopVerdict::Block { reason } => {
+                assert!(reason.contains("ACTED ON"), "{reason}");
+                assert!(!reason.contains("re-run the two reviews"), "the stale instruction must not be re-served: {reason}");
+            }
+            StopVerdict::Allow => panic!("work does not end the turn by itself; the judge sees it first"),
+        }
+        let t = read_turn(&format!("{}{}{}", spawn("J1"), answer("J1", "VERDICT: RESERVED"), work)).unwrap();
+        let mut f = facts(Autonomy::Granted, vec![]);
+        f.turn = t;
+        assert!(
+            matches!(judge(&f), StopVerdict::Block { .. }),
+            "a reservation from before the work is stale in the other direction"
+        );
+
+        // ...and after the work a FRESH verdict is accepted and governs.
+        let t = read_turn(&format!(
+            "{}{}{}{}{}",
+            spawn("J1"),
+            answer("J1", fix),
+            work,
+            spawn("J2"),
+            answer("J2", "VERDICT: RESERVED")
+        ))
+        .unwrap();
+        assert_eq!(Some(&JudgeVerdict::Reserved), t.live_verdict());
+        let mut f = facts(Autonomy::Granted, vec![]);
+        f.turn = t;
+        assert_eq!(StopVerdict::Allow, judge(&f), "the judge saw the work and reserved: the stop stands");
     }
 
     #[test]
@@ -2899,7 +3042,7 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
         // And the judge's verdict IS the switch, both ways. RESERVED lets the
         // same stop through; RESOLVABLE holds it and carries the next action.
         let mut reserved = facts(Autonomy::Granted, vec![communicator()]);
-        reserved.turn.judge_ran = true;
+        reserved.turn.judge_call_ids = vec!["toolu_J".into()];
         reserved.turn.judge_verdict = Some(JudgeVerdict::Reserved);
         reserved.already_bounced = true;
         assert_eq!(
@@ -2908,7 +3051,7 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
             "a fresh-context seat saying the plan reserves this is a legitimate stop"
         );
         let mut resolvable = facts(Autonomy::Granted, vec![communicator()]);
-        resolvable.turn.judge_ran = true;
+        resolvable.turn.judge_call_ids = vec!["toolu_J".into()];
         resolvable.turn.judge_verdict =
             Some(JudgeVerdict::Resolvable("re-run the two reviews".into()));
         resolvable.already_bounced = true;

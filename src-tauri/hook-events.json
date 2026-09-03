@@ -147,7 +147,7 @@
       "autocontinue_judge": {
         "bash": "absent",
         "rust": "present",
-        "what": "v4.0.0. Under a live grant, a stop with nothing armed is put to a fresh-context subagent that reads the transcript and the plan ITSELF and answers RESERVED or RESOLVABLE. It is a bounce-and-verify rule, so it shares Rule B's marker rather than owning one — the block that demands the seat, and the block that carries the seat's next action, are both RULE B outcomes. Bound: the empty-turn ceiling, which the judge deliberately does not reset."
+        "what": "v4.0.0, redesigned v4.1.0 after three patch releases on one defect shape and a fresh architect+auditor review. Under a live grant, a stop with nothing armed is put to a fresh-context subagent that reads the transcript and the plan ITSELF. Its stance is Harald's three situations (2026-09-03): between checkpoints only a showstopper or a redesign halts, everything else is fixed; at a signed-off checkpoint only a release gate halts, otherwise proceed; past the review cap it takes the architect's position on the dispute. The gate owns ONE fact beyond the verdict — whether work happened since it was given. An unspent instruction is re-served unchanged and disables the idle valve; work spends it and the next stop is judged fresh; a re-spawn without work is ignored. Verdicts bind to the judge call's tool_use id and are read from the LAST verdict line. The review ceiling that blocked here without an exit is gone — the seat counts refusals itself."
       },
       "seat_discipline": {
         "bash": "present",
