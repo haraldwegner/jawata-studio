@@ -76,6 +76,27 @@ while dropping the doc's goal).
 - **The loop:** REFUSE → editor revises the clean → re-audit → repeat until SIGN-OFF.
   Editor-auditor disagreement that cannot converge is **ESCALATED TO THE USER as a named
   decision** — never resolved silently between the seats.
+- **ROUND ONE IS THE FULL AUDIT. EVERY LATER ROUND IS SCOPED TO THE REPAIRS** (Harald,
+  2026-09-04: *"each finding cannot cost a complete run"*). Six full re-audits ran on one
+  plan that day — each re-read three documents and re-derived a measured census from
+  scratch — to return two or three findings a round, most of them inside the lines the
+  editor had just changed. **The wrong shape, refuse it in your own dispatch:** a re-audit
+  prompt that hands the auditor the whole artifact set and the full check list again.
+  A re-audit receives THREE things and nothing more: the previous round's findings, the
+  repair made for each, and the round history so far. It answers two questions per
+  finding — *does this repair close it?* and *do the lines it touched introduce a new
+  instance of the four blocking classes?* — and it does not re-read the rest. The full
+  audit runs again only when the artifact changed OUTSIDE the repairs, or at the cap.
+  This composes with the rule below about repetition: a scoped re-audit is exactly the
+  memoryless reviewer that cannot see a fourth repair, which is why it is handed the
+  history rather than the artifact.
+- **AND THE EDITOR PRE-CHECKS THE CHEAP CLASSES BEFORE SPENDING AN AUDIT.** Three of the
+  four blocking classes are decidable by the editor from the artifact alone: *is every
+  claim about the code READ rather than asserted* (run the lookup, paste the line), *can
+  every gate fail on a no-op* (say what the mutation is and why the check goes red), *does
+  every deferral name a stage*. An audit that returns one of those has caught the editor
+  skipping a check it could have run in a minute. Only the fourth class — scope narrowed
+  against the raw — genuinely needs a second pair of eyes.
 - **The user signs off LAST (GATE 1)**, ratifying a gate that already did the forensics
   against their own words. On sign-off: the raw is deleted.
 - **The audit trail records verdicts AFTER they are given — never pre-written** (writing
