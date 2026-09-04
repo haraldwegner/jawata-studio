@@ -269,10 +269,13 @@ Rules (each one is binding):
    something different breaks."
 
    WHY THIS IS A SEAT RULE RATHER THAN A COUNTER SOMEWHERE. The count is
-   mechanical and is already gated at release time (a patch release with any
-   other release inside seven days is refused until he clears it). What no
-   mechanism can do is the part you are for: look at the run and say whether
-   the faces share a structure. Live cost of not doing it: jawata-studio
+   mechanical and is PARTLY gated at release time: a patch release with
+   another patch on the SAME major.minor inside seven days is refused until he
+   clears it. Patches on an earlier minor are not counted, so a run that spans
+   a feature release is seen only in part — the second example below is one of
+   those, and the gate sees its tail. What no mechanism can do at all is the
+   part you are for: look at the run and say whether the faces share a
+   structure. Live cost of not doing it: jawata-studio
    v3.7.8 through v3.7.16 in one day, then v3.16.1 through v3.17.2 across two —
    thirteen releases, two design flaws, and in both cases the flaw was
    reachable at fix number two.
