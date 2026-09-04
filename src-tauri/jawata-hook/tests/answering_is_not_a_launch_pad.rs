@@ -317,3 +317,48 @@ fn an_unreadable_transcript_refuses_nothing() {
         "unreadable evidence is not evidence of a violation. Got: {out}"
     );
 }
+
+/// A SUBAGENT'S WINDOW IS NOT HIS WINDOW — the 2026-09-04 dogfood defect.
+///
+/// The harness stamps every line of a sidechain `"isSidechain": true`, and this
+/// binary read none of it. So a subagent's own prompt looked exactly like the
+/// human opening a window, and the rule fired on work nobody was waiting to
+/// read.
+///
+/// The one-shot reset could not end it either, and that is the part worth
+/// keeping. A denial comes back carrying `TURNAROUND_MARKER`, which clears
+/// `answered_substantially` — one call gets through. Then the subagent writes
+/// its next paragraph, the flag is set again, and the next call is refused. In
+/// the human's session his next message ends the window; a sidechain has no
+/// such message, so the speed bump is a wall.
+///
+/// MEASURED on the transcript of an architect seat run: SIX refusals in one
+/// sidechain, every one on a read-only shell command, and the seat reported
+/// its own gates as NOT RUN and therefore NOT passed.
+#[test]
+fn a_write_inside_a_subagent_is_not_the_turn_around() {
+    let home = scratch("sidechain");
+    let opened = serde_json::json!({
+        "type": "user", "isSidechain": true,
+        "message": {"content": "review these three shas and report"}
+    })
+    .to_string();
+    let answered = serde_json::json!({
+        "type": "assistant", "isSidechain": true,
+        "message": {"content": [{"type": "text", "text": an_answer()}]}
+    })
+    .to_string();
+    let t = transcript(&home, "sub", &[opened, answered]);
+    let target = home.join("notes.md");
+    std::fs::write(&target, "x").unwrap();
+
+    let out = guard_says(&payload("Write", &t, &target), &home);
+
+    assert!(
+        is_allow(&out),
+        "the parent agent opened this window, not him — and he is not reading it. \
+         `a_write_after_answering_him_is_refused` above is the DISCRIMINATOR: it \
+         is this same transcript without the sidechain stamps, and it must still \
+         deny. Got: {out}"
+    );
+}

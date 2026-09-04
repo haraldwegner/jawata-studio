@@ -191,6 +191,20 @@ fn answering_then_working(payload: &str) -> Option<String> {
     if !turn.human_window || !turn.answered_substantially {
         return None;
     }
+    // A SUBAGENT'S WINDOW IS NOT HIS WINDOW. The premise of this whole rule is
+    // that his own message opened the turn; in a sidechain the opening message
+    // is the parent agent's prompt, and he is not reading any of it. Left in,
+    // the one-shot reset below cannot end the refusal either — clearing
+    // `answered_substantially` buys one call, and the subagent's next paragraph
+    // sets it again, with no human message able to close the window.
+    //
+    // Measured 2026-09-04 on an architect seat run: SIX refusals in one
+    // sidechain, all on read-only shell commands, and the seat reported its
+    // gates NOT RUN. A seat that cannot verify is this product breaking its own
+    // discipline, which is a worse outcome than any commit this rule prevents.
+    if turn.sidechain {
+        return None;
+    }
     Some(format!(
         "{}, NOT ANSWER THEN WORK. He is in this window \
          — his own message opened it — and this turn has already emitted an \
@@ -1916,7 +1930,7 @@ mod tests {
             review_rounds: 0,
             already_bounced: false,
             bounces: 0,
-            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, declares_a_decision: true, judge_verdict: None, judge_call_ids: vec![], verdict_spent: false, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, worked_since_push: false, answered_substantially: false },
+            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, declares_a_decision: true, judge_verdict: None, judge_call_ids: vec![], verdict_spent: false, user_asked: false, human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, worked_since_push: false, answered_substantially: false },
             autonomy: Autonomy::Granted,
             substrate: None,
             reseed_bounces: 0,

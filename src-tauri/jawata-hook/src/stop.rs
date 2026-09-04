@@ -412,6 +412,29 @@ pub struct Turn {
     /// is how the AUDIT-FIX alarm spent months unable to fire on the very loop
     /// it was built for (2026-08-29).
     pub human_window: bool,
+    /// Whether this window belongs to a SUBAGENT's own conversation rather
+    /// than the session the human is typing in.
+    ///
+    /// The harness stamps every line of a sidechain `"isSidechain": true`, and
+    /// nothing in this binary read it until 2026-09-04. That matters for one
+    /// rule in particular: the turn-around guard's whole premise is *"he is in
+    /// this window — his own message opened it"*, and in a sidechain the
+    /// opening message is the PARENT AGENT's prompt. Read as the human's, a
+    /// one-shot speed bump becomes a wall, because the one-shot reset below
+    /// clears [`Turn::answered_substantially`] and the subagent's very next
+    /// paragraph of narration sets it again — there is no human message to end
+    /// the window and no way out.
+    ///
+    /// MEASURED on the transcript of an architect seat run, 2026-09-04: SIX
+    /// refusals in one sidechain, every one on a read-only shell command, and
+    /// the seat reported its gates as NOT RUN and therefore NOT passed. The
+    /// denials came back in exactly the shape the reset looks for — `type:
+    /// user`, one `tool_result` block carrying [`TURNAROUND_MARKER`] — so the
+    /// reset fired each time and was undone each time. That is why the fix is
+    /// the premise and not the reset: v3.17.5 built the rule, v3.17.6 made it
+    /// one-shot, and a third repair on the reset would have been the third
+    /// face of one structure.
+    pub sidechain: bool,
     /// Whether this window has already emitted a SUBSTANTIAL answer — a text
     /// block at or above [`ANSWER_LENGTH`].
     ///
@@ -1133,6 +1156,17 @@ fn is_harness_line(v: &serde_json::Value) -> bool {
     is_harness_text(&user_text(v))
 }
 
+/// Whether this transcript line belongs to a SUBAGENT's own conversation.
+///
+/// Read per LINE and not per file, deliberately. A main-session transcript can
+/// carry sidechain lines too, so a substring test over the whole tail would
+/// disable a rule in the session the human is actually typing in — the wrong
+/// direction for a guard to fail in. Answering it at the line that OPENS the
+/// window keeps the fact scoped to the window it describes.
+fn is_sidechain(v: &serde_json::Value) -> bool {
+    v.get("isSidechain").and_then(serde_json::Value::as_bool).unwrap_or(false)
+}
+
 /// Verdict lines at the START of a line, markdown decoration allowed — the
 /// DEGRADED_STAMP principle: reading or discussing a word is not emitting it.
 fn verdict_lines(text: &str, verdict: &str) -> usize {
@@ -1361,6 +1395,7 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
             }
             Some("user") if !is_tool_result(&v) && is_harness_line(&v) => {
                 turn = Turn::default();
+                turn.sidechain = is_sidechain(&v);
             }
             Some("user") if !is_tool_result(&v) && is_interruption(&v) => {
                 // An interrupt is the human, so it opens a new window like any
@@ -1372,10 +1407,12 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                 turn = Turn::default();
                 turn.interrupted = true;
                 turn.human_window = true;
+                turn.sidechain = is_sidechain(&v);
             }
             Some("user") if !is_tool_result(&v) => {
                 turn = Turn::default();
                 turn.human_window = true;
+                turn.sidechain = is_sidechain(&v);
                 // studio#11: remember whether the human ASKED. Everything after
                 // this line is a REPLY, and a reply is out of the ask gate's
                 // scope by the 2026-08-07 ruling.
@@ -2013,7 +2050,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
             // Mirrors reality rather than defaulting: a turn carrying tool calls
             // HAS worked. A helper that always said `false` would let a test pass
             // against a fixture that could not occur.
-            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, refusals_emitted: 0, asks_the_human: false, declares_a_decision: false, judge_verdict: None, judge_call_ids: vec![], verdict_spent: false, user_asked: false, human_window: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, answered_substantially: false },
+            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, refusals_emitted: 0, asks_the_human: false, declares_a_decision: false, judge_verdict: None, judge_call_ids: vec![], verdict_spent: false, user_asked: false, human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, answered_substantially: false },
             autonomy,
             substrate: None,
             reseed_bounces: 0,
