@@ -608,6 +608,34 @@ close proceeds; BLOCKING residue still standing is the genuine stop, reported
 with diagnostics. An ask per refuse and an unbounded repair loop are both
 failures; the cap is what makes "no asks inside the loop" safe.
 
+**AND THAT LOOP CANNOT SEE ITS OWN REPETITION — THE EDITOR MUST HAND IT OVER**
+(2026-09-04, Sprint 28d C6). One check was rewritten FOUR times across four
+rounds. Every version answered exactly the case the previous round had named,
+and every version left the same hole one step to the side. Five rounds ran over
+that sequence and not one said *this is the fourth*; the person who named the
+defect class did it from a single word in a status report, before seeing any
+code. Both instruments were working as designed: an audit inspects the changes
+since the last gate, so four versions across four rounds never appear together
+in any one of them, and the auditor is started fresh ON PURPOSE, which is the
+same property that stops it knowing a previous round already repaired this
+place.
+
+So the duty is the EDITOR's, and its trigger is mechanical rather than a
+judgement — knowing you are in a recurrence is precisely what nobody in the
+loop has. Before handing a repair back for re-audit: **has this place been
+repaired before in this effort?** `git log -L <range>:<file>` over the lines
+the repair touches, kept to this effort's commits. Two minutes, and it needs no
+prior suspicion.
+
+When the answer is yes, TWO things follow. Give the auditor that place's
+history alongside the change — each previous version and what each one was
+answering, as FACTS and never your reasoning, since the reasoning is what the
+freshness exists to exclude. And dispatch the architect over the RUN rather
+than writing repair number three: it is the actuator, and its rules 12 and 14
+are this same alarm read from the seat's side. A finding whose SHAPE matches
+the last round's is the alarm — "every round found something real" is not
+evidence the review is working.
+
 **Then mind the turn boundary** (Harald 2026-08-07, Sprint 28: the sprint halted
 silently at a checkpoint summary and resumed only because an unrelated command
 woke the session). The agent runs only while a turn is active, and a turn starts
