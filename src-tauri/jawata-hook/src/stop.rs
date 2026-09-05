@@ -14,27 +14,32 @@
 //!   - Even unforged, it proves only that the communicator was CALLED. It
 //!     cannot read the verdict, so running it and ignoring the answer passes.
 //! * **Rule B — do not stop when autonomy is granted and nothing is armed.**
-//!   OBSERVABLE ONLY. Its trigger — whether the human granted autonomous
-//!   continuation — is underivable from anything this hook can read. It is
-//!   RECORDED (see [`SilenceReason::AutonomyUnknown`]) rather than enforced,
-//!   because a gate that reads as enforcement and enforces nothing is the exact
-//!   defect this sprint exists to end.
-//!
-//! NEITHER RULE CAN FIRE IN PRODUCTION TODAY: [`crate::pipeline`] always
-//! supplies [`Autonomy::Unknown`], and both rules are gated on `Granted`,
-//! which is constructed only in tests. Both are RECORDED, not enforced.
-//! Marking one of them "enforceable" in the present tense — as this comment
-//! previously did — is the specific claim this sprint exists to stop.
+//!   LIVE since v3.14.1: the grant is Harald's own word, recorded by
+//!   `autonomy.rs` when he types it and cleared when he types anything else,
+//!   so its trigger is a fact the agent did not author. Before that release
+//!   the pipeline supplied [`Autonomy::Unknown`] on every stop and the rule
+//!   never fired in 267 recorded stops — RECORDED, not enforced, which this
+//!   header said in the present tense for as long as it was true.
 //!
 //! The transcript is still preferred over a marker file the agent writes,
 //! because a marker can be skipped silently while a missing transcript entry
 //! requires a deliberate forgery. That is a difference in cost, not the
 //! absolute asymmetry originally claimed here.
 //!
-//! The second asymmetry, in [`judge`]: "the turn launched nothing" PROVES
-//! nothing is armed, while "the turn launched something" proves only that
-//! something once started — it may already have finished. So the gate blocks
-//! only on the direction it can actually prove.
+//! ARMED MEANS PENDING (v4.1.3). Until this release "the turn launched
+//! something" was read as "something is armed", and this header excused it:
+//! a launch proves only that something once started, it may already have
+//! finished, so the gate blocks only on the direction it can prove. That
+//! excuse cost the night of 2026-09-05. Four sharded-suite runs launched in
+//! the background between 01:41 and 02:47 had all finished by 03:13; the gate
+//! read `armed=true` off their launch lines, allowed the stop, and the session
+//! slept 4h 13m. The completions WERE in the transcript — as `queue-operation`
+//! and `attachment` records carrying the launching tool-use id — in a record
+//! type this reader never opened. So a launch now arms the turn only while no
+//! completion record for it has been seen: see [`ToolUse::arms_work`] and the
+//! `completion_in` reader. Harald's rule, verbatim: *"The hook fires always
+//! because it is a stop hook. It is the other way round: when should a judge
+//! NOT be called?"* — grant OFF, or something genuinely pending. Nothing else.
 
 use crate::safety::SilenceReason;
 
@@ -68,9 +73,9 @@ pub const JUDGE_SEAT: &str = "autocontinue";
 
 /// What the [`JUDGE_SEAT`] said about this stop.
 ///
-/// It replaces [`Turn::declares_a_decision`] as Rule B's exemption, and the
-/// reason is the defect measured on 2026-09-03. That field keyed the exemption
-/// on a `DECISION:` line the AGENT writes. The gate's own doc had already named
+/// It replaced the agent's own `DECISION:` line as Rule B's exemption (v4.0.0),
+/// and the reason is the defect measured on 2026-09-03. That line keyed the
+/// exemption on text the AGENT writes. The gate's own doc had already named
 /// the risk — "the agent's discretion wearing a detector's clothes" — and
 /// answered it by demanding a deliberate marker instead of a guess. But a
 /// declaration is still the agent's text, and an agent whose training rewards
@@ -80,8 +85,13 @@ pub const JUDGE_SEAT: &str = "autocontinue";
 /// later stage, and a refused review whose findings the agent had already fixed
 /// and simply not re-run.
 ///
-/// So the exemption moves onto text the agent does NOT author: a verdict a
+/// So the exemption moved onto text the agent does NOT author: a verdict a
 /// fresh-context seat wrote, read out of the harness's own tool-result record.
+/// v4.1.3 then deleted the last phrase list the gate still computed (an ask
+/// detector over the agent's closing message, unread by any rule since v4.0.0)
+/// — every phrase in it was an appeal to a HUMAN reader, meaningless with a
+/// machine in the driver's seat, and a list keyed on the agent's own wording
+/// fails open by construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JudgeVerdict {
     /// The plan reserves this for the human. The stop stands.
@@ -211,38 +221,63 @@ pub struct ToolUse {
     /// For an `Agent` call, the `subagent_type` it was given.
     pub subagent: Option<String>,
     /// Whether it was started in the background — i.e. whether it can wake us.
+    ///
+    /// Set from the call's own `run_in_background` flag, and RAISED by the
+    /// harness's answer to the call: `Async agent launched successfully` and
+    /// `Command running in background with ID:` are the two sentences the
+    /// client writes for a launch it will report on later, and a client that
+    /// backgrounds subagents by default writes the first without any flag on
+    /// the call. Measured over this session's own transcript: 477 of 767
+    /// background agent launches carried no flag at all.
     pub backgrounded: bool,
+    /// The `tool_use` id the harness minted for this call — the key every
+    /// completion record carries back (`<tool-use-id>` in a task notification).
+    pub id: Option<String>,
+    /// The harness's own task id for a background launch, read out of the
+    /// launch result (`with ID: b6cnanh22`, `agentId: a5b1c388…`). A
+    /// `task_status` attachment names the task by this and not by the call.
+    pub task: Option<String>,
+    /// Whether the harness has since reported this launch finished.
+    ///
+    /// THIS IS THE FIELD THE 03:13 SLEEP WAS MISSING. A finished background
+    /// job is not armed: nothing about it will ever wake the session again. It
+    /// is set only from records the HARNESS writes — a task notification, a
+    /// `task_status` attachment, a `queue-operation` — never from anything the
+    /// agent says about the job, and a `SendMessage` to the same agent clears
+    /// it again, because continuing an agent is a new launch in all but name.
+    pub completed: bool,
 }
 
 impl ToolUse {
-    /// Did this call arm work that will wake the agent later?
+    /// Is this call still going to wake the agent later?
     ///
-    /// An `Agent` spawn qualifies regardless of flags — the harness notifies on
-    /// completion. A `Bash` call qualifies only when backgrounded.
+    /// Backgrounded, and not yet reported finished. That is the whole test,
+    /// and both halves are load-bearing. A FOREGROUND call — an `Agent` spawn
+    /// whose report came back inline, a plain `Bash` — has nothing left to
+    /// happen after it returned, so it arms nothing whatever its name. A
+    /// background call whose completion the harness has already recorded is in
+    /// exactly the same state, and until v4.1.3 this read it as armed.
     ///
-    /// EXCEPT the communicator, and the exception is the point: it JUDGES the
-    /// message being sent, it is not work that continues afterwards. Counting
-    /// it would let the two rules cancel each other out — run the communicator,
-    /// satisfy Rule A, and have Rule B read the same call as "something is
-    /// armed", so a turn that ends with a judged summary and nothing running
-    /// would pass both. That is precisely the stop this gate exists to catch.
+    /// The communicator and the judge are NOT excepted here any more. They
+    /// were, on the reasoning that consulting the judge must not satisfy the
+    /// rule that demands the judge. With completion in view the exception is
+    /// redundant: a foreground consultation is not backgrounded and arms
+    /// nothing, and a background one is genuinely pending — its answer WILL
+    /// wake the session, at which point this gate runs again with the answer
+    /// in hand (the reader carries a judge's verdict across that wake-up). What
+    /// the two are still not is WORK — see the `worked_since_push` handling in
+    /// `read_turn`, which keeps them off the emptiness ceiling.
     pub fn arms_work(&self) -> bool {
-        if self.is_communicator() || self.is_autocontinue_judge() {
-            return false;
-        }
-        self.name == "Agent" || self.backgrounded
+        self.backgrounded && !self.completed
     }
 
-    /// Was this the communicator judging an upward message?
     /// A run of the `autocontinue` judge — the seat that decides whether a stop
     /// under a live grant is the human's to make.
     ///
-    /// Like the communicator it is NOT work and does NOT arm anything: it judges
-    /// the turn that is trying to end. Counting it either way would hand the
-    /// agent a way to satisfy Rule B by consulting the very judge Rule B
-    /// demands, and — worse — would reset the empty-turn ceiling that is this
-    /// rule's only release valve, so a session that spun on the judge could
-    /// never be let go.
+    /// Like the communicator it is NOT work: it judges the turn that is trying
+    /// to end. Counted as work it would reset the empty-turn ceiling that is
+    /// this rule's only release valve, so a session that spun on the judge
+    /// could never be let go.
     pub fn is_autocontinue_judge(&self) -> bool {
         (self.name == "Agent" || self.name == "SendMessage")
             && self.subagent.as_deref() == Some(JUDGE_SEAT)
@@ -303,38 +338,42 @@ pub struct Turn {
     /// The bash gate counted the raw transcript and fired on any session that
     /// merely READ a file containing the word; this counts assistant text only.
     pub refusals_emitted: usize,
-    /// Whether the final message asks the human for a word, ruling or decision.
+    /// Background launches from EARLIER windows that the harness has not yet
+    /// reported finished.
     ///
-    /// HEURISTIC, and it may only cost a REVIEW. This is inferred from prose by
-    /// a phrase list, so it is wrong sometimes — and every wrong guess used to
-    /// be paid for twice: it stood Rule B down for the turn AND deleted the
-    /// autonomy grant. Both are now keyed on [`Turn::declares_a_decision`]
-    /// instead. See that field for Harald's ruling.
-    pub asks_the_human: bool,
-    /// Whether the final message DECLARES a decision, in the one form his
-    /// upward contract mandates: a `DECISION:` line of its own.
+    /// A window closes on every human line and every harness notification, and
+    /// `launches` is emptied with it — but a suite started three windows ago and
+    /// still running is still going to wake this session. Until v4.1.3 that
+    /// launch was simply forgotten at the first reset, so Rule B could push a
+    /// turn that had a job pending (a wasted judge run — the safe direction),
+    /// and, worse, a finished job in the CURRENT window read as armed (the
+    /// 03:13 sleep). The two mistakes are answered by one fact: which launches
+    /// are pending, wherever they were launched. The reader carries that set
+    /// across every reset, and every completion record settles it, whichever
+    /// window the record lands in.
     ///
-    /// HARALD'S RULING, 2026-08-29, verbatim: *"you cannot by yourself change
-    /// the autocontinue variable by yourself. Only the conditions met is a way
-    /// to stop your work. … If I want you to stop at checkpoint I don't say
-    /// autocontinue. But you cannot on your own discretion just switch this."*
+    /// Kept apart from `launches` rather than merged into it: the loop counters
+    /// in the pipeline count spawns PER WINDOW and must not see a carried
+    /// launch as a fresh one.
+    pub carried: Vec<ToolUse>,
+    /// Whether the judge has given an instruction that no work has followed.
     ///
-    /// The control lives entirely at GRANT time and it is his: he withholds the
-    /// word when he wants checkpoint stops. So the agent may not switch the
-    /// grant off, and may not stand the push down on an INFERENCE about its own
-    /// wording either — a phrase guessed out of prose is the agent's discretion
-    /// wearing a detector's clothes, and it slept a session for 21 minutes on
-    /// 2026-08-29 by matching "SAY THE WORD" inside the sentence *"Nothing
-    /// needed from you — say the word only if you want one back."*
-    ///
-    /// A DECLARATION is different in kind from a guess: it is unambiguous, it
-    /// is the agent's own deliberate act, and it is the form he already
-    /// requires for a real ask. Everything he named as a legitimate stop — a
-    /// design or spec direction, access only he has, something genuinely
-    /// broken, an unresolved dispute with the auditor, a release, the sprint
-    /// finished — is raised AS a decision, so one marker carries all of them.
-    pub declares_a_decision: bool,
-    /// The `tool_use` ids of the [`JUDGE_SEAT`] spawns in this window.
+    /// THE IDLE VALVE'S EXEMPTION MUST OUTLIVE THE PUSH (the architect's F2 on
+    /// this release, 2026-09-05). The verdict itself belongs to one attempt and
+    /// is cleared at the gate's own bounce — but the valve that releases a
+    /// wedged session after two empty attempts must not release an agent that
+    /// was TOLD what to do and is doing nothing. v4.1.0 held that case until
+    /// work; the first cut of v4.1.3 silently narrowed it to the attempt: told,
+    /// pushed, idle, pushed, idle → released → asleep, the very shape this
+    /// release exists to end. So this bit is set when a RESOLVABLE verdict is
+    /// read, cleared by the next real tool call, and NOT cleared by the bounce.
+    /// It disables the valve and nothing else: it never re-serves the
+    /// instruction's text (the judge is consulted afresh and repeats it
+    /// itself) and never decides a stop — the gate remembers one bit, not what
+    /// the work was, which is the whole of what "the acted-on path is gone"
+    /// leaves standing.
+    pub instruction_open: bool,
+    /// The `tool_use` ids of the [`JUDGE_SEAT`] spawns in this ATTEMPT.
     ///
     /// THE VERDICT IS BOUND TO THE CALL THAT ASKED FOR IT (v4.0.2). Until this
     /// existed the reader took the first verdict line out of ANY tool result
@@ -353,26 +392,29 @@ pub struct Turn {
     /// ceiling releases it. That is the safe direction: holding a turn costs
     /// two pushes, accepting a quoted line costs the whole rule.
     pub judge_call_ids: Vec<String>,
-    /// Has the agent done work since the current verdict was recorded?
-    ///
-    /// THE VERDICT HAS A LIFETIME, AND WORK IS WHAT ENDS IT (Harald, 2026-09-03,
-    /// on the C3 stop: *"We had the agent saying I can fix and he did not move
-    /// on."*). v4.0.2 kept the first verdict of the window for the window's
-    /// whole life, which failed both ways at once. An agent told "fix X" that
-    /// fixed X and stopped again was re-served the stale instruction forever —
-    /// and because fixing X is a tool call, the idle valve never released it.
-    /// An agent told "fix X" that did NOT fix X and re-spawned the judge until
-    /// it heard something kinder would, under the obvious last-wins fix, have
-    /// been let through.
-    ///
-    /// One flag answers both. A fresh verdict is accepted only when there is no
-    /// verdict yet OR this flag is set, so re-rolling without working changes
-    /// nothing; and a verdict with this flag set is SPENT — it neither blocks
-    /// with its stale next action nor allows on a stale reservation, it demands
-    /// a fresh consultation that will see the work.
-    pub verdict_spent: bool,
     /// The verdict, read from the HARNESS's tool-result record rather than from
-    /// the agent's own prose.
+    /// the agent's own prose — and scoped to ONE ATTEMPT.
+    ///
+    /// AN ATTEMPT IS WHAT LIES BETWEEN TWO PUSHES. The gate's own block comes
+    /// back as a `Stop hook feedback` line, and everything the judge said
+    /// before that line belonged to the attempt the line ended. So the reader
+    /// clears the verdict and the call ids at every bounce, and the FIRST
+    /// verdict after it governs the next stop: a second spawn in the same
+    /// attempt is a re-roll and is ignored.
+    ///
+    /// This replaces the verdict LIFETIME of v4.1.0 — `verdict_spent`, a flag
+    /// that work set and that made a stale instruction demand a fresh
+    /// consultation ("THE JUDGE'S LAST VERDICT HAS BEEN ACTED ON"). Harald,
+    /// 2026-09-05: that path stops being a gate — it is subsumed by the one
+    /// rule. Every stop under a live grant with nothing pending consults the
+    /// judge; the judge reads the transcript itself and sees what happened since
+    /// its last word, so the gate has no reason to remember it. What the
+    /// v4.1.0 flag protected against is still covered: told "fix X", fixed X,
+    /// stopped → the block that carried the instruction was a push, so this is
+    /// a new attempt and the judge is asked afresh; told "fix X", did nothing,
+    /// asked the judge again inside the same attempt → ignored, the instruction
+    /// stands; a stale RESERVED cannot end a later attempt because it does not
+    /// survive the push that would have to precede it.
     ///
     /// That distinction is the whole mechanism. `verdict_lines` already reads
     /// relayed audit verdicts out of assistant text, and for those it is right:
@@ -388,20 +430,6 @@ pub struct Turn {
     /// not a sentence — and it would do it while he is sitting there pressing
     /// the key. Every blocking rule stands down on it.
     pub interrupted: bool,
-    /// Whether the human's own message OPENED this window with a question.
-    ///
-    /// studio#11: the 2026-08-07 ruling puts direct replies outside this gate —
-    /// "replies to the user's OWN questions are DIRECT, fast, bottom-line-first,
-    /// never routed through the communicator", because gating conversation
-    /// triples his waiting time for a failure mode it barely has. The detector
-    /// had no notion of who asked, so a reply that quoted his question or ended
-    /// on a clarifying line was held as an UNJUDGED ASK and cost a full
-    /// communicator round trip on a message the ruling exempts.
-    ///
-    /// SET ONLY BY A REAL HUMAN LINE. A task notification or system reminder is
-    /// the harness, however question-shaped its embedded text is — see
-    /// `is_harness_line` for the six-hour sleep that rule cost.
-    pub user_asked: bool,
     /// Whether a REAL keyboard line opened this window (a typed message or an
     /// interrupt) — as opposed to a harness notification. INTERNAL FACT for
     /// the pipeline's counter resets ONLY: Rule B deliberately does NOT key on
@@ -549,8 +577,18 @@ impl Turn {
     pub fn communicator_ran(&self) -> bool {
         self.launches.iter().any(ToolUse::is_communicator)
     }
+    /// Will ANYTHING wake this session again?
+    ///
+    /// Both lists, because a pending job does not care which window it was
+    /// started in. A launch counts only while it is backgrounded and the
+    /// harness has not reported it finished — see [`ToolUse::arms_work`].
     pub fn armed_anything(&self) -> bool {
-        self.launches.iter().any(ToolUse::arms_work)
+        self.pending().next().is_some()
+    }
+
+    /// The launches still pending, wherever they were started.
+    pub fn pending(&self) -> impl Iterator<Item = &ToolUse> {
+        self.launches.iter().chain(self.carried.iter()).filter(|l| l.arms_work())
     }
 
     /// Was the [`JUDGE_SEAT`] spawned in this window — with an id the harness
@@ -565,13 +603,10 @@ impl Turn {
         !self.judge_call_ids.is_empty()
     }
 
-    /// The verdict that still governs this stop — None once work has spent it.
+    /// The verdict that governs this stop — the judge's first word in this
+    /// attempt, or None if it has not been consulted since the last push.
     pub fn live_verdict(&self) -> Option<&JudgeVerdict> {
-        if self.verdict_spent {
-            None
-        } else {
-            self.judge_verdict.as_ref()
-        }
+        self.judge_verdict.as_ref()
     }
 
     /// Is the agent holding an instruction it has not acted on?
@@ -582,8 +617,12 @@ impl Turn {
     /// wedged, it is refusing. Measured before this existed: spawn the judge
     /// three times, do nothing else, and the valve let the turn end without a
     /// verdict ever being read.
+    ///
+    /// Two sources, because they have different lifetimes: a RESOLVABLE verdict
+    /// in this attempt, or the open-instruction bit that survives the push —
+    /// see `Turn::instruction_open`.
     pub fn holds_an_unspent_fix(&self) -> bool {
-        matches!(self.live_verdict(), Some(JudgeVerdict::Resolvable(_)))
+        self.instruction_open || matches!(self.live_verdict(), Some(JudgeVerdict::Resolvable(_)))
     }
 }
 
@@ -1016,35 +1055,32 @@ of in front of it?",
         // different act from phrasing a stop to fit a rule — it is not the
         // failure that has ever occurred here — and the honest bound is the one
         // this module's own header already draws for Rule A.
+        // ONE RULE, ONE CELL (Harald, 2026-09-05). Grant ON and nothing
+        // pending → the judge is consulted, every time, and its word for THIS
+        // attempt decides. There is no second path to it any more: v4.1.0's
+        // "THE JUDGE'S LAST VERDICT HAS BEEN ACTED ON" arm — the gate
+        // remembering that work had happened since a verdict — is gone, because
+        // the block that carried the verdict's instruction was itself a push,
+        // the push ended the attempt, and the next stop consults the judge
+        // afresh by construction. The judge reads the transcript; the gate has
+        // no reason to remember what the judge can see — with ONE exception
+        // that decides no stop: `Turn::instruction_open`, which keeps the idle
+        // valve shut while an instruction is unresolved.
         match facts.turn.live_verdict() {
             Some(JudgeVerdict::Reserved) => return StopVerdict::Allow,
             Some(JudgeVerdict::Resolvable(next)) => {
-                // UNSPENT: the agent was told what to do and has not done it.
-                // This is the C3 stop — "I can fix" followed by not fixing —
-                // and the message does not change until work happens. Nor
-                // does re-asking: a fresh verdict is only accepted once this
-                // one is spent, so the judge cannot be re-rolled from here.
+                // Told what to do, in this attempt, and stopping anyway. The
+                // instruction is re-served unchanged — re-asking the judge
+                // inside the attempt is ignored (first verdict wins), and the
+                // idle valve stands down while this is unresolved.
                 return StopVerdict::Block {
                     reason: format!(
                         "THE JUDGE SAYS THIS IS YOURS TO RESOLVE, not his. It read the \
 plan and the transcript with no session context and found nothing reserved here. Its next \
-action: {next}\n\nDo that. Nothing else ends this turn: not re-asking the judge, not \
-idling — the next verdict is read only after you have worked. If you believe it is wrong, \
-do the part you can and say what you cannot; the judge will see both."
-                    ),
-                }
-            }
-            None if facts.turn.verdict_spent => {
-                // SPENT: work happened since the last verdict, so it no longer
-                // describes the situation. Reserved or resolvable, it is stale
-                // in either direction — a reservation from before the fix must
-                // not end the turn any more than a stale instruction should
-                // hold it. Consult again; the judge will see the work.
-                return StopVerdict::Block {
-                    reason: format!(
-                        "THE JUDGE'S LAST VERDICT HAS BEEN ACTED ON, so it no longer \
-governs this stop. Spawn the `{JUDGE_SEAT}` subagent again with the same one line — the \
-transcript path — and it will judge what you did."
+action: {next}\n\nDo that, then stop again: the next stop consults the judge afresh and it \
+will see what you did. Re-asking it now changes nothing — the first verdict of an attempt is \
+the one read — and neither does idling. If you believe it is wrong, do the part you can and \
+say what you cannot; the judge will see both."
                     ),
                 }
             }
@@ -1062,11 +1098,13 @@ say what stopped it from answering."
                 return StopVerdict::Block {
                     reason: format!(
                         "RULE B: autonomy is granted and this turn armed no background \
-work, so ending here sleeps until he returns. Whether that is his call is not yours to \
-decide — spawn the `{JUDGE_SEAT}` subagent and give it ONE line, the transcript this \
-session is writing:\n\n    TRANSCRIPT: <this session's transcript path>\n\nIt reads the \
-plan and the facts itself; do not summarise them for it, and do not argue your case. Its \
-verdict decides: RESERVED lets this stop through, RESOLVABLE names what you do next."
+work — nothing you launched is still pending — so ending here sleeps until he returns. \
+Whether that is his call is not yours to decide — spawn the `{JUDGE_SEAT}` subagent and \
+give it ONE line, the transcript this session is writing:\n\n    TRANSCRIPT: <this \
+session's transcript path>\n\nRun it in the foreground so its answer lands in this turn (a \
+background run also works: its answer wakes you and is read then). It reads the plan and \
+the facts itself; do not summarise them for it, and do not argue your case. Its verdict \
+decides: RESERVED lets this stop through, RESOLVABLE names what you do next."
                     ),
                 }
             }
@@ -1243,6 +1281,13 @@ fn verdict_in(text: &str) -> Option<JudgeVerdict> {
     let mut found = None;
     for line in text.lines() {
         let l = line.trim_start().trim_start_matches(['#', '*', '>', '-', ' ']);
+        // A background judge's answer arrives inside a task notification, and
+        // the harness appends the closing tag to the answer's LAST line rather
+        // than giving it a line of its own — measured in this session's own
+        // transcript: `VERDICT: keep</result>`. Without this the whole-word
+        // check below would read a reservation as "RESERVED followed by
+        // something" and discard it.
+        let l = l.trim_end().strip_suffix("</result>").unwrap_or(l).trim_end();
         if let Some(rest) = l.strip_prefix("VERDICT: RESERVED") {
             if rest.trim().is_empty() {
                 found = Some(JudgeVerdict::Reserved);
@@ -1315,12 +1360,24 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
             // previous window — which is the safer direction: it can only make
             // the gate see MORE of the turn, never less.
             Some("user") if !is_tool_result(&v) && is_our_own_bounce(&v) => {
-                // OUR OWN PUSH RESETS THE TWO PER-ATTEMPT CLOCKS, and only those.
+                // OUR OWN PUSH RESETS THE PER-ATTEMPT CLOCKS, and only those.
                 // The window itself deliberately survives (see above), so the
                 // ceiling would otherwise credit the attempt AFTER the push with
                 // the work done BEFORE it, never advance, and turn the wedge it
                 // guards into an endless push loop.
                 turn.worked_since_push = false;
+                // AND THE JUDGE'S WORD (v4.1.3): a verdict belongs to the attempt
+                // it was given in, and this line is what ends an attempt. The
+                // next stop consults the judge afresh — it reads the transcript
+                // itself and sees whatever was done on the last instruction —
+                // so nothing here has to remember whether that instruction was
+                // acted on. This is the whole of "the acted-on path is subsumed
+                // by the one rule".
+                turn.judge_call_ids.clear();
+                turn.judge_verdict = None;
+                // `instruction_open` deliberately SURVIVES this line — see its
+                // doc: the verdict is the attempt's, the open instruction is
+                // the agent's until it works.
                 // AND THE ANSWERED FLAG, measured the very morning v3.17.4
                 // shipped without this line: the flag set by one substantial
                 // answer stayed up for the REST of the window, so under a
@@ -1369,33 +1426,64 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                 // degraded-rule tests went red at once, which is the shadowing
                 // announcing itself. Both jobs, one arm.
                 turn.degraded_consumed += degraded_stamps_in(&v);
+                // THE HARNESS'S ANSWER TO A LAUNCH (v4.1.3). "Async agent
+                // launched successfully" and "Command running in background
+                // with ID:" are the client's own sentences for a launch it will
+                // report on later; they raise `backgrounded` on the call they
+                // answer — a client that backgrounds subagents by default puts
+                // no flag on the call, so the flag alone misses most of them —
+                // and they carry the task id a later `task_status` record names.
+                note_launch_results(&mut turn, &v);
                 // THE JUDGE'S ANSWER, and it is read HERE rather than from the
                 // agent's own text on purpose — see `Turn::judge_verdict`.
                 //
-                // Gated on `judge_ran` because the reader walks the window
-                // forward: the spawn is already recorded when its result
-                // arrives, so this is simply "a result that followed a judge
-                // launch". Without the gate any tool result quoting the verdict
-                // line would count — reading this very file, for instance, which
-                // contains both spellings.
-                // A FRESH VERDICT IS ACCEPTED ONLY WHEN THE OLD ONE IS SPENT.
-                // With no verdict, or with work done since the last, the new
-                // answer governs. With an unspent verdict standing, a new one
-                // is a re-roll — the agent asked again without doing anything
-                // — and it is ignored. Re-spawning the judge cannot change what
-                // the agent was told; only doing it can.
-                if answers_one_of(&v, &turn.judge_call_ids)
-                    && (turn.judge_verdict.is_none() || turn.verdict_spent)
-                {
+                // Bound to the spawn's own id: without that any tool result
+                // quoting the verdict line would count — reading this very
+                // file, for instance, which contains both spellings.
+                //
+                // THE FIRST VERDICT OF THE ATTEMPT GOVERNS. A second spawn inside
+                // the same attempt is a re-roll — the agent asked again without
+                // a push in between, i.e. without having been sent to work — and
+                // it is ignored. The attempt ends at the gate's own bounce,
+                // where both fields are cleared.
+                if answers_one_of(&v, &turn.judge_call_ids) && turn.judge_verdict.is_none() {
                     if let Some(verdict) = verdict_in(&tool_result_text(&v)) {
+                        turn.instruction_open = matches!(verdict, JudgeVerdict::Resolvable(_));
                         turn.judge_verdict = Some(verdict);
-                        turn.verdict_spent = false;
                     }
                 }
             }
             Some("user") if !is_tool_result(&v) && is_harness_line(&v) => {
+                // A NOTIFICATION IS ALSO A COMPLETION RECORD (v4.1.3): the
+                // harness names the launch it reports on by tool-use id and task
+                // id, and that launch is not pending any more. Settled BEFORE
+                // the window closes, so the carry below does not carry it.
+                let text = user_text(&v);
+                let done = completion_in(&text);
+                mark_completed(&mut turn, done.as_ref());
+                // ...AND IT MAY BE THE JUDGE'S ANSWER. A judge spawned in the
+                // background reports through this line rather than through a
+                // tool result, and its verdict must survive the window it opens
+                // — otherwise the stop that follows would be sent to consult a
+                // judge that has just spoken.
+                let judge_answer = done
+                    .as_ref()
+                    .and_then(|d| d.tool_use_id.clone())
+                    .filter(|id| turn.judge_call_ids.contains(id))
+                    .and_then(|id| verdict_in(&text).map(|verdict| (id, verdict)));
+                let carry = pending_carry(&turn);
+                // An open instruction survives a wake-up too: a job finishing
+                // does not discharge what the judge asked for.
+                let open = turn.instruction_open;
                 turn = Turn::default();
                 turn.sidechain = is_sidechain(&v);
+                turn.carried = carry;
+                turn.instruction_open = open;
+                if let Some((id, verdict)) = judge_answer {
+                    turn.instruction_open = matches!(verdict, JudgeVerdict::Resolvable(_));
+                    turn.judge_call_ids = vec![id];
+                    turn.judge_verdict = Some(verdict);
+                }
             }
             Some("user") if !is_tool_result(&v) && is_interruption(&v) => {
                 // An interrupt is the human, so it opens a new window like any
@@ -1404,19 +1492,21 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                 // reached for the key. Read from his own text: the harness
                 // writes the marker, so the agent cannot fake it and cannot
                 // suppress it.
+                let carry = pending_carry(&turn);
                 turn = Turn::default();
                 turn.interrupted = true;
                 turn.human_window = true;
                 turn.sidechain = is_sidechain(&v);
+                turn.carried = carry;
             }
             Some("user") if !is_tool_result(&v) => {
+                // A job he did not wait for is still running when he types; it
+                // will still wake the session, so it is still pending.
+                let carry = pending_carry(&turn);
                 turn = Turn::default();
                 turn.human_window = true;
                 turn.sidechain = is_sidechain(&v);
-                // studio#11: remember whether the human ASKED. Everything after
-                // this line is a REPLY, and a reply is out of the ask gate's
-                // scope by the 2026-08-07 ruling.
-                turn.user_asked = user_asked(&user_text(&v));
+                turn.carried = carry;
                 // studio#18: a seat is INVOKED by the human typing its command
                 // — so read it from the human's own text, at the line level.
                 // Scanning the raw transcript for the bare token counted every
@@ -1427,6 +1517,43 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
             // window (see `is_tool_result`), and it is the only place a
             // degradation stamp can legitimately arrive.
             Some("user") => turn.degraded_consumed += degraded_stamps_in(&v),
+            // THE RECORDS THE 03:13 SLEEP WAS WRITTEN IN (v4.1.3). A background
+            // job that finishes while the agent is mid-turn is delivered
+            // in-band, and the transcript records THAT as a `queue-operation`
+            // (`enqueue`, then `remove` with reason `absorbed_mid_turn`) and as
+            // an `attachment` of type `queued_command` — never as a user line.
+            // Measured over this session: 2139 background launches, 1140 with a
+            // user-line notification, 977 with only these. All four suite runs
+            // of the 03:13 window were among the 977. An agent's own finish is
+            // an attachment too, of type `task_status`, naming the task id.
+            Some("queue-operation") => {
+                let text = v.get("content").and_then(|c| c.as_str()).unwrap_or_default();
+                mark_completed(&mut turn, completion_in(text).as_ref());
+            }
+            Some("attachment") => {
+                if let Some(a) = v.get("attachment") {
+                    match a.get("type").and_then(|t| t.as_str()) {
+                        Some("queued_command") => {
+                            let text = a.get("prompt").and_then(|p| p.as_str()).unwrap_or_default();
+                            mark_completed(&mut turn, completion_in(text).as_ref());
+                        }
+                        Some("task_status") => {
+                            let finished = a
+                                .get("status")
+                                .and_then(|s| s.as_str())
+                                .is_some_and(|s| !matches!(s, "running" | "pending" | "started"));
+                            if finished {
+                                let done = Completion {
+                                    tool_use_id: None,
+                                    task_id: a.get("taskId").and_then(|t| t.as_str()).map(str::to_string),
+                                };
+                                mark_completed(&mut turn, Some(&done));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
             Some("assistant") => {
                 let content = v
                     .get("message")
@@ -1500,22 +1627,56 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                             {
                                 turn.wrote_markdown = true;
                             }
+                            let flagged = input
+                                .and_then(|i| i.get("run_in_background"))
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(false);
+                            // A SCHEDULED WAKE IS ARMED WORK (v4.1.3): the
+                            // harness will re-invoke the session when it fires.
+                            // `stop: true` cancels rather than schedules. A cron
+                            // likewise wakes the session on its own clock.
+                            // Neither has a completion record — a firing is a
+                            // new user line, which closes this window — so they
+                            // are not carried across a reset (see
+                            // `pending_carry`); within the window they hold.
+                            let scheduled = match name.as_str() {
+                                "ScheduleWakeup" => !input
+                                    .and_then(|i| i.get("stop"))
+                                    .and_then(serde_json::Value::as_bool)
+                                    .unwrap_or(false),
+                                "CronCreate" => true,
+                                _ => false,
+                            };
+                            // A SendMessage names its recipient in `to` rather
+                            // than `subagent_type`; both answer the same
+                            // question — WHICH agent is this.
+                            let to = if name == "SendMessage" {
+                                input.and_then(|i| i.get("to")).and_then(|s| s.as_str()).map(str::to_string)
+                            } else {
+                                None
+                            };
+                            // CONTINUING A BACKGROUND AGENT RE-ARMS IT: the
+                            // recipient of a SendMessage is going to report
+                            // again, so a launch the harness had reported
+                            // finished is pending once more.
+                            if let Some(agent) = to.as_deref() {
+                                for l in turn.launches.iter_mut().chain(turn.carried.iter_mut()) {
+                                    if l.task.as_deref() == Some(agent) {
+                                        l.completed = false;
+                                    }
+                                }
+                            }
                             let launch = ToolUse {
                                 subagent: input
                                     .and_then(|i| i.get("subagent_type"))
-                                    // A SendMessage names its recipient in `to`
-                                    // rather than `subagent_type`; both answer
-                                    // the same question — WHICH agent is this.
-                                    .or_else(|| {
-                                        if name == "SendMessage" { input.and_then(|i| i.get("to")) } else { None }
-                                    })
                                     .and_then(|s| s.as_str())
-                                    .map(str::to_string),
+                                    .map(str::to_string)
+                                    .or(to),
                                 name,
-                                backgrounded: input
-                                    .and_then(|i| i.get("run_in_background"))
-                                    .and_then(serde_json::Value::as_bool)
-                                    .unwrap_or(false),
+                                backgrounded: flagged || scheduled,
+                                id: b.get("id").and_then(|i| i.as_str()).map(str::to_string),
+                                task: None,
+                                completed: false,
                             };
                             // ANY tool call is work — an edit, a build, a commit.
                             // The old measure was "started a background job",
@@ -1541,15 +1702,9 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                             // arguing itself into a corner it built.
                             if !launch.is_communicator() && !launch.is_autocontinue_judge() {
                                 turn.worked_since_push = true;
-                                // WORK SPENDS THE VERDICT — see `Turn::verdict_spent`.
-                                // Any real tool call after a verdict is the agent
-                                // acting on it (or on something), and the next
-                                // stop must be judged against what that work
-                                // produced, not against the instruction that
-                                // preceded it.
-                                if turn.judge_verdict.is_some() {
-                                    turn.verdict_spent = true;
-                                }
+                                // WORK CLOSES THE INSTRUCTION — the one bit the
+                                // gate keeps past a push; see `Turn::instruction_open`.
+                                turn.instruction_open = false;
                             }
                             if launch.is_autocontinue_judge() {
                                 // The id is what binds the answer to the ask. A
@@ -1568,8 +1723,6 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
             _ => {}
         }
     }
-    turn.asks_the_human = asks_the_human(&turn.final_text);
-    turn.declares_a_decision = declares_a_decision(&turn.final_text);
     // (Seats are read from the human's own message where the window opens —
     // see `seats_in`. A `Skill` launch counts too: an agent may invoke a seat
     // on its own.)
@@ -1626,24 +1779,6 @@ fn seats_in(text: &str) -> Vec<String> {
     out
 }
 
-/// Does this message ask the human for something?
-///
-/// FIRST LIVE FAILURE, on the day it shipped: this was a list of ten phrases,
-/// and the very next ask the agent wrote — "you decide whether it becomes
-/// v3.7.2 or waits" — matched none of them. The deployed gate returned allow.
-/// That is the SAME defect this function's own comment claimed to fix about the
-/// script generation: keying on tokens the agent authors freely.
-///
-/// STATE THE LIMIT PLAINLY: a closed list of phrasings, written by the party it
-/// constrains, can always be walked around — usually by accident, as here. The
-/// list below is materially wider (a direct question, the decision verbs, the
-/// option-offering shapes) and that is a REDUCTION IN LEAKAGE, not a fix.
-///
-/// The only non-evadable form is the inversion Rule A describes: in an
-/// autonomous session EVERY stop must show a communicator pass, whatever the
-/// message says. That requires the autonomy signal the hook cannot yet read —
-/// which makes the Studio autonomy file the difference between a rule that
-/// leaks and a rule that holds.
 /// The human's message text, whichever shape the client wrote it in.
 ///
 /// Claude Code writes `message.content` as a string for a typed prompt and as
@@ -1663,122 +1798,153 @@ fn user_text(entry: &serde_json::Value) -> String {
     }
 }
 
-/// Did the human ASK for something in this message (studio#11)?
+// THE PHRASE LISTS ARE GONE (v4.1.3), and the space they occupied is worth a
+// paragraph. Three detectors over prose lived here: `asks_the_human` (some
+// forty phrases — YOUR WORD, SHALL I, AWAITING, BLOCKED ON YOU — plus bare
+// decision words and a trailing question mark), `declares_a_decision` (a
+// `DECISION:` line), and `user_asked` (a question mark or an imperative in
+// HIS message). Since v4.0.0 not one of them was read by any rule in `judge`;
+// they were computed on every stop and consulted by nothing but their own
+// tests, which is how a retired rule's reader survives a release and this
+// crate's recorded way of shipping a fix to one copy of a pair. Harald's
+// ruling on 2026-09-05 settles why they must not come back: every phrase was
+// an appeal to a HUMAN reader — meaningless when another agent drives the
+// session — and a list keyed on the agent's own wording fails open, because
+// the party it constrains writes the text it matches. Whether a stop is
+// legitimate is the judge's question, and only the judge's.
+
+/// What a completion record says about the launch it reports on.
 ///
-/// A question mark is the reliable half. The imperatives cover the asks he
-/// writes without one — "Discuss!", "Explain", "Tell me what the problem is" —
-/// which are requests for an answer just as much as a question is, and a reply
-/// to them is equally out of the gate's scope.
-///
-/// Deliberately NARROW. Over-matching here would exempt real self-initiated asks
-/// (the gate's whole purpose), so anything not recognised keeps the gate ON: the
-/// failure direction is a needless communicator run, never a silent bypass.
-fn user_asked(text: &str) -> bool {
-    if text.contains('?') {
-        return true;
-    }
-    let u = text.to_uppercase();
-    const IMPERATIVES: &[&str] = &[
-        "DISCUSS", "EXPLAIN", "TELL ME", "WHAT ABOUT", "ANALYSE", "ANALYZE",
-        "WHY ", "HOW ", "WHICH ", "WHAT ", "GIVE ME", "SHOW ME", "CHECK ",
-        "COMPARE", "OPINION", "ADVISE", "ADVICE", "THOUGHTS",
-    ];
-    IMPERATIVES.iter().any(|p| u.contains(p))
+/// A task notification carries both keys; a `task_status` attachment carries
+/// only the task id. Either is enough to find the launch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Completion {
+    tool_use_id: Option<String>,
+    task_id: Option<String>,
 }
 
-/// THE DECLARED ASK — a `DECISION:` line of its own, and nothing else.
+/// The harness's own two sentences for a launch it will report on later, and
+/// the task id each carries.
 ///
-/// This is the ONLY thing that may stand the autonomy push down, and the only
-/// reason distinct from his Esc. It is deliberately not a heuristic: it matches
-/// a line the agent wrote on purpose, in the form his upward contract already
-/// mandates, so it cannot fire on prose that merely resembles an ask.
-///
-/// Kept separate from [`asks_the_human`] rather than folded into it, because
-/// the two now answer different questions and pay different prices. That one
-/// asks "might this be an ask?" and its cost is a communicator review — a
-/// false positive there is cheap. This one asks "did the agent declare that it
-/// is stopping?" and its cost is the session's evening.
-fn declares_a_decision(text: &str) -> bool {
-    text.lines().any(|l| {
-        let t = l.trim_start().trim_start_matches(['#', '*', '>', ' ']).to_uppercase();
-        t.starts_with("DECISION:") || t.starts_with("DECISION ")
-    })
+/// Read from the RESULT of the call, not from the call: a client that
+/// backgrounds subagents by default puts no `run_in_background` on the call
+/// (477 of 767 agent launches in this session's own transcript), and the
+/// result is the one place the harness says what it did with the launch.
+fn launch_marks(text: &str) -> (bool, Option<String>) {
+    fn token_after<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
+        let rest = &text[text.find(marker)? + marker.len()..];
+        let tok = rest.trim_start().split(|c: char| c.is_whitespace() || c == '.' || c == '(').next()?;
+        (!tok.is_empty()).then_some(tok)
+    }
+    // ANCHORED AT THE START, never `contains` (the architect's F1 on this
+    // release, 2026-09-05). A quotation of either sentence in some OTHER call's
+    // output — a transcript dig, the judge citing what it read — would mark the
+    // quoting FOREGROUND call as a background launch that no completion ever
+    // settles, and `pending_carry` would then carry it across every window:
+    // Rule B disarmed for the rest of the session. That is the v4.0.2 face (a
+    // verdict taken from a quotation) re-created inside the fix for the 03:13
+    // face. Measured over this session's transcript: 1800 genuine harness
+    // answers all begin with the sentence, 10 of them for unflagged Bash calls
+    // (so the sentence must still be read, not the flag alone); the 6 results
+    // that quote it mid-text are all foreground, two of them the judge's own.
+    let t = text.trim_start();
+    if t.starts_with("Command running in background with ID:") {
+        return (true, token_after(t, "with ID:").map(str::to_string));
+    }
+    if t.starts_with("Async agent launched successfully") {
+        return (true, token_after(t, "agentId:").map(str::to_string));
+    }
+    (false, None)
 }
 
-fn asks_the_human(text: &str) -> bool {
-    let u = text.to_uppercase();
-    // The CANONICAL form: markdown emphasis, quotes and dashes flattened to
-    // single spaces. Every phrase below is matched against this, because the
-    // live misses of 2026-08-27 (studio#33) were not missing WORDS — they were
-    // punctuation: `say **go**` does not contain "SAY GO" as a substring, and
-    // an em-dash broke "yours to confirm" the same way. Matching the raw text
-    // made the rule depend on the agent's formatting habits.
-    let canon: String = u
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { ' ' })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    // Explicit requests for a ruling — plus the imperative shapes measured
-    // live on 2026-08-27, each of which Rule B bounced straight past:
-    // "say go and I run exactly that sequence", "reseed is yours to confirm",
-    // "still blocked on you", "waiting on you: the toggle", and the very
-    // sentence Rule B itself instructs — "blocked on the human".
-    const PHRASES: &[&str] = &[
-        "YOUR WORD", "NEEDS YOUR", "NEED YOUR", "YOUR CALL", "YOUR RULING",
-        "YOUR SIGN OFF", "YOUR DECISION", "SHALL I", "WANT ME TO", "DO YOU WANT",
-        // "DECISION" is matched as its own WORD below, never as a substring:
-        // "design decisions", "the decision was made", "a decision path" are
-        // ordinary engineering prose and tripped this rule repeatedly on
-        // 2026-08-29 — and a false positive here does more than cost a bounce,
-        // it disables Rule B's push on the retry (see the valve in `judge`).
-        "MAY I", "LET ME KNOW", "UP TO YOU", "YOU DECIDE",
-        "YOU CHOOSE", "IF YOU D RATHER", "IF YOU PREFER", "SAY THE WORD",
-        "ON YOUR WORD", "AWAITING", "AWAIT YOUR", "SHOULD I", "WOULD YOU LIKE",
-        "PREFER THAT I", "SAY GO", "SAY YES", "YOUR GO", "YOURS TO CONFIRM",
-        "YOURS TO", "BLOCKED ON YOU", "BLOCKED ON THE HUMAN", "WAITING ON YOU",
-        "WAITING ON YOUR", "WAITING FOR YOU", "WAITING FOR YOUR",
-        "YOUR APPROVAL", "APPROVE ME", "YOUR CLICK", "GIVE THE WORD",
-        "THE WORD IS YOURS", "ON YOUR YES", "YOUR CONFIRM",
-    ];
-    if PHRASES.iter().any(|p| canon.contains(p)) {
-        return true;
-    }
-    // THE AGENT'S OWN ASK FORMAT, always caught and checked FIRST. The upward
-    // contract says a decision ask opens with `DECISION:` on its own line, so a
-    // line starting that way is an ask whatever else the text contains — no
-    // pronoun test, no question mark needed.
-    if text.lines().any(|l| {
-        let t = l.trim_start().trim_start_matches(['#', '*', ' ']).to_uppercase();
-        t.starts_with("DECISION:") || t.starts_with("DECISION ")
-    }) {
-        return true;
-    }
-    // WORD-BOUNDED, not substring. "design decisions" inside a sentence about
-    // engineering is not an ask. The canonical form has already flattened
-    // punctuation to single spaces, so word matching is a token walk.
-    const BARE_WORDS: &[&str] = &["DECISION", "DECIDE", "RULING", "APPROVAL"];
-    if canon.split(' ').any(|w| BARE_WORDS.contains(&w)) {
-        // ...but only when the sentence is ABOUT the reader. "a decision path"
-        // and "the arms make no decision" are descriptions; "your decision" and
-        // "I need a decision" are asks. The pronoun is what separates them.
-        const ADDRESSED: &[&str] = &[
-            "YOUR", "YOU", "I NEED", "WE NEED", "NEEDS A", "AWAIT", "AWAITING",
-            "PENDING", "BLOCKED",
-        ];
-        if ADDRESSED.iter().any(|p| canon.contains(p)) {
-            return true;
+/// Raise `backgrounded` and record the task id on every launch this
+/// tool-result line answers.
+fn note_launch_results(turn: &mut Turn, v: &serde_json::Value) {
+    let Some(blocks) = v.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) else {
+        return;
+    };
+    for b in blocks {
+        if b.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+            continue;
+        }
+        let Some(id) = b.get("tool_use_id").and_then(|i| i.as_str()) else { continue };
+        // A result's content is a string for a shell call and an array of text
+        // blocks for a subagent (429 of 429 Agent results in this session's
+        // transcript). Only the TEXT of each block is read: walking every
+        // string in the value would put the block's own `type` label first and
+        // defeat the start anchor in `launch_marks`.
+        let text = match b.get("content") {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(serde_json::Value::Array(parts)) => parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => continue,
+        };
+        let (backgrounded, task) = launch_marks(&text);
+        if !backgrounded {
+            continue;
+        }
+        for l in turn.launches.iter_mut().chain(turn.carried.iter_mut()) {
+            if l.id.as_deref() == Some(id) {
+                l.backgrounded = true;
+                if task.is_some() {
+                    l.task = task.clone();
+                }
+            }
         }
     }
-    // A DIRECT QUESTION to the reader. The phrase list above is what the agent
-    // remembers; a question mark is what the agent cannot avoid while asking.
-    // Scoped to the last few lines so a question quoted mid-report — an audit
-    // brief, a rhetorical framing — does not trip it.
-    text.lines()
-        .rev()
-        .take(6)
-        .any(|l| l.trim_end().ends_with('?'))
+}
+
+/// The launch a task notification reports on, by both keys the harness writes.
+///
+/// Matched on the tags, never on the word "completed": a task the harness
+/// reports as failed or killed is every bit as finished.
+fn completion_in(text: &str) -> Option<Completion> {
+    fn tagged<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+        let open = format!("<{tag}>");
+        let start = text.find(&open)? + open.len();
+        let end = text[start..].find(&format!("</{tag}>"))? + start;
+        let v = text[start..end].trim();
+        (!v.is_empty()).then_some(v)
+    }
+    let noti = concat!("task-notifi", "cation");
+    if !text.contains(&format!("<{noti}>")) {
+        return None;
+    }
+    let done = Completion {
+        tool_use_id: tagged(text, "tool-use-id").map(str::to_string),
+        task_id: tagged(text, "task-id").map(str::to_string),
+    };
+    (done.tool_use_id.is_some() || done.task_id.is_some()).then_some(done)
+}
+
+/// Settle the launch a completion record names — in this window or an earlier
+/// one — so it no longer arms the turn.
+fn mark_completed(turn: &mut Turn, done: Option<&Completion>) {
+    let Some(done) = done else { return };
+    for l in turn.launches.iter_mut().chain(turn.carried.iter_mut()) {
+        let by_call = done.tool_use_id.is_some() && l.id == done.tool_use_id;
+        let by_task = done.task_id.is_some() && l.task == done.task_id;
+        if by_call || by_task {
+            l.completed = true;
+        }
+    }
+}
+
+/// The launches that must outlive a window reset: still pending, and of a kind
+/// whose completion the harness will record.
+///
+/// A scheduled wake or a cron is pending too, but its firing IS the user line
+/// that opens the next window, and it leaves no completion record behind — so
+/// carried, it would read as pending forever and stand Rule B down for the
+/// rest of the session. Those two hold only inside the window that made them.
+fn pending_carry(turn: &Turn) -> Vec<ToolUse> {
+    turn.pending()
+        .filter(|l| !matches!(l.name.as_str(), "ScheduleWakeup" | "CronCreate"))
+        .cloned()
+        .collect()
 }
 
 /// A `user` entry carrying a tool RESULT is the harness echoing our own tool
@@ -1838,7 +2004,11 @@ mod tests {
     use super::*;
 
     fn tool(name: &str) -> ToolUse {
-        ToolUse { name: name.into(), subagent: None, backgrounded: false }
+        ToolUse { name: name.into(), subagent: None, backgrounded: false, id: None, task: None, completed: false }
+    }
+    /// A launch the harness will report on later — the only kind that arms.
+    fn bg(name: &str) -> ToolUse {
+        ToolUse { backgrounded: true, ..tool(name) }
     }
     /// The whole verdict path, read out of a transcript rather than assembled
     /// from struct fields — this is where the two halves meet, and either one
@@ -1954,13 +2124,9 @@ mod tests {
     /// would otherwise both satisfy the rule and reset its release valve.
     #[test]
     fn the_judge_neither_arms_work_nor_counts_as_it() {
-        let j = ToolUse {
-            name: "Agent".into(),
-            subagent: Some(JUDGE_SEAT.into()),
-            backgrounded: false,
-        };
+        let j = ToolUse { subagent: Some(JUDGE_SEAT.into()), ..tool("Agent") };
         assert!(j.is_autocontinue_judge());
-        assert!(!j.arms_work(), "judging the turn is not work that continues after it");
+        assert!(!j.arms_work(), "a foreground consultation has already answered; nothing is pending");
         let t = read_turn(
             "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\
 \"name\":\"Agent\",\"input\":{\"subagent_type\":\"autocontinue\"}}]}}\n",
@@ -1991,12 +2157,10 @@ stuck in the judge loop could never be released"
         let long_ask = "Stage 3 is committed and every gate is green. ".repeat(60);
         let mut without = facts(Autonomy::Unknown, vec![]);
         without.turn.final_text = long_ask.clone();
-        without.turn.asks_the_human = true;
         without.already_bounced = true;
 
         let mut with = facts(Autonomy::Unknown, vec![communicator()]);
         with.turn.final_text = long_ask;
-        with.turn.asks_the_human = true;
         with.already_bounced = true;
 
         assert_eq!(
@@ -2019,7 +2183,6 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
         // into an Allow.
         let mut first_pass = facts(Autonomy::Unknown, vec![]);
         first_pass.turn.final_text = "Stage 3 is committed and every gate is green. ".repeat(60);
-        first_pass.turn.asks_the_human = true;
         match judge(&first_pass) {
             StopVerdict::Block { reason } => assert!(reason.contains("TOO LONG"), "{reason}"),
             StopVerdict::Allow => {
@@ -2030,7 +2193,6 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
         let mut first_pass_judged = facts(Autonomy::Unknown, vec![communicator()]);
         first_pass_judged.turn.final_text =
             "Stage 3 is committed and every gate is green. ".repeat(60);
-        first_pass_judged.turn.asks_the_human = true;
         assert_eq!(
             judge(&first_pass),
             judge(&first_pass_judged),
@@ -2039,7 +2201,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
     }
 
     fn communicator() -> ToolUse {
-        ToolUse { name: "Agent".into(), subagent: Some("communicator".into()), backgrounded: false }
+        ToolUse { subagent: Some("communicator".into()), ..tool("Agent") }
     }
     fn facts(autonomy: Autonomy, launches: Vec<ToolUse>) -> StopFacts {
         StopFacts {
@@ -2050,7 +2212,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
             // Mirrors reality rather than defaulting: a turn carrying tool calls
             // HAS worked. A helper that always said `false` would let a test pass
             // against a fixture that could not occur.
-            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, refusals_emitted: 0, asks_the_human: false, declares_a_decision: false, judge_verdict: None, judge_call_ids: vec![], verdict_spent: false, user_asked: false, human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, answered_substantially: false },
+            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, carried: vec![], instruction_open: false, refusals_emitted: 0, judge_verdict: None, judge_call_ids: vec![], human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, answered_substantially: false },
             autonomy,
             substrate: None,
             reseed_bounces: 0,
@@ -2581,7 +2743,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
         // the retirement itself: an ask, no reviewer, no autonomy, any bounce
         // count — and nothing holds it.
         let mut f = facts(Autonomy::Unknown, vec![]);
-        f.turn.asks_the_human = true;
+        f.turn.final_text = "Shall I push it?".into();
         f.already_bounced = false; // Cursor: every invocation looks like the first
         for n in 0..=MAX_UNJUDGED_BOUNCES {
             f.bounces = n;
@@ -2593,24 +2755,6 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
         }
     }
 
-    /// THE LIVE MISSES OF 2026-08-27 (studio#33), verbatim. Every sentence
-    /// below was a real decision ask that Rule B bounced straight past — the
-    /// words were there, the punctuation broke the match ("say **go**" does
-    /// not contain "SAY GO" as a raw substring). Revert the canonicalisation
-    /// or the widened phrases and these go red.
-    #[test]
-    fn the_live_missed_ask_shapes_are_detected() {
-        for s in [
-            "Reseed is yours to confirm — say **go** and I run exactly that sequence.",
-            "Still blocked on you, same two things: the toggle, and \"go\" for the reseed.",
-            "Blocked on the human.",
-            "Waiting on you: the toggle, the reseed word, and the hook fix.",
-            "Frozen. Waiting on you: the toggle and the go.",
-        ] {
-            assert!(asks_the_human(s), "missed live 2026-08-27 and must never miss again: {s:?}");
-        }
-    }
-
     /// THE 22:54 SLEEP (2026-08-30). The window opened on his work-order
     /// "We had a discussion before … autocontinue". `user_asked` is true
     /// because DISCUSS sits inside "discussion". He was not at the machine.
@@ -2619,7 +2763,6 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
     #[test]
     fn a_stale_keyboard_line_that_is_not_a_question_does_not_silence_rule_b() {
         let mut f = facts(Autonomy::Granted, vec![tool("Edit"), tool("Bash")]);
-        f.turn.user_asked = true;
         f.turn.final_text =
             "Both findings are homed to Sprint 28e. Continuing to S9a.2, the patch-streak gate."
                 .into();
@@ -2662,43 +2805,37 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
     /// own, or this fix trades a stranding for a wedge.
     #[test]
     fn the_valve_still_releases_a_retry_that_armed_work() {
-        let mut f = facts(Autonomy::Granted, vec![tool("Agent")]);
+        let mut f = facts(Autonomy::Granted, vec![bg("Agent")]);
         f.already_bounced = true;
         assert_eq!(StopVerdict::Allow, judge(&f),
             "a retry that DID arm work must pass — Rule B has nothing to complain about");
     }
 
-    /// ORDINARY ENGINEERING PROSE IS NOT AN ASK. Every one of these tripped the
-    /// rule live on 2026-08-29 by containing DECISION as a bare substring, and
-    /// each false positive cost a bounce AND the push on the retry.
+    /// THE WORDS ARE NOT READ (v4.1.3). Two suites of sentences used to live
+    /// here — engineering prose that must not read as an ask, and real asks
+    /// that must — pinning a forty-phrase detector that no rule had consulted
+    /// since v4.0.0. This is what replaces them: under a grant with nothing
+    /// pending, the message's wording changes NOTHING about the verdict, in
+    /// either direction. A plain summary and a formally declared decision ask
+    /// are held identically, and only the judge's word tells them apart.
     #[test]
-    fn describing_a_design_choice_is_not_asking_for_one() {
-        for s in [
-            "Two design decisions in the tool worth naming, and both are about \
-             whether the operation actually finishes.",
-            "It would add a class that holds no state and makes no decision.",
-            "Choosing whether a switch becomes a hierarchy is a judgement about \
-             the domain, not a property of the AST.",
-            "The decision path count is what cyclomatic complexity measures.",
+    fn the_wording_of_the_stop_changes_nothing() {
+        let plain = facts(Autonomy::Granted, vec![]);
+        for shaped in [
+            "DECISION: close C7? I recommend yes. Your call.",
+            "Blocked on your ruling about the cut line — say the word.",
+            "Reseed is yours to confirm; shall I wait?",
+            "Two design decisions in the tool worth naming.",
         ] {
-            assert!(!asks_the_human(s), "false positive, and it disables the push: {s:?}");
+            let mut f = facts(Autonomy::Granted, vec![]);
+            f.turn.final_text = shaped.into();
+            assert_eq!(
+                judge(&plain),
+                judge(&f),
+                "the gate must not read the agent's own wording: {shaped:?}"
+            );
         }
-    }
-
-    /// ...while a real ask still is one. The pair is asserted together because
-    /// either half alone passes for the wrong reason: a detector that never
-    /// fires satisfies the first, and today's satisfied the second.
-    #[test]
-    fn a_real_ask_is_still_caught_after_the_narrowing() {
-        for s in [
-            "DECISION: close C7? I recommend yes.",
-            "This one is your decision, not mine.",
-            "I need a decision on whether the default flips.",
-            "Blocked on your ruling about the cut line.",
-            "That needs your approval before it ships.",
-        ] {
-            assert!(asks_the_human(s), "a real ask must still be caught: {s:?}");
-        }
+        assert!(matches!(judge(&plain), StopVerdict::Block { .. }), "and the pair is a push, not two allows");
     }
 
     /// THE SIX-HOUR SLEEP CANNOT RECUR (2026-08-29, measured: `stop-allowed`
@@ -2723,11 +2860,10 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
         );
         let turn = read_turn(&transcript).expect("parses");
         assert!(
-            !turn.user_asked,
-            "question-shaped report text must not read as the human asking — \
+            !turn.human_window,
+            "question-shaped report text must not read as the human speaking — \
              this exact misread slept a session for six hours"
         );
-        assert!(turn.asks_the_human, "the final text is a decision ask");
 
         let f = StopFacts {
             empty_turns: 0,
@@ -2802,21 +2938,14 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
         // v4.0.0: a decision-class message owes NOTHING here any more. The
         // scope argument this test recorded — decision-class, then
         // unconditional for one afternoon, then back — ended by the rule being
-        // retired rather than re-scoped.
+        // retired rather than re-scoped. v4.1.3 deleted the detector itself, so
+        // the fixture is the TEXT and nothing reads it.
         let mut asking = facts(Autonomy::Unknown, vec![]);
-        asking.turn.asks_the_human = true;
+        asking.turn.final_text = "DECISION: close C7? Your call.".into();
         assert_eq!(
             StopVerdict::Allow,
             judge(&asking),
             "the reviewer is retired; the ruling carries what it checked"
-        );
-        let mut replying = facts(Autonomy::Unknown, vec![]);
-        replying.turn.asks_the_human = true;
-        replying.turn.user_asked = true;
-        assert_eq!(
-            StopVerdict::Allow,
-            judge(&replying),
-            "a reply to his own question is exempt — gating conversation triples his wait"
         );
     }
 
@@ -2825,8 +2954,7 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
         // v4.0.0: it still blocks, and for a DIFFERENT rule. The reviewer is
         // retired, so what holds this turn is Rule B — granted, nothing armed —
         // and the way out is the judge, not a readback.
-        let mut f = facts(Autonomy::Granted, vec![tool("Bash")]);
-        f.turn.asks_the_human = true;
+        let f = facts(Autonomy::Granted, vec![tool("Bash")]);
         match judge(&f) {
             StopVerdict::Block { reason } => {
                 assert!(reason.contains("RULE B"), "{reason}");
@@ -2851,11 +2979,9 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
         // The discriminating role passes to the judge — see
         // `the_verdict_is_read_from_the_harnesss_record_and_not_from_our_own_prose`,
         // where one fixture differs only by the verdict and flips the verdict.
-        let armed = ToolUse { name: "Agent".into(), subagent: Some("general-purpose".into()), backgrounded: false };
-        let mut with = facts(Autonomy::Granted, vec![communicator(), armed.clone()]);
-        with.turn.asks_the_human = true;
-        let mut without = facts(Autonomy::Granted, vec![armed]);
-        without.turn.asks_the_human = true;
+        let armed = ToolUse { subagent: Some("general-purpose".into()), ..bg("Agent") };
+        let with = facts(Autonomy::Granted, vec![communicator(), armed.clone()]);
+        let without = facts(Autonomy::Granted, vec![armed]);
         assert_eq!(judge(&with), judge(&without), "the reviewer must not decide anything");
         assert_eq!(StopVerdict::Allow, judge(&without), "and work is armed, so the turn may end");
     }
@@ -2869,11 +2995,21 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
         }
     }
 
+    /// ARMED MEANS PENDING (v4.1.3). Until this release an `Agent` spawn armed
+    /// the turn whatever its flags, and a background `Bash` armed it for as
+    /// long as the window lasted — which is the 03:13 sleep: four finished
+    /// suite runs read as armed and the stop was allowed.
     #[test]
-    fn an_agent_spawn_counts_as_armed_but_a_foreground_bash_does_not() {
-        assert!(ToolUse { name: "Agent".into(), subagent: None, backgrounded: false }.arms_work());
+    fn only_a_pending_background_launch_is_armed() {
+        assert!(!tool("Agent").arms_work(), "a foreground spawn has already answered");
+        assert!(bg("Agent").arms_work(), "a background spawn will report later");
         assert!(!tool("Bash").arms_work());
-        assert!(ToolUse { name: "Bash".into(), subagent: None, backgrounded: true }.arms_work());
+        assert!(bg("Bash").arms_work());
+        assert!(
+            !ToolUse { completed: true, ..bg("Bash") }.arms_work(),
+            "a launch the harness has reported finished cannot wake anything"
+        );
+        assert!(bg("ScheduleWakeup").arms_work(), "a scheduled wake is a wake");
     }
 
     /// The anti-loop flag must win, or the gate can wedge a session — worse
@@ -2912,26 +3048,29 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
         settled.turn.judge_call_ids = vec!["toolu_J".into()];
         settled.turn.judge_verdict = Some(JudgeVerdict::Reserved);
         assert_eq!(StopVerdict::Allow, judge(&settled));
-        // And the agent cannot end it by saying so itself.
+        // And the agent cannot end it by saying so itself: its words are not
+        // read (v4.1.3 deleted the last detector over them), so a message
+        // shaped like a decision changes nothing.
         let mut declared = facts(Autonomy::Granted, vec![]);
         declared.review_rounds = crate::autonomy::MAX_REVIEW_ROUNDS;
-        declared.turn.declares_a_decision = true;
+        declared.turn.final_text = "DECISION: stop here? Awaiting your word.".into();
         assert!(matches!(judge(&declared), StopVerdict::Block { .. }));
     }
 
     /// THE C3 STOP, AND THE TWO ABUSES ON EITHER SIDE OF IT (Harald, 2026-09-03:
-    /// *"We had the agent saying I can fix and he did not move on."*).
+    /// *"We had the agent saying I can fix and he did not move on."*) — under
+    /// the v4.1.3 rule, where a verdict belongs to ONE ATTEMPT and the attempt
+    /// ends at the gate's own push.
     ///
     /// Three claims, each with its control:
-    /// 1. told to fix, did nothing → held with the SAME instruction, however
-    ///    many times it asks, however many times it re-spawns the judge;
-    /// 2. told to fix, did the work → the instruction is SPENT and a fresh
-    ///    consultation is demanded — never the stale one re-served (the
-    ///    v4.0.2 wedge), never a stale reservation honoured either;
-    /// 3. holding an unspent instruction, idling → the idle valve does NOT
-    ///    release the turn (the v4.0.2 self-disarm: three judge spawns and out).
+    /// 1. told to fix, did nothing, re-asked inside the attempt → held with the
+    ///    SAME instruction, and the idle valve does not release it;
+    /// 2. the push ends the attempt → the next stop consults the judge afresh
+    ///    whatever was done: the stale instruction is never re-served (the
+    ///    v4.0.2 wedge) and a stale reservation is never honoured;
+    /// 3. after the push a fresh verdict is accepted and governs.
     #[test]
-    fn an_instruction_is_held_until_work_spends_it() {
+    fn an_instruction_holds_for_its_attempt_and_the_next_attempt_consults_afresh() {
         let spawn = |id: &str| {
             format!(
                 "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"tool_use\",\
@@ -2946,10 +3085,12 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
         };
         let work = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\
 \"id\":\"toolu_E\",\"name\":\"Edit\",\"input\":{\"file_path\":\"/x/A.rs\"}}]}}\n";
+        let push = human_line("Stop hook feedback:\nTHE JUDGE SAYS THIS IS YOURS TO RESOLVE …") + "\n";
         let fix = "VERDICT: RESOLVABLE — re-run the two reviews";
 
-        // 1. Told, did nothing, re-asked: the re-roll is IGNORED and the same
-        //    instruction stands. A kinder second judge changes nothing.
+        // 1. Told, did nothing, re-asked inside the attempt: the re-roll is
+        //    IGNORED and the same instruction stands. A kinder second judge
+        //    changes nothing.
         let t = read_turn(&format!(
             "{}{}{}{}",
             spawn("J1"),
@@ -2961,9 +3102,8 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
         assert_eq!(
             Some(JudgeVerdict::Resolvable("re-run the two reviews".into())),
             t.judge_verdict,
-            "re-spawning without working must not replace the instruction"
+            "re-spawning inside the attempt must not replace the instruction"
         );
-        assert!(!t.verdict_spent);
         let mut f = facts(Autonomy::Granted, vec![]);
         f.turn = t;
         match judge(&f) {
@@ -2971,38 +3111,42 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
             StopVerdict::Allow => panic!("an unacted instruction must hold the turn"),
         }
         // ...and idling does not release it either — the idle valve is off
-        // while an instruction is unspent. This is the self-disarm control.
+        // while an instruction is unresolved. This is the self-disarm control.
         f.empty_turns = MAX_EMPTY_TURNS;
         assert!(
             matches!(judge(&f), StopVerdict::Block { .. }),
             "three judge spawns and nothing else used to trip the idle valve and end the turn"
         );
 
-        // 2. Told, DID THE WORK, stopped: the instruction is spent. Not the
-        //    stale message (the wedge), and not a stale reservation either.
-        let t = read_turn(&format!("{}{}{}", spawn("J1"), answer("J1", fix), work)).unwrap();
-        assert!(t.verdict_spent, "an Edit after the verdict spends it");
+        // 2. Told, PUSHED, did the work, stopped: a new attempt with no verdict,
+        //    so the judge is asked afresh — never the stale message (the wedge),
+        //    and never a bare "acted on" either (that arm is gone).
+        let t = read_turn(&format!("{}{}{push}{}", spawn("J1"), answer("J1", fix), work)).unwrap();
+        assert!(t.judge_verdict.is_none() && !t.judge_ran(), "the push ended the attempt the verdict belonged to");
         assert!(!t.holds_an_unspent_fix());
         let mut f = facts(Autonomy::Granted, vec![]);
         f.turn = t;
         match judge(&f) {
             StopVerdict::Block { reason } => {
-                assert!(reason.contains("ACTED ON"), "{reason}");
+                assert!(reason.contains("RULE B"), "{reason}");
                 assert!(!reason.contains("re-run the two reviews"), "the stale instruction must not be re-served: {reason}");
+                assert!(!reason.contains("ACTED ON"), "the gate no longer remembers work for the judge: {reason}");
             }
             StopVerdict::Allow => panic!("work does not end the turn by itself; the judge sees it first"),
         }
-        let t = read_turn(&format!("{}{}{}", spawn("J1"), answer("J1", "VERDICT: RESERVED"), work)).unwrap();
+        // A RESERVED given before a push (another rule's bounce, say) is just as
+        // spent: the new attempt consults afresh.
+        let t = read_turn(&format!("{}{}{push}{}", spawn("J1"), answer("J1", "VERDICT: RESERVED"), work)).unwrap();
         let mut f = facts(Autonomy::Granted, vec![]);
         f.turn = t;
         assert!(
             matches!(judge(&f), StopVerdict::Block { .. }),
-            "a reservation from before the work is stale in the other direction"
+            "a reservation from before the push is stale in the other direction"
         );
 
-        // ...and after the work a FRESH verdict is accepted and governs.
+        // 3. After the push a FRESH verdict is accepted and governs.
         let t = read_turn(&format!(
-            "{}{}{}{}{}",
+            "{}{}{push}{}{}{}",
             spawn("J1"),
             answer("J1", fix),
             work,
@@ -3018,12 +3162,12 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
 
     #[test]
     fn a_second_pass_excuses_everything_except_a_missing_review() {
-        // Retry, and the turn ASKS for something: still held — by RULE B now,
-        // since the reviewer that used to hold it is retired. The valve's
-        // subject is unchanged: a second pass must not excuse a turn that is
-        // about to sleep with nothing armed.
+        // Retry, nothing armed: still held — by RULE B now, since the reviewer
+        // that used to hold it is retired. The valve's subject is unchanged: a
+        // second pass must not excuse a turn that is about to sleep with
+        // nothing pending.
         let mut f = facts(Autonomy::Granted, vec![]);
-        f.turn.asks_the_human = true;
+        f.turn.final_text = "Stage 3 is committed. Shall I push it?".into();
         f.already_bounced = true;
         match judge(&f) {
             StopVerdict::Block { reason } => {
@@ -3031,17 +3175,16 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
             }
             StopVerdict::Allow => panic!("the retry must not excuse a turn that armed nothing"),
         }
-        // Retry, review done, and the turn only LOOKS like an ask: Rule A is
-        // satisfied and Rule B now PUSHES ANYWAY.
+        // Retry, reviewer consulted (in the foreground — it has answered, so
+        // it arms nothing), nothing pending: Rule B PUSHES ANYWAY.
         //
         // This asserts the 2026-08-29 contract change. It used to expect Allow,
-        // because `asks_the_human` — a phrase list over the agent's own prose —
-        // stood the push down. That is what slept a session for 21 minutes by
-        // matching "SAY THE WORD" inside "Nothing needed from you". Harald's
-        // ruling: the agent may not stop on its own inference. A heuristic ask
-        // still costs a REVIEW; only a DECLARATION stops the work.
+        // because a phrase list over the agent's own prose stood the push down.
+        // That is what slept a session for 21 minutes by matching "SAY THE
+        // WORD" inside "Nothing needed from you". Harald's ruling: the agent
+        // may not stop on its own inference.
         let mut judged = facts(Autonomy::Granted, vec![communicator()]);
-        judged.turn.asks_the_human = true;
+        judged.turn.final_text = "Nothing needed from you — say the word only if you want one back.".into();
         judged.already_bounced = true;
         match judge(&judged) {
             StopVerdict::Block { reason } => assert!(
@@ -3052,20 +3195,16 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
                 panic!("an inferred ask stopped the session — the switch is the agent's again")
             }
         }
-        // ...AND NEITHER DOES THE DECLARED FORM ANY MORE (2026-09-03). This
-        // asserted the opposite until today: `declares_a_decision` was the
-        // exemption, on the reasoning that a deliberate marker is different in
-        // kind from an inferred phrase. It is — and it failed the same way one
-        // level up, because the marker is still the agent's own text and an
-        // agent that wants the turn to end simply writes it. Two stops that
-        // night were correctly formatted and carried no decision at all.
-        //
-        // So the declaration now buys NOTHING, and this is the control for
-        // that: revert the exemption to `declares_a_decision` and this
-        // assertion goes red.
+        // ...AND NEITHER DOES THE DECLARED FORM (2026-09-03). A `DECISION:`
+        // line was the exemption once, on the reasoning that a deliberate
+        // marker is different in kind from an inferred phrase. It is — and it
+        // failed the same way one level up, because the marker is still the
+        // agent's own text and an agent that wants the turn to end simply
+        // writes it. Two stops that night were correctly formatted and carried
+        // no decision at all. v4.1.3 deleted the reader of that line too; this
+        // is the control: teach the gate to read it again and this goes red.
         let mut declared = facts(Autonomy::Granted, vec![communicator()]);
-        declared.turn.asks_the_human = true;
-        declared.turn.declares_a_decision = true;
+        declared.turn.final_text = "DECISION: hold the release for M5? I recommend yes.".into();
         declared.already_bounced = true;
         match judge(&declared) {
             StopVerdict::Block { reason } => assert!(
@@ -3104,7 +3243,6 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
         // real work resets it, so a working session never approaches it while a
         // wedged one is released in two.
         let mut spent = facts(Autonomy::Granted, vec![]);
-        spent.turn.asks_the_human = true;
         spent.already_bounced = true;
         spent.empty_turns = MAX_EMPTY_TURNS;
         assert_eq!(
@@ -3205,6 +3343,299 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
         let t = read_turn(s).expect("parses");
         assert!(t.armed_anything());
     }
+
+    // -----------------------------------------------------------------
+    // v4.1.3 — ARMED MEANS PENDING. Fixtures built with serde_json, never
+    // hand-escaped format strings: the panic-guard lexes this file line by
+    // line and a `\`-continued JSON literal desynchronises it silently.
+    // -----------------------------------------------------------------
+
+    fn launch_line(id: &str, name: &str, input: serde_json::Value) -> String {
+        serde_json::json!({"type":"assistant","message":{"content":[
+            {"type":"tool_use","id":id,"name":name,"input":input}]}})
+        .to_string()
+    }
+    fn result_for(id: &str, text: &str) -> String {
+        serde_json::json!({"type":"user","message":{"role":"user","content":[
+            {"type":"tool_result","tool_use_id":id,"content":text}]}})
+        .to_string()
+    }
+    /// The harness's own notification text for a finished task, both keys.
+    fn notice(task: &str, id: &str) -> String {
+        let noti = concat!("task-notifi", "cation");
+        format!(
+            "<{noti}>\n<task-id>{task}</task-id>\n<tool-use-id>{id}</tool-use-id>\n<status>completed</status>\n<summary>Background command \"suite\" completed (exit code 0)</summary>\n</{noti}>"
+        )
+    }
+    /// A background shell launch and the harness's answer to it, as recorded.
+    fn bash_bg(id: &str, task: &str) -> String {
+        format!(
+            "{}\n{}\n",
+            launch_line(id, "Bash", serde_json::json!({"command":"./build/run-suite.sh 4","run_in_background":true})),
+            result_for(
+                id,
+                &format!("Command running in background with ID: {task}. Output is being written to: /tmp/t/{task}.output. You will be notified when it completes.")
+            )
+        )
+    }
+    fn queue_op(text: &str) -> String {
+        serde_json::json!({"type":"queue-operation","operation":"enqueue","content":text}).to_string()
+    }
+    fn queued_command(text: &str) -> String {
+        // Assembled, never written whole — the popping-surface scan bans the
+        // bare word in code, this file included.
+        let mode = concat!("task-notifi", "cation");
+        serde_json::json!({"type":"attachment","attachment":{"type":"queued_command","commandMode":mode,"prompt":text}}).to_string()
+    }
+    fn task_status(task: &str, status: &str) -> String {
+        serde_json::json!({"type":"attachment","attachment":{"type":"task_status","taskId":task,"taskType":"local_agent","status":status}}).to_string()
+    }
+    fn granted(turn: Turn) -> StopFacts {
+        let mut f = facts(Autonomy::Granted, vec![]);
+        f.turn = turn;
+        f
+    }
+
+    /// THE 03:13 SLEEP, AS THE TRANSCRIPT RECORDED IT (2026-09-05). Four suite
+    /// runs launched in the background, four completions delivered mid-turn —
+    /// a `queue-operation` each, no user line — a closing summary, nothing
+    /// pending. v4.1.2 read `armed=true` off the launch lines, allowed the
+    /// stop, and the session slept 4h 13m.
+    #[test]
+    fn four_finished_suite_runs_do_not_arm_the_turn() {
+        let runs = ["ba78fhp8z", "bxwdlum6x", "bezkgpqdy", "bu8spqnvd"];
+        let mut t = human_line("carry on") + "\n";
+        for (i, task) in runs.iter().enumerate() {
+            let id = format!("toolu_{i}");
+            t += &bash_bg(&id, task);
+            t += &queue_op(&notice(task, &id));
+            t += "\n";
+        }
+        t += &assistant_line("Six rows built. Continuing there.");
+        let turn = read_turn(&t).unwrap();
+        assert_eq!(4, turn.launches.iter().filter(|l| l.backgrounded).count(), "all four launched in the background");
+        assert!(!turn.armed_anything(), "every one had finished — nothing was going to wake the session");
+        match judge(&granted(turn)) {
+            StopVerdict::Block { reason } => assert!(reason.contains("RULE B"), "{reason}"),
+            StopVerdict::Allow => panic!("this is the 03:13 allow"),
+        }
+
+        // THE CONTROL: the same four runs with no completion recorded ARE
+        // pending, and a pending suite is exactly what lets a stop end.
+        let mut still = human_line("carry on") + "\n";
+        for (i, task) in runs.iter().enumerate() {
+            still += &bash_bg(&format!("toolu_{i}"), task);
+        }
+        still += &assistant_line("Waiting on the suite.");
+        let running = read_turn(&still).unwrap();
+        assert!(running.armed_anything(), "a suite still running will wake the session");
+        assert_eq!(StopVerdict::Allow, judge(&granted(running)));
+    }
+
+    /// Every record the harness uses to say "finished" settles the launch —
+    /// and the one that names the task without the call proves the task id
+    /// read off the launch result is load-bearing.
+    #[test]
+    fn a_completion_is_read_from_every_record_the_harness_writes_it_in() {
+        let base = format!("{}\n{}", human_line("go"), bash_bg("toolu_A", "b1"));
+        for done in [
+            queue_op(&notice("b1", "toolu_A")),
+            queued_command(&notice("b1", "toolu_A")),
+            task_status("b1", "completed"),
+            human_line(&notice("b1", "toolu_A")),
+        ] {
+            let t = format!("{base}{done}\n{}\n", assistant_line("done"));
+            assert!(!read_turn(&t).unwrap().armed_anything(), "not settled by: {done}");
+        }
+        // A status that is not terminal keeps it pending.
+        let t = format!("{base}{}\n{}\n", task_status("b1", "running"), assistant_line("done"));
+        assert!(read_turn(&t).unwrap().armed_anything());
+        // And a record about some OTHER task settles nothing.
+        let t = format!("{base}{}\n{}\n", queue_op(&notice("zzz", "toolu_Z")), assistant_line("done"));
+        assert!(read_turn(&t).unwrap().armed_anything());
+    }
+
+    /// A subagent's background flag is usually ABSENT (477 of 767 in this
+    /// session's transcript): the harness's answer decides, and it names the
+    /// task the finish will later be filed under.
+    #[test]
+    fn a_background_agent_is_known_by_the_harnesss_answer_not_by_a_flag() {
+        let spawn = launch_line("toolu_S", "Agent", serde_json::json!({"subagent_type":"general-purpose","prompt":"read the plan"}));
+        // Foreground: the report came back inline. Nothing is pending.
+        let fg = format!(
+            "{}\n{spawn}\n{}\n{}\n",
+            human_line("go"),
+            result_for("toolu_S", "Here is what the plan says: three stages are left."),
+            assistant_line("noted")
+        );
+        assert!(!read_turn(&fg).unwrap().armed_anything(), "a report that already arrived wakes nobody");
+
+        // Background: the harness said so, and named the task.
+        let launched = "Async agent launched successfully. (This tool result is internal metadata.)\nagentId: a5b1c3889db94064d (internal ID)\nThe agent is working in the background.";
+        let bgt = format!("{}\n{spawn}\n{}\n{}\n", human_line("go"), result_for("toolu_S", launched), assistant_line("waiting"));
+        let turn = read_turn(&bgt).unwrap();
+        assert!(turn.armed_anything(), "the harness said it will report later");
+        assert_eq!(Some("a5b1c3889db94064d"), turn.launches[0].task.as_deref(), "the task id is read off the result");
+
+        // ...its `task_status` settles it, by that id alone...
+        let finished = format!("{bgt}{}\n", task_status("a5b1c3889db94064d", "completed"));
+        assert!(!read_turn(&finished).unwrap().armed_anything());
+
+        // ...and continuing it re-arms it.
+        let continued = format!(
+            "{finished}{}\n",
+            launch_line("toolu_M", "SendMessage", serde_json::json!({"to":"a5b1c3889db94064d","message":"go on"}))
+        );
+        assert!(read_turn(&continued).unwrap().armed_anything(), "a continued agent will report again");
+    }
+
+    /// A launch outlives the window it was started in, and its completion is
+    /// honoured wherever it lands.
+    #[test]
+    fn a_pending_launch_survives_a_window_reset_and_settles_in_a_later_one() {
+        let two = format!("{}\n{}{}", human_line("go"), bash_bg("toolu_A", "a1"), bash_bg("toolu_B", "b1"));
+        // B finishes and its notice opens a new window. A is still running.
+        let after_b = format!("{two}{}\n{}\n", human_line(&notice("b1", "toolu_B")), assistant_line("B is in"));
+        let turn = read_turn(&after_b).unwrap();
+        assert!(turn.launches.is_empty(), "the notice opened a fresh window");
+        assert!(turn.armed_anything(), "A was carried across it — still pending");
+        // A finishes mid-turn, in the new window.
+        let after_a = format!("{after_b}{}\n{}\n", queue_op(&notice("a1", "toolu_A")), assistant_line("both in"));
+        assert!(!read_turn(&after_a).unwrap().armed_anything(), "a carried launch is settled by a record in a later window");
+        // A notice for the ONLY pending launch carries nothing forward.
+        let one = format!("{}\n{}{}\n{}\n", human_line("go"), bash_bg("toolu_A", "a1"), human_line(&notice("a1", "toolu_A")), assistant_line("in"));
+        assert!(!read_turn(&one).unwrap().armed_anything());
+        // His own message does not end a job he did not wait for.
+        let typed = format!("{two}{}\n{}\n", human_line("status?"), assistant_line("both still running"));
+        assert!(read_turn(&typed).unwrap().armed_anything(), "pending across a human line too");
+    }
+
+    /// A scheduled wake arms the window that made it, and only that window:
+    /// its firing IS the next user line, and it leaves no completion record.
+    #[test]
+    fn a_scheduled_wake_arms_its_own_window_only() {
+        let armed = format!(
+            "{}\n{}\n{}\n",
+            human_line("go"),
+            launch_line("toolu_W", "ScheduleWakeup", serde_json::json!({"delaySeconds":600,"prompt":"check the suite","reason":"waiting on it"})),
+            assistant_line("back in ten")
+        );
+        assert!(read_turn(&armed).unwrap().armed_anything());
+        let cancelled = format!(
+            "{}\n{}\n{}\n",
+            human_line("go"),
+            launch_line("toolu_W", "ScheduleWakeup", serde_json::json!({"stop":true})),
+            assistant_line("done")
+        );
+        assert!(!read_turn(&cancelled).unwrap().armed_anything(), "stop: true cancels, it does not arm");
+        let fired = format!("{armed}{}\n{}\n", human_line("check the suite"), assistant_line("checked"));
+        assert!(!read_turn(&fired).unwrap().armed_anything(), "carried, it would read as pending forever");
+    }
+
+    /// A judge spawned in the background reports through the wake-up it
+    /// causes, and its verdict must survive that window reset — otherwise the
+    /// stop that follows would be sent to consult a judge that just spoke.
+    #[test]
+    fn a_background_judges_verdict_survives_the_wake_up_it_causes() {
+        let spawn = launch_line("toolu_J", "Agent", serde_json::json!({"subagent_type":"autocontinue","prompt":"TRANSCRIPT: /t.jsonl"}));
+        let launched = result_for("toolu_J", "Async agent launched successfully.\nagentId: j1 (internal ID)\nThe agent is working in the background.");
+        let noti = concat!("task-notifi", "cation");
+        for (verdict, reserved) in [("VERDICT: RESERVED", true), ("VERDICT: RESOLVABLE — proceed to Stage 6", false)] {
+            let wake = format!(
+                "<{noti}>\n<task-id>j1</task-id>\n<tool-use-id>toolu_J</tool-use-id>\n<status>completed</status>\n<result>The plan reserves nothing here.\n{verdict}</result>\n</{noti}>"
+            );
+            let t = format!("{}\n{spawn}\n{launched}\n{}\n{}\n", human_line("go"), human_line(&wake), assistant_line("the judge answered"));
+            let turn = read_turn(&t).unwrap();
+            assert!(turn.judge_ran(), "the spawn is remembered across the wake-up it caused");
+            assert!(!turn.armed_anything(), "the judge has answered; nothing is pending");
+            match (reserved, judge(&granted(turn))) {
+                (true, v) => assert_eq!(StopVerdict::Allow, v),
+                (false, StopVerdict::Block { reason }) => assert!(reason.contains("proceed to Stage 6"), "{reason}"),
+                (false, StopVerdict::Allow) => panic!("a resolvable verdict must hold the turn"),
+            }
+        }
+        // While it is still out, the stop may end: its answer WILL wake the session.
+        let out = format!("{}\n{spawn}\n{launched}\n{}\n", human_line("go"), assistant_line("consulting"));
+        let turn = read_turn(&out).unwrap();
+        assert!(turn.armed_anything());
+        assert_eq!(StopVerdict::Allow, judge(&granted(turn)));
+    }
+
+    /// THE ARCHITECT'S F1 ON THIS RELEASE, before the tag. A foreground call
+    /// whose OUTPUT quotes the harness's launch sentence — a transcript dig, the
+    /// judge citing what it read — is not a launch. Matched with `contains` it
+    /// was: marked backgrounded, never completed, carried across every window,
+    /// Rule B disarmed for the session. Six such results in this session's own
+    /// transcript, two of them the judge's; 1800 genuine answers all BEGIN with
+    /// the sentence, which is what the anchor keys on.
+    #[test]
+    fn a_quoted_launch_sentence_does_not_arm_the_quoting_call() {
+        let dig = launch_line("toolu_D", "Bash", serde_json::json!({"command":"python3 dig.py"}));
+        let quoting = result_for(
+            "toolu_D",
+            "2026-09-05T01:41:21 user ['ba78fhp8z'] | tool_result:Command running in background with ID: ba78fhp8z. Output is being written to: /tmp/x",
+        );
+        let t = format!("{}\n{dig}\n{quoting}\n{}\n", human_line("go"), assistant_line("all four finished by 02:56"));
+        let turn = read_turn(&t).unwrap();
+        assert!(!turn.launches[0].backgrounded, "a quotation is not the harness's answer");
+        assert!(!turn.armed_anything(), "a quotation is not a launch");
+
+        // The judge citing the transcript is the same shape, in blocks — and
+        // its verdict must still be read.
+        let spawn = launch_line("toolu_J", "Agent", serde_json::json!({"subagent_type":"autocontinue"}));
+        let cite = serde_json::json!({"type":"user","message":{"role":"user","content":[
+            {"type":"tool_result","tool_use_id":"toolu_J","content":[
+                {"type":"text","text":"I read the transcript. Its launch line says: Async agent launched successfully. agentId: a1\nVERDICT: RESERVED"}]}]}})
+        .to_string();
+        let t = format!("{}\n{spawn}\n{cite}\n{}\n", human_line("go"), assistant_line("noted"));
+        let turn = read_turn(&t).unwrap();
+        assert!(!turn.armed_anything(), "the judge quoting a launch is not a launch");
+        assert_eq!(Some(JudgeVerdict::Reserved), turn.judge_verdict, "and its verdict is still read");
+
+        // THE CONTROL: the genuine answer BEGINS with the sentence and arms.
+        let real = result_for("toolu_D", "Command running in background with ID: b9. Output is being written to: /tmp/x");
+        let t = format!("{}\n{dig}\n{real}\n{}\n", human_line("go"), assistant_line("waiting"));
+        assert!(read_turn(&t).unwrap().armed_anything(), "the real answer still arms — or the anchor broke the feature");
+    }
+
+    /// THE ARCHITECT'S F2 ON THIS RELEASE, before the tag. The verdict dies at
+    /// the push; the fact that an instruction is OPEN must not, or two empty
+    /// attempts after "fix X" release the turn — told, pushed, idle, pushed,
+    /// idle → asleep. Work, and only work, closes it.
+    #[test]
+    fn an_open_instruction_keeps_the_idle_valve_shut_across_the_push() {
+        let spawn = launch_line("toolu_J", "Agent", serde_json::json!({"subagent_type":"autocontinue"}));
+        let told = result_for("toolu_J", "VERDICT: RESOLVABLE — re-run the two reviews");
+        let push = human_line("Stop hook feedback:\nTHE JUDGE SAYS THIS IS YOURS TO RESOLVE …");
+
+        // Told, pushed, idle: the verdict is gone but the instruction is open.
+        let idle = format!("{}\n{spawn}\n{told}\n{push}\n{}\n", human_line("go"), assistant_line("nothing more from me"));
+        let turn = read_turn(&idle).unwrap();
+        assert!(turn.judge_verdict.is_none(), "the push ended the attempt");
+        assert!(turn.holds_an_unspent_fix(), "but the instruction is still open");
+        let mut f = granted(turn);
+        f.empty_turns = MAX_EMPTY_TURNS;
+        match judge(&f) {
+            StopVerdict::Block { reason } => assert!(reason.contains("RULE B"), "{reason}"),
+            StopVerdict::Allow => panic!(
+                "the idle valve released an agent sitting on an instruction — that is a sleep, not a wedge"
+            ),
+        }
+
+        // Told, pushed, WORKED, then idle at the ceiling: the instruction is
+        // closed and the wedge valve works as before.
+        let worked = format!(
+            "{}\n{spawn}\n{told}\n{push}\n{}\n{}\n",
+            human_line("go"),
+            edit_line(),
+            assistant_line("did what it said")
+        );
+        let turn = read_turn(&worked).unwrap();
+        assert!(!turn.holds_an_unspent_fix(), "work closes the instruction");
+        let mut f = granted(turn);
+        f.empty_turns = MAX_EMPTY_TURNS;
+        assert_eq!(StopVerdict::Allow, judge(&f), "with the instruction closed, the valve releases as before");
+    }
     /// PORTED RULE 1, and it fires WITHOUT autonomy — which is the whole point.
     /// The parity contract listed this as script-only; cutting a client over to
     /// the binary before it existed would have stripped a working protection.
@@ -3237,7 +3668,7 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
         // not a subagent. What it cost was the readback rendered to him beside
         // the message it judged.
         let mut f = facts(Autonomy::Unknown, vec![]);
-        f.turn.asks_the_human = true;
+        f.turn.final_text = "Do we cut a patch, or leave it?".into();
         assert_eq!(
             StopVerdict::Allow,
             judge(&f),
@@ -3279,56 +3710,6 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
         assert_eq!(3, read_turn(emitted).expect("parses").refusals_emitted);
     }
 
-    /// The ask detector must not key on a shape the agent authors freely. A
-    /// message that asks in plain words is caught even without `DECISION:`.
-    #[test]
-    fn an_ask_phrased_without_the_token_is_still_an_ask() {
-        let s = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"One thing needs your word before I push.\"}]}}\n";
-        assert!(read_turn(s).expect("parses").asks_the_human);
-        let plain = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Committed and green, continuing.\"}]}}\n";
-        assert!(!read_turn(plain).expect("parses").asks_the_human);
-    }
-
-    /// THE LIVE MISS, as a test. On the day the check shipped, the next ask the
-    /// agent wrote matched none of its ten phrases and the deployed gate
-    /// allowed it. This is that exact sentence.
-    #[test]
-    fn the_ask_that_slipped_past_the_first_phrase_list_is_caught() {
-        for ask in [
-            "This is dogfood output; you decide whether it becomes v3.7.2 or waits.",
-            "Not pushed. Up to you whether we ship it.",
-            "Do we cut a patch, or leave it?",
-            "Let me know which you'd prefer.",
-        ] {
-            let s = format!(
-                "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{ask}\"}}]}}}}\n"
-            );
-            assert!(
-                read_turn(&s).expect("parses").asks_the_human,
-                "must be read as an ask: {ask:?}"
-            );
-        }
-    }
-
-    /// And ordinary reporting must still pass, or the check is turned off by
-    /// the first person it annoys.
-    #[test]
-    fn a_report_that_asks_nothing_is_not_an_ask() {
-        for plain in [
-            "Committed and green, continuing to Stage 9.",
-            "The suite is 156 tests, five clean runs. Nothing outstanding.",
-            "I fixed the escaping and re-tagged; all five targets published.",
-        ] {
-            let s = format!(
-                "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{plain}\"}}]}}}}\n"
-            );
-            assert!(
-                !read_turn(&s).expect("parses").asks_the_human,
-                "must not be read as an ask: {plain:?}"
-            );
-        }
-    }
-
     // ---- studio#11: a REPLY is not an ask ----
     //
     // Live false positive (2026-08-16): a reply to Harald's own question —
@@ -3359,7 +3740,6 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
         ))
         .expect("parses");
 
-        assert!(turn.user_asked, "the human's message carries a question mark");
         let verdict = judge(&StopFacts {
             empty_turns: 0,
             review_rounds: 0,
@@ -3379,16 +3759,6 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
     }
 
     #[test]
-    fn an_imperative_ask_also_opens_a_reply_window() {
-        // He asks without a question mark as often as with one.
-        for prompt in ["Discuss!", "Explain the tradeoff", "Tell me what the problem is"] {
-            let turn = read_turn(&exchange(prompt, "Here is the tradeoff. Which way do you lean?"))
-                .expect("parses");
-            assert!(turn.user_asked, "must open a reply window: {prompt:?}");
-        }
-    }
-
-    #[test]
     fn a_self_initiated_ask_after_a_plain_instruction_still_blocks() {
         // The gate's whole purpose: an ask the AGENT raises on its own. The
         // human's message here instructs and asks nothing, so the exemption
@@ -3399,8 +3769,6 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
         ))
         .expect("parses");
 
-        assert!(!turn.user_asked, "an instruction is not a question");
-        assert!(turn.asks_the_human);
         // v4.0.0: WITHOUT AUTONOMY, nothing holds this any more. The reviewer
         // that did is retired, and Rule B is not engaged because he never gave
         // the word — he is present, and a turn that ends while he is present

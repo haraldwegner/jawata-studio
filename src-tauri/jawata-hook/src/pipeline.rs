@@ -1327,11 +1327,19 @@ fn stop_gate(
             &dir,
             "stop-verdict",
             &format!(
-                "{head} · autonomy={:?} empty={} worked={} armed={} bounced={}",
+                "{head} · autonomy={:?} empty={} worked={} armed={} pending={} bounced={}",
                 facts.autonomy,
                 facts.empty_turns,
                 facts.turn.worked_since_push,
                 facts.turn.armed_anything(),
+                // Which launches still hold the turn, by name — the 03:13 sleep
+                // took a byte-offset dig to learn WHAT the gate thought was armed.
+                facts
+                    .turn
+                    .pending()
+                    .map(|l| format!("{}:{}", l.name, l.task.as_deref().or(l.id.as_deref()).unwrap_or("?")))
+                    .collect::<Vec<_>>()
+                    .join(","),
                 facts.already_bounced,
             ),
         );
@@ -1930,7 +1938,7 @@ mod tests {
             review_rounds: 0,
             already_bounced: false,
             bounces: 0,
-            turn: Turn { final_text: "summary".into(), launches: vec![], refusals_emitted: 0, asks_the_human: true, declares_a_decision: true, judge_verdict: None, judge_call_ids: vec![], verdict_spent: false, user_asked: false, human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, worked_since_push: false, answered_substantially: false },
+            turn: Turn { final_text: "summary".into(), launches: vec![], carried: vec![], instruction_open: false, refusals_emitted: 0, judge_verdict: None, judge_call_ids: vec![], human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, worked_since_push: false, answered_substantially: false },
             autonomy: Autonomy::Granted,
             substrate: None,
             reseed_bounces: 0,
@@ -1966,8 +1974,15 @@ mod tests {
 
     #[test]
     fn the_communicator_never_counts_as_armed_work() {
-        let c = ToolUse { name: "Agent".into(), subagent: Some("communicator".into()), backgrounded: false };
-        assert!(!c.arms_work(), "else the two rules cancel each other out");
+        let c = ToolUse {
+            name: "Agent".into(),
+            subagent: Some("communicator".into()),
+            backgrounded: false,
+            id: None,
+            task: None,
+            completed: false,
+        };
+        assert!(!c.arms_work(), "a foreground consultation has answered; nothing is pending");
     }
 
     /// HOLLOW-WIRE FIX. A sweep that seeded every arm of `run` found the guard
