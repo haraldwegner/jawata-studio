@@ -8,17 +8,16 @@ on:
   workflow_dispatch:
 
 jobs:
-  # THE PATCH-STREAK GATE IS NOT HERE ANY MORE, AND ITS ABSENCE IS A DECISION
-  # (Harald, 2026-09-02): "A quality gate like too many patches is a dev quality
-  # gate which stays on this machine and should not be part of the CI."
-  #
-  # The gate stays in build/patch-streak-gate.sh and runs ON THE DEV MACHINE
-  # before a tag is pushed — the one place its question can be answered: the
-  # agent doing the tagging is stopped, the streak is put in front of Harald in
-  # conversation, and his word clears it. The CI copy fired AFTER that decision
-  # and could be cleared only through a repository-settings page — a channel
-  # that cannot carry the answer to the question the gate asks. Proven the same
-  # evening in jawata-mcp, on his own release, mid-flight.
+  # THERE IS NO PATCH-STREAK GATE, HERE OR ON THE DEV MACHINE, AND ITS ABSENCE
+  # IS A DECISION. The CI copy went first (Harald, 2026-09-02): "A quality gate
+  # like too many patches is a dev quality gate which stays on this machine and
+  # should not be part of the CI." The dev-machine copy went on 2026-09-05, when
+  # counting releases proved to be the wrong measure: "Dogfood and patching
+  # different modules makes sense. What does not make sense is to move an error
+  # in the same bugfix session from one place to another, because this rots the
+  # design or is a smell for a bad architectural design already." That alarm
+  # needs a reader of the run, not a counter of tags, and it lives in the
+  # architect seat — seats/architect.md, rule 12.
 
   release:
     permissions:

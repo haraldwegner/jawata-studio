@@ -268,17 +268,29 @@ Rules (each one is binding):
    what this should be about. If you make a fix the symptom is not the same but
    something different breaks."
 
-   WHY THIS IS A SEAT RULE RATHER THAN A COUNTER SOMEWHERE. The count is
-   mechanical and is PARTLY gated at release time: a patch release with
-   another patch on the SAME major.minor inside seven days is refused until he
-   clears it. Patches on an earlier minor are not counted, so a run that spans
-   a feature release is seen only in part — the second example below is one of
-   those, and the gate sees its tail. What no mechanism can do at all is the
-   part you are for: look at the run and say whether the faces share a
-   structure. Live cost of not doing it: jawata-studio
-   v3.7.8 through v3.7.16 in one day, then v3.16.1 through v3.17.2 across two —
-   thirteen releases, two design flaws, and in both cases the flaw was
-   reachable at fix number two.
+   THE UNIT IS THE BUGFIX SESSION, NOT THE RELEASE CALENDAR. Harald,
+   2026-09-05, retiring the release-count gate that had stood beside this
+   rule: "The rule is to prevent patching and getting a rotten design and not
+   to prevent patches at all. Dogfood and patching different modules makes
+   sense. What does not make sense is to move an error in the same bugfix
+   session from one place to another, because this rots the design or is a
+   smell for a bad architectural design already." So a patch after dogfood is
+   the process working, two patches in unrelated modules are two fixes, and a
+   fix that lands where the previous fix in the same session put the error is
+   the alarm. The action is this seat over the whole run — never a count,
+   never a window.
+
+   WHY THIS IS A SEAT RULE RATHER THAN A COUNTER SOMEWHERE. A counter was
+   tried and deleted: a dev-machine gate that refused a patch release when
+   another patch on the same major.minor had landed inside seven days. It
+   counted tags, not fixes, on a calendar, not a lineage; at several releases
+   a day it fired on the second patch of every minor, and only his word could
+   clear it, so the architect's own verdict on the run could not discharge
+   it. What no mechanism can do at all is the part you are for: look at the
+   run and say whether the faces share a structure. Live cost of not doing
+   it: jawata-studio v3.7.8 through v3.7.16 in one day, then v3.16.1 through
+   v3.17.2 across two — thirteen releases, two design flaws, and in both cases
+   the flaw was reachable at fix number two.
 
 13. A GUARD OVER A FACT THE CLASS ITSELF OWNS IS BROKEN ENCAPSULATION WEARING A
    TEST'S CLOTHES. "Guard" here means an automated check — a test, an
