@@ -268,17 +268,27 @@ Rules (each one is binding):
    what this should be about. If you make a fix the symptom is not the same but
    something different breaks."
 
-   THE UNIT IS THE BUGFIX SESSION, NOT THE RELEASE CALENDAR. Harald,
-   2026-09-05, retiring the release-count gate that had stood beside this
-   rule: "The rule is to prevent patching and getting a rotten design and not
-   to prevent patches at all. Dogfood and patching different modules makes
+   THE UNIT IS THE DEFECT'S LINEAGE — NOT A SESSION, NOT THE RELEASE CALENDAR.
+   Harald, 2026-09-05, retiring the release-count gate that had stood beside
+   this rule: "The rule is to prevent patching and getting a rotten design and
+   not to prevent patches at all. Dogfood and patching different modules makes
    sense. What does not make sense is to move an error in the same bugfix
    session from one place to another, because this rots the design or is a
-   smell for a bad architectural design already." So a patch after dogfood is
-   the process working, two patches in unrelated modules are two fixes, and a
-   fix that lands where the previous fix in the same session put the error is
-   the alarm. The action is this seat over the whole run — never a count,
-   never a window.
+   smell for a bad architectural design already." And his question the same
+   afternoon, which fixes the unit: what does the same session mean when a
+   release and a rollout lie between the two fixes? Nothing about a defect
+   resets at a tag, so the answer is in the code. BLAME the lines a fix is
+   about to change, and the path the failure runs through. If their last
+   change was itself a fix, this fix is fixing a fix: the chain is one moving
+   defect across any number of releases, and that chain, not the last patch,
+   is your target. So a patch after dogfood is the process working, two
+   patches in unrelated modules are two fixes, and a fix landing on a previous
+   fix's lines is the alarm. Blame over-fires where those lines are simply
+   where the behaviour lives; the cost is one look at a short chain, and you,
+   not the blame, say whether the faces share a structure. The debugger seat
+   runs that blame as the step before its probe and hands you the chain — the
+   moment the deleted gate missed, because it asked at tagging, when the fix
+   was already written and tested.
 
    WHY THIS IS A SEAT RULE RATHER THAN A COUNTER SOMEWHERE. A counter was
    tried and deleted: a dev-machine gate that refused a patch release when
