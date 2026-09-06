@@ -172,6 +172,14 @@ user's judgement, so check 13's product is a named decision for them, never a ve
    that share a `cpu` saturation point or an `artifact` path, without the plan
    naming why they do not collide.
 
+   **REFUSE a step whose gate names an instrument a LATER step creates** — a derived
+   list, a seam, a test that reads it — because the gate cannot run at its step and
+   passes only by being read against the end state. Twice on Sprint 28d-rescue: C6's
+   M7 gated on a reader M1 creates (a circle two reviewers found), and S8b step 6 gated
+   on `refactoringDoors()`, which step 8 extracts. The cure: gate over what EXISTS at
+   that step — the hand list at HEAD — and re-point it when the seam lands, or move the
+   dependent clause to the step that can satisfy it.
+
 12. **IS THERE A REQUIREMENT AT ALL?** (Harald, 2026-08-11: *"You tend to
    overcomplicate. An auditor should check if there is a requirement at all."*)
    Checks 1–11 all assume the requirement exists and ask whether the clean
@@ -317,6 +325,15 @@ it is waste spent before the plan exists — on text the implementation may inva
 cap, remaining findings are ACCEPTED AS-IS or written into the spec as named open items.
 They are never another round. Sprint 28a ran to TEN and the last three found almost nothing
 but text the editor had itself generated.
+
+**INSIDE EXECUTION, THE CAP IS ONE ROUND** (Harald, 2026-09-06, on a plan amendment's
+GATE 2 audit: *"Skip it now. Only 8b left. Don't spend too much time here planning when we
+need to check everything in S9 anyhow. A single word doesn't matter that much if we are
+missing goals by missing half of the stuff halfway anyhow. This is just losing time."*).
+Once a plan is executing and a later stage verifies every deliverable through the built
+artifact, run round 1 — it finds blockers — fold them, and STOP. A scoped round 2 re-reads
+text the release stage will re-derive against the product. The failure shape to refuse:
+launching round 2 because the rule says round 2 is scoped to the repairs.
 
 **Only these are BLOCKING findings** — everything else is a note folded silently or not at
 all:
