@@ -14028,6 +14028,87 @@ judge was never told to give"
 
 
     #[test]
+    fn a_project_that_cannot_be_read_is_not_shown_as_merely_running() {
+        // jawata-studio#37. The workspace card has said "cannot be read" beside its phase
+        // since #24 — but the PROJECT ROWS all said `running`, so on a five-project
+        // workspace with one failure a reader saw four correct green rows and one lie,
+        // with no way to tell them apart.
+        //
+        // The per-project answer was never missing. `fold_resolution` above reads the
+        // resident's own health_check and publishes ProjectResolution with project_path,
+        // healthy, problem and remedy; it was rendered in the FIELD view while the
+        // dashboard read a different source. So this guards a WIRING, and the wiring is
+        // the whole fix.
+        //
+        // Reading the Svelte source as TEXT is crude, and it is the only thing that
+        // crosses the language boundary where the defect lives — the same reasoning, and
+        // the same runtime read rather than include_str!, as the deploy-picker assertion
+        // above: baked-in contents give a STALE GREEN when only the .svelte changed.
+        let row_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../src/lib/components/ProjectList.svelte");
+        let source = std::fs::read_to_string(&row_path).unwrap_or_else(|error| {
+            panic!(
+                "cannot read {}: {error} — this assertion did NOT run",
+                row_path.display()
+            )
+        });
+
+        // COMMENTS ARE STRIPPED FIRST, and that is not fastidiousness: this repository has
+        // already recorded a text assertion satisfied by the very comment that explained
+        // the code, because one author writes both in one commit using the same words. The
+        // paragraphs around this wiring name `projectUnhealthy` repeatedly. Only code counts.
+        let code: String = source
+            .lines()
+            .filter(|line| {
+                let t = line.trim_start();
+                !(t.starts_with("//") || t.starts_with("<!--") || t.starts_with("*")
+                    || t.starts_with("/*"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            code.contains("export let projectUnhealthy"),
+            "ProjectList.svelte no longer accepts the per-project readability verdict, so \
+             every row is back to reporting the SERVICE phase alone and a failed project \
+             renders as `running` (jawata-studio#37)"
+        );
+        assert!(
+            code.contains("projectUnhealthy[projectPathKey(project.projectPath)]"),
+            "the row no longer JOINS itself to the resident's per-project verdict. The prop \
+             may still be declared and the badge may still be written, and the row will \
+             report `running` for a project the resident says it cannot read"
+        );
+        assert!(
+            code.contains("cannot be read"),
+            "the row no longer RENDERS the verdict it joined — the same words the workspace \
+             card uses, one level down"
+        );
+
+        // AND THE PRODUCER SIDE, so the two cannot drift apart into a join over a field
+        // nobody publishes: the row keys on project_path, so ProjectResolution must carry
+        // it. Derived from the serialized struct rather than a literal, exactly as the
+        // field view's own guard does.
+        let published = serde_json::to_value(ProjectResolution {
+            project_key: String::new(),
+            project_path: String::new(),
+            unresolved: 0,
+            healthy: false,
+            problem: None,
+            remedy: None,
+        })
+        .unwrap();
+        for key in ["projectPath", "healthy", "problem", "remedy"] {
+            assert!(
+                published.as_object().unwrap().contains_key(key),
+                "the dashboard row reads `{key}` off ProjectResolution and the backend no \
+                 longer publishes it — the join would silently miss, and a missed join \
+                 renders as silence, which is indistinguishable from healthy"
+            );
+        }
+    }
+
+    #[test]
     fn removing_antigravity_artifacts_takes_the_utility_files_too() {
         // Ordering matters and the test says why: remove_managed_seat_commands
         // prunes `.agent/workflows` when it empties, so a utility file removed

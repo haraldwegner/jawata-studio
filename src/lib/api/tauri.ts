@@ -702,6 +702,27 @@ export interface ProjectResolution {
   remedy?: string | null;
 }
 
+/**
+ * jawata-studio#37: THE ONE normalizer for the project-path join key.
+ *
+ * The dashboard row and the resident's per-project verdict are joined on
+ * {@link ProjectResolution.projectPath} — which that field's own doc calls "the exact join
+ * key for a consumer that knows projects by path rather than by key", and a dashboard row
+ * is exactly such a consumer. The two spellings must not miss each other over a trailing
+ * separator, and a missed join renders as silence, which is indistinguishable from
+ * "healthy" — the defect one level up from the one being fixed.
+ *
+ * Deliberately minimal: it normalizes PUNCTUATION, not identity. It does not resolve
+ * symlinks or relative segments, because a join that quietly guesses would be worse than
+ * one that misses loudly.
+ *
+ * Here rather than in each caller, so the store and the component cannot drift apart on
+ * what counts as the same path.
+ */
+export function projectPathKey(path: string): string {
+  return path.replace(/[\\/]+$/, "");
+}
+
 export interface ResolutionStatus {
   workspace: string;
   url: string;

@@ -5,8 +5,12 @@
     DeployMode,
     DeployToAgentsResult,
     ProjectRecord,
+    ProjectResolution,
     RuntimeStatusRecord
   } from "../api/tauri";
+  // jawata-studio#37: the SAME normalizer the store keys with — one rule, one place, so
+  // the two sides of the join cannot drift on what counts as the same path.
+  import { projectPathKey } from "../api/tauri";
   import ContextMenu from "./ContextMenu.svelte";
 
   interface ContextMenuItem {
@@ -51,6 +55,13 @@
    *  A workspace absent from this map has not been observed yet, which is NOT
    *  the same as unreadable. */
   export let workspaceReadable: Record<string, boolean> = {};
+  /** jawata-studio#37: the resident's PER-PROJECT verdict, keyed by projectPath and
+   *  holding only the projects it cannot read. The workspace badge says SOMETHING in this
+   *  workspace is unreadable; without this a reader cannot tell WHICH project, so a
+   *  five-project workspace with one failure showed five green `running` rows — four
+   *  correct and one a lie, indistinguishable. A project absent from this map has not been
+   *  reported unreadable, which is NOT the same as confirmed healthy. */
+  export let projectUnhealthy: Record<string, ProjectResolution> = {};
   export let onDeploy: (mode: DeployMode, targetClients?: string[]) => void;
   export let deployTargetDefaults: DeployTargetFlags = {
     cursor: true,
@@ -960,6 +971,7 @@
             {/if}
               {#each workspace.projects as project (project.id)}
                 {@const status = runtimeStatuses[project.id]}
+                {@const unreadableProject = projectUnhealthy[projectPathKey(project.projectPath)]}
                 <article
                   class:selected={project.id === selectedProjectId}
                   class:selected-row={selectedProjectIds.has(project.id)}
@@ -1020,6 +1032,20 @@
                           <span class={`status-lamp ${status?.phase ?? "stopped"}`}></span>
                           {status?.phase ?? "stopped"}
                         </span>
+                        {#if unreadableProject}
+                          <!-- jawata-studio#37. BESIDE the phase, never instead of it —
+                               the same choice studio#24 made one level up, for the same
+                               reason: the service really is running AND this project
+                               cannot be read. Both are true and the reader needs both.
+                               The tooltip carries the resident's own words. -->
+                          <span
+                            class="badge failed"
+                            title={`${unreadableProject.problem ?? "The resident cannot read this project."}${unreadableProject.remedy ? "\n\n" + unreadableProject.remedy : ""}`}
+                          >
+                            <span class="status-lamp failed"></span>
+                            cannot be read
+                          </span>
+                        {/if}
                       </div>
                       <div class="actions row-actions">
                         <button

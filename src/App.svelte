@@ -575,6 +575,7 @@
               projectErrors={$appStore.projectErrors ?? {}}
               runtimeStatuses={$appStore.runtimeStatuses ?? {}}
               workspaceReadable={$appStore.workspaceReadable ?? {}}
+              projectUnhealthy={$appStore.projectUnhealthy ?? {}}
               selectedProjectId={$appStore.selectedProjectId}
             />
           </div>

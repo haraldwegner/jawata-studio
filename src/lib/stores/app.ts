@@ -32,6 +32,9 @@ import {
   type ServiceProbeResult,
   type RuntimeStatusRecord,
   type UpdateSettingsInput,
+  type ProjectResolution,
+  projectPathKey,
+  resolutionStatus,
   workspaceReadability} from "../api/tauri";
 
 interface AppState extends Partial<ManagerDashboard> {
@@ -45,6 +48,11 @@ interface AppState extends Partial<ManagerDashboard> {
    *  verdict. Absent means not yet observed, which is NOT the same as
    *  unreadable — a row only says so when the resident said so. */
   workspaceReadable?: Record<string, boolean>;
+  /** jawata-studio#37: the resident's PER-PROJECT verdict, keyed by projectPath, holding
+   *  only the projects it says it cannot read — so a row can say which one failed instead
+   *  of leaving the reader with one workspace-level marker and five green rows. Absent
+   *  means not yet observed, which is NOT the same as healthy. */
+  projectUnhealthy?: Record<string, ProjectResolution>;
   lastCleanupSummary?: CleanupSummary;
   serviceProbeBusy?: boolean;
   serviceProbeError?: string;
@@ -58,6 +66,7 @@ const initialState: AppState = {
   projects: [],
   runtimeStatuses: {},
   workspaceReadable: {},
+  projectUnhealthy: {},
   projectErrors: {},
   isBusy: false,
   settingsSaveStatus: "idle"
@@ -520,6 +529,32 @@ export function createAppStore() {
         console.error("workspace readability poll failed", e);
       }
 
+      // jawata-studio#37: the same verdict PER PROJECT. The readability above is one
+      // boolean per workspace, so a five-project workspace with one failure showed one
+      // workspace-level "cannot be read" and five green `running` rows — four correct and
+      // one a lie, indistinguishable. The per-project answer already existed and already
+      // reached the frontend (fold_resolution reads the resident's own health_check and
+      // publishes projectKey, projectPath, healthy, problem, remedy); it was rendered in
+      // the Field view and the dashboard read a different source. This is the wiring.
+      //
+      // Keyed by projectPath, which ProjectResolution's own doc calls "the exact join key
+      // for a consumer that knows projects by path rather than by key" — which is what a
+      // dashboard row is.
+      let unhealthy: Record<string, ProjectResolution> | undefined;
+      try {
+        unhealthy = {};
+        for (const workspace of await resolutionStatus()) {
+          for (const project of workspace.projects) {
+            if (project.healthy === false) {
+              unhealthy[projectPathKey(project.projectPath)] = project;
+            }
+          }
+        }
+      } catch (e) {
+        console.error("per-project resolution poll failed", e);
+        unhealthy = undefined;
+      }
+
       update((state) => {
         const currentIds = new Set((state.projects ?? []).map((project) => project.id));
         const runtimeStatuses = { ...(state.runtimeStatuses ?? {}) };
@@ -531,7 +566,10 @@ export function createAppStore() {
         return {
           ...state,
           runtimeStatuses,
-          workspaceReadable: readable ?? state.workspaceReadable ?? {}
+          workspaceReadable: readable ?? state.workspaceReadable ?? {},
+          // A failed poll leaves the previous answer standing rather than inventing
+          // "everything is fine" — the same discipline the readability poll above uses.
+          projectUnhealthy: unhealthy ?? state.projectUnhealthy ?? {}
         };
       });
     } finally {
