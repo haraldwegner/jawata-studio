@@ -405,6 +405,17 @@ struct ManagedRuntime {
     /// (`-port <N>`). Carried so status records expose the URL the
     /// manager-deployed MCP clients connect to.
     resident_port: u16,
+    /// mcp#27: the bearer token this resident accepts, carried so the sibling
+    /// registry can be written as a PROJECTION of this map rather than by
+    /// read-modify-writing a file. A resident refuses an unauthenticated
+    /// caller, so a registry row without the token names a server no sibling
+    /// can actually ask — the port alone is an address nobody can use.
+    ///
+    /// `Adopted` keeps its own copy inside the variant because it needs one to
+    /// re-verify the process it did not spawn; this field is the one place
+    /// BOTH kinds answer from, so the projection does not have to know which
+    /// kind it is looking at.
+    resident_token: String,
     /// Sprint 15 Stage 10: flipped to true by the stdout-capture thread
     /// the moment the fork emits its `READY url=... token=...` line.
     /// Phase transitions consult this to mark Running on a real readiness
@@ -574,12 +585,79 @@ impl RuntimeManager {
                 runtime_label: reference.runtime_label.clone(),
                 resolved_jar_path: reference.resolved_jar_path.clone(),
                 resident_port: reference.resident_port,
+                resident_token: reference.resident_token.clone(),
                 ready,
             },
         );
+        // mcp#27: after the insert, so the projection includes the resident we
+        // just launched. Deliberately not `?` — see publish_sibling_registry.
+        self.publish_sibling_registry();
         self.persist_snapshot(status.clone())?;
 
         Ok(status)
+    }
+
+    /// mcp#27 — publish the residents this manager believes are running, so a
+    /// resident asked for a symbol it does not have can ask the others.
+    ///
+    /// A PROJECTION of `handles`, never a read-modify-write of the file: the
+    /// map is what this process actually believes, and a file edited in place
+    /// drifts from it the first time a write is lost. Rebuilding means the file
+    /// cannot disagree with the manager for longer than one spawn.
+    ///
+    /// <b>It publishes on spawn and on adopt, and does NOT remove a row on
+    /// stop.</b> A stopped resident therefore leaves its row behind until the
+    /// next spawn re-projects the map. That is deliberate and the reading side
+    /// is built for it: a row nothing answers on is reported as LISTED but not
+    /// CONSULTED, so a sibling that is merely stopped stays distinguishable
+    /// from a machine that never had one. Hooking every removal path would put
+    /// the same invariant in seven places, which is the failure this file has
+    /// already paid for elsewhere.
+    ///
+    /// Never fails a spawn. A resident that started is more valuable than a
+    /// hint that did not get written, and the reading side treats an absent
+    /// registry as "no siblings" — the ordinary case for a hand-launched
+    /// resident with no Studio behind it.
+    fn publish_sibling_registry(&self) {
+        let rows: Vec<SiblingRow> = {
+            let handles = self.handles.lock().expect("runtime mutex poisoned");
+            let mut rows: Vec<SiblingRow> = handles
+                .iter()
+                .map(|(workspace_name, runtime)| SiblingRow {
+                    workspace_name: workspace_name.clone(),
+                    port: runtime.resident_port,
+                    token: runtime.resident_token.clone(),
+                })
+                .collect();
+            // A HashMap iterates in no particular order, so an unsorted
+            // projection rewrites the file with the same facts in a new order
+            // on every spawn. Sorted, an unchanged fleet produces an unchanged
+            // file — which is what makes a diff of it mean something.
+            rows.sort_by(|a, b| a.workspace_name.cmp(&b.workspace_name));
+            rows
+        };
+        // Every workspace dir shares one parent — `<data_root>/workspaces` —
+        // and that is the directory the resident walks up to. Taking it from a
+        // handle rather than from settings means the file lands beside the
+        // workspaces it describes by construction, whatever the data root is.
+        let registry_dir = {
+            let handles = self.handles.lock().expect("runtime mutex poisoned");
+            handles
+                .values()
+                .find_map(|r| Path::new(&r.workspace_dir).parent().map(Path::to_path_buf))
+        };
+        let Some(registry_dir) = registry_dir else {
+            // Nothing is running, so there is no workspace dir to derive the
+            // location from — and nothing to publish either.
+            return;
+        };
+        if let Err(error) = write_sibling_registry(&registry_dir, &rows) {
+            eprintln!(
+                "mcp#27: could not publish the sibling registry to {}: {error}. \
+                 Residents will answer as if this machine has one workspace.",
+                display_path(&registry_dir)
+            );
+        }
     }
 
     /// Test helper: returns the membership snapshot for a workspace, or
@@ -1030,11 +1108,15 @@ impl RuntimeManager {
                     runtime_label: reference.runtime_label.clone(),
                     resolved_jar_path: reference.resolved_jar_path.clone(),
                     resident_port: reference.resident_port,
+                    resident_token: reference.resident_token.clone(),
                     // It answered a health_check, so it is READY by definition.
                     ready: Arc::new(AtomicBool::new(true)),
                 },
             );
         }
+        // mcp#27: outside the block above, because publishing takes the same
+        // lock and Rust's mutex is not reentrant — inside it this deadlocks.
+        self.publish_sibling_registry();
         let status = self.adopted_status(
             reference,
             Some(pid),
@@ -1278,6 +1360,76 @@ pub(crate) const RESIDENT_TOKEN_FILE: &str = "resident.token";
 /// strictly better than a resident that cannot start. The failure is not
 /// silent — it is the caller's fallback branch, and the argv form is visible in
 /// `ps` for anyone who looks.
+/// mcp#27 — the published file name. A CONTRACT with the resident, which reads
+/// it by this name; Studio's own `projects.json` holds the same facts and is
+/// deliberately not what the resident reads, because pointing a Java process at
+/// a Rust application's private settings layout is a join that breaks silently
+/// the first time Studio reorganises itself.
+pub(crate) const SIBLING_REGISTRY_FILE: &str = "residents.json";
+
+/// One row of the registry. `camelCase` on the wire because the reader spells
+/// it that way — the names here are half of the contract, not a local style.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SiblingRow {
+    pub workspace_name: String,
+    pub port: u16,
+    pub token: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SiblingRegistryFile {
+    residents: Vec<SiblingRow>,
+}
+
+/// Write `<registry_dir>/residents.json` atomically and owner-only.
+///
+/// Atomic because a resident may read it at any moment: a reader that catches a
+/// half-written file sees a parse error, and the reading side treats an
+/// unreadable registry as "no siblings" — so a torn write silently costs the
+/// very answer this exists to give. Writing a temp file and renaming means a
+/// reader sees either the old file or the new one, never a partial one.
+///
+/// Owner-only because every row carries a bearer token. The file is created
+/// with its mode BEFORE the tokens go in, for the reason the sibling function
+/// below gives: a write-then-chmod leaves a window in which anyone can read it.
+pub(crate) fn write_sibling_registry(
+    registry_dir: &Path,
+    rows: &[SiblingRow],
+) -> Result<(), String> {
+    fs::create_dir_all(registry_dir)
+        .map_err(|error| format!("could not create {}: {error}", registry_dir.display()))?;
+    let body = serde_json::to_string_pretty(&SiblingRegistryFile {
+        residents: rows.to_vec(),
+    })
+    .map_err(|error| format!("could not serialize the registry: {error}"))?;
+
+    // Same directory as the target: a rename is only atomic within one
+    // filesystem, and a temp dir may be on another.
+    let temp = registry_dir.join(format!("{SIBLING_REGISTRY_FILE}.tmp"));
+    let _ = fs::remove_file(&temp);
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&temp)
+        .map_err(|error| format!("could not open {}: {error}", temp.display()))?;
+    file.write_all(body.as_bytes())
+        .map_err(|error| format!("could not write {}: {error}", temp.display()))?;
+    file.write_all(b"\n")
+        .map_err(|error| format!("could not write {}: {error}", temp.display()))?;
+    drop(file);
+
+    fs::rename(&temp, registry_dir.join(SIBLING_REGISTRY_FILE)).map_err(|error| {
+        let _ = fs::remove_file(&temp);
+        format!("could not publish the registry: {error}")
+    })
+}
+
 fn write_resident_token_file(workspace_dir: &str, token: &str) -> Option<String> {
     let path = Path::new(workspace_dir).join(RESIDENT_TOKEN_FILE);
     if let Some(parent) = path.parent() {
@@ -1910,6 +2062,157 @@ mod tests {
         let _ = resident.wait();
     }
 
+    // ---- mcp#27: the sibling registry Studio publishes for the residents ----
+
+    /// THE CONTRACT TEST. The resident reads these key names; serde would spell
+    /// them `workspace_name` by default, and the reader drops a row whose name
+    /// is blank or whose port is 0 — so the wrong spelling costs every row and
+    /// costs it SILENTLY, as an empty registry that looks exactly like a
+    /// machine with one resident. Asserting the raw JSON is what makes the
+    /// contract visible from this side.
+    #[test]
+    fn the_registry_is_written_in_the_keys_the_resident_reads() {
+        let dir = unique_tempdir("registry-keys");
+        let rows = vec![SiblingRow {
+            workspace_name: "orb-strategy".into(),
+            port: 51234,
+            token: "tok-abc".into(),
+        }];
+
+        write_sibling_registry(&dir, &rows).expect("registry written");
+
+        let raw = fs::read_to_string(dir.join(SIBLING_REGISTRY_FILE)).expect("readable");
+        let parsed: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON");
+        let row = &parsed["residents"][0];
+        assert_eq!(row["workspaceName"], "orb-strategy", "raw: {raw}");
+        assert_eq!(row["port"], 51234, "raw: {raw}");
+        assert_eq!(row["token"], "tok-abc", "raw: {raw}");
+        // The control: the snake_case spelling serde would produce by default
+        // must NOT be there. Without this the assertions above pass on a file
+        // that carries both spellings, which is the shape a careless fix makes.
+        assert!(
+            row.get("workspace_name").is_none(),
+            "the default spelling would be read as a blank name and dropped: {raw}"
+        );
+    }
+
+    /// Every row carries a bearer token, so the file is owner-only — and it is
+    /// created that way BEFORE the tokens go in, because a write-then-chmod
+    /// leaves a window in which anyone can read it.
+    #[cfg(unix)]
+    #[test]
+    fn the_registry_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = unique_tempdir("registry-perms");
+        write_sibling_registry(
+            &dir,
+            &[SiblingRow {
+                workspace_name: "w".into(),
+                port: 1,
+                token: "secret".into(),
+            }],
+        )
+        .expect("registry written");
+
+        let mode = fs::metadata(dir.join(SIBLING_REGISTRY_FILE))
+            .expect("readable")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(0o600, mode, "the file carries bearer tokens");
+    }
+
+    /// A reader may arrive mid-write, and it treats an unparseable registry as
+    /// "no siblings" — so a torn file silently costs the answer this exists to
+    /// give. The temp file must not survive, or the next write finds it there.
+    #[test]
+    fn the_registry_leaves_no_temp_file_behind() {
+        let dir = unique_tempdir("registry-temp");
+        for _ in 0..2 {
+            write_sibling_registry(
+                &dir,
+                &[SiblingRow {
+                    workspace_name: "w".into(),
+                    port: 1,
+                    token: "t".into(),
+                }],
+            )
+            .expect("a second write must not trip over the first");
+        }
+        assert!(
+            !dir.join(format!("{SIBLING_REGISTRY_FILE}.tmp")).exists(),
+            "a surviving temp file is a half-written registry waiting to be read"
+        );
+    }
+
+    /// The registry is a PROJECTION of what this manager believes is running,
+    /// and it lands in the workspace dirs' shared parent — which is the
+    /// directory the resident walks up to find it.
+    #[test]
+    fn publishing_projects_the_handles_into_the_workspaces_parent() {
+        let dir = unique_tempdir("registry-project");
+        let manager = RuntimeManager::new(paths_in(&dir));
+        let workspaces = dir.join("workspaces");
+
+        // Inserted out of alphabetical order on purpose: a HashMap iterates in
+        // no particular order, so an unsorted projection would rewrite the file
+        // with the same facts rearranged on every spawn.
+        for (name, port) in [("zulu", 9002u16), ("alpha", 9001u16)] {
+            let mut members = HashSet::new();
+            members.insert(format!("p-{name}"));
+            manager.handles.lock().unwrap().insert(
+                name.to_string(),
+                ManagedRuntime {
+                    process: RuntimeProcess::Adopted {
+                        pid: 1,
+                        port,
+                        token: format!("tok-{name}"),
+                    },
+                    started_at: Instant::now(),
+                    log_path: String::new(),
+                    members,
+                    workspace_dir: workspaces.join(name).to_string_lossy().to_string(),
+                    runtime_label: "test-runtime".into(),
+                    resolved_jar_path: "/dev/null".into(),
+                    resident_port: port,
+                    resident_token: format!("tok-{name}"),
+                    ready: Arc::new(AtomicBool::new(true)),
+                },
+            );
+        }
+
+        manager.publish_sibling_registry();
+
+        let raw = fs::read_to_string(workspaces.join(SIBLING_REGISTRY_FILE))
+            .expect("the registry lands beside the workspaces it describes");
+        let parsed: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON");
+        let residents = parsed["residents"].as_array().expect("an array");
+        assert_eq!(2, residents.len(), "both handles are projected: {raw}");
+        assert_eq!(residents[0]["workspaceName"], "alpha", "sorted: {raw}");
+        assert_eq!(residents[1]["workspaceName"], "zulu", "sorted: {raw}");
+        // The token is the half the port cannot substitute for: a resident
+        // refuses an unauthenticated caller, so a row without it is an address
+        // nobody can use.
+        assert_eq!(residents[0]["token"], "tok-alpha", "raw: {raw}");
+        assert_eq!(residents[0]["port"], 9001, "raw: {raw}");
+    }
+
+    /// THE CONTROL — with nothing running there is no workspace dir to derive
+    /// the location from, and nothing to publish. It must not panic, and it
+    /// must not write a registry somewhere invented.
+    #[test]
+    fn publishing_with_nothing_running_writes_nothing() {
+        let dir = unique_tempdir("registry-empty");
+        let manager = RuntimeManager::new(paths_in(&dir));
+
+        manager.publish_sibling_registry();
+
+        assert!(
+            !dir.join("workspaces").join(SIBLING_REGISTRY_FILE).exists(),
+            "an empty fleet has no registry rather than an empty one in a guessed place"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn stop_workspace_kills_an_adopted_orphan_by_pid() {
@@ -1938,6 +2241,7 @@ mod tests {
                 runtime_label: "test-runtime".into(),
                 resolved_jar_path: "/dev/null".into(),
                 resident_port: port,
+                resident_token: "test-token".into(),
                 ready: Arc::new(AtomicBool::new(true)),
             },
         );
@@ -1987,6 +2291,7 @@ mod tests {
                 runtime_label: "test-runtime".into(),
                 resolved_jar_path: "/dev/null".into(),
                 resident_port: port,
+                resident_token: "test-token".into(),
                 ready: Arc::new(AtomicBool::new(true)),
             },
         );
@@ -2121,6 +2426,7 @@ mod tests {
                 runtime_label: "test-runtime".into(),
                 resolved_jar_path: "/dev/null".into(),
                 resident_port: 2,
+                resident_token: "test-token".into(),
                 ready: Arc::new(AtomicBool::new(true)),
             },
         );
