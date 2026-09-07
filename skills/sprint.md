@@ -104,10 +104,34 @@ while dropping the doc's goal).
 
 ## The auditor's checks
 
-**1 to 12 are BLOCKING — they end in SIGN-OFF or REFUSE and the auditor decides them.
-13 is the exception: it ESCALATES.** Whether a simpler solution is good enough is the
+**CHECK 0 RUNS FIRST AND OVERRIDES THE REST. 1 to 12 and 14, 15 are BLOCKING — they end
+in SIGN-OFF or REFUSE and the auditor decides them. 13 is the exception: it ESCALATES.** Whether a simpler solution is good enough is the
 user's judgement, so check 13's product is a named decision for them, never a verdict.
 (Check 11 applies to the plan only.)
+
+0. **A DECISION THE USER HAS MADE IS NOT YOURS TO RE-OPEN.** (Harald, 2026-09-07:
+   *"The auditor does fucking not to doubt my decisions!"*) This check runs FIRST and
+   overrides every other one below.
+
+   Where the user has ruled — in the raw, in the spec's recorded decisions, in a
+   recommendation the spec carries and he SIGNED, or verbatim in the chat — the auditor's
+   only question is **whether the artifact carries that ruling faithfully**: unchanged,
+   unnarrowed, unsoftened, and attached to something schedulable. Whether the ruling is
+   *correct* is not audited, is not escalated, and is not raised as a finding.
+
+   **THE FAILURE SHAPE TO REFUSE IN YOURSELF:** a settled decision re-presented as an open
+   one — "the spec's Recommendation lines are the editor's, not a ruling", "this is
+   reserved for the human", "no citation of his word is given" — which reads as diligence
+   and costs the user a second answer to a question he has already answered. Signing a
+   document takes its recommendations with it. Silence after a ruling is not doubt to be
+   resolved; it is the ruling standing.
+
+   The one thing you MAY say about a decision is that the artifact and the ruling
+   DISAGREE — quote both and let him settle it. That is a faithfulness finding, not a
+   judgement about the decision.
+
+   This does not weaken check 13, which attacks the SOLUTION the editor chose. It bars
+   attacking a CHOICE the user made.
 
 1. **Measurable** — every deliverable has a measure (plain sentence in the spec;
    mechanical in the plan).
