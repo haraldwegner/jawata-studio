@@ -2154,10 +2154,21 @@ mod tests {
         let manager = RuntimeManager::new(paths_in(&dir));
         let workspaces = dir.join("workspaces");
 
-        // Inserted out of alphabetical order on purpose: a HashMap iterates in
-        // no particular order, so an unsorted projection would rewrite the file
-        // with the same facts rearranged on every spawn.
-        for (name, port) in [("zulu", 9002u16), ("alpha", 9001u16)] {
+        // SIX workspaces, not two, and the number is the control rather than
+        // decoration. A HashMap iterates in no particular order and Rust seeds
+        // its hasher per process, so an unsorted projection would come out
+        // already sorted by chance one run in two with two entries — a control
+        // that fails half the time is not a control. With six, one arrangement
+        // of 720 is sorted, so a run that passes says the code sorted rather
+        // than that the map happened to.
+        for (name, port) in [
+            ("zulu", 9006u16),
+            ("mike", 9005u16),
+            ("delta", 9004u16),
+            ("bravo", 9003u16),
+            ("kilo", 9002u16),
+            ("alpha", 9001u16),
+        ] {
             let mut members = HashSet::new();
             members.insert(format!("p-{name}"));
             manager.handles.lock().unwrap().insert(
@@ -2187,9 +2198,16 @@ mod tests {
             .expect("the registry lands beside the workspaces it describes");
         let parsed: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON");
         let residents = parsed["residents"].as_array().expect("an array");
-        assert_eq!(2, residents.len(), "both handles are projected: {raw}");
-        assert_eq!(residents[0]["workspaceName"], "alpha", "sorted: {raw}");
-        assert_eq!(residents[1]["workspaceName"], "zulu", "sorted: {raw}");
+        assert_eq!(6, residents.len(), "every handle is projected: {raw}");
+        let order: Vec<&str> = residents
+            .iter()
+            .map(|r| r["workspaceName"].as_str().expect("a name"))
+            .collect();
+        assert_eq!(
+            vec!["alpha", "bravo", "delta", "kilo", "mike", "zulu"],
+            order,
+            "an unchanged fleet must produce an unchanged file: {raw}"
+        );
         // The token is the half the port cannot substitute for: a resident
         // refuses an unauthenticated caller, so a row without it is an address
         // nobody can use.
