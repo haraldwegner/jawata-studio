@@ -163,52 +163,76 @@ fn undefined_terms(text: &str) -> Vec<String> {
     // READ" is a badge; reporting BE as an undefined term is the giveaway that
     // the rule was matching shape rather than meaning. Tokens whose immediate
     // neighbour (across spaces or hyphens only) is also capitalised are skipped.
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let core_of = |w: &str| -> String { w.chars().filter(|c| c.is_ascii_alphanumeric()).collect() };
-    // jawata-studio#31: a DIGIT is not uppercase, so the first version of this
-    // predicate answered false for `C5` and `v4` — tokens that are plainly part
-    // of the label they sit in. A token counts as capitalised when it carries at
-    // least one uppercase letter and nothing lowercase.
-    let is_caps = |w: &str| {
-        let core = core_of(w);
-        core.len() >= 2
+    // studio#31, SECOND PASS. The first shipped a false negative and a C9
+    // architect watch found it: `we saw ETXTBSY 3` reported NOTHING, because
+    // the acronym had a number on one side and the text's edge beyond it, and
+    // an `||` over three separately-derived conditions read that as a label.
+    // Its control could not see the case — it had prose after the number.
+    //
+    // The cure is to CLASSIFY EACH WORD ONCE and then read the classification,
+    // rather than re-deriving three overlapping predicates over raw text. Both
+    // questions the rule asks — what is my nearest non-number neighbour, and is
+    // there anything but numbers between me and the edge — are then direct
+    // reads of one sequence.
+    #[derive(PartialEq, Clone, Copy)]
+    enum Word {
+        /// Every letter uppercase, digits allowed: `SPRINT`, `C5`.
+        Caps,
+        /// Digits and no uppercase letter: `25`, `2026-07-10`, `v2.7.1`.
+        /// TRANSPARENT to a run — it neither starts one nor breaks one.
+        Number,
+        /// Ordinary words. These BREAK a run, which is what stops a label from
+        /// swallowing the acronym next to it.
+        Prose,
+    }
+    let classify = |w: &str| -> Word {
+        let core: String = w.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+        if core.len() >= 2
             && core.chars().any(|c| c.is_ascii_uppercase())
             && core.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
-    };
-    // A pure NUMBER — `25`, `2026-07-10`, `v2.7.1` — is TRANSPARENT to a run: it
-    // neither starts one nor breaks one. That is the whole of #31's defect: in
-    // `SPRINT 25 EXECUTING` the two capitalised words are not adjacent, so under
-    // an immediate-neighbour test neither is in a run and BOTH are reported as
-    // undefined abbreviations. Skipping over numbers makes them adjacent again.
-    //
-    // It must not START a run, which is why this is a skip rather than a widening
-    // of `is_caps`: `we saw ETXTBSY 3 times` must still report ETXTBSY, and it
-    // does, because the nearest non-number token on each side is ordinary prose.
-    let is_number_like = |w: &str| {
-        let core = core_of(w);
-        !core.is_empty()
+        {
+            return Word::Caps;
+        }
+        if !core.is_empty()
             && core.chars().any(|c| c.is_ascii_digit())
             && !core.chars().any(|c| c.is_ascii_uppercase())
+        {
+            return Word::Number;
+        }
+        Word::Prose
+    };
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let kinds: Vec<Word> = words.iter().map(|w| classify(w)).collect();
+    let nearest = |from: usize, forward: bool| -> Option<Word> {
+        let found = if forward {
+            ((from + 1)..kinds.len()).find(|&j| kinds[j] != Word::Number)
+        } else {
+            (0..from).rev().find(|&j| kinds[j] != Word::Number)
+        };
+        found.map(|j| kinds[j])
     };
     let mut in_run: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (i, w) in words.iter().enumerate() {
-        if !is_caps(w) {
+        if kinds[i] != Word::Caps {
             continue;
         }
-        let nearest = |mut range: Box<dyn Iterator<Item = usize>>| -> Option<&str> {
-            range.find(|&j| !is_number_like(words[j])).map(|j| words[j])
-        };
-        let left = nearest(Box::new((0..i).rev()));
-        let right = nearest(Box::new((i + 1)..words.len()));
-        // The label runs to the edge of the text with only numbers between —
-        // `v2.7.1 RELEASED 2026-07-10` as a line of its own, where RELEASED has
-        // no word neighbour at all on either side.
-        let numbers_to_the_edge = (i > 0 && is_number_like(words[i - 1]) && left.is_none())
-            || (i + 1 < words.len() && is_number_like(words[i + 1]) && right.is_none());
-        let neighbour_caps = left.is_some_and(&is_caps)
-            || right.is_some_and(&is_caps)
-            || numbers_to_the_edge;
-        if neighbour_caps {
+        let left = nearest(i, false);
+        let right = nearest(i, true);
+        let touches_a_number = (i > 0 && kinds[i - 1] == Word::Number)
+            || (i + 1 < kinds.len() && kinds[i + 1] == Word::Number);
+        // A LABEL is either a capitalised word beside another one — numbers in
+        // between are transparent — or a capitalised word with NOTHING but
+        // numbers between it and BOTH edges, which is a label on a line of its
+        // own (`v2.7.1 RELEASED 2026-07-10`).
+        //
+        // BOTH edges is the repair. The first version asked only whether ONE
+        // side ran to the edge, so an acronym with prose on the left and a
+        // number at the end of the sentence counted as a label — which is
+        // exactly the licence the rule exists to withhold.
+        let label = left == Some(Word::Caps)
+            || right == Some(Word::Caps)
+            || (left.is_none() && right.is_none() && touches_a_number);
+        if label {
             for part in w.split(|c: char| !c.is_ascii_alphanumeric()) {
                 if !part.is_empty() {
                     in_run.insert(part.to_string());
@@ -3972,6 +3996,24 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
             "a number beside an acronym does not make it a label: {:?}",
             undefined_terms(acronym)
         );
+
+        // AND THE CASE THE FIRST VERSION GOT WRONG. A C9 architect watch traced
+        // it by hand and the probe confirmed it: with the number at the END of
+        // the text, the first implementation reported NOTHING for all three of
+        // these. The control above could not see it — it has prose after the
+        // number, so the scan never reaches an edge.
+        for ending_at_a_number in [
+            "we saw ETXTBSY 3",
+            "the run hit TOCTOU 2",
+            "the write failed with SIGPIPE 13",
+        ] {
+            assert!(
+                !undefined_terms(ending_at_a_number).is_empty(),
+                "an acronym with PROSE on one side is not a label, whatever sits on \
+                 the other: {ending_at_a_number:?} -> {:?}",
+                undefined_terms(ending_at_a_number)
+            );
+        }
 
         // And a digit INSIDE a capitalised token no longer hides it from the run,
         // which is the same defect on the other axis.

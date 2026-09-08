@@ -318,7 +318,10 @@ fn seen_file(base: &Path, session: &str) -> PathBuf {
 }
 
 /// Whether a prompt event has been processed for this session.
-pub fn seen(base: &Path, session: &str) -> bool {
+///
+/// PRIVATE: publishing it would let a caller mark the channel alive without a
+/// prompt, which is the door `note_prompt` was moved to close.
+fn seen(base: &Path, session: &str) -> bool {
     !session.is_empty() && seen_file(base, session).exists()
 }
 
@@ -326,7 +329,7 @@ pub fn seen(base: &Path, session: &str) -> bool {
 ///
 /// Called on EVERY prompt event, granting or not — its whole job is to say the
 /// channel is alive, so it must not be conditional on what the prompt said.
-pub fn note_seen(base: &Path, session: &str) {
+fn note_seen(base: &Path, session: &str) {
     if session.is_empty() {
         return;
     }

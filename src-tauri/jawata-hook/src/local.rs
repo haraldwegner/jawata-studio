@@ -14,12 +14,16 @@
 //! and on Windows a path that should be blocked would otherwise read as outside
 //! the tree and be allowed.
 //!
-//! The Windows-only cases — case folding, the drive letter, 8.3 short names,
-//! junctions — are covered by `#[cfg(windows)]` tests, so they are exercised by
-//! CI on Windows rather than asserted from a Linux machine that cannot produce
-//! them. That is deliberate: this module's own history is a rule that passed on
-//! Linux by coincidence and denied every temp path on macOS until release CI
-//! said so.
+//! WHAT IS TESTED, and what is not, because a C9 audit found this paragraph
+//! claiming `#[cfg(windows)]` tests that the same commit had deleted — a false
+//! claim in the header of the file whose subject is false claims.
+//!
+//! Case folding is tested by ASKING the filesystem, so it asserts on every
+//! platform instead of compiling away. 8.3 short names and junctions are
+//! resolved by `fs::canonicalize` and are asserted by NOTHING here: they cannot
+//! be produced on the machine this is written on, and a test that skips itself
+//! silently is the shape this module already removed once. They ride
+//! canonicalisation's own contract, which is stated rather than demonstrated.
 //!
 //! Ported faithfully rather than reinvented: each message below is the one the
 //! script had earned, incident by incident, and each incident is kept with it.
@@ -60,7 +64,7 @@ const MANIFEST_NAME: &str = "jawata-dev.code-workspace";
 /// the roots it cannot resolve, and fewer roots means more denials. A guessed
 /// home would ADD a root nobody verified, which is the direction a guard must
 /// never err in.
-fn home() -> Option<PathBuf> {
+pub(crate) fn home() -> Option<PathBuf> {
     home_from(|k| std::env::var(k).ok())
 }
 
@@ -169,12 +173,21 @@ pub fn workspace_roots() -> Vec<PathBuf> {
     // same code denied every temp path, and it took the release CI of v4.1.6 to
     // say so — seven integration tests, each denied on its own fixture.
     roots.push(std::env::temp_dir());
-    // The Unix literal stays, and ONLY on Unix. With TMPDIR pointing elsewhere
-    // `/tmp` is still a legitimate scratch root on this platform, so dropping it
-    // would DENY correct use; on Windows it names nothing and would only be a
-    // Unix spelling shaping a Windows verdict.
+    // The Unix literal stays, ONLY on Unix, ONLY when it exists, and only when
+    // it is not already the resolved root. A C9 audit was right that the first
+    // version added a root nobody verified — the very direction `home()`'s doc
+    // says a guard must never err in — and that no test covered it.
+    //
+    // It is not dropped outright because with TMPDIR pointing elsewhere `/tmp`
+    // is still a real scratch directory on this platform, and denying writes to
+    // it would refuse correct work.
     #[cfg(unix)]
-    roots.push(PathBuf::from("/tmp"));
+    {
+        let unix_tmp = PathBuf::from("/tmp");
+        if unix_tmp.is_dir() && !roots.contains(&unix_tmp) {
+            roots.push(unix_tmp);
+        }
+    }
     // studio#38: the two agent-config roots exist only when the profile
     // directory resolved. An unresolvable home drops them rather than guessing,
     // which FAILS CLOSED — fewer roots means more denials.
@@ -241,12 +254,42 @@ fn normalise(path: &Path) -> PathBuf {
         }
         None => path.to_path_buf(),
     };
-    if !cfg!(target_os = "linux") {
+    if folds_case() {
         if let Some(s) = out.to_str() {
             out = PathBuf::from(s.to_lowercase());
         }
     }
     out
+}
+
+/// Does THIS filesystem ignore case?
+///
+/// Asked once and cached. The first version read `cfg!(target_os = "linux")` —
+/// the OS-name PROXY that this module's own tests were rewritten to refuse, and
+/// a C9 architect watch caught the production code still using it. It is wrong
+/// in the dangerous direction on a case-sensitive volume under a case-folding
+/// OS: over-folding makes an outside path compare EQUAL to a root, which
+/// ALLOWS, and this module says a guard must never err that way.
+///
+/// The probe creates nothing: it asks whether the temp directory answers to a
+/// differently-cased spelling of its own name. Unanswerable (no temp dir, a
+/// name with no letters) is read as DOES NOT FOLD, which is the stricter
+/// reading — it denies more.
+fn folds_case() -> bool {
+    static FOLDS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FOLDS.get_or_init(|| {
+        let dir = std::env::temp_dir();
+        let Some(s) = dir.to_str() else { return false };
+        let flipped = if s.chars().any(|c| c.is_ascii_lowercase()) {
+            s.to_uppercase()
+        } else {
+            s.to_lowercase()
+        };
+        if flipped == s {
+            return false;
+        }
+        std::fs::metadata(&dir).is_ok() && std::fs::metadata(PathBuf::from(flipped)).is_ok()
+    })
 }
 
 /// Expand the three home spellings a shell would expand, so the check polices a
@@ -595,8 +638,9 @@ mod tests {
         // A Windows-shaped assertion was here and could not hold on Linux:
         // `Path::join` uses THIS platform's separator, so `C:\Users\someone`
         // is one component and the result mixes separators. That is a fact
-        // about the host, not about the change — the Windows path semantics
-        // are asserted in the `cfg(windows)` test below, where they are real.
+        // about the host, not about the change. There is no Windows-only test
+        // to defer to: the case behaviour is asserted by the filesystem probe
+        // below, which runs everywhere.
 
         // No profile at all: the bare name, which resolves relative to wherever
         // the hook runs rather than to a stranger's home directory.
@@ -619,9 +663,23 @@ mod tests {
         let _ = std::fs::remove_file(&link);
         #[cfg(unix)]
         let made = std::os::unix::fs::symlink(&real, &link).is_ok();
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_dir(&real, &link).is_ok();
+        #[cfg(not(any(unix, windows)))]
         let made = false;
 
+        // NEVER EMPTY. A C9 audit found the first version asserting nothing at
+        // all on Windows — `made` was hardcoded false there, which is the
+        // silent-skip shape this file removed elsewhere in the same commit. If
+        // no link can be made (Windows without the privilege, say), the
+        // NON-link half still runs, so the test always claims something.
+        if !made {
+            let direct = real.join("inside.txt");
+            assert!(
+                inside(&direct.to_string_lossy(), &[real.clone()]),
+                "no link could be made here, so at least the direct path must be inside"
+            );
+        }
         if made {
             let target = link.join("inside.txt");
             assert!(

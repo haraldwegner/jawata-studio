@@ -392,9 +392,14 @@ pub(crate) fn session_id_in(payload: &str) -> Option<String> {
 /// role now runs there natively rather than through a shell that would have
 /// supplied it.
 pub(crate) fn home_dir() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(std::path::PathBuf::from)
+    // ONE resolver. studio#38 fixed this question in `local`, and a C9 audit
+    // found the answer had been fixed in one copy only: this one still missed
+    // HOMEDRIVE+HOMEPATH, so on a domain-joined Windows machine that sets only
+    // those, `local` resolved and everything hanging off THIS — the studio
+    // directory, bounces, the observer log, the editgate window — went dark, on
+    // exactly the configuration #38 was filed to fix. Two copies of one rule,
+    // inside the commit that closed the portability issue.
+    crate::local::home()
 }
 
 /// The text following a declaration marker, trimmed and capped.
