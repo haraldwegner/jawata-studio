@@ -28,7 +28,7 @@ pub struct BootstrapStatus {
 }
 
 /// Policy determining how application updates should be handled.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Copy, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum UpdatePolicy {
     Always,
@@ -349,7 +349,7 @@ const LEGACY_DEFAULT_RELEASE_REPOS: &[&str] = &[
 impl ManagerSettings {
     pub(crate) fn default_for_paths(paths: &AppPaths) -> Self {
         Self {
-            version: 1,
+            version: SETTINGS_VERSION,
             // Sprint 28 (v3.6.1): see UpdatePolicy::default — a fresh install
             // keeps its runtime current instead of recording the new version
             // and waiting to be asked.
@@ -1330,6 +1330,16 @@ fn dedupe_projects_by_id(projects: &mut Vec<ProjectRecord>) -> usize {
     original_len - projects.len()
 }
 
+/// The shape version of `settings.json`, bumped when a stored value has to be
+/// MIGRATED rather than merely defaulted.
+///
+/// D4: this field existed from v0.1 and nothing had ever read it — every write
+/// put `1` there and no code asked. It is what a one-shot migration needs and
+/// could not otherwise have: a value's own content cannot say whether it was
+/// stored by an old build's default or chosen by the user, and those two must
+/// end up in different places.
+pub const SETTINGS_VERSION: u32 = 2;
+
 fn read_settings(path: &Path, paths: &AppPaths) -> Result<ManagerSettings, String> {
     let contents = fs::read_to_string(path)
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
@@ -1359,7 +1369,50 @@ fn read_settings(path: &Path, paths: &AppPaths) -> Result<ManagerSettings, Strin
         settings.release_repo = default_release_repo();
     }
     settings.mcp_client_paths = merge_detected_mcp_paths(settings.mcp_client_paths);
+    // D4: A MIGRATION THAT IS NOT WRITTEN IS NOT A MIGRATION. It would run
+    // again on the next boot, and the second run would overrule a user who
+    // chose `Ask` in between — so the whole "once" property lives in this
+    // write, not in the decision above it.
+    //
+    // It happens HERE rather than in the caller for the reason the other
+    // rewrites in this function are here: this is where the file and its
+    // parsed form are both in hand. Best effort — a settings file that cannot
+    // be written is not a reason to refuse to start, and the migration simply
+    // runs again next time.
+    if migrate_settings_shape(&mut settings) {
+        if let Err(error) = write_json(path, &settings) {
+            eprintln!("[jawata-studio] settings migration not persisted: {error}");
+        }
+    }
     Ok(settings)
+}
+
+/// D4: bring a settings file written by an older build up to the current shape.
+///
+/// **The `ask` -> `always` migration.** v3.6.1 made `Always` the DEFAULT and
+/// deliberately left existing files alone — *"an existing settings file keeps
+/// whatever it stored"* — so automatic update became the real behaviour only
+/// where nothing had been stored. Every install that predates it is still
+/// asking, and the macOS dogfood is what that looks like: the studio knew about
+/// a newer runtime and went on running the old one until somebody pressed a
+/// button.
+///
+/// **Once, and the version is what makes it once.** `Ask` is both the value an
+/// old build stored by default and a value a user may legitimately choose, and
+/// nothing in the value itself tells them apart — so re-deciding it on every
+/// boot would silently overrule a user who chose `Ask` after the migration.
+/// A file at the current version is never touched again, which is exactly the
+/// difference between a migration and a policy.
+/// Returns whether anything changed, which is what decides the write-back.
+fn migrate_settings_shape(settings: &mut ManagerSettings) -> bool {
+    if settings.version >= SETTINGS_VERSION {
+        return false;
+    }
+    if settings.update_policy == UpdatePolicy::Ask {
+        settings.update_policy = UpdatePolicy::Always;
+    }
+    settings.version = SETTINGS_VERSION;
+    true
 }
 
 fn detect_default_mcp_client_paths() -> McpClientPaths {
@@ -2319,6 +2372,50 @@ mod tests {
             }),
             settings: Mutex::new(ManagerSettings::default_for_paths(&paths)),
         }
+    }
+
+    // ---- D4: automatic update becomes the real behaviour EVERYWHERE ----
+
+    /// v3.6.1 made `Always` the default and deliberately left existing files
+    /// alone, so automatic update became real only where nothing had been
+    /// stored. Every install older than that is still asking — which is what
+    /// the macOS dogfood found: the studio knew about a newer runtime and went
+    /// on running the old one until somebody pressed a button.
+    #[test]
+    fn a_stored_ask_migrates_to_always_exactly_once() {
+        let dir = unique_tempdir("update-policy-migration");
+        let paths = paths_in(&dir);
+        std::fs::create_dir_all(paths.settings_file.parent().unwrap()).unwrap();
+
+        // A settings file as an older build wrote it: version 1, policy `ask`.
+        let mut old_shape = ManagerSettings::default_for_paths(&paths);
+        old_shape.version = 1;
+        old_shape.update_policy = UpdatePolicy::Ask;
+        write_json(&paths.settings_file, &old_shape).unwrap();
+
+        let migrated = read_settings(&paths.settings_file, &paths).expect("read");
+        assert_eq!(UpdatePolicy::Always, migrated.update_policy);
+        assert_eq!(SETTINGS_VERSION, migrated.version);
+
+        // AND IT IS ON DISK. A migration that is not written runs again next
+        // boot, and the second run would overrule the user below.
+        let raw = std::fs::read_to_string(&paths.settings_file).expect("settings");
+        assert!(raw.contains("\"always\""), "the file must carry the new policy: {raw}");
+
+        // ONCE. The user now chooses `ask` deliberately, on a file already at
+        // the current version — and it must survive, because `ask` as a stored
+        // value cannot tell an old build's default from a person's choice, and
+        // re-deciding it every boot is a policy rather than a migration.
+        let mut chosen = migrated.clone();
+        chosen.update_policy = UpdatePolicy::Ask;
+        write_json(&paths.settings_file, &chosen).unwrap();
+
+        let reread = read_settings(&paths.settings_file, &paths).expect("reread");
+        assert_eq!(
+            UpdatePolicy::Ask,
+            reread.update_policy,
+            "a deliberate choice made AFTER the migration must not be overruled"
+        );
     }
 
     // ---- studio#29: the debug agent is opt-in, per workspace ----

@@ -139,6 +139,106 @@ pub struct ReleaseManager {
     download_client: Client,
 }
 
+/// D4: what one version check DECIDED, and why.
+///
+/// The requirement is that *every* version check says what it decided —
+/// installed, already current, policy said no, download failed — with the
+/// reason. Before this the check composed a sentence beside the branch it took,
+/// so the two could disagree and the commonest outcome said the least: a
+/// runtime that was NOT updated logged *"Latest upstream release is X"*, which
+/// is true whether the policy declined it, it was already current, or nothing
+/// had been asked at all.
+///
+/// So the outcome becomes a VALUE, and both the log line and the user-visible
+/// detail are rendered from it. A branch that forgets to say what it did is not
+/// expressible.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateDecision {
+    /// Checking is switched off in settings; nothing was asked of the network.
+    CheckingDisabled,
+    /// The check itself failed, so there is no verdict about the runtime —
+    /// which is NOT the same as "no update", and is why it is its own variant.
+    CheckFailed { error: String },
+    /// Nothing was cached yet. A first runtime is fetched whatever the policy
+    /// says: `Ask` is a policy about UPDATING, and there is nothing to update.
+    InstalledFirstRuntime { version: String },
+    /// A newer release existed and the policy allowed taking it.
+    Installed { version: String },
+    /// The newest release is the one already installed.
+    AlreadyCurrent { version: String },
+    /// A newer release exists and the policy is `Ask`, so it waits for a click.
+    PolicyDeclined { installed: String, latest: String },
+    /// The policy allowed it and the download did not finish.
+    DownloadFailed { version: String, error: String },
+}
+
+impl UpdateDecision {
+    /// The one line a check leaves behind. Written as what it DID and why,
+    /// because a log that says only what it saw is what this replaced.
+    pub fn log_line(&self) -> String {
+        match self {
+            Self::CheckingDisabled => {
+                "no check — automatic release checks are switched off in settings".into()
+            }
+            Self::CheckFailed { error } => {
+                format!("no verdict — the release check itself failed: {error}")
+            }
+            Self::InstalledFirstRuntime { version } => {
+                format!("installed {version} — nothing was cached yet")
+            }
+            Self::Installed { version } => {
+                format!("installed {version} — it was newer and the update policy allows it")
+            }
+            Self::AlreadyCurrent { version } => {
+                format!("nothing to do — {version} is installed and is the newest release")
+            }
+            Self::PolicyDeclined { installed, latest } => format!(
+                "declined {latest} — the update policy is `ask`, so {installed} stays until \
+                 someone presses the button"
+            ),
+            Self::DownloadFailed { version, error } => {
+                format!("could not install {version} — the download failed: {error}")
+            }
+        }
+    }
+
+    /// Whether this decision means a release was fetched.
+    pub fn installed_something(&self) -> bool {
+        matches!(self, Self::Installed { .. } | Self::InstalledFirstRuntime { .. })
+    }
+}
+
+/// D4: what a check should DO, from the facts alone.
+///
+/// Pure, and separate from the check, because this IS the requirement: the
+/// download, the settings write and the status rendering are what carry the
+/// answer. `latest` is the release the network reported; a check that could not
+/// reach it never gets here, because "the check failed" is a decision the
+/// caller holds the error for.
+pub fn decide_update(
+    auto_check_for_updates: bool,
+    policy: UpdatePolicy,
+    installed: Option<&str>,
+    latest: &str,
+) -> UpdateDecision {
+    if !auto_check_for_updates {
+        return UpdateDecision::CheckingDisabled;
+    }
+    let Some(installed) = installed else {
+        return UpdateDecision::InstalledFirstRuntime { version: latest.to_string() };
+    };
+    if installed == latest {
+        return UpdateDecision::AlreadyCurrent { version: installed.to_string() };
+    }
+    match policy {
+        UpdatePolicy::Always => UpdateDecision::Installed { version: latest.to_string() },
+        UpdatePolicy::Ask => UpdateDecision::PolicyDeclined {
+            installed: installed.to_string(),
+            latest: latest.to_string(),
+        },
+    }
+}
+
 impl ReleaseManager {
     /// Creates a new release manager with its two HTTP clients.
     ///
@@ -187,7 +287,7 @@ impl ReleaseManager {
     pub fn sync_with_settings(
         &self,
         settings: &mut ManagerSettings,
-    ) -> Result<(Option<ManagedRuntimeRecord>, ReleaseStatus), String> {
+    ) -> Result<(Option<ManagedRuntimeRecord>, ReleaseStatus, UpdateDecision), String> {
         let mut installed = self.get_installed_runtime(settings)?;
 
         if !settings.auto_check_for_updates {
@@ -201,9 +301,9 @@ impl ReleaseManager {
                 default_version: installed.as_ref().map(|r| r.version.clone()),
                 checked_at: settings.last_release_check.clone(),
                 update_available: false,
-                detail: "Automatic JAWATA release checks are disabled.".into(),
+                detail: UpdateDecision::CheckingDisabled.log_line(),
             };
-            return Ok((installed, status));
+            return Ok((installed, status, UpdateDecision::CheckingDisabled));
         }
 
         match self.fetch_latest_release(settings) {
@@ -212,38 +312,44 @@ impl ReleaseManager {
                 settings.last_release_check = Some(checked_at.clone());
                 settings.last_seen_latest_version = Some(release.version.clone());
 
-                let latest_installed = installed
-                    .as_ref()
-                    .map_or(false, |runtime| runtime.version == release.version);
-                let should_download = installed.is_none()
-                    || (settings.update_policy == UpdatePolicy::Always && !latest_installed);
+                // D4: decide once, from the facts, and let everything else
+                // render that decision — the log line, the user-visible detail
+                // and whether anything is downloaded at all.
+                let mut decision = decide_update(
+                    settings.auto_check_for_updates,
+                    settings.update_policy,
+                    installed.as_ref().map(|runtime| runtime.version.as_str()),
+                    &release.version,
+                );
 
-                let mut detail = if installed.is_none() {
-                    "No managed JAWATA runtime is cached yet.".to_string()
-                } else {
-                    format!("Latest upstream release is {}.", release.version)
-                };
-
-                if should_download {
-                    let runtime = self.install_release(&release, settings)?;
-                    installed = self.get_installed_runtime(settings)?;
-                    detail = format!(
-                        "Downloaded JAWATA {} into the managed tools cache.",
-                        runtime.version
-                    );
+                if decision.installed_something() {
+                    // A FAILED download is its own decision rather than an
+                    // error thrown past the caller: before this it aborted the
+                    // whole sync with `?`, so the one outcome most worth
+                    // recording was the one that left no record.
+                    match self.install_release(&release, settings) {
+                        Ok(_) => installed = self.get_installed_runtime(settings)?,
+                        Err(error) => {
+                            decision = UpdateDecision::DownloadFailed {
+                                version: release.version.clone(),
+                                error,
+                            }
+                        }
+                    }
                 }
 
                 let status = self.build_release_status(
                     Some(&release),
                     installed.as_ref(),
                     settings,
-                    Some(detail),
+                    Some(decision.log_line()),
                     None,
                 );
 
-                Ok((installed, status))
+                Ok((installed, status, decision))
             }
             Err(error) => {
+                let decision = UpdateDecision::CheckFailed { error: error.clone() };
                 let status = self.build_release_status(
                     None,
                     installed.as_ref(),
@@ -253,7 +359,7 @@ impl ReleaseManager {
                         "Could not check the latest JAWATA release: {error}"
                     )),
                 );
-                Ok((installed, status))
+                Ok((installed, status, decision))
             }
         }
     }
@@ -816,6 +922,69 @@ fn find_relative_jar_path(root: &Path) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
+
+    // ---- D4: every version check says what it DECIDED, and why ----
+
+    /// The four outcomes the requirement names, plus the two the old code could
+    /// not tell apart. Before this the check composed a sentence beside the
+    /// branch it took, and the commonest outcome said the least: a runtime that
+    /// was NOT updated logged "Latest upstream release is X", which is true
+    /// whether the policy declined it, it was already current, or nothing had
+    /// been asked at all.
+    #[test]
+    fn a_check_names_its_outcome_and_the_reason() {
+        use crate::config::UpdatePolicy;
+
+        // ALREADY CURRENT and POLICY DECLINED are DIFFERENT, and telling them
+        // apart is the whole point: one is nothing to do, the other is an
+        // update sitting there waiting for a click.
+        let current = decide_update(true, UpdatePolicy::Always, Some("4.1.3"), "4.1.3");
+        assert_eq!(UpdateDecision::AlreadyCurrent { version: "4.1.3".into() }, current);
+        assert!(current.log_line().contains("nothing to do"));
+        assert!(!current.installed_something());
+
+        let declined = decide_update(true, UpdatePolicy::Ask, Some("4.1.3"), "4.2.0");
+        assert_eq!(
+            UpdateDecision::PolicyDeclined {
+                installed: "4.1.3".into(),
+                latest: "4.2.0".into()
+            },
+            declined
+        );
+        assert!(declined.log_line().contains("declined 4.2.0"), "{}", declined.log_line());
+        assert!(declined.log_line().contains("ask"), "the REASON, not just the fact");
+        assert!(!declined.installed_something());
+
+        // The same facts under the policy this sprint migrates everyone to.
+        let installed = decide_update(true, UpdatePolicy::Always, Some("4.1.3"), "4.2.0");
+        assert_eq!(UpdateDecision::Installed { version: "4.2.0".into() }, installed);
+        assert!(installed.installed_something());
+
+        // A FIRST runtime is fetched whatever the policy says: `ask` is a
+        // policy about UPDATING, and there is nothing to update.
+        let first = decide_update(true, UpdatePolicy::Ask, None, "4.2.0");
+        assert_eq!(UpdateDecision::InstalledFirstRuntime { version: "4.2.0".into() }, first);
+        assert!(first.installed_something());
+
+        // Checking switched off short-circuits everything, including the
+        // bootstrap above — and it says so rather than reading as "no update".
+        let off = decide_update(false, UpdatePolicy::Always, None, "4.2.0");
+        assert_eq!(UpdateDecision::CheckingDisabled, off);
+        assert!(off.log_line().contains("switched off"));
+
+        // The two failures a decision must not be silent about. A check that
+        // FAILED is not "no update" — it is no verdict at all.
+        let failed = UpdateDecision::CheckFailed { error: "timed out".into() };
+        assert!(failed.log_line().contains("no verdict"), "{}", failed.log_line());
+        assert!(failed.log_line().contains("timed out"), "the reason travels with it");
+        let broken = UpdateDecision::DownloadFailed {
+            version: "4.2.0".into(),
+            error: "connection reset".into(),
+        };
+        assert!(broken.log_line().contains("could not install 4.2.0"));
+        assert!(broken.log_line().contains("connection reset"));
+        assert!(!broken.installed_something(), "a failed download installed nothing");
+    }
     use super::*;
     use crate::config::AppPaths;
     use std::path::PathBuf;

@@ -400,10 +400,14 @@ impl ManagerService {
         let outcome = (|| {
             let mut settings = self.config_store.get_settings();
             let before = settings.last_seen_latest_version.clone();
-            let (_installed, status) = self.release_manager.sync_with_settings(&mut settings)?;
+            let (_installed, status, decision) =
+                self.release_manager.sync_with_settings(&mut settings)?;
             let changed = before != settings.last_seen_latest_version;
             self.config_store.write_settings(settings)?;
-            eprintln!("[jawata-studio] release sync: {}", status.detail);
+            // D4: one line per version check, naming what it DECIDED and why.
+            // `status.detail` is the same sentence — both are rendered from the
+            // decision, so the log and the UI cannot say different things.
+            eprintln!("[jawata-studio] release check: {}", decision.log_line());
             Ok(changed)
         })();
 
@@ -1524,7 +1528,7 @@ impl ManagerService {
         let bootstrap = self.config_store.bootstrap_status();
         let (settings, installed_runtime, release_status) = if refresh_release_status {
             let mut settings = self.config_store.get_settings();
-            let (installed_runtime, release_status) =
+            let (installed_runtime, release_status, _decision) =
                 self.release_manager.sync_with_settings(&mut settings)?;
             let settings = self.config_store.write_settings(settings)?;
             (settings, installed_runtime, release_status)
