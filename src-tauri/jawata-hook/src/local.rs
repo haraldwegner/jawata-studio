@@ -60,9 +60,10 @@ fn manifest_path() -> PathBuf {
 /// scratch dir, the agent config dir, the manifest itself and the node version
 /// manager's dir.
 ///
-/// NOT PORTABLE YET, and this is the line that says so: `/tmp` is a Unix
-/// concept and `~/.nvm` a Unix layout. The portable forms are the platform
-/// temp directory and the client's own resolved config dir — see the issue.
+/// NOT PORTABLE YET, and this is the line that says so: `~/.claude` and
+/// `~/.nvm` are one client's Unix layout, and the portable form is the client's
+/// own resolved config dir — jawata-studio#38 owns that. The SCRATCH root is no
+/// longer among the gaps: see the comment on the push below.
 pub fn workspace_roots() -> Vec<PathBuf> {
     let home = home();
     let manifest = manifest_path();
@@ -89,6 +90,18 @@ pub fn workspace_roots() -> Vec<PathBuf> {
             roots.push(PathBuf::from(project));
         }
     }
+    // The scratch root is RESOLVED, not spelled. `/tmp` is the Unix literal and
+    // stays because this workspace declares it, but what a program actually
+    // gets is the PLATFORM temp directory — `/var/folders/<...>/T` on macOS,
+    // `%TEMP%` on Windows — and containment must know that directory by the
+    // name the platform gives it.
+    //
+    // Hardcoding `/tmp` alone made this rule pass on Linux BY COINCIDENCE: a
+    // process whose temp dir happens to live under `/tmp` is inside the root by
+    // accident of spelling, not because the rule understood it. On macOS the
+    // same code denied every temp path, and it took the release CI of v4.1.6 to
+    // say so — seven integration tests, each denied on its own fixture.
+    roots.push(std::env::temp_dir());
     roots.push(PathBuf::from("/tmp"));
     roots.push(home.join(".claude"));
     roots.push(home.join(".nvm"));
@@ -305,6 +318,39 @@ mod tests {
         assert!(!denied(judge_payload("git status --porcelain")));
         assert!(!denied(judge_payload("git log --oneline -3")));
         assert!(!denied(judge_payload("git config user.name")));
+    }
+
+    #[test]
+    fn the_scratch_root_is_the_platform_temp_dir_and_not_the_unix_spelling() {
+        // WHAT THIS CAN AND CANNOT SEE, stated because the difference IS the
+        // defect. On macOS the temp directory is `/var/folders/<...>/T` and on
+        // Windows `%TEMP%`, so a rule knowing only `/tmp` refuses a program's
+        // own scratch file everywhere but Linux. On LINUX with the default
+        // TMPDIR, `temp_dir()` IS `/tmp` — so removing the resolved push leaves
+        // this test GREEN here. Measured: the mutation was run and it did not
+        // fail, which is what a mutation staying green is for.
+        //
+        // So this STATES the property; it does not discriminate on this host.
+        // The discriminator is the integration suite with the scratch dir moved
+        // off `/tmp`, which reproduces the macOS failure on Linux exactly:
+        //
+        //     TMPDIR=/var/tmp/probe cargo test --test answering_is_not_a_launch_pad
+        //
+        // With the resolved push: 8 passed. Without it: 1 passed, 7 failed —
+        // the same seven the v4.1.6 macOS release job reported.
+        let roots = workspace_roots();
+        let scratch = std::env::temp_dir();
+        assert!(
+            roots.iter().any(|r| *r == scratch),
+            "the platform temp dir {scratch:?} must be a root; got {roots:?}"
+        );
+        // And a file in it is INSIDE, which is the property the rule is for —
+        // membership of the list is the mechanism, not the claim.
+        let file = scratch.join("jawata-scratch-probe.txt");
+        assert!(
+            inside(file.to_str().unwrap(), &roots),
+            "a file in the platform scratch dir must be inside the workspace"
+        );
     }
 
     #[test]
