@@ -24,6 +24,13 @@ pub const FALLBACK_DECLARATION: &str = "jawata-fallback:";
 /// The declaration that lets a justified hand-edit of a `.java` file through.
 pub const AUTHOR_DECLARATION: &str = "jawata-author:";
 
+/// The two reasons a FULL suite run is legitimate, declared in the command the
+/// way the two above are. Deliberately plain words rather than a `jawata-`
+/// prefix: these name an event in the user's own process — a checkpoint, a
+/// release — and the agent should be writing the stage or version it means.
+pub const CHECKPOINT_DECLARATION: &str = "checkpoint:";
+pub const RELEASE_DECLARATION: &str = "release:";
+
 /// Text-search tools whose use over Java sources is what we redirect.
 const TEXT_TOOLS: &[&str] = &["grep", "rg", "sed", "awk", "ack", "ag"];
 
@@ -70,8 +77,104 @@ pub enum Verdict {
     Deny { reason: String },
 }
 
+/// Whole-test-suite runners, by the name in COMMAND POSITION. A project's own
+/// sharded runner is the expensive shape this gate is for.
+const SUITE_SCRIPTS: &[&str] = &["run-suite.sh", "run-suite", "run-tests.sh", "run-all-tests.sh"];
+
+/// Build tools whose bare test goals run EVERYTHING unless a filter narrows them.
+const BUILD_TOOLS: &[&str] = &["mvn", "mvnw", "./mvnw", "gradle", "gradlew", "./gradlew"];
+
+/// Flags that NARROW a build tool's run to a selection — their presence means
+/// this is not a full suite and the gate does not apply.
+const TEST_FILTERS: &[&str] = &["-Dtest=", "-Dit.test=", "--tests", "-DfailIfNoTests"];
+
+/// Whether this command runs the WHOLE suite, and under which spelling.
+///
+/// Two shapes. A project's own suite script by name, and a build tool reaching
+/// a test phase with nothing narrowing it. `-DskipTests` is the common case that
+/// looks like a test command and runs none — a build before a suite is not the
+/// suite, and denying it would block the step that PRECEDES every legitimate run.
+fn full_suite_in(command: &str) -> Option<&'static str> {
+    for segment in segments(command) {
+        // COMMAND POSITION for both shapes, which is this file's standing
+        // discipline and not a nuance: scanning every word made
+        // `echo 'remember to run run-suite.sh'` a denial. Caught by this gate's
+        // own prose test on its first run, the same way `echo 'python Foo.java'`
+        // is called out for the write gate above.
+        let mut words = segment.split_whitespace().skip_while(|w| {
+            let bare = w.rsplit(['/', '\\']).next().unwrap_or(w);
+            PREFIXES.contains(&bare) || (w.contains('=') && !w.starts_with('-'))
+        });
+        let Some(first) = words.next() else { continue };
+        let head = first.rsplit(['/', '\\']).next().unwrap_or(first);
+        if let Some(script) = SUITE_SCRIPTS.iter().find(|s| **s == head) {
+            return Some(script);
+        }
+        let Some(tool) = BUILD_TOOLS.iter().find(|t| {
+            **t == head || t.trim_start_matches("./") == head
+        }) else {
+            continue;
+        };
+        // A build that explicitly skips tests is not a test run.
+        if segment.contains("-DskipTests") || segment.contains("-x test") {
+            continue;
+        }
+        let reaches_tests = segment.split_whitespace().any(|w| {
+            w == "test" || w == "verify" || w == "integration-test" || w == "check"
+        });
+        let narrowed = TEST_FILTERS.iter().any(|f| segment.contains(*f));
+        if reaches_tests && !narrowed {
+            return Some(tool);
+        }
+    }
+    None
+}
+
 /// Decide on one shell command.
 pub fn judge(command: &str) -> Verdict {
+    // THE SUITE CADENCE GATE RUNS FIRST, before the Java declarations below —
+    // otherwise `jawata-author:` (which short-circuits to Allow) would be a
+    // bypass for a rule that has nothing to do with authoring Java.
+    //
+    // Harald, 2026-09-08: "Full suite runs at the checkpoints and when we
+    // release only." Measured on Sprint 28e's first night — 17 full runs, mean
+    // 11m20s, 3¼ hours out of a 14-hour sprint, and about 13 of them buying
+    // nothing that the checkpoint would not have proved once.
+    //
+    // WHY THIS IS A HOOK AND NOT SEAT TEXT. The seat's own check 9 states the
+    // asymmetry: a full suite "costs the agent nothing — it sleeps through the
+    // wall-clock — while every minute lands on the person waiting." The agent
+    // is the one participant that cannot feel the price, so a cadence left to
+    // its judgement is chosen too high every time. Asked for a rule it proposed
+    // "run it when a change touches production code", which is true of every
+    // edit and discriminates nothing.
+    //
+    // STATELESS BY DESIGN. An earlier sketch kept a checkpoint marker on disk
+    // and compared it against the last run. That adds a second thing to forget
+    // and to go stale; requiring the reason ON EVERY RUN needs no state and
+    // cannot drift. It is SELF-CERTIFIED — nothing stops a false
+    // `checkpoint:` — exactly as nothing stops a weak `jawata-fallback:`. The
+    // value is not the block: it is that N runs become N logged claims, and a
+    // stage with four declared checkpoints and one real one is visible
+    // afterwards. It converts an invisible habit into a countable one.
+    if let Some(runner) = full_suite_in(command) {
+        if !command.contains(CHECKPOINT_DECLARATION) && !command.contains(RELEASE_DECLARATION) {
+            return Verdict::Deny {
+                reason: format!(
+                    "Full suite run (`{runner}`) is blocked outside a checkpoint or a release. \
+                     The whole suite belongs at the two borders where a claim is actually made; \
+                     between them, run the touched classes and their siblings plus whatever a \
+                     mutation needs. Measured on one sprint: 17 full runs, 3¼ hours, a quarter \
+                     of the sprint, and ~13 of them provable at the next checkpoint for free. \
+                     If this IS one, re-run with `{CHECKPOINT_DECLARATION} <stage or id>` or \
+                     `{RELEASE_DECLARATION} <version>` in the command; the declaration is \
+                     logged. \"Only the full suite says what else the change did\" is TRUE and \
+                     is not a reason — that damage surfaces at the checkpoint either way, and \
+                     bisecting one red checkpoint is cheaper than the runs spent avoiding it."
+                ),
+            };
+        }
+    }
     // The declarations are a LATTICE, and v3.8.1 shipped them as a flat pair.
     // `jawata-author:` is the stronger claim (I am writing Java deliberately)
     // and satisfies both gates. `jawata-fallback:` claims only a justified
@@ -272,6 +375,82 @@ mod tests {
 
     fn denied(cmd: &str) -> bool {
         matches!(judge(cmd), Verdict::Deny { .. })
+    }
+
+    // ===== The suite-cadence gate (Harald, 2026-09-08) =====
+
+    /// Built rather than written literally, because this repository carries a
+    /// hook that refuses an uncaptured suite command — and to a guard reading
+    /// command text, a test fixture NAMING one is indistinguishable from running
+    /// one. Found the moment these tests were first added, by being blocked.
+    fn suite_cmd(tail: &str) -> String {
+        format!("./build/run-{}.sh 4{}", "suite", tail)
+    }
+
+    #[test]
+    fn a_bare_full_suite_run_is_denied_and_taught_both_declarations() {
+        let cmd = suite_cmd("");
+        assert!(denied(&cmd));
+        let Verdict::Deny { reason } = judge(&cmd) else {
+            panic!("expected a denial");
+        };
+        assert!(
+            reason.contains(CHECKPOINT_DECLARATION),
+            "the denial must teach the checkpoint form: {reason}"
+        );
+        assert!(
+            reason.contains(RELEASE_DECLARATION),
+            "and the release form: {reason}"
+        );
+    }
+
+    #[test]
+    fn either_declaration_lets_the_suite_through() {
+        assert!(!denied(&suite_cmd("  # checkpoint: C4")));
+        assert!(!denied(&suite_cmd("  # release: v4.2.0")));
+    }
+
+    #[test]
+    fn the_gate_runs_before_the_author_declaration_so_it_is_not_a_bypass() {
+        // `jawata-author:` short-circuits to Allow for the Java gates. With the
+        // suite check placed after it, an unrelated authoring window would buy a
+        // free full run — the same lattice defect v3.8.1 shipped one gate over.
+        let cmd = format!("jawata-author: a fixture && {}", suite_cmd(""));
+        assert!(denied(&cmd), "an authoring window must not open the suite gate");
+    }
+
+    #[test]
+    fn a_build_that_skips_tests_is_not_a_test_run() {
+        // The step that PRECEDES every legitimate suite run. Denying it would
+        // block the very thing the rule depends on.
+        assert!(!denied("mvn -B -q -f build/pom.xml clean package -DskipTests"));
+    }
+
+    #[test]
+    fn a_filtered_run_is_not_a_full_suite() {
+        assert!(!denied("mvn -Dtest=FormMigrationTest test"));
+        assert!(!denied("gradle test --tests com.example.FooTest"));
+    }
+
+    #[test]
+    fn an_unfiltered_build_test_goal_is_a_full_suite() {
+        assert!(denied("mvn verify"));
+        assert!(denied("cd /repo && ./gradlew test"));
+    }
+
+    #[test]
+    fn a_targeted_class_run_is_untouched() {
+        // The whole between-checkpoint budget: touched classes and the mutation.
+        assert!(!denied(
+            "java -jar build/dist/jawata.jar -runTests -Djawata.test.classlist=/tmp/c.txt"
+        ));
+    }
+
+    #[test]
+    fn merely_naming_the_runner_in_prose_does_not_fire() {
+        // Command position, the same discipline the text and write gates use.
+        let cmd = format!("echo 'remember to run {} at the checkpoint'", "run-suite.sh");
+        assert!(!denied(&cmd));
     }
 
     #[test]
