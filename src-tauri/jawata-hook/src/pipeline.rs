@@ -282,6 +282,35 @@ fn guard(client: Client, payload: &str) -> Outcome {
     }
 
     let command = command_in(payload).unwrap_or_default();
+
+    // The dev-machine guards, folded in at v4.1.6. Two of the four police
+    // PATHS rather than shell syntax, so they see the command AND the file a
+    // reading or editing tool is about to touch — a containment rule that
+    // watched only Bash would be satisfied while Read walked out of the
+    // workspace.
+    let mut scan = command.clone();
+    if let Some(path) = edit_path_in(payload) {
+        scan.push(' ');
+        scan.push_str(&path);
+    }
+    if let crate::guard::Verdict::Deny { reason } = crate::local::judge_payload(&scan) {
+        return emit_permission(client, false, reason);
+    }
+    // Ordered as the shell guards were: which repository, then whether the
+    // output survives. Naming the wrong repository makes the captured output
+    // worthless, so it is the earlier question.
+    for rule in [
+        crate::local::gate_without_absolute_cd(&command),
+        crate::local::uncaptured_gate(&command),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let crate::guard::Verdict::Deny { reason } = rule {
+            return emit_permission(client, false, reason);
+        }
+    }
+
     let emission = match crate::guard::judge(&command) {
         crate::guard::Verdict::Allow => Emission::Permission {
             allowed: true,
