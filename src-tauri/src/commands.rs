@@ -112,10 +112,10 @@ pub fn rename_project(
     state.manager_service.rename_project(input)
 }
 
-/// studio#28: set (or clear, with `None`) a workspace's heap ceiling.
+/// studio#29: turn the debug agent on or off for one workspace's resident.
 ///
-/// Applies at the workspace's next start — a JVM cannot be re-bounded while it
-/// runs, and the UI says so rather than implying an immediate effect.
+/// Applies at the workspace's next start, and unlike the heap ceiling that is
+/// not a policy choice: a debug agent cannot be added to a running JVM.
 #[tauri::command]
 pub fn set_workspace_debuggable(
     state: State<'_, AppState>,
@@ -127,6 +127,10 @@ pub fn set_workspace_debuggable(
         .set_workspace_debuggable(&workspace_name, debuggable)
 }
 
+/// studio#28: set (or clear, with `None`) a workspace's heap ceiling.
+///
+/// Applies at the workspace's next start — a JVM cannot be re-bounded while it
+/// runs, and the UI says so rather than implying an immediate effect.
 #[tauri::command]
 pub fn set_workspace_max_heap(
     state: State<'_, AppState>,

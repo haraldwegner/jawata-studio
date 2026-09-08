@@ -33,7 +33,14 @@
   let loadError = "";
   let timer: ReturnType<typeof setInterval> | null = null;
 
-  /** File reads only on the backend, so polling costs nothing worth counting. */
+  /** Reads on the backend, so polling costs nothing worth counting.
+   *
+   * studio#22 made it not quite reads-only: a workspace with no cached copy of
+   * the machine's go-silent switch is given one here. That write happens ONCE
+   * per such workspace and never for one that already has a value, so the
+   * steady state of this poll is still reads — and `add_project` is where a new
+   * workspace actually inherits, which is why this stays a backstop rather than
+   * becoming the reason for the cadence. */
   const POLL_MILLIS = 5000;
 
   $: utilization = status?.utilization ?? null;

@@ -973,16 +973,6 @@ impl ConfigStore {
         Ok(Some(removed))
     }
 
-    /// studio#28: set (or clear) a workspace's heap ceiling in megabytes.
-    ///
-    /// `None` clears the setting, which returns the workspace to
-    /// [`crate::resident::DEFAULT_MAX_HEAP_MB`] rather than to unbounded —
-    /// there is deliberately no way to ask for an unbounded resident from here,
-    /// because that is the state this issue exists to remove.
-    ///
-    /// Takes effect on the workspace's NEXT start: a JVM's heap ceiling is
-    /// fixed at launch and cannot be changed in a running process. The caller
-    /// is responsible for telling the user that.
     /// studio#29: turn the debug agent on or off for one workspace's resident.
     ///
     /// `debuggable: true` ALLOCATES a JDWP port from the debug range and stores
@@ -1036,6 +1026,16 @@ impl ConfigStore {
         Ok(updated)
     }
 
+    /// studio#28: set (or clear) a workspace's heap ceiling in megabytes.
+    ///
+    /// `None` clears the setting, which returns the workspace to
+    /// [`crate::resident::DEFAULT_MAX_HEAP_MB`] rather than to unbounded —
+    /// there is deliberately no way to ask for an unbounded resident from here,
+    /// because that is the state this issue exists to remove.
+    ///
+    /// Takes effect on the workspace's NEXT start: a JVM's heap ceiling is
+    /// fixed at launch and cannot be changed in a running process. The caller
+    /// is responsible for telling the user that.
     pub fn set_workspace_max_heap(
         &self,
         workspace_name: &str,

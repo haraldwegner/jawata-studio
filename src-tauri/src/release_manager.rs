@@ -212,18 +212,21 @@ impl UpdateDecision {
 ///
 /// Pure, and separate from the check, because this IS the requirement: the
 /// download, the settings write and the status rendering are what carry the
-/// answer. `latest` is the release the network reported; a check that could not
-/// reach it never gets here, because "the check failed" is a decision the
-/// caller holds the error for.
+/// answer.
+///
+/// Two decisions are DELIBERATELY not here, and both for the same reason: they
+/// are not decidable from the facts this takes. `CheckingDisabled` is settled
+/// before the network is touched at all, and `CheckFailed` carries an error
+/// only the caller holds. A first version took `auto_check_for_updates` and
+/// answered `CheckingDisabled` from it — reachable from no caller, because the
+/// check returns before it, so the arm was exercised only by its own unit test.
+/// That is "a condition that cannot change the outcome", which is the shape
+/// this checkpoint kept finding elsewhere.
 pub fn decide_update(
-    auto_check_for_updates: bool,
     policy: UpdatePolicy,
     installed: Option<&str>,
     latest: &str,
 ) -> UpdateDecision {
-    if !auto_check_for_updates {
-        return UpdateDecision::CheckingDisabled;
-    }
     let Some(installed) = installed else {
         return UpdateDecision::InstalledFirstRuntime { version: latest.to_string() };
     };
@@ -316,7 +319,6 @@ impl ReleaseManager {
                 // render that decision — the log line, the user-visible detail
                 // and whether anything is downloaded at all.
                 let mut decision = decide_update(
-                    settings.auto_check_for_updates,
                     settings.update_policy,
                     installed.as_ref().map(|runtime| runtime.version.as_str()),
                     &release.version,
@@ -349,15 +351,20 @@ impl ReleaseManager {
                 Ok((installed, status, decision))
             }
             Err(error) => {
-                let decision = UpdateDecision::CheckFailed { error: error.clone() };
+                // The UI's sentence IS the decision's, on this branch too. It
+                // was composed separately here — so a failed check logged "no
+                // verdict — the release check itself failed" while the window
+                // read "Could not check the latest JAWATA release", two
+                // independently written sentences about one outcome. That is
+                // exactly the drift this type was introduced to make
+                // inexpressible, surviving on the branch it matters most on.
+                let decision = UpdateDecision::CheckFailed { error };
                 let status = self.build_release_status(
                     None,
                     installed.as_ref(),
                     settings,
                     None,
-                    Some(format!(
-                        "Could not check the latest JAWATA release: {error}"
-                    )),
+                    Some(decision.log_line()),
                 );
                 Ok((installed, status, decision))
             }
@@ -373,6 +380,15 @@ impl ReleaseManager {
         let runtime = self.install_release(&release, settings)?;
         settings.last_release_check = Some(current_timestamp_string());
         settings.last_seen_latest_version = Some(release.version.clone());
+        // D4 says EVERY version check names its decision, and this reaches the
+        // network and installs, so it is one — it simply reaches it because a
+        // person pressed the button rather than because a policy allowed it.
+        // Leaving it silent would have made the log's coverage depend on how
+        // the download was started.
+        eprintln!(
+            "[jawata-studio] release check: {}",
+            UpdateDecision::Installed { version: runtime.version.clone() }.log_line()
+        );
         Ok(runtime)
     }
 
@@ -775,7 +791,7 @@ impl ReleaseManager {
                 default_version: installed.map(|r| r.version.clone()),
                 checked_at: settings.last_release_check.clone(),
                 update_available: false,
-                detail: "Automatic JAWATA release checks are disabled.".into(),
+                detail: UpdateDecision::CheckingDisabled.log_line(),
             };
         }
 
@@ -938,12 +954,12 @@ mod tests {
         // ALREADY CURRENT and POLICY DECLINED are DIFFERENT, and telling them
         // apart is the whole point: one is nothing to do, the other is an
         // update sitting there waiting for a click.
-        let current = decide_update(true, UpdatePolicy::Always, Some("4.1.3"), "4.1.3");
+        let current = decide_update(UpdatePolicy::Always, Some("4.1.3"), "4.1.3");
         assert_eq!(UpdateDecision::AlreadyCurrent { version: "4.1.3".into() }, current);
         assert!(current.log_line().contains("nothing to do"));
         assert!(!current.installed_something());
 
-        let declined = decide_update(true, UpdatePolicy::Ask, Some("4.1.3"), "4.2.0");
+        let declined = decide_update(UpdatePolicy::Ask, Some("4.1.3"), "4.2.0");
         assert_eq!(
             UpdateDecision::PolicyDeclined {
                 installed: "4.1.3".into(),
@@ -956,21 +972,20 @@ mod tests {
         assert!(!declined.installed_something());
 
         // The same facts under the policy this sprint migrates everyone to.
-        let installed = decide_update(true, UpdatePolicy::Always, Some("4.1.3"), "4.2.0");
+        let installed = decide_update(UpdatePolicy::Always, Some("4.1.3"), "4.2.0");
         assert_eq!(UpdateDecision::Installed { version: "4.2.0".into() }, installed);
         assert!(installed.installed_something());
 
         // A FIRST runtime is fetched whatever the policy says: `ask` is a
         // policy about UPDATING, and there is nothing to update.
-        let first = decide_update(true, UpdatePolicy::Ask, None, "4.2.0");
+        let first = decide_update(UpdatePolicy::Ask, None, "4.2.0");
         assert_eq!(UpdateDecision::InstalledFirstRuntime { version: "4.2.0".into() }, first);
         assert!(first.installed_something());
 
-        // Checking switched off short-circuits everything, including the
-        // bootstrap above — and it says so rather than reading as "no update".
-        let off = decide_update(false, UpdatePolicy::Always, None, "4.2.0");
-        assert_eq!(UpdateDecision::CheckingDisabled, off);
-        assert!(off.log_line().contains("switched off"));
+        // Checking switched off is NOT decided here — the check returns before
+        // the network is touched — so it is asserted as the sentence it leaves
+        // rather than as an arm of a function that could never reach it.
+        assert!(UpdateDecision::CheckingDisabled.log_line().contains("switched off"));
 
         // The two failures a decision must not be silent about. A check that
         // FAILED is not "no update" — it is no verdict at all.

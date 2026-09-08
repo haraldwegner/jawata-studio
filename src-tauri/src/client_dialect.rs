@@ -59,6 +59,51 @@ pub struct Client {
     /// `false`: its command-line tool has no mechanism to connect jawata, so
     /// it stays visible and greyed rather than silently vanishing.
     pub supported: bool,
+    /// studio#19: other clients whose seat directory THIS client also reads.
+    ///
+    /// Cursor loads skills from the Claude and Codex directories *"for
+    /// compatibility"* — its own documentation says so
+    /// (cursor.com/docs/context/skills, read 2026-09-08). So on a machine where
+    /// jawata writes one of those, our own copy is a SECOND source for ONE
+    /// reader and every seat is listed twice.
+    ///
+    /// A LIST rather than one name, because the vendor's sentence names two
+    /// directories and a single `Option` cannot say so — even though only
+    /// `claude` receives seat files today, which is why Codex is not in this
+    /// row: a source that is written nowhere cannot be inherited from, and
+    /// listing it would claim coverage this deploy does not have.
+    ///
+    /// It lives HERE rather than beside the deploy for the reason this module
+    /// exists: a client described in a `match` in a sibling module is the
+    /// fourteenth place a client is described, and the conformance tests below
+    /// cannot see one.
+    pub seats_inherited_from: &'static [&'static str],
+}
+
+impl Client {
+    /// studio#19: whether this client must write NO seat files of its own.
+    ///
+    /// ONE input, and it is an OBSERVATION: are the source's seat files there
+    /// right now. The deploy visits a source before anything that inherits from
+    /// it, so that one question covers a source written moments ago in this
+    /// same run and a source left by an earlier one alike.
+    ///
+    /// A first version also asked whether the source was SELECTED for this run,
+    /// which is a prediction — and wrong in the way that matters. If the
+    /// source's own write then failed, this client's files were removed against
+    /// a promise nothing kept, and the machine ended with no seat files at all:
+    /// the invisible absence the whole conditional exists to prevent, arriving
+    /// through it.
+    ///
+    /// The bound that keeps it honest: a client with no source PRESENT keeps
+    /// its own files. Trading a visible duplicate for an invisible absence
+    /// would be the worse defect.
+    pub fn inherits_seat_commands(
+        &self,
+        source_is_present: impl Fn(&str) -> bool,
+    ) -> bool {
+        self.seats_inherited_from.iter().any(|source| source_is_present(source))
+    }
 }
 
 /// Every client the deploy knows, in display order.
@@ -74,17 +119,49 @@ pub struct Client {
 /// So IntelliJ's coverage is INHERITED, and the parity matrix must say that
 /// rather than claim it as a driven client.
 pub const CLIENTS: &[Client] = &[
-    Client { id: "cursor", settings_key: "cursor", label: "Cursor", supported: true },
-    Client { id: "claude", settings_key: "claude", label: "Claude Code", supported: true },
-    Client { id: "codex", settings_key: "codex", label: "Codex", supported: true },
+    Client {
+        id: "cursor",
+        settings_key: "cursor",
+        label: "Cursor",
+        supported: true,
+        // Measured, and the reason is in the field's own doc.
+        seats_inherited_from: &["claude"],
+    },
+    Client {
+        id: "claude",
+        settings_key: "claude",
+        label: "Claude Code",
+        supported: true,
+        seats_inherited_from: &[],
+    },
+    Client {
+        id: "codex",
+        settings_key: "codex",
+        label: "Codex",
+        supported: true,
+        seats_inherited_from: &[],
+    },
     Client {
         id: "copilot_cli",
         settings_key: "copilotCli",
         label: "Copilot CLI",
         supported: true,
+        seats_inherited_from: &[],
     },
-    Client { id: "vscode", settings_key: "vscode", label: "VS Code", supported: true },
-    Client { id: "grok", settings_key: "grok", label: "Grok", supported: true },
+    Client {
+        id: "vscode",
+        settings_key: "vscode",
+        label: "VS Code",
+        supported: true,
+        seats_inherited_from: &[],
+    },
+    Client {
+        id: "grok",
+        settings_key: "grok",
+        label: "Grok",
+        supported: true,
+        seats_inherited_from: &[],
+    },
 ];
 
 /// The roster row for a client id, or `None` for an id we do not know.
@@ -288,6 +365,68 @@ pub fn dialect_for(client: &str) -> ClientDialect {
 
 #[cfg(test)]
 mod tests {
+
+    /// studio#19: Cursor reads the Claude skills directory for compatibility, so
+    /// a machine that gets both targets lists every seat twice.
+    ///
+    /// The decision lives on the roster and so does its test — a duplicate is a
+    /// fact about a MACHINE, and the deploy's own per-client assertions cannot
+    /// see one.
+    #[test]
+    fn cursor_inherits_the_seat_files_it_would_otherwise_duplicate() {
+        let cursor = client("cursor").expect("cursor");
+        assert_eq!(&["claude"], &cursor.seats_inherited_from);
+
+        assert!(cursor.inherits_seat_commands(|s| s == "claude"), "the source is present");
+        assert!(
+            !cursor.inherits_seat_commands(|s| s == "codex"),
+            "a source that is present but is not one THIS client reads changes nothing"
+        );
+
+        // THE CASE THAT KEEPS THE FIX HONEST: no source present, so Cursor
+        // keeps its own files. Trading a visible duplicate for an invisible
+        // absence would be the worse defect.
+        assert!(
+            !cursor.inherits_seat_commands(|_| false),
+            "a Cursor-only machine has nothing to inherit FROM"
+        );
+
+        // The source itself never inherits — it is where the files come from —
+        // and neither does a client that reads no other client's directory.
+        // Asserted over the WHOLE roster rather than a hand-typed list, so a
+        // client added tomorrow is covered without anyone remembering.
+        for row in CLIENTS.iter().filter(|c| c.id != "cursor") {
+            assert!(
+                !row.inherits_seat_commands(|_| true),
+                "{} must keep writing its own seat files",
+                row.id
+            );
+        }
+    }
+
+    /// A source that is never WRITTEN cannot be inherited from, and naming one
+    /// would claim coverage the deploy does not have.
+    ///
+    /// Cursor's documentation names the Codex skills directory beside Claude's,
+    /// and this is why Codex is nonetheless absent from that row: the deploy
+    /// writes seat files for `claude`, `cursor` and `antigravity` only, so a
+    /// Cursor+Codex machine has nothing of ours in the Codex directory to
+    /// duplicate. If that ever changes, this test is what fails.
+    #[test]
+    fn every_named_source_is_a_client_that_receives_seat_files() {
+        const RECEIVES_SEAT_FILES: &[&str] = &["claude", "cursor", "antigravity"];
+        for row in CLIENTS {
+            for source in row.seats_inherited_from {
+                assert!(
+                    RECEIVES_SEAT_FILES.contains(source),
+                    "{} inherits from {source}, which receives no seat files — so there is \
+                     nothing there to inherit and this row promises coverage it has not got",
+                    row.id
+                );
+                assert!(client(source).is_some(), "{source} is not a client at all");
+            }
+        }
+    }
     use super::*;
 
     #[test]

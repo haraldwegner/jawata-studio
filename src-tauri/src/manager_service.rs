@@ -454,6 +454,14 @@ impl ManagerService {
         // Sprint 16 (bugs.md #14a): keep already-deployed client configs
         // in sync with workspace mutations.
         self.refresh_deployed_configs();
+        // studio#22: THIS is the moment a workspace becomes real, so it is
+        // where it inherits the machine's go-silent value. Doing it only on the
+        // status read left the window open until somebody opened the Reporting
+        // page — and the hook reads that file on every prompt in between, which
+        // is the whole defect rather than a smaller version of it.
+        for error in self.reconcile_field_silence().failed {
+            eprintln!("[jawata-studio] field silence not inherited: {error}");
+        }
         Ok(project)
     }
 
@@ -831,7 +839,20 @@ impl ManagerService {
                 None => target.enabled_by_settings,
             }
         };
-        for target in &clients {
+        // studio#19: a client that INHERITS its seat files must be visited
+        // AFTER the client it inherits them from, or the probe reads a
+        // directory that has not been written yet and answers "absent" on
+        // every first deploy. Stable, so the roster's display order survives
+        // for every client the ordering does not constrain.
+        let mut order: Vec<&DeployClientTarget> = clients.iter().collect();
+        order.sort_by_key(|t| {
+            let inherits = crate::client_dialect::client(t.id)
+                .map(|c| !c.seats_inherited_from.is_empty())
+                .unwrap_or(false);
+            u8::from(inherits)
+        });
+
+        for target in order {
             let is_selected = selected(target);
             if !is_selected {
                 let reason = if requested_targets.is_some() {
@@ -851,10 +872,7 @@ impl ManagerService {
             // itself instead of silently vanishing. Delete stays allowed on
             // purpose: an install that received our entries before the ruling
             // must still be able to clean them out.
-            let unsupported = crate::client_dialect::client(target.id)
-                .map(|c| !c.supported)
-                .unwrap_or(false);
-            if unsupported && !matches!(input.mode, DeployMode::Delete) {
+            if skipped_as_unsupported(target.id, &input.mode) {
                 results.push(skipped_client_result(
                     target.id,
                     target.target_path.clone(),
@@ -865,21 +883,32 @@ impl ManagerService {
             // studio#19: a client whose seat files come from another client's
             // directory writes none of its own — and any it wrote before are
             // removed, because a duplicate that survives the fix is the defect.
-            let source = seat_commands_inherited_from(target.id);
-            let source_target = source.and_then(|s| clients.iter().find(|c| c.id == s));
-            let source_deployed = source_target
-                .map(|t| {
-                    selected(t)
-                        && crate::client_dialect::client(t.id).map(|c| c.supported).unwrap_or(true)
+            // The roster owns WHICH clients those are; this asks it whether the
+            // source is actually there, which is a fact about this machine and
+            // this run.
+            // studio#19: OBSERVED, not predicted. A source deployed EARLIER IN
+            // THIS RUN has already written its directory, so the probe answers
+            // for both cases at once and there is no second input to get wrong.
+            //
+            // The first version asked instead whether the source was selected —
+            // which is a prediction, and wrong in the way that matters: if the
+            // source's own write then FAILED, Cursor's files were removed
+            // against a promise nothing kept and the machine ended with no seat
+            // files at all. That is the invisible absence the conditional
+            // exists to prevent, arriving through the conditional.
+            let inherits_seat_commands = crate::client_dialect::client(target.id)
+                .map(|row| {
+                    row.inherits_seat_commands(|source| {
+                        clients
+                            .iter()
+                            .find(|c| c.id == source)
+                            .and_then(|t| t.target_path.as_deref())
+                            .and_then(|path| derive_seat_commands_dir(source, path))
+                            .map(|dir| seat_dir_carries_managed_seats(source, &dir))
+                            .unwrap_or(false)
+                    })
                 })
                 .unwrap_or(false);
-            let source_dir_carries_seats = source
-                .zip(source_target.and_then(|t| t.target_path.clone()))
-                .and_then(|(s, path)| derive_seat_commands_dir(s, &path).map(|dir| (s, dir)))
-                .map(|(s, dir)| seat_dir_carries_managed_seats(s, &dir))
-                .unwrap_or(false);
-            let inherits_seat_commands =
-                seat_commands_inherited(target.id, source_deployed, source_dir_carries_seats);
 
             let result = self.deploy_to_client(
                 target.id,
@@ -892,6 +921,14 @@ impl ManagerService {
             );
             results.push(result);
         }
+
+        // The deploy VISITED the clients in dependency order (studio#19); the
+        // user reads them in the roster's order, which is what every earlier
+        // version showed and what the settings list is sorted by.
+        let display_order: Vec<&str> = clients.iter().map(|t| t.id).collect();
+        results.sort_by_key(|r| {
+            display_order.iter().position(|id| *id == r.client).unwrap_or(usize::MAX)
+        });
 
         // Sprint 16 (bugs.md #14b): resolve failures ride on every written
         // client result + the summary line — partial deploys are visible.
@@ -944,14 +981,17 @@ impl ManagerService {
                                 .and_then(substrate_root_in),
                             Err(error) => {
                                 eprintln!(
-                                    "[jawata-studio] auto-seed skipped ({url}):                                      could not read the substrate root: {error}"
+                                    "[jawata-studio] auto-seed skipped ({url}): could not read \
+                                     the substrate root: {error}"
                                 );
                                 continue;
                             }
                         };
                         let Some(root) = root else {
                             eprintln!(
-                                "[jawata-studio] auto-seed skipped ({url}): the store                                  reports no file substrate, and a pathless load would                                  seed the legacy corpus (studio#34)"
+                                "[jawata-studio] auto-seed skipped ({url}): the store reports no \
+                                 file substrate, and a pathless load would seed the \
+                                 legacy corpus (studio#34)"
                             );
                             continue;
                         };
@@ -1137,12 +1177,16 @@ impl ManagerService {
     /// verdict behind.
     ///
     /// It is not read-ONLY, and studio#22 is why: the go-silent switch is a
-    /// machine fact cached per workspace, and a workspace that appeared after
-    /// the user went silent has no cached copy. This is the first moment studio
-    /// sees such a workspace, so it is where the copy is written — and only
-    /// there, since the reconcile is silent when the two already agree.
+    /// machine fact cached per workspace, and a workspace with no cached copy
+    /// is given one here — ONLY where there is none, so a value another writer
+    /// of that lane has set is never overridden by a poll.
+    ///
+    /// A BACKSTOP rather than the moment that matters. `add_project` is where a
+    /// workspace becomes real and is where it inherits; the claim that the
+    /// status read is "the first moment studio sees such a workspace" was
+    /// false — it is visible the instant `add_project` returns.
     pub fn field_status(&self) -> crate::field_view::FieldStatus {
-        self.reconcile_field_silence();
+        let _ = self.reconcile_field_silence();
         crate::field_view::status_from(
             &self.field_workspaces(),
             &crate::field_view::silence_log_paths(),
@@ -1167,32 +1211,43 @@ impl ManagerService {
         silenced: Option<bool>,
     ) -> Result<crate::field_view::FieldStatus, String> {
         let dir = self.field_dir_for(workspace)?;
-        if nudges.is_some() {
-            crate::field_view::write_state(&dir, nudges, None)?;
+        if let Some(value) = nudges {
+            crate::field_view::set_nudges(&dir, value)?;
         }
-        // ONE writer for the cache. Recording the machine value and then also
-        // writing this workspace's copy would make the setter a second writer of
-        // one fact — and it would hide a dropped recording, because the clicked
+        // ONE writer for the machine value. Recording it and then also writing
+        // this workspace's copy would make the setter a second writer of one
+        // fact — and it would hide a dropped recording, because the clicked
         // workspace would fall silent either way while every other one did not.
+        //
+        // The FAN-OUT over the existing workspaces stays in the UI, which is
+        // where it already was: this settles the machine's value and fills in
+        // workspaces that have none, and never overrides a value some other
+        // writer of that lane has set.
         if let Some(value) = silenced {
             self.config_store.set_field_reminders_silenced(value)?;
         }
-        self.reconcile_field_silence();
+        for error in self.reconcile_field_silence().failed {
+            eprintln!("[jawata-studio] field silence not inherited: {error}");
+        }
         Ok(self.field_status())
     }
 
-    /// studio#22: settle every workspace's cached copy of the go-silent switch
-    /// against the machine's recorded value.
+    /// studio#22: give every workspace with NO cached copy of the go-silent
+    /// switch the machine's recorded value, and never override one that has it.
     ///
-    /// Called from the status read as well as from the setter, because the
-    /// window this closes opens without anyone clicking anything: a workspace
-    /// added after the user went silent has no state file, which reads as NOT
-    /// silenced, and the reminders come back for it. The status read is the
-    /// first moment studio can see that workspace at all.
-    fn reconcile_field_silence(&self) {
+    /// Called from `add_project` — where a workspace becomes real, and the
+    /// moment that actually matters — and from the setter and the status read
+    /// as backstops, because a workspace can also arrive without going through
+    /// `add_project` (an edited `projects.json`, a restored config).
+    ///
+    /// Resting on the status read alone was wrong and the reason is worth
+    /// keeping: it left the window open until somebody opened the Reporting
+    /// page, while the hook reads that file on every prompt in between — which
+    /// is the defect itself rather than a smaller version of it.
+    fn reconcile_field_silence(&self) -> crate::field_view::Reconciled {
         let silenced = self.config_store.get_settings().field_reminders_silenced;
         let dirs: Vec<PathBuf> = self.field_workspaces().into_iter().map(|(_, dir)| dir).collect();
-        crate::field_view::reconcile_silence(&dirs, silenced);
+        crate::field_view::reconcile_silence(&dirs, silenced)
     }
 
     /// Resolve a workspace to its field directory. Studio keys workspaces by
@@ -1528,8 +1583,13 @@ impl ManagerService {
         let bootstrap = self.config_store.bootstrap_status();
         let (settings, installed_runtime, release_status) = if refresh_release_status {
             let mut settings = self.config_store.get_settings();
-            let (installed_runtime, release_status, _decision) =
+            let (installed_runtime, release_status, decision) =
                 self.release_manager.sync_with_settings(&mut settings)?;
+            // D4: this path reaches the network too. It is dead today — every
+            // caller passes `false` — and a version check that logs nothing is
+            // exactly the silence this deliverable removed, so it says the same
+            // sentence rather than waiting to be found later.
+            eprintln!("[jawata-studio] release check: {}", decision.log_line());
             let settings = self.config_store.write_settings(settings)?;
             (settings, installed_runtime, release_status)
         } else {
@@ -3978,52 +4038,6 @@ fn client_still_receives_seat_commands(client: &str) -> bool {
         .unwrap_or(true)
 }
 
-/// studio#19: which client's directory a machine's seat files actually live in.
-///
-/// Cursor loads skills from the CLAUDE skills directory **for compatibility** —
-/// its own documentation says so in as many words (cursor.com/docs/context/skills,
-/// read 2026-09-08: *"For compatibility, Cursor also loads skills from Claude and
-/// Codex directories"*, naming the project-level and home-level `.claude/skills`
-/// and `.codex/skills`). So on a machine where jawata writes BOTH targets, one
-/// reader has two sources and every seat is listed twice; measured at v3.11.0 and
-/// reported again on the live install at v4.1 — eight seats under the Cursor
-/// commands directory, the same eight under the Claude skills directory, each one
-/// shown twice, while Cursor's own built-ins appeared once.
-///
-/// That makes WHOSE files a client reads a per-MACHINE fact rather than a
-/// per-client one, and a client that INHERITS them writes none of its own. It is
-/// the shape the roster already uses for IntelliJ, whose coverage is inherited
-/// from the four agents it hosts rather than driven directly.
-///
-/// This says only WHERE the files would come from. Whether they are actually
-/// there is [`seat_commands_inherited`]'s question, and it has to be asked:
-/// trading a visible duplicate for an invisible absence would be worse than the
-/// defect.
-fn seat_commands_inherited_from(client: &str) -> Option<&'static str> {
-    match client {
-        "cursor" => Some("claude"),
-        _ => None,
-    }
-}
-
-/// studio#19: whether `client` must write NO seat files of its own on this run.
-///
-/// Pure, and separate from the deploy, because this IS the fix: everything else
-/// in the change is plumbing that carries the answer to the write. Both inputs
-/// are needed and neither implies the other — a source deployed in this very run
-/// leaves the directory behind afterwards even when it is empty now (the roster
-/// visits Cursor before Claude Code, so a filesystem probe alone would answer
-/// "absent" on a first deploy and write the duplicate anyway), and a source that
-/// is NOT in this run can still carry seats an earlier one left, which Cursor
-/// goes on reading whether or not the user has since unticked that client.
-fn seat_commands_inherited(
-    client: &str,
-    source_deployed: bool,
-    source_dir_carries_seats: bool,
-) -> bool {
-    seat_commands_inherited_from(client).is_some() && (source_deployed || source_dir_carries_seats)
-}
-
 /// Does this client's seat directory already hold the managed seat files?
 ///
 /// Reads ONE of them rather than all: they are written and removed together, so
@@ -4034,6 +4048,20 @@ fn seat_dir_carries_managed_seats(client: &str, commands_dir: &Path) -> bool {
         .first()
         .map(|(_, path)| path.exists())
         .unwrap_or(false)
+}
+
+/// Sprint 28a, the four-client ruling: an UNSUPPORTED client is never written
+/// to. Delete stays allowed on purpose — an install that received our entries
+/// before the ruling must still be able to clean them out.
+///
+/// studio#19 made this a function rather than an inline test: the seat-source
+/// question asks it too, and the first version of that asked a SIMILAR one
+/// (it omitted the Delete term), which is how two predicates for one rule start.
+fn skipped_as_unsupported(client: &str, mode: &DeployMode) -> bool {
+    let unsupported = crate::client_dialect::client(client)
+        .map(|c| !c.supported)
+        .unwrap_or(false);
+    unsupported && !matches!(mode, DeployMode::Delete)
 }
 
 fn derive_seat_commands_dir(client: &str, mcp_target_path: &str) -> Option<PathBuf> {
@@ -10486,41 +10514,6 @@ judge was never told to give"
         // is a real gap in the gate's reach on that client, recorded here
         // rather than papered over with a file it would ignore.
         assert!(derive_agents_dir("cursor", &display_path(&cfg)).is_none());
-    }
-
-    /// studio#19: Cursor reads the Claude skills directory for compatibility, so
-    /// a machine that gets both targets lists every seat twice. The decision is
-    /// pure, and so is its test — a duplicate is a fact about a MACHINE, and no
-    /// per-client assertion can see one.
-    #[test]
-    fn cursor_inherits_the_seat_files_it_would_otherwise_duplicate() {
-        // Both ways the shared directory can be there, and each ALONE is enough:
-        // the roster visits Cursor first, so on a first deploy the directory is
-        // still empty and only `source_deployed` can answer; and a source the
-        // user has since unticked still leaves files Cursor goes on reading, so
-        // only the probe can answer that one.
-        assert!(seat_commands_inherited("cursor", true, false), "deployed in this run");
-        assert!(seat_commands_inherited("cursor", false, true), "left by an earlier run");
-        assert!(seat_commands_inherited("cursor", true, true));
-
-        // AND THE CASE THAT KEEPS THE FIX HONEST: no shared directory, so Cursor
-        // keeps its own files. Trading a visible duplicate for an invisible
-        // absence would be the worse defect.
-        assert!(
-            !seat_commands_inherited("cursor", false, false),
-            "a Cursor-only machine has nothing to inherit FROM"
-        );
-
-        // The source itself never inherits — it is where the files come from —
-        // and neither does a client that reads no other client's directory.
-        for client in ["claude", "codex", "vscode", "copilot_cli", "grok"] {
-            assert!(
-                !seat_commands_inherited(client, true, true),
-                "{client} must keep writing its own seat files"
-            );
-        }
-        assert_eq!(Some("claude"), seat_commands_inherited_from("cursor"));
-        assert_eq!(None, seat_commands_inherited_from("claude"));
     }
 
     /// The probe the "left by an earlier run" half rides on, against a real

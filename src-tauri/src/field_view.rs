@@ -267,7 +267,24 @@ pub fn read_state(field_dir: &Path) -> FieldState {
 /// truncating write sees an empty file, and the hook reads this one on every
 /// prompt. `rename` within a directory is atomic on every platform we ship, so
 /// the hook sees either the whole old file or the whole new one.
-pub fn write_state(
+/// studio#22: the ONLY two ways to write this file, and they are separate so
+/// the machine-level switch cannot be set for one workspace by accident.
+///
+/// `nudges` is per workspace and anyone may set it. `silenced` is not: it is a
+/// fact about the machine, so it is written only by [`reconcile_silence`],
+/// filling in a workspace that has no value yet. Leaving one `write_state` with
+/// both would have left the old path a single call away — and it is exactly
+/// that call, still available and merely unused, that made a mutation deleting
+/// the machine-level recording pass 415 of 415 tests.
+pub fn set_nudges(field_dir: &Path, nudges: bool) -> Result<FieldState, String> {
+    write_state(field_dir, Some(nudges), None)
+}
+
+fn write_state_silence(field_dir: &Path, silenced: bool) -> Result<FieldState, String> {
+    write_state(field_dir, None, Some(silenced))
+}
+
+fn write_state(
     field_dir: &Path,
     nudges: Option<bool>,
     silenced: Option<bool>,
@@ -310,39 +327,58 @@ pub fn write_state(
         .map_err(|e| format!("wrote {} but could not read it back: {e}", target.display()))
 }
 
-/// studio#22: bring every workspace's CACHED copy of the go-silent switch to
-/// the machine's value, and report the directories it had to write.
+/// studio#22: give a workspace that has NO cached copy of the go-silent switch
+/// the machine's value, and report what it wrote and what it could not.
 ///
 /// The switch is one fact about the machine (Harald, 2026-08-18) while the file
-/// the hook reads is per workspace, so the two can disagree — and they do, in
-/// the one direction nobody clicks: a workspace added AFTER the user went
-/// silent has no state file at all, `read_state` folds that to *not silenced*,
-/// and the reminders come back for it without the user changing anything.
+/// the hook reads is per workspace, so the two can disagree — in the one
+/// direction nobody clicks: a workspace added AFTER the user went silent has no
+/// state file at all, `read_state` folds that to *not silenced*, and the
+/// reminders come back for it without the user changing anything.
 ///
-/// Two properties this has to have, and both are asserted:
+/// **IT INHERITS AND NEVER OVERRIDES, and that bound is the whole design.**
+/// The first version settled every DISAGREEING workspace against the machine
+/// value, which reads as tidy and is wrong: this module's own header names
+/// three writers of that lane — the hook reads it, **the agent writes it
+/// through `FieldTool`**, studio writes it from the tile. An agent asked to go
+/// silent writes `silenced` for its workspace, and a studio that treats every
+/// disagreement as a stale cache reverts that request on its next poll. So a
+/// workspace that HAS a value keeps it, whoever set it; only the absence of one
+/// is filled in.
 ///
-/// - **Silent about agreement.** It runs on every status read, so a write per
-///   poll would churn a file the hook reads on every prompt.
-/// - **It does not CREATE a file to record "not silenced".** That one needs no
-///   clause of its own and deliberately does not have one: an absent file
-///   already READS as not silenced, from both sides — the hook makes the same
-///   call — so it already agrees and is skipped by the same comparison. A
-///   separate guard would be a condition that cannot change the outcome.
+/// The machine setting is therefore the DEFAULT a new workspace starts from
+/// rather than a value continuously imposed, and the checkbox's fan-out over
+/// the existing workspaces is what settles those — which is what it already
+/// did before this existed.
 ///
-/// Only `silenced` is reconciled. `nudges` is the OTHER switch, it is not
-/// ruled per machine, and `write_state` preserves it.
-pub fn reconcile_silence(field_dirs: &[PathBuf], silenced: bool) -> Vec<PathBuf> {
-    let mut written = Vec::new();
+/// It does not create a file to record "not silenced": an absent file already
+/// READS as not silenced from both sides — the hook makes the same call — so
+/// there is nothing to write down.
+///
+/// Only `silenced` is written. `nudges` is the OTHER switch, it is not ruled
+/// per machine, and it is left exactly as it was.
+pub fn reconcile_silence(field_dirs: &[PathBuf], silenced: bool) -> Reconciled {
+    let mut out = Reconciled::default();
     for dir in field_dirs {
-        if read_state(dir).silenced == silenced {
+        if !silenced || dir.join("state.json").exists() {
             continue;
         }
-        match write_state(dir, None, Some(silenced)) {
-            Ok(_) => written.push(dir.clone()),
-            Err(error) => eprintln!("[jawata-studio] field silence not reconciled: {error}"),
+        match write_state_silence(dir, silenced) {
+            Ok(_) => out.inherited.push(dir.clone()),
+            // Reported rather than swallowed: the caller renders a status that
+            // would otherwise say every workspace settled.
+            Err(error) => out.failed.push(error),
         }
     }
-    written
+    out
+}
+
+/// What one reconcile did — the workspaces given the machine's value, and the
+/// writes that did not happen.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Reconciled {
+    pub inherited: Vec<PathBuf>,
+    pub failed: Vec<String>,
 }
 
 /// EXACTLY what a first click of the go-silent checkbox leaves on disk.
@@ -1430,8 +1466,8 @@ mod tests {
     }
 
     /// studio#22: the go-silent switch is a fact about the MACHINE and the file
-    /// the hook reads is per workspace, so the cache has to be settled against
-    /// the value rather than written once at the click.
+    /// the hook reads is per workspace, so a workspace with no copy of it has
+    /// to be given one — and a workspace that HAS one has to be left alone.
     #[test]
     fn a_workspace_that_appears_later_inherits_the_machines_silence() {
         // THE DEFECT ITSELF: a workspace added after the user went silent. It
@@ -1440,7 +1476,7 @@ mod tests {
         // user.
         let fresh = scratch("later-workspace");
         assert!(!fresh.join("state.json").exists());
-        assert_eq!(vec![fresh.clone()], reconcile_silence(&[fresh.clone()], true));
+        assert_eq!(vec![fresh.clone()], reconcile_silence(&[fresh.clone()], true).inherited);
         let raw = std::fs::read_to_string(fresh.join("state.json")).unwrap();
         assert!(raw.contains("\"silenced\":true"), "the bytes the hook reads: {raw}");
 
@@ -1448,23 +1484,34 @@ mod tests {
         // writes no file to say so — an absent file already says it, and the
         // hook makes the same call — so there is nothing here to create.
         let untouched = scratch("never-silenced");
-        assert!(reconcile_silence(&[untouched.clone()], false).is_empty());
+        assert!(reconcile_silence(&[untouched.clone()], false).inherited.is_empty());
         assert!(
             !untouched.join("state.json").exists(),
             "a file recording 'not silenced' is state that says nothing"
         );
 
-        // SILENT ABOUT AGREEMENT, because this runs on every status poll and
-        // the hook reads the file on every prompt.
-        assert!(reconcile_silence(&[fresh.clone()], true).is_empty());
+        // IT INHERITS ONCE AND NEVER AGAIN, which is what stops it churning a
+        // file the hook reads on every prompt.
+        assert!(reconcile_silence(&[fresh.clone()], true).inherited.is_empty());
 
-        // And it settles the disagreement WITHOUT touching the other switch:
-        // `nudges` is not ruled per machine.
-        write_state(&fresh, Some(false), None).unwrap();
-        assert_eq!(vec![fresh.clone()], reconcile_silence(&[fresh.clone()], false));
-        let after = read_state(&fresh);
-        assert!(!after.silenced, "the machine's value won");
-        assert!(!after.nudges, "the OTHER switch survived");
+        // AND IT NEVER OVERRIDES A VALUE SOMEBODY ELSE SET. This module's
+        // header names three writers of this lane, one of them the AGENT
+        // through `FieldTool` — so a workspace asked to go silent, or asked to
+        // stop being silent, keeps what it was given. The first version of this
+        // reconcile settled every disagreement against the machine value, which
+        // reverts that request on the next poll.
+        write_state_silence(&fresh, false).unwrap();
+        assert!(
+            reconcile_silence(&[fresh.clone()], true).inherited.is_empty(),
+            "a workspace that HAS a value keeps it, whoever set it"
+        );
+        assert!(!read_state(&fresh).silenced, "the other writer's value survived");
+
+        // The other switch is never touched: `nudges` is not ruled per machine.
+        let nudged = scratch("nudges-kept");
+        set_nudges(&nudged, false).unwrap();
+        assert!(reconcile_silence(&[nudged.clone()], true).inherited.is_empty());
+        assert!(!read_state(&nudged).nudges, "the OTHER switch survived");
     }
 
     /// The hook decides by SUBSTRING on this file. A pretty-printed or
