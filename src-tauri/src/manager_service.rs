@@ -10646,6 +10646,45 @@ judge was never told to give"
         assert!(seat_dir_carries_managed_seats("claude", &dir));
     }
 
+    /// A SERVICE BUILT IN A TEST CANNOT REACH THE USER'S OWN FILES, and this
+    /// is a repair rather than a precaution.
+    ///
+    /// `ManagerSettings::default_for_paths` fills the client paths from
+    /// `detect_default_mcp_client_paths()`, which points at the USER'S home,
+    /// and every deploy target defaults to enabled. So the first service test
+    /// written on this harness called `add_project`, which calls
+    /// `refresh_deployed_configs`, which found this machine's six real client
+    /// configs carrying managed entries and DEPLOYED to them — rewriting them
+    /// with servers derived from a temp workspace that ceases to exist when the
+    /// test ends.
+    ///
+    /// Measured before the fix: six targets enabled, six real paths, all six
+    /// `managed_entries=true`. It is asserted here rather than remembered,
+    /// because the next person to add a service test will not know.
+    #[test]
+    fn a_service_built_for_a_test_cannot_reach_the_users_own_configuration() {
+        let dir = unique_tempdir("no-real-paths");
+        let service = service_over(&dir);
+        let settings = service.config_store.get_settings();
+        let root = display_path(&dir);
+
+        let targets = service.deploy_targets_for_settings(&settings);
+        assert!(!targets.is_empty(), "an empty list would pass having checked nothing");
+        for target in targets {
+            assert!(
+                !target.enabled_by_settings,
+                "{} is enabled, so a deploy from a test would write to it",
+                target.id
+            );
+            let path = target.target_path.clone().unwrap_or_default();
+            assert!(
+                path.starts_with(&root),
+                "{} points at {path:?}, which is OUTSIDE the test's own directory",
+                target.id
+            );
+        }
+    }
+
     // ---- studio#45: the service itself, over a temp directory ----
 
     /// A REAL `ManagerService`, assembled the way `lib.rs` assembles it.

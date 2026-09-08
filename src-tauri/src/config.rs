@@ -728,8 +728,47 @@ impl ConfigStore {
             log_dir: dir.join("logs"),
         };
         fs::create_dir_all(&paths.log_dir).expect("log dir");
+        let mut settings = ManagerSettings::default_for_paths(&paths);
+        // THE REAL CLIENT CONFIGS ARE UNREACHABLE FROM A TEST, and this is not
+        // caution — it is a defect that happened.
+        //
+        // `default_for_paths` fills `mcp_client_paths` from
+        // `detect_default_mcp_client_paths()`, which points at the USER'S OWN
+        // files, and every deploy target defaults to enabled. So a service over
+        // a temp directory that called `add_project` reached
+        // `refresh_deployed_configs`, found the user's real configs carrying
+        // managed entries, and DEPLOYED — rewriting six real client files with
+        // servers derived from a temp workspace that ceases to exist when the
+        // test ends.
+        //
+        // Measured on this machine before the fix: all six targets enabled,
+        // all six real paths carrying managed entries. So the harness is
+        // pointed inside `dir` AND every target is switched off — either alone
+        // would do it today, and a future test that legitimately turns a target
+        // on must not thereby acquire the user's home.
+        let inside = |name: &str| McpClientPathEntry {
+            auto_detected_path: None,
+            manual_override_path: Some(display_path(&dir.join(name))),
+            effective_path: Some(display_path(&dir.join(name))),
+        };
+        settings.mcp_client_paths = McpClientPaths {
+            cursor: inside("client-cursor.json"),
+            claude: inside("client-claude.json"),
+            codex: inside("client-codex.toml"),
+            copilot_cli: inside("client-copilot.json"),
+            vscode: inside("client-vscode.json"),
+            grok: inside("client-grok.toml"),
+        };
+        settings.deploy_targets = DeployTargetFlags {
+            cursor: false,
+            claude: false,
+            codex: false,
+            copilot_cli: false,
+            vscode: false,
+            grok: false,
+        };
         Self {
-            settings: Mutex::new(ManagerSettings::default_for_paths(&paths)),
+            settings: Mutex::new(settings),
             projects: Mutex::new(ProjectsFile {
                 version: 1,
                 projects: Vec::new(),
