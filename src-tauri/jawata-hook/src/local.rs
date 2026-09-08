@@ -6,12 +6,20 @@
 //! stopped being a delivery mechanism at the macOS and Windows port — so a
 //! rule written that way after the port reached nobody but its author.
 //!
-//! **The paths here are HARDCODED and Linux-shaped, deliberately and
-//! temporarily.** Making them portable needs canonicalisation the codebase
-//! already has elsewhere, and that work is filed as its own issue rather than
-//! guessed at inside a patch. What ships now is the RULE reaching the product;
-//! what is missing is the rule reaching the other two platforms. Stated so a
-//! reader is not misled into thinking this is done.
+//! **The paths are RESOLVED, on every platform (jawata-studio#38).** The scratch
+//! root comes from `std::env::temp_dir()`, the profile directory from whichever
+//! variable the platform sets, and the workspace manifest from the launching
+//! project or that profile — no absolute path is compiled in. Containment
+//! compares NORMALISED paths, because `Path::starts_with` canonicalises nothing
+//! and on Windows a path that should be blocked would otherwise read as outside
+//! the tree and be allowed.
+//!
+//! The Windows-only cases — case folding, the drive letter, 8.3 short names,
+//! junctions — are covered by `#[cfg(windows)]` tests, so they are exercised by
+//! CI on Windows rather than asserted from a Linux machine that cannot produce
+//! them. That is deliberate: this module's own history is a rule that passed on
+//! Linux by coincidence and denied every temp path on macOS until release CI
+//! said so.
 //!
 //! Ported faithfully rather than reinvented: each message below is the one the
 //! script had earned, incident by incident, and each incident is kept with it.
@@ -27,13 +35,55 @@ use crate::guard::Verdict;
 const PATH_TERMINATORS: &[char] =
     &[' ', '"', '\'', '`', ':', ';', '|', '&', ')', '>', '\n', '\t', ','];
 
-/// The workspace manifest, hardcoded with the same discovery the script had.
-const FALLBACK_MANIFEST: &str = "/home/harald/CursorProjects/jawata-dev.code-workspace";
+/// The workspace manifest's file name. The DIRECTORY is resolved, never
+/// spelled: studio#38 found `/home/harald/CursorProjects/jawata-dev.code-workspace`
+/// compiled in as a constant, which is one developer's filesystem shipped to
+/// every install — a worse problem than the portability it was filed under,
+/// because on any other machine it names a path that cannot exist and the root
+/// derived from it silently matches nothing.
+const MANIFEST_NAME: &str = "jawata-dev.code-workspace";
 
-fn home() -> PathBuf {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/home/harald"))
+/// The user's profile directory, or `None` when no variable answers.
+///
+/// studio#38: **Windows sets no `HOME`.** The previous version read `HOME` and
+/// fell back to a hardcoded `/home/harald`, so on Windows every root derived
+/// from it pointed at a Linux path that does not exist — and the failure is
+/// SILENT, because a containment test against a non-existent root simply never
+/// matches, which reads exactly like a path that is legitimately outside.
+///
+/// `USERPROFILE` is the documented Windows spelling; `HOMEDRIVE` + `HOMEPATH`
+/// is the older pair that still answers on domain-joined machines. `HOME` is
+/// tried first because a Unix machine always has it and Git Bash sets it on
+/// Windows too.
+///
+/// `None` rather than a guess is what makes this FAIL CLOSED: the caller drops
+/// the roots it cannot resolve, and fewer roots means more denials. A guessed
+/// home would ADD a root nobody verified, which is the direction a guard must
+/// never err in.
+fn home() -> Option<PathBuf> {
+    home_from(|k| std::env::var(k).ok())
+}
+
+/// The resolution itself, over a lookup the caller supplies.
+///
+/// Split out so the Windows spellings can be TESTED on any machine.
+/// `std::env::set_var` is process-global, so an env-mutating test races every
+/// other test in the binary — and the thing under test here is which variable
+/// is consulted, which needs no real environment at all.
+fn home_from(get: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    for var in ["HOME", "USERPROFILE"] {
+        if let Some(v) = get(var) {
+            if !v.trim().is_empty() {
+                return Some(PathBuf::from(v));
+            }
+        }
+    }
+    match (get("HOMEDRIVE"), get("HOMEPATH")) {
+        (Some(d), Some(p)) if !d.trim().is_empty() && !p.trim().is_empty() => {
+            Some(PathBuf::from(format!("{d}{p}")))
+        }
+        _ => None,
+    }
 }
 
 /// Where the workspace manifest is, preferring one beside the launching
@@ -53,17 +103,34 @@ fn manifest_path() -> PathBuf {
             }
         }
     }
-    PathBuf::from(FALLBACK_MANIFEST)
+    manifest_under(home())
+}
+
+/// The fallback manifest, under a supplied profile directory.
+///
+/// studio#38: DERIVED, not spelled. The previous constant was one machine's
+/// absolute Linux path; anywhere else it named a file that cannot exist, and a
+/// root that cannot exist matches nothing while looking like a root.
+///
+/// Takes the home rather than reading it, because on the machine that wrote the
+/// constant the derived value is BYTE-IDENTICAL to it — so a test asserting the
+/// result here would pass with the constant restored, and prove nothing. The
+/// only way to see the derivation is to hand it a different home.
+fn manifest_under(home: Option<PathBuf>) -> PathBuf {
+    home.map(|h| h.join("CursorProjects").join(MANIFEST_NAME))
+        .unwrap_or_else(|| PathBuf::from(MANIFEST_NAME))
 }
 
 /// The roots the agent may operate in: the manifest's own folders, plus the
 /// scratch dir, the agent config dir, the manifest itself and the node version
 /// manager's dir.
 ///
-/// NOT PORTABLE YET, and this is the line that says so: `~/.claude` and
-/// `~/.nvm` are one client's Unix layout, and the portable form is the client's
-/// own resolved config dir — jawata-studio#38 owns that. The SCRATCH root is no
-/// longer among the gaps: see the comment on the push below.
+/// PORTABLE (jawata-studio#38). Every root is RESOLVED rather than spelled: the
+/// scratch dir from `std::env::temp_dir()`, the profile directory from the
+/// platform's own variable, the manifest from the launching project or the
+/// profile. `.claude` and `.nvm` are the client's directory NAMES under that
+/// profile, which is the same layout on every platform — the defect was the
+/// hardcoded `/home/harald` they were joined to, not the names.
 pub fn workspace_roots() -> Vec<PathBuf> {
     let home = home();
     let manifest = manifest_path();
@@ -102,16 +169,84 @@ pub fn workspace_roots() -> Vec<PathBuf> {
     // same code denied every temp path, and it took the release CI of v4.1.6 to
     // say so — seven integration tests, each denied on its own fixture.
     roots.push(std::env::temp_dir());
+    // The Unix literal stays, and ONLY on Unix. With TMPDIR pointing elsewhere
+    // `/tmp` is still a legitimate scratch root on this platform, so dropping it
+    // would DENY correct use; on Windows it names nothing and would only be a
+    // Unix spelling shaping a Windows verdict.
+    #[cfg(unix)]
     roots.push(PathBuf::from("/tmp"));
-    roots.push(home.join(".claude"));
-    roots.push(home.join(".nvm"));
+    // studio#38: the two agent-config roots exist only when the profile
+    // directory resolved. An unresolvable home drops them rather than guessing,
+    // which FAILS CLOSED — fewer roots means more denials.
+    if let Some(home) = home.as_ref() {
+        roots.push(home.join(".claude"));
+        roots.push(home.join(".nvm"));
+    }
     roots.push(manifest);
     roots
 }
 
+/// Is `path` inside one of the roots?
+///
+/// studio#38: COMPARED ON NORMALISED PATHS, because `Path::starts_with` is a
+/// component-wise TEXTUAL test that canonicalises nothing. On Windows that
+/// fails in the direction a guard must never fail: a path that should be
+/// BLOCKED reads as outside the tree and is allowed. Four ways, all real —
+/// case (`C:\Users` vs `c:\users`), the drive letter's own case, 8.3 short
+/// names (`RUNNER~1`), and junctions.
+///
+/// [`normalise`] resolves what EXISTS and folds case where the platform does,
+/// so the comparison is between two paths the operating system would agree are
+/// the same place.
 fn inside(path: &str, roots: &[PathBuf]) -> bool {
-    let p = Path::new(path);
-    roots.iter().any(|r| p == r || p.starts_with(r))
+    let p = normalise(Path::new(path));
+    roots.iter().any(|r| {
+        let r = normalise(r);
+        p == r || p.starts_with(&r)
+    })
+}
+
+/// A path in the form the containment test compares.
+///
+/// Canonicalises the longest ANCESTOR that exists and re-appends the rest: a
+/// guard is asked about files that have not been created yet, so
+/// `fs::canonicalize` on the whole path would fail exactly when it is needed.
+/// That resolves 8.3 short names and junctions, which are filesystem facts no
+/// string rule can reach.
+///
+/// Case is then folded on the platforms whose filesystems ignore it. Doing that
+/// unconditionally would be wrong on Linux, where two names differing only in
+/// case ARE two files.
+fn normalise(path: &Path) -> PathBuf {
+    let mut existing = path;
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let resolved = loop {
+        match std::fs::canonicalize(existing) {
+            Ok(c) => break Some(c),
+            Err(_) => match (existing.parent(), existing.file_name()) {
+                (Some(parent), Some(name)) => {
+                    tail.push(name.to_os_string());
+                    existing = parent;
+                }
+                _ => break None,
+            },
+        }
+    };
+    let mut out = match resolved {
+        Some(mut c) => {
+            for name in tail.iter().rev() {
+                c.push(name);
+            }
+            c
+        }
+        None => path.to_path_buf(),
+    };
+    if !cfg!(target_os = "linux") {
+        if let Some(s) = out.to_str() {
+            out = PathBuf::from(s.to_lowercase());
+        }
+    }
+    out
 }
 
 /// Expand the three home spellings a shell would expand, so the check polices a
@@ -195,7 +330,13 @@ pub fn judge_payload(text: &str) -> Verdict {
                 .to_string(),
         };
     }
-    let home_dir = home();
+    // studio#38: no resolvable profile directory means the home-path rules have
+    // no subject. Allowing is correct here and not a hole — the OTHER rules in
+    // this module still run, and inventing a home would police a tree nobody
+    // named.
+    let Some(home_dir) = home() else {
+        return Verdict::Allow;
+    };
     let Some(home_str) = home_dir.to_str() else {
         return Verdict::Allow;
     };
@@ -373,6 +514,186 @@ mod tests {
         }
     }
 
+    /// studio#38: Windows sets no `HOME`, so the profile must be found by the
+    /// spelling the PLATFORM uses. Driven through a supplied lookup rather than
+    /// the real environment: `set_var` is process-global and would race every
+    /// other test in this binary, and what is under test is which variable is
+    /// consulted — a question no real environment is needed to answer.
+    #[test]
+    fn the_profile_directory_is_found_by_each_platforms_own_spelling() {
+        let only = |want: &'static str, val: &'static str| {
+            move |k: &str| (k == want).then(|| val.to_string())
+        };
+
+        assert_eq!(
+            Some(PathBuf::from("/home/someone")),
+            home_from(only("HOME", "/home/someone")),
+            "Unix, and Git Bash on Windows"
+        );
+        assert_eq!(
+            Some(PathBuf::from("C:\\Users\\someone")),
+            home_from(only("USERPROFILE", "C:\\Users\\someone")),
+            "the documented Windows spelling — the case that was BROKEN"
+        );
+        assert_eq!(
+            Some(PathBuf::from("C:\\Users\\someone")),
+            home_from(|k| match k {
+                "HOMEDRIVE" => Some("C:".into()),
+                "HOMEPATH" => Some("\\Users\\someone".into()),
+                _ => None,
+            }),
+            "the older pair, still answering on domain-joined machines"
+        );
+
+        // FAILS CLOSED. The previous version answered `/home/harald` here — a
+        // path that exists on exactly one machine, so every root derived from it
+        // matched nothing while looking like a root.
+        assert_eq!(None, home_from(|_| None), "no variable answers");
+        assert_eq!(
+            None,
+            home_from(|k| (k == "HOME").then(|| "   ".to_string())),
+            "an empty value is not an answer"
+        );
+
+        // AND THE ORDER MATTERS: a machine setting both must not be decided by
+        // whichever the loop happened to reach first.
+        assert_eq!(
+            Some(PathBuf::from("/home/unix")),
+            home_from(|k| match k {
+                "HOME" => Some("/home/unix".into()),
+                "USERPROFILE" => Some("C:\\Users\\win".into()),
+                _ => None,
+            }),
+            "HOME wins where both are set"
+        );
+    }
+
+    /// studio#38: no absolute path of one developer's machine is compiled in.
+    ///
+    /// THE FIRST VERSION OF THIS TEST WAS VOID, and the run said so. It called
+    /// `manifest_path()` and asserted the result did not contain
+    /// `/home/harald` — but this IS that machine, so the correctly derived
+    /// value is byte-identical to the constant it replaced. The assertion
+    /// would have passed with the hardcoded constant restored: it was reading
+    /// a coincidence of the environment, not the change.
+    ///
+    /// So the home is FORCED TO DIFFER first, and only then is the derivation
+    /// asserted — which is the only arrangement in which it can fail.
+    #[test]
+    fn the_manifest_path_is_derived_from_the_profile_not_compiled_in() {
+        let elsewhere = manifest_under(Some(PathBuf::from("/somewhere/else")));
+        assert_eq!(
+            PathBuf::from("/somewhere/else/CursorProjects").join(MANIFEST_NAME),
+            elsewhere,
+            "the manifest follows the profile it is given"
+        );
+        assert!(
+            !elsewhere.to_string_lossy().contains("harald"),
+            "and carries nothing of the machine that wrote the old constant: {elsewhere:?}"
+        );
+
+        // A Windows-shaped assertion was here and could not hold on Linux:
+        // `Path::join` uses THIS platform's separator, so `C:\Users\someone`
+        // is one component and the result mixes separators. That is a fact
+        // about the host, not about the change — the Windows path semantics
+        // are asserted in the `cfg(windows)` test below, where they are real.
+
+        // No profile at all: the bare name, which resolves relative to wherever
+        // the hook runs rather than to a stranger's home directory.
+        assert_eq!(PathBuf::from(MANIFEST_NAME), manifest_under(None));
+    }
+
+    /// studio#38: containment compares NORMALISED paths.
+    ///
+    /// `Path::starts_with` is component-wise and TEXTUAL — it canonicalises
+    /// nothing — so a path reaching a root by a different but equivalent
+    /// spelling reads as OUTSIDE and is allowed. This exercises the mechanism on
+    /// every platform using a symlink, which is the one form of it Linux can
+    /// produce; the Windows-only spellings are the test below.
+    #[test]
+    fn containment_follows_a_link_to_the_same_place() {
+        let base = std::env::temp_dir().join(format!("jawata-38-{}", std::process::id()));
+        let real = base.join("real");
+        let _ = std::fs::create_dir_all(&real);
+        let link = base.join("link");
+        let _ = std::fs::remove_file(&link);
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&real, &link).is_ok();
+        #[cfg(not(unix))]
+        let made = false;
+
+        if made {
+            let target = link.join("inside.txt");
+            assert!(
+                inside(&target.to_string_lossy(), &[real.clone()]),
+                "a path reaching the root through a link is INSIDE it: {target:?} vs {real:?}"
+            );
+            // THE CONTROL: a genuinely outside path is still outside, so the
+            // assertion above is not simply "everything is inside".
+            let elsewhere = base.join("not-under-real").join("x.txt");
+            assert!(
+                !inside(&elsewhere.to_string_lossy(), &[real.clone()]),
+                "and normalising must not make everything match: {elsewhere:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// studio#38: one place spelled two ways is one place — asserted against
+    /// what the FILESYSTEM does, not against the operating system's name.
+    ///
+    /// This began as `#[cfg(windows)]` and that was the weaker shape twice
+    /// over. A compiled-out test cannot fail, so a wrong `cfg` deletes it in
+    /// silence; and the OS name is a PROXY for the property that matters —
+    /// macOS folds case too, so gating on Windows would have skipped a
+    /// platform where the defect is equally real.
+    ///
+    /// So the filesystem is ASKED. Where it folds case, containment must fold
+    /// with it or a path that should be BLOCKED reads as outside the tree and
+    /// is allowed. Where it does not, two spellings are two places and must
+    /// stay that way — on Linux `/x/A` and `/x/a` are different files, and a
+    /// guard that conflated them would deny a directory nobody named.
+    ///
+    /// Both branches assert, so neither platform gets a free pass, and the
+    /// probe reports which branch ran.
+    #[test]
+    fn one_place_spelled_two_ways_is_one_place_where_the_filesystem_says_so() {
+        let base = std::env::temp_dir().join(format!("jawata-38-case-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("Root");
+        std::fs::create_dir_all(&root).expect("scratch");
+
+        // THE PROBE: reach the directory by a differently-cased name. If that
+        // resolves, this filesystem ignores case.
+        let folds = std::fs::metadata(base.join("root")).is_ok();
+
+        let lower = base.join("root");
+        let target_via_lower = lower.join("f.txt");
+        let contained = inside(&target_via_lower.to_string_lossy(), &[root.clone()]);
+
+        if folds {
+            assert!(
+                contained,
+                "this filesystem ignores case, so {target_via_lower:?} IS inside {root:?} —                  a textual comparison would call it outside and ALLOW it"
+            );
+        } else {
+            assert!(
+                !contained,
+                "this filesystem distinguishes case, so {target_via_lower:?} is a different                  place from {root:?} and must not be conflated"
+            );
+        }
+
+        // THE CONTROL, on both branches: a genuinely different tree is outside
+        // either way, so neither assertion above is "everything matches".
+        let elsewhere = base.join("Other").join("f.txt");
+        assert!(
+            !inside(&elsewhere.to_string_lossy(), &[root]),
+            "a different directory is outside whatever the filesystem does about case"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn the_scratch_root_is_the_platform_temp_dir_and_not_the_unix_spelling() {
         // WHAT THIS CAN AND CANNOT SEE, stated because the difference IS the
@@ -411,7 +732,7 @@ mod tests {
         // The defect this closes: matching the expanded form ONLY meant the
         // guard enforced a spelling, so the tilde form of a blocked directory
         // walked straight past it.
-        let home = home();
+        let home = home().expect("the test machine has a profile directory");
         let home_str = home.to_str().unwrap();
         let expanded = expand_home("cat ~/.ssh/id_rsa", home_str);
         assert!(
