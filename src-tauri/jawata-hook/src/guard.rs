@@ -1,7 +1,34 @@
 //! The guard: a LOCAL policy decision, taken without asking anyone.
 //!
 //! It denies shell text-search over Java sources and steers to JAWATA's
-//! compiler-accurate tools. Two properties make it different from every other
+//! compiler-accurate tools.
+//!
+//! **THE SHELL TRIPWIRE IS A HINT, NOT A BOUNDARY — studio#5, frozen on the C9
+//! architect ruling of 2026-09-08.** Its subject is an opaque command string,
+//! and the effect it wants to predict is decided at RUN TIME by data that
+//! string need not contain: a path can arrive from a variable, a substitution,
+//! a glob, a file list, or a script one level down. Three patches (v3.8.0,
+//! v3.8.1, v3.8.2) each closed a set of spellings and each moved the hole, and
+//! v3.8.1 shipped two NEW and different regressions doing it — which is this
+//! project's design-alarm condition, met. There is no patch four.
+//!
+//! MEASURED PASSING, 2026-09-08, so the next reader does not rediscover them as
+//! a bug: `find . -name '*.java' -exec sed -i {} \;` (the writer is not in
+//! command position) · `./rewrite.sh src/Foo.java` (the writer is inside a
+//! script) · `sd 'a' 'b' Foo.java` (not on the tool list) · `sed -i s/a/b/ $F`
+//! and `git checkout HEAD~1 -- src/main/java/` (no `.java` literal at all, so
+//! the precondition rejects them before any writer check runs).
+//!
+//! MEASURED DENYING, the same day: `sed -i` on a literal path, a `python3`
+//! heredoc, and `cd <repo> && sed -i … Foo.java`. Those are the shapes an agent
+//! writes by habit, which is what a hint is for.
+//!
+//! **PREVENTION LIVES IN [`crate::editgate`], not here.** That gate predicates
+//! on the tool name and the structured `file_path` — a value the harness
+//! supplies and an agent cannot spell around — which is why it has never needed
+//! a patch chain. The denial text below argues from CORRECTNESS ("sed edits
+//! text, not the program"), not from security, and a correctness argument
+//! addressed to a cooperating agent does not need completeness. Two properties make it different from every other
 //! role, and both are deliberate:
 //!
 //! * **It never queries the store.** It has to answer while the resident is
@@ -312,7 +339,13 @@ fn write_route_in(command: &str) -> Option<&'static str> {
             if SHELLS.contains(&word) && segment.contains(" -c") {
                 return Some("sh -c");
             }
-            // `git apply` / `git checkout --` rewrite files too.
+            // `git apply` rewrites files. `git checkout HEAD~1 -- <path>` does
+            // too and is NOT here — deliberately, since studio#5's C9 architect
+            // watch showed that adding it would change nothing: that command
+            // carries no `.java` literal, so `mentions_java_source` is false and
+            // `judge` has already returned Allow before this function is
+            // consulted. A branch that cannot be reached is worse than an absent
+            // one, because it reads as coverage.
             if word == "git" {
                 if let Some(sub) = words.next() {
                     if sub == "apply" {
