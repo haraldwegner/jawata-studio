@@ -862,24 +862,68 @@ impl ManagerService {
             .iter()
             .all(|entry| !matches!(entry.status, DeployClientStatus::Failed));
 
-        // Sprint 21a (item D): auto-seed the knowledge store after a successful deploy —
-        // experience(kind=load) with no path seeds from the resident's default memory
-        // roots, so the primer + recall have content from day one. Fire-and-forget in a
-        // background thread: results are LOGGED, a dead/booting resident never fails or
-        // delays the deploy.
+        // Sprint 21a (item D): auto-seed the knowledge store after a successful
+        // deploy, so the primer and recall have content from day one.
+        //
+        // studio#34: IT MUST NAME THE SUBSTRATE. A `load` with NO path crawls the
+        // engine's DEFAULT memory roots — the layered CLAUDE.md set, every
+        // ~/.claude/projects/*/memory directory, .cursor/rules — which is the
+        // pre-28c legacy corpus. Sprint 28c moved the store's substrate to
+        // jawata-enterprise/docs/knowledge and this call was never retargeted, so
+        // **every deploy silently undid every reseed**: measured 2026-08-27, 436
+        // of 712 rows were legacy files the cutover was supposed to retire.
+        //
+        // The root is not guessed here — it is ASKED of the resident, which is
+        // the only party that knows where its own substrate lives, and it is
+        // reported by `experience(kind=stats)` as `substrate.root`.
+        //
+        // NO ROOT MEANS NO SEED. A resident whose store has no file substrate is
+        // skipped and says so, rather than falling back to the pathless call:
+        // the fallback is the defect, and a fallback that reintroduces it on the
+        // one configuration nobody checked is worse than not seeding at all.
+        //
+        // Fire-and-forget in a background thread: results are LOGGED, and a dead
+        // or booting resident never fails or delays the deploy.
         if ok {
             let seed_targets = auto_seed_targets(settings.auto_seed_on_deploy, &servers);
             if !seed_targets.is_empty() {
                 std::thread::spawn(move || {
                     for (url, token) in seed_targets {
+                        let root = match call_resident_tool(
+                            &url,
+                            &token,
+                            "experience",
+                            serde_json::json!({"kind": "stats"}),
+                            10,
+                        ) {
+                            // The tool answers with a JSON STRING; an
+                            // unparseable body is "no root", which skips rather
+                            // than falling back to the pathless call.
+                            Ok(body) => serde_json::from_str::<serde_json::Value>(&body)
+                                .ok()
+                                .as_ref()
+                                .and_then(substrate_root_in),
+                            Err(error) => {
+                                eprintln!(
+                                    "[jawata-studio] auto-seed skipped ({url}):                                      could not read the substrate root: {error}"
+                                );
+                                continue;
+                            }
+                        };
+                        let Some(root) = root else {
+                            eprintln!(
+                                "[jawata-studio] auto-seed skipped ({url}): the store                                  reports no file substrate, and a pathless load would                                  seed the legacy corpus (studio#34)"
+                            );
+                            continue;
+                        };
                         match call_resident_tool(
                             &url,
                             &token,
                             "experience",
-                            serde_json::json!({"kind": "load"}),
+                            serde_json::json!({"kind": "load", "path": root, "recursive": true}),
                             10,
                         ) {
-                            Ok(_) => eprintln!("[jawata-studio] auto-seed ok: {url}"),
+                            Ok(_) => eprintln!("[jawata-studio] auto-seed ok: {url} <- {root}"),
                             Err(error) => {
                                 eprintln!("[jawata-studio] auto-seed skipped ({url}): {error}")
                             }
@@ -6757,6 +6801,22 @@ mod resolution_tests {
     }
 }
 
+/// The store's own file substrate root, out of an `experience(kind=stats)`
+/// response — or `None` when it reports none.
+///
+/// studio#34: PURE, and separate from the call, for the same reason
+/// `auto_seed_targets` is: the decision this encodes — seed the substrate, or
+/// do not seed — is the whole content of the fix, and a decision reachable only
+/// through a live resident is a decision nothing can test.
+fn substrate_root_in(value: &serde_json::Value) -> Option<String> {
+    let root = value
+        .pointer("/data/substrate/root")
+        .or_else(|| value.pointer("/substrate/root"))?
+        .as_str()?
+        .trim();
+    (!root.is_empty()).then(|| root.to_string())
+}
+
 /// Sprint 21a (item D): which residents to auto-seed. Pure so the toggle logic is
 /// unit-testable; empty when the setting is off or a server has no url/token.
 fn auto_seed_targets(enabled: bool, servers: &[ManagedDeployServer]) -> Vec<(String, String)> {
@@ -10993,6 +11053,41 @@ judge was never told to give"
             1,
             "observer steering payload defined once, shared by selftest + emit_slip"
         );
+    }
+
+    /// studio#34: the seed must NAME the substrate, and must not fall back to a
+    /// pathless load — that call crawls the engine's legacy default roots and is
+    /// the defect itself.
+    #[test]
+    fn the_substrate_root_is_read_or_the_seed_is_skipped() {
+        // The shape `experience(kind=stats)` actually returns.
+        let real = serde_json::json!({
+            "success": true,
+            "data": {
+                "total": 384,
+                "substrate": {
+                    "root": "/home/harald/CursorProjects/jawata-enterprise/docs/knowledge/stories",
+                    "derivedFrom": "190 entries carrying a memory: source path"
+                }
+            }
+        });
+        assert_eq!(
+            Some("/home/harald/CursorProjects/jawata-enterprise/docs/knowledge/stories".to_string()),
+            substrate_root_in(&real)
+        );
+
+        // NO SUBSTRATE IS AN ANSWER, and it means do not seed. Every one of
+        // these used to reach the pathless call, which is what refilled the
+        // store with the pre-28c corpus at every deploy.
+        for none in [
+            serde_json::json!({"success": true, "data": {"total": 0}}),
+            serde_json::json!({"success": true, "data": {"substrate": {}}}),
+            serde_json::json!({"success": true, "data": {"substrate": {"root": null}}}),
+            serde_json::json!({"success": true, "data": {"substrate": {"root": "   "}}}),
+            serde_json::json!({"error": "resident is booting"}),
+        ] {
+            assert_eq!(None, substrate_root_in(&none), "no root means no seed: {none}");
+        }
     }
 
     // ===== Sprint 21a (item D): auto-seed on deploy =====
