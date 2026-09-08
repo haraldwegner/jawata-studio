@@ -32,7 +32,15 @@ fn guard_says(payload: &str, home: &std::path::Path) -> String {
     let dir = home.join("bin");
     std::fs::create_dir_all(&dir).expect("scratch bin");
     let exe = dir.join(if cfg!(windows) { "jawata-hook-guard.exe" } else { "jawata-hook-guard" });
-    std::fs::copy(HOOK, &exe).expect("copy the built binary to its role name");
+    // macOS validates a binary's code signature PER INODE, so overwriting an
+    // executable that has already been run gets the NEXT exec SIGKILLed — the
+    // process dies with no exit code at all, which reads as "the guard crashed"
+    // rather than as a harness fault. It took down the v4.1.7 release job on
+    // macos-14 and nowhere else. Copy ONCE per path: the file is written before
+    // any exec and never overwritten after one.
+    if !exe.exists() {
+        std::fs::copy(HOOK, &exe).expect("copy the built binary to its role name");
+    }
     // The config sits beside the binary. Without it the hook is deliberately
     // SILENT (absent config is a fail-safe case, not a crash), so the test
     // writes one.
