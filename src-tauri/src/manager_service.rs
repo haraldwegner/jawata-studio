@@ -2683,6 +2683,13 @@ impl ManagerService {
                     // on purpose: dropping the mapping would strand the
                     // existing files forever, with nothing left that knows
                     // where they are. Same shape as `remove_legacy_rule_sibling`.
+                    // studio#44: whichever branch follows, the files at the
+                    // RETIRED location are stale — a deploy that writes the new
+                    // ones and leaves the old ones is the duplicate-listing
+                    // defect of studio#19, one directory over.
+                    if remove_legacy_seat_commands(client, &path) {
+                        changed_sections.push("seatCommands".into());
+                    }
                     if !client_still_receives_seat_commands(client) || seat_commands_inherited {
                         if let Some(commands_dir) = derive_seat_commands_dir(client, &path) {
                             // Utility commands first: `remove_managed_seat_commands`
@@ -4064,13 +4071,59 @@ fn skipped_as_unsupported(client: &str, mode: &DeployMode) -> bool {
     unsupported && !matches!(mode, DeployMode::Delete)
 }
 
+/// studio#44: whether a client's seat artifact is a SKILL — a directory per
+/// command holding a `SKILL.md` — or a flat markdown file named for the command.
+///
+/// ONE fact in one place. It was FOUR separate `client == "claude"` tests, in
+/// the two path builders and the two writers, and Cursor joining the skill
+/// layout would have made it eight.
+/// studio#44: remove the seat files a PREVIOUS version wrote to the location
+/// this client no longer uses.
+///
+/// Cursor's artifacts moved from a flat `commands/<cmd>.md` to a
+/// `skills/<cmd>/SKILL.md`, and a machine that has both ends up reading each
+/// seat twice — which is studio#19 again, one directory over, and the reason a
+/// move has to take the old copies with it rather than leaving them.
+///
+/// Same shape as `remove_legacy_rule_sibling`: the old location stays NAMED
+/// here after nothing writes it, because deleting the mapping would strand the
+/// files forever with nothing left that knows where they are.
+fn remove_legacy_seat_commands(client: &str, mcp_target_path: &str) -> bool {
+    if client != "cursor" {
+        return false;
+    }
+    let Some(parent) = PathBuf::from(mcp_target_path).parent().map(Path::to_path_buf) else {
+        return false;
+    };
+    let legacy = parent.join("commands");
+    let mut removed = false;
+    let names = crate::conductor::COMMAND_MAP
+        .iter()
+        .map(|(_, cmd, _)| *cmd)
+        .chain(crate::conductor::UTILITY_MAP.iter().map(|(cmd, _)| *cmd));
+    for cmd in names {
+        let path = legacy.join(format!("{cmd}.md"));
+        if path.exists() && fs::remove_file(&path).is_ok() {
+            removed = true;
+        }
+    }
+    let _ = fs::remove_dir(&legacy); // only if empty — a user's own file stays
+    removed
+}
+
+fn seat_layout_is_skill(client: &str) -> bool {
+    matches!(client, "claude" | "cursor")
+}
+
 fn derive_seat_commands_dir(client: &str, mcp_target_path: &str) -> Option<PathBuf> {
     let parent = PathBuf::from(mcp_target_path)
         .parent()
         .map(Path::to_path_buf)?;
     match client {
         "claude" => Some(parent.join(".claude").join("skills")),
-        "cursor" => Some(parent.join("commands")),
+        // studio#44: `skills`, not `commands` — the config sibling is the
+        // Cursor dot-directory, so this lands beside its own settings.
+        "cursor" => Some(parent.join("skills")),
         "antigravity" => Some(parent.join(".agent").join("workflows")),
         _ => None,
     }
@@ -4083,9 +4136,10 @@ fn seat_artifact_paths(client: &str, commands_dir: &Path) -> Vec<(String, PathBu
     crate::conductor::COMMAND_MAP
         .iter()
         .map(|(_, cmd, _)| {
-            let path = match client {
-                "claude" => commands_dir.join(cmd).join("SKILL.md"),
-                _ => commands_dir.join(format!("{cmd}.md")),
+            let path = if seat_layout_is_skill(client) {
+                commands_dir.join(cmd).join("SKILL.md")
+            } else {
+                commands_dir.join(format!("{cmd}.md"))
             };
             ((*cmd).to_string(), path)
         })
@@ -4153,9 +4207,10 @@ fn write_managed_seat_commands(
         let Some(body) = rendered else { continue };
         let (cmd, _) = crate::conductor::command_for(&seat.name)
             .expect("rendered seats are command-mapped");
-        let path = match client {
-            "claude" => commands_dir.join(cmd).join("SKILL.md"),
-            _ => commands_dir.join(format!("{cmd}.md")),
+        let path = if seat_layout_is_skill(client) {
+            commands_dir.join(cmd).join("SKILL.md")
+        } else {
+            commands_dir.join(format!("{cmd}.md"))
         };
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -4186,7 +4241,7 @@ fn remove_managed_seat_commands(client: &str, commands_dir: &Path) -> Result<boo
                 .map_err(|e| format!("{client}: cannot remove {}: {e}", path.display()))?;
             removed = true;
         }
-        if client == "claude" {
+        if seat_layout_is_skill(client) {
             let _ = fs::remove_dir(commands_dir.join(&cmd)); // only if empty
         }
     }
@@ -4203,9 +4258,10 @@ fn remove_managed_seat_commands(client: &str, commands_dir: &Path) -> Result<boo
 /// Sprint 26 (D6): the utility commands ride the same dirs as the seats.
 fn utility_artifact_paths(client: &str, commands_dir: &Path) -> Vec<(String, PathBuf)> {
     crate::conductor::UTILITY_MAP.iter().map(|(cmd, _)| {
-        let path = match client {
-            "claude" => commands_dir.join(cmd).join("SKILL.md"),
-            _ => commands_dir.join(format!("{cmd}.md")),
+        let path = if seat_layout_is_skill(client) {
+            commands_dir.join(cmd).join("SKILL.md")
+        } else {
+            commands_dir.join(format!("{cmd}.md"))
         };
         ((*cmd).to_string(), path)
     }).collect()
@@ -4224,9 +4280,10 @@ fn write_managed_utility_commands(
             "antigravity" => crate::conductor::render_antigravity_utility(cmd, desc),
             _ => continue,
         };
-        let path = match client {
-            "claude" => commands_dir.join(cmd).join("SKILL.md"),
-            _ => commands_dir.join(format!("{cmd}.md")),
+        let path = if seat_layout_is_skill(client) {
+            commands_dir.join(cmd).join("SKILL.md")
+        } else {
+            commands_dir.join(format!("{cmd}.md"))
         };
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -4250,7 +4307,7 @@ fn remove_managed_utility_commands(client: &str, commands_dir: &Path) -> Result<
                 .map_err(|e| format!("{client}: cannot remove {}: {e}", path.display()))?;
             removed = true;
         }
-        if client == "claude" {
+        if seat_layout_is_skill(client) {
             let _ = fs::remove_dir(commands_dir.join(&cmd));
         }
     }
@@ -10587,6 +10644,56 @@ judge was never told to give"
         );
         write_managed_seat_commands("claude", &dir, &seats, false).unwrap();
         assert!(seat_dir_carries_managed_seats("claude", &dir));
+    }
+
+    /// studio#44: Cursor's seats moved to the location its own documentation
+    /// names, and the move TAKES THE OLD COPIES WITH IT.
+    ///
+    /// The path assertions are literal on purpose. Every other test here derives
+    /// its expectation from `seat_artifact_paths`, which means it follows the
+    /// change instead of checking it — a move like this one would pass all of
+    /// them without anything having moved anywhere in particular.
+    #[test]
+    fn the_cursor_seats_move_to_skills_and_the_old_copies_go() {
+        let (_, seats) = loaded_seats("cursor-skills");
+        let base = unique_tempdir("cursor-move");
+        let cfg = base.join("config.json");
+        fs::write(&cfg, "{}").unwrap();
+
+        // What a previous version left behind, in the retired location.
+        let legacy = base.join("commands");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("cover.md"), "old flat command").unwrap();
+        fs::write(legacy.join("memorize.md"), "old flat utility").unwrap();
+        // A file that is NOT ours shares the directory and must survive: the
+        // cleanup removes the names it wrote, never the folder's contents.
+        fs::write(legacy.join("my-own-note.md"), "the user's").unwrap();
+
+        let dir = derive_seat_commands_dir("cursor", &display_path(&cfg)).expect("cursor");
+        assert_eq!(base.join("skills"), dir, "Cursor's own documented location");
+
+        write_managed_seat_commands("cursor", &dir, &seats, false).unwrap();
+        write_managed_utility_commands("cursor", &dir, false).unwrap();
+        let skill = dir.join("cover").join("SKILL.md");
+        assert!(skill.is_file(), "a skill is a folder with a SKILL.md: {}", skill.display());
+        let body = fs::read_to_string(&skill).unwrap();
+        assert!(
+            body.starts_with("---\nname: cover\n"),
+            "Cursor requires the frontmatter name to match the folder: {body}"
+        );
+
+        assert!(remove_legacy_seat_commands("cursor", &display_path(&cfg)));
+        assert!(!legacy.join("cover.md").exists(), "the retired seat copy is gone");
+        assert!(!legacy.join("memorize.md").exists(), "and the retired utility copy");
+        assert!(
+            legacy.join("my-own-note.md").is_file(),
+            "a file jawata never wrote is not ours to delete"
+        );
+        // Idempotent: a second deploy finds nothing left to retire.
+        assert!(!remove_legacy_seat_commands("cursor", &display_path(&cfg)));
+
+        // And it is scoped to the client that moved.
+        assert!(!remove_legacy_seat_commands("claude", &display_path(&cfg)));
     }
 
     #[test]
