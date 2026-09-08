@@ -3748,6 +3748,41 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
     /// an architect run against a fix loop that did not exist. Talking about
     /// refusing is not refusing, exactly as reading the word is not.
     #[test]
+    /// studio#42: the other end of the pin.
+    ///
+    /// This rule ships twice — here, and as a counter inside the generated stop
+    /// script for clients with no binary. The contract row said `bash: present,
+    /// rust: present` with one `what` string, asserting a parity that did not
+    /// hold: this side has always required a verdict to START a line, and the
+    /// script counted the substring anywhere in the agent's own prose. A session
+    /// that QUOTED the rule three times tripped that side and not this one.
+    ///
+    /// The two crates may not depend on each other, so the fixtures are the
+    /// shared thing rather than a symbol — the same mechanism the field state
+    /// file uses. Studio's suite EXECUTES the script's function over these
+    /// cases; this drives `verdict_lines` over them. Change either predicate and
+    /// a test fails on both sides.
+    fn the_binarys_refusal_count_agrees_with_the_scripts() {
+        let contract: serde_json::Value =
+            serde_json::from_str(include_str!("../../hook-events.json")).unwrap();
+        let cases = contract["stop_rules"]["parity_fixtures"]["audit_fix_loop"]
+            .as_array()
+            .expect("the contract carries the shared fixtures")
+            .clone();
+        assert!(cases.len() >= 5, "a fixture list this short cannot separate the two rules");
+        for case in cases {
+            let text = case["text"].as_str().unwrap();
+            assert_eq!(
+                case["refusals"].as_u64().unwrap() as usize,
+                verdict_lines(text, "VERDICT: REFUSE"),
+                "{}: text was {text:?}",
+                case["case"].as_str().unwrap_or("?")
+            );
+        }
+    }
+
+    #[test]
+
     fn refusals_are_counted_only_from_what_the_agent_emitted() {
         let quoted = "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"REFUSE REFUSE REFUSE\"}]}}\n{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"all green\"}]}}\n";
         let t = read_turn(quoted).expect("parses");

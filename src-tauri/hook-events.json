@@ -12,15 +12,15 @@
     "(a hook process must never link a GUI toolkit) and the studio must not depend",
     "on the hook (deploy writes the binary, it never runs it). Both forbidden edges",
     "are asserted by tests. A committed data file is the one thing both sides can",
-    "read without an edge between them — each includes it at compile time and",
+    "read without an edge between them \u2014 each includes it at compile time and",
     "asserts its own table against it.",
     "",
     "Change an event here and BOTH sides fail until they agree.",
     "",
     "Sprint 28, C8 architect finding F2. The same argument now covers the FILES",
     "that cross the boundary, not only the event names. The hook appends to",
-    "hook_silence.log and the studio renames it away — two processes, two crates,",
-    "one file — and that seam was declared NOWHERE. It had already produced three",
+    "hook_silence.log and the studio renames it away \u2014 two processes, two crates,",
+    "one file \u2014 and that seam was declared NOWHERE. It had already produced three",
     "hand-copied facts (the cap, the filename, the rotated name) with nothing",
     "asserting they agree, plus an ordering contract living only in a private doc",
     "comment. Same fix, same file: declare it once, assert from both sides."
@@ -63,7 +63,7 @@
       "rotated_name": "hook_silence.log.1",
       "retention_generations": 1,
       "bounding": "the STUDIO rotates; the hook only appends and drops past the ceiling",
-      "violation": "a hook that trims, truncates or renames this file — six audit rounds proved in-path bounding destroys records"
+      "violation": "a hook that trims, truncates or renames this file \u2014 six audit rounds proved in-path bounding destroys records"
     }
   },
   "hook_budget": {
@@ -92,23 +92,23 @@
     "_why": [
       "Sprint 28, C8 architect finding F3. TWO stop gates exist: the deployed bash",
       "script (live today) and the Rust stop::judge (built, inert). Their rule sets",
-      "have DIVERGED — the audit-fix-loop trigger and the unjudged-ask check were",
+      "have DIVERGED \u2014 the audit-fix-loop trigger and the unjudged-ask check were",
       "added to the bash generation, which the architecture schedules for deletion.",
       "At cutover the binary would ship WITHOUT rules the script had: the hook-outage",
       "shape inverted, at the one moment nobody is reading the old file.",
       "",
       "Every rule is declared here with its status on each side. A rule may be",
-      "ported or deliberately dropped — but not silently lost.",
+      "ported or deliberately dropped \u2014 but not silently lost.",
       "",
       "Sprint 28 dogfood, first probe after the release: the six role binaries were",
-      "DEPLOYED and every client event still invoked the .sh script — the deploy",
+      "DEPLOYED and every client event still invoked the .sh script \u2014 the deploy",
       "writes binaries, then writes settings entries pointing at scripts, and no code",
       "path builds a command aimed at a binary. Pointing a client at the binary then",
       "would have STRIPPED five working protections to gain two inert ones. The",
       "audit-fix loop and the unjudged ask are now PORTED and fire without autonomy;",
       "three remain script-only, and the cutover stays blocked until they follow.",
       "",
-      "All eight rules now exist on BOTH sides — the cutover is no longer blocked by",
+      "All eight rules now exist on BOTH sides \u2014 the cutover is no longer blocked by",
       "parity. Length became a trigger on Harald's own suggestion: it does not depend",
       "on wording, so the agent cannot walk past it by accident, which is exactly how",
       "the ten-phrase ask detector failed on its first live outing."
@@ -122,17 +122,17 @@
       "audit_fix_loop": {
         "bash": "present",
         "rust": "present",
-        "what": "3+ refusals with no checkpoint reached -> run the architect"
+        "what": "3+ refusals with no checkpoint reached -> run the architect; a verdict counts only when it STARTS a line, and both sides are driven over stop_rules.parity_fixtures.audit_fix_loop (studio#42)"
       },
       "unjudged_ask": {
         "bash": "absent",
         "rust": "absent",
-        "what": "RETIRED v4.0.0 (Harald, 2026-09-03: 'The communicator is annoying. I see the same output twice... Can we instead add a ruling'). It required a fresh-context reviewer to read every decision-class message before it was sent. What it caught was a checklist — an unopenable reference, a count with no object, an undefined term — and a checklist is a ruling, not a subagent; what it cost was the whole readback rendered to him beside the message it judged. The check now lives in the deployed instructions and in decision_test_length's own reason. The mechanical residual — length, undefined terms — stays, because both are decidable from the text with nothing to consult."
+        "what": "RETIRED v4.0.0 (Harald, 2026-09-03: 'The communicator is annoying. I see the same output twice... Can we instead add a ruling'). It required a fresh-context reviewer to read every decision-class message before it was sent. What it caught was a checklist \u2014 an unopenable reference, a count with no object, an undefined term \u2014 and a checklist is a ruling, not a subagent; what it cost was the whole readback rendered to him beside the message it judged. The check now lives in the deployed instructions and in decision_test_length's own reason. The mechanical residual \u2014 length, undefined terms \u2014 stays, because both are decidable from the text with nothing to consult."
       },
       "unreported_degradation": {
         "bash": "absent",
         "rust": "present-but-inert",
-        "what": "a tool result stamped DEGRADED: was consumed and the message does not say so (studio#4) — INERT until jawata-mcp#12 stamps responses: no producer emits a line beginning DEGRADED: today, so the rule is correct and unreachable"
+        "what": "a tool result stamped DEGRADED: was consumed and the message does not say so (studio#4) \u2014 INERT until jawata-mcp#12 stamps responses: no producer emits a line beginning DEGRADED: today, so the rule is correct and unreachable"
       },
       "communicator_rule_a": {
         "bash": "absent",
@@ -142,12 +142,12 @@
       "nothing_armed_rule_b": {
         "bash": "absent",
         "rust": "present",
-        "what": "Rule B: autonomy granted and nothing armed. LIVE since v3.14.1, and no longer inert — the grant reaches it from autonomy.rs. v4.0.0 replaced its exemption: a stop is cleared by the autocontinue seat's VERDICT: RESERVED, read out of the harness's tool-result record, and never by the agent writing a DECISION: line of its own. v4.1.3: ARMED MEANS PENDING. A launch arms the turn only while it is backgrounded (by flag, or by the harness's own 'Async agent launched' / 'Command running in background' answer) and no completion record has been seen for it — a task notification, a queue-operation, or a task_status attachment, matched by tool-use id or task id. Pending launches are carried across window resets; a scheduled wake or cron arms only its own window. Measured cause: 2026-09-05 03:13, four finished suite runs read as armed and the session slept 4h 13m."
+        "what": "Rule B: autonomy granted and nothing armed. LIVE since v3.14.1, and no longer inert \u2014 the grant reaches it from autonomy.rs. v4.0.0 replaced its exemption: a stop is cleared by the autocontinue seat's VERDICT: RESERVED, read out of the harness's tool-result record, and never by the agent writing a DECISION: line of its own. v4.1.3: ARMED MEANS PENDING. A launch arms the turn only while it is backgrounded (by flag, or by the harness's own 'Async agent launched' / 'Command running in background' answer) and no completion record has been seen for it \u2014 a task notification, a queue-operation, or a task_status attachment, matched by tool-use id or task id. Pending launches are carried across window resets; a scheduled wake or cron arms only its own window. Measured cause: 2026-09-05 03:13, four finished suite runs read as armed and the session slept 4h 13m."
       },
       "autocontinue_judge": {
         "bash": "absent",
         "rust": "present",
-        "what": "v4.0.0, redesigned v4.1.0 after three patch releases on one defect shape and a fresh architect+auditor review, simplified v4.1.3 on Harald's ruling ('when should a judge NOT be called?'). Under a live grant, a stop with nothing pending is put to a fresh-context subagent that reads the transcript and the plan ITSELF — every time. Its stance is Harald's three situations (2026-09-03): between checkpoints only a showstopper or a redesign halts, everything else is fixed; at a signed-off checkpoint only a release gate halts, otherwise proceed; past the review cap it takes the architect's position on the dispute. The gate owns ONE bit beyond the verdict, and it decides no stop: whether a RESOLVABLE instruction is still open (set by the verdict, cleared by the next real tool call, surviving the push), used only to keep the idle valve from releasing an agent that was told what to do and idles — the architect's F2 on this release. A verdict belongs to one ATTEMPT (the span between two of the gate's own pushes), the first verdict of an attempt governs it, a re-spawn inside the attempt is ignored, and the push that carries a RESOLVABLE instruction ends the attempt — so the next stop consults the judge afresh and the v4.1.0 'ACTED ON' arm is gone. A background judge's verdict is read from the notification that wakes the session. Verdicts bind to the judge call's tool_use id and are read from the LAST verdict line. The phrase lists over the agent's own wording (ask detector, DECISION: line, imperative detector) are deleted: unread since v4.0.0, appeals to a human reader, and fail-open by construction."
+        "what": "v4.0.0, redesigned v4.1.0 after three patch releases on one defect shape and a fresh architect+auditor review, simplified v4.1.3 on Harald's ruling ('when should a judge NOT be called?'). Under a live grant, a stop with nothing pending is put to a fresh-context subagent that reads the transcript and the plan ITSELF \u2014 every time. Its stance is Harald's three situations (2026-09-03): between checkpoints only a showstopper or a redesign halts, everything else is fixed; at a signed-off checkpoint only a release gate halts, otherwise proceed; past the review cap it takes the architect's position on the dispute. The gate owns ONE bit beyond the verdict, and it decides no stop: whether a RESOLVABLE instruction is still open (set by the verdict, cleared by the next real tool call, surviving the push), used only to keep the idle valve from releasing an agent that was told what to do and idles \u2014 the architect's F2 on this release. A verdict belongs to one ATTEMPT (the span between two of the gate's own pushes), the first verdict of an attempt governs it, a re-spawn inside the attempt is ignored, and the push that carries a RESOLVABLE instruction ends the attempt \u2014 so the next stop consults the judge afresh and the v4.1.0 'ACTED ON' arm is gone. A background judge's verdict is read from the notification that wakes the session. Verdicts bind to the judge call's tool_use id and are read from the LAST verdict line. The phrase lists over the agent's own wording (ask detector, DECISION: line, imperative detector) are deleted: unread since v4.0.0, appeals to a human reader, and fail-open by construction."
       },
       "seat_discipline": {
         "bash": "present",
@@ -164,30 +164,88 @@
         "rust": "present",
         "what": "undefined terms in a shaped message"
       }
+    },
+    "parity_fixtures": {
+      "_why": [
+        "studio#42. One rule, two implementations: the binary's `verdict_lines`",
+        "and the generated stop script's own counter. The rules row said",
+        "bash: present, rust: present with one `what` string \u2014 asserting a parity",
+        "that did not hold, and the only test pinning them checked that the",
+        "literal 'AUDIT-FIX LOOP' appears in the template. A marker check cannot",
+        "see a predicate difference.",
+        "",
+        "The binary required a verdict to START a line; the script counted the",
+        "substring anywhere in the agent's own prose. So a session that QUOTED",
+        "the rule three times tripped one and not the other \u2014 the issue's own",
+        "text would have done it.",
+        "",
+        "These cases are driven through BOTH predicates, from opposite ends: the",
+        "studio suite execs the generated script's function, the hook suite calls",
+        "`verdict_lines`. A change to either fails a test on both sides.",
+        "It is the mechanism `CHECKBOX_SILENCED_STATE` already uses for the",
+        "state file, whose two owners may not depend on each other either."
+      ],
+      "audit_fix_loop": [
+        {
+          "case": "a bare verdict at the start of a line",
+          "text": "VERDICT: REFUSE",
+          "refusals": 1
+        },
+        {
+          "case": "markdown decoration is allowed",
+          "text": "# VERDICT: REFUSE\nfinding one\n**VERDICT: REFUSE** again\n  * VERDICT: REFUSE",
+          "refusals": 3
+        },
+        {
+          "case": "QUOTING a verdict is not emitting one \u2014 the whole difference",
+          "text": "the audit's VERDICT: REFUSE was about the fixture, and a second VERDICT: REFUSE followed",
+          "refusals": 0
+        },
+        {
+          "case": "the word alone is not a verdict",
+          "text": "I will not REFUSE this, and REFUSE appears again here, and again REFUSE",
+          "refusals": 0
+        },
+        {
+          "case": "a verdict after prose on the same line does not start it",
+          "text": "so the answer is VERDICT: REFUSE",
+          "refusals": 0
+        },
+        {
+          "case": "a sign-off is not a refusal",
+          "text": "VERDICT: SIGN-OFF\nVERDICT: SIGN-OFF",
+          "refusals": 0
+        },
+        {
+          "case": "nothing at all",
+          "text": "",
+          "refusals": 0
+        }
+      ]
     }
   },
   "role_generations": {
     "_why": [
       "Which GENERATION is live per role: the binary, or the generation-2 script.",
-      "The stop_rules parity discipline, applied at role granularity — a role cuts",
+      "The stop_rules parity discipline, applied at role granularity \u2014 a role cuts",
       "over to the binary only when the binary holds parity, and a drop is declared",
       "here, never discovered.",
       "",
       "3.7.2 dogfood F4: the observer cut over by FILE EXISTENCE (the invocation",
-      "path preferred any binary on disk), and the observer binary is a stub — it",
-      "records a silence row and nothing else — while the script generation captures",
+      "path preferred any binary on disk), and the observer binary is a stub \u2014 it",
+      "records a silence row and nothing else \u2014 while the script generation captures",
       "tool outcomes and the jawata-fallback audit trail. outcomes.log froze the",
-      "moment the observer entry first pointed at the binary. Enforcement, stated exactly (audit F3 — the previous sentence here claimed more",
-      "than was true): the STUDIO asserts the deploy's live/retired binary lists match these rows (the_deployed_role_list test), and the HOOK crate asserts every declared role resolves in its dispatch table with a known generation (role_generations_match_the_dispatch). This section governs the CLAUDE-CODE deploy only — see _scope; the Cursor deploy is all script-generation by construction, and a studio test pins that no Cursor entry names a role binary.",
+      "moment the observer entry first pointed at the binary. Enforcement, stated exactly (audit F3 \u2014 the previous sentence here claimed more",
+      "than was true): the STUDIO asserts the deploy's live/retired binary lists match these rows (the_deployed_role_list test), and the HOOK crate asserts every declared role resolves in its dispatch table with a known generation (role_generations_match_the_dispatch). This section governs the CLAUDE-CODE deploy only \u2014 see _scope; the Cursor deploy is all script-generation by construction, and a studio test pins that no Cursor entry names a role binary.",
       "declared binary here, and keeps the script for the rest.",
       "",
       "3.7.3 dogfood F5: the guard binary held parity on the shell-command half",
       "(java-grep redirect, jawata-fallback escape) and silently dropped the OTHER",
-      "half — the .java hand-edit gate with its jawata-author authoring windows.",
+      "half \u2014 the .java hand-edit gate with its jawata-author authoring windows.",
       "Proven by a front-door Edit of a .java file that went through unblocked.",
       "The guard reverts to its script (which carries both halves) until the port."
     ],
-    "_scope": "claude-code, and — since Sprint 28a — the rows govern Cursor too. Before that, Cursor was all script-generation by construction and a studio test pinned that no Cursor entry named a role binary. That test now checks the weaker, truer thing: a Cursor entry may name a role binary only where a row here declares that role live as a binary (a `cursor` key on a row may override `live` where the two clients legitimately diverge, as the observer's did from v3.7.9 until 28b D8; no row carries one today).",
+    "_scope": "claude-code, and \u2014 since Sprint 28a \u2014 the rows govern Cursor too. Before that, Cursor was all script-generation by construction and a studio test pinned that no Cursor entry named a role binary. That test now checks the weaker, truer thing: a Cursor entry may name a role binary only where a row here declares that role live as a binary (a `cursor` key on a row may override `live` where the two clients legitimately diverge, as the observer's did from v3.7.9 until 28b D8; no row carries one today).",
     "primer": {
       "live": "binary"
     },
@@ -199,11 +257,11 @@
     },
     "guard": {
       "live": "binary",
-      "ported": "Sprint 28a (2026-08-12). The .java hand-edit gate moved into the binary: tool_name extraction, Edit/Write/MultiEdit denial, the session-scoped jawata-author window (TTL-bounded, so it cannot become a standing bypass), and the new-file allowance. BOTH halves are pinned by tests that SPAWN THE REAL BINARY — edit_gate_runs_the_real_binary.rs — including a regression asserting the shell half still denies a java grep, because the two previous cutovers each shipped one half. Windows forced the timing: a .sh cannot execute there, Cursor runs this role failClosed, and a hook that never returns BLOCKS the command — observed live on 2026-08-12 as an interactive bash window hung on cat."
+      "ported": "Sprint 28a (2026-08-12). The .java hand-edit gate moved into the binary: tool_name extraction, Edit/Write/MultiEdit denial, the session-scoped jawata-author window (TTL-bounded, so it cannot become a standing bypass), and the new-file allowance. BOTH halves are pinned by tests that SPAWN THE REAL BINARY \u2014 edit_gate_runs_the_real_binary.rs \u2014 including a regression asserting the shell half still denies a java grep, because the two previous cutovers each shipped one half. Windows forced the timing: a .sh cannot execute there, Cursor runs this role failClosed, and a hook that never returns BLOCKS the command \u2014 observed live on 2026-08-12 as an interactive bash window hung on cat."
     },
     "observer": {
       "live": "binary",
-      "ported": "Sprint 28b D8 (2026-08-17). Both script halves are in the binary (observer.rs): outcome capture — the outcomes.log signals (slip, read-ungrounded, verify) — and the jawata-fallback audit trail — the slip store bridge plus the steering answer — with the C7 edit feed alongside. Pinned by the observer tests that drive the real module. Live on BOTH clients from this one row: Cursor has run the observer binary since v3.7.9 (its script did nothing, so there was no parity to lose — a cursor override on this row recorded that while the clients diverged), and Claude Code flips here, closing the 3.7.2 revert (outcomes.log froze the moment the entry pointed at the stub) the way 28a closed the guard's 3.7.3 revert."
+      "ported": "Sprint 28b D8 (2026-08-17). Both script halves are in the binary (observer.rs): outcome capture \u2014 the outcomes.log signals (slip, read-ungrounded, verify) \u2014 and the jawata-fallback audit trail \u2014 the slip store bridge plus the steering answer \u2014 with the C7 edit feed alongside. Pinned by the observer tests that drive the real module. Live on BOTH clients from this one row: Cursor has run the observer binary since v3.7.9 (its script did nothing, so there was no parity to lose \u2014 a cursor override on this row recorded that while the clients diverged), and Claude Code flips here, closing the 3.7.2 revert (outcomes.log froze the moment the entry pointed at the stub) the way 28a closed the guard's 3.7.3 revert."
     },
     "stop": {
       "live": "binary"

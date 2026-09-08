@@ -8081,7 +8081,25 @@ try:
     # tail matched tool results and file contents, so any session that READ this
     # file, hook-events.json or a C8 sprint doc was told to abandon correct
     # work. Reading the word is not refusing.
-    rounds = emitted.count('REFUSE')
+    #
+    # studio#42: AND A VERDICT ONLY COUNTS WHEN IT STARTS A LINE, markdown
+    # decoration allowed — which is what the binary's `verdict_lines` has always
+    # required and what this copy's own comment above claimed while doing
+    # something else. `emitted.count('REFUSE')` counts the word anywhere in the
+    # agent's own prose, so a session that QUOTES this rule three times tripped
+    # this gate and not the binary. The issue's own text would have done it.
+    #
+    # The two are pinned from opposite ends now: the fixtures in
+    # hook-events.json under stop_rules.parity_fixtures are driven through THIS
+    # function by the studio suite and through `verdict_lines` by the hook's,
+    # so a change to either predicate fails a test on both sides.
+    def _refusal_verdicts(text):
+        n = 0
+        for line in text.split('\n'):
+            if line.lstrip().lstrip('#* ').startswith('VERDICT: REFUSE'):
+                n += 1
+        return n
+    rounds = _refusal_verdicts(emitted)
     # NO "but a checkpoint happened" suppression. The first version of this
     # check looked for a checkpoint marker in the window and stood down if it
     # found one — and on the very session it was written for it found the
@@ -10019,8 +10037,13 @@ mod tests {
             ));
         }
         for i in 0..refusals {
+            // studio#42: a VERDICT, which starts its line. The fixture used to
+            // say "audit round N: REFUSE, one finding" — the word in the middle
+            // of a sentence — and the gate counted it, because the script
+            // counted the substring anywhere. That is the defect, so the
+            // fixture that proved the gate worked was written to it.
             body.push_str(&format!(
-                "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"audit round {i}: REFUSE, one finding\"}}]}}}}\n"
+                "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"VERDICT: REFUSE\\nround {i}, one finding\"}}]}}}}\n"
             ));
         }
         body.push_str("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"fixed it, moving on\"}]}}\n");
@@ -10044,6 +10067,37 @@ mod tests {
         let reason = out["reason"].as_str().unwrap();
         assert!(reason.contains("AUDIT-FIX LOOP"), "{reason}");
         assert!(reason.contains("/refactor"), "must name the architect seat: {reason}");
+    }
+
+    /// studio#42: and QUOTING the word is not emitting a verdict — which is the
+    /// difference the two implementations of this rule had drifted apart on.
+    ///
+    /// The script counted `REFUSE` anywhere in the agent's own prose while the
+    /// binary required a verdict to start a line, so a session that discussed
+    /// this rule three times tripped the script and not the binary. The issue
+    /// reporting it would have done it. This is the control the fixture above
+    /// cannot be: it drives the SAME count of the SAME word and must not block.
+    #[test]
+    fn the_stop_gate_does_not_read_a_quoted_refusal_as_an_emitted_one() {
+        let dir = unique_tempdir("stop-quoted");
+        let p = dir.join("t.jsonl");
+        let mut body = String::new();
+        for i in 0..5 {
+            body.push_str(&format!(
+                "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"audit round {i}: REFUSE, one finding — the report says VERDICT: REFUSE in it\"}}]}}}}\n"
+            ));
+        }
+        body.push_str("{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"fixed it, moving on\"}]}}\n");
+        fs::write(&p, body).unwrap();
+
+        let out = run_stop_script(&serde_json::json!({
+            "transcript_path": p, "stop_hook_active": false
+        }));
+        let reason = out.get("reason").and_then(|r| r.as_str()).unwrap_or("");
+        assert!(
+            !reason.contains("AUDIT-FIX LOOP"),
+            "reading the word ten times is not refusing five times: {out}"
+        );
     }
 
     /// Ordinary work must pass. A gate that fires on every session is turned
@@ -12911,6 +12965,84 @@ judge was never told to give"
         }
         assert_eq!(BINARY_LIVE_ROLES.len() + BINARY_RETIRED_ROLES.len(), SCRIPT_GENERATION.len(),
             "SCRIPT_GENERATION carries a row for a role the deploy neither writes nor retires");
+    }
+
+    /// studio#42: the audit-fix-loop rule has two implementations, and this
+    /// drives the SHIPPED one over the contract's own fixtures.
+    ///
+    /// A marker check — which is all that pinned them before — cannot see a
+    /// predicate difference, and there was one: the binary required a verdict to
+    /// START a line while this script counted the substring anywhere in the
+    /// agent's prose, so a session that QUOTED the rule three times tripped this
+    /// side and not the other.
+    ///
+    /// The function is EXECUTED, not read. Extracting its source out of the
+    /// template and running it under python3 is the only way to assert what the
+    /// deployed script actually computes; asserting on the template's text would
+    /// be the same marker check one level finer. The hook's own suite drives
+    /// `verdict_lines` over the same cases, so a change to either predicate
+    /// fails a test on both sides — the mechanism `CHECKBOX_SILENCED_STATE`
+    /// already uses for the state file, whose two owners may not depend on each
+    /// other either.
+    #[test]
+    fn the_scripts_refusal_count_agrees_with_the_binarys() {
+        let contract: serde_json::Value =
+            serde_json::from_str(include_str!("../hook-events.json")).unwrap();
+        let cases = contract["stop_rules"]["parity_fixtures"]["audit_fix_loop"]
+            .as_array()
+            .expect("the contract carries the shared fixtures");
+        assert!(cases.len() >= 5, "a fixture list this short cannot separate the two rules");
+
+        // The function as the deployed script defines it, lifted verbatim.
+        let start = STOP_TEMPLATE
+            .find("    def _refusal_verdicts(text):")
+            .expect("the template defines the counter as a named function, so it can be driven");
+        let body = &STOP_TEMPLATE[start..];
+        let end = body.find("    rounds = ").expect("the definition is followed by its use");
+        let function: String = body[..end]
+            .lines()
+            .map(|l| l.strip_prefix("    ").unwrap_or(l))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut program = function;
+        program.push_str("\nimport json,sys\n");
+        program.push_str("cases = json.load(sys.stdin)\n");
+        program.push_str(
+            "print(json.dumps([_refusal_verdicts(c['text']) for c in cases]))\n",
+        );
+
+        let dir = unique_tempdir("refusal-parity");
+        let script = dir.join("counter.py");
+        fs::write(&script, &program).unwrap();
+        let mut child = std::process::Command::new("python3")
+            .arg(&script)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("python3 runs the deployed script; it is what runs the hook itself");
+        {
+            use std::io::Write;
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(serde_json::to_string(cases).unwrap().as_bytes())
+                .unwrap();
+        }
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "the extracted counter did not run: {out:?}");
+        let counted: Vec<u64> = serde_json::from_slice(&out.stdout).expect("counts");
+
+        for (case, got) in cases.iter().zip(counted) {
+            assert_eq!(
+                case["refusals"].as_u64().unwrap(),
+                got,
+                "{}: the script counted {got} — text was {:?}",
+                case["case"].as_str().unwrap_or("?"),
+                case["text"].as_str().unwrap_or("")
+            );
+        }
     }
 
     /// Audit F3, the bash column: `stop_rules` declared each rule's status in
