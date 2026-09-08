@@ -808,12 +808,16 @@ impl ManagerService {
         let requested_targets = normalize_requested_deploy_targets(input.target_clients.as_ref())?;
 
         let mut results = Vec::new();
-        for target in clients {
-            let is_selected = if let Some(requested) = requested_targets.as_ref() {
-                requested.contains(target.id)
-            } else {
-                target.enabled_by_settings
-            };
+        // Hoisted so the SOURCE client of an inherited seat directory (studio#19)
+        // can be asked the same question as the one being deployed.
+        let selected = |target: &DeployClientTarget| -> bool {
+            match requested_targets.as_ref() {
+                Some(requested) => requested.contains(target.id),
+                None => target.enabled_by_settings,
+            }
+        };
+        for target in &clients {
+            let is_selected = selected(target);
             if !is_selected {
                 let reason = if requested_targets.is_some() {
                     "Skipped: not selected in this deploy run."
@@ -843,6 +847,25 @@ impl ManagerService {
                 ));
                 continue;
             }
+            // studio#19: a client whose seat files come from another client's
+            // directory writes none of its own — and any it wrote before are
+            // removed, because a duplicate that survives the fix is the defect.
+            let source = seat_commands_inherited_from(target.id);
+            let source_target = source.and_then(|s| clients.iter().find(|c| c.id == s));
+            let source_deployed = source_target
+                .map(|t| {
+                    selected(t)
+                        && crate::client_dialect::client(t.id).map(|c| c.supported).unwrap_or(true)
+                })
+                .unwrap_or(false);
+            let source_dir_carries_seats = source
+                .zip(source_target.and_then(|t| t.target_path.clone()))
+                .and_then(|(s, path)| derive_seat_commands_dir(s, &path).map(|dir| (s, dir)))
+                .map(|(s, dir)| seat_dir_carries_managed_seats(s, &dir))
+                .unwrap_or(false);
+            let inherits_seat_commands =
+                seat_commands_inherited(target.id, source_deployed, source_dir_carries_seats);
+
             let result = self.deploy_to_client(
                 target.id,
                 target.target_path.clone(),
@@ -850,6 +873,7 @@ impl ManagerService {
                 &settings.mcp_merge_mode,
                 settings.mcp_backup_before_write,
                 &input.mode,
+                inherits_seat_commands,
             );
             results.push(result);
         }
@@ -2102,6 +2126,9 @@ impl ManagerService {
         deploy_targets_for_paths(&settings.deploy_targets, &settings.mcp_client_paths)
     }
 
+    /// `seat_commands_inherited` (studio#19): this client reads another client's
+    /// seat directory on this machine, so writing its own would list every seat
+    /// twice — it receives none, and any it already has are removed.
     fn deploy_to_client(
         &self,
         client: &str,
@@ -2110,6 +2137,7 @@ impl ManagerService {
         merge_mode: &McpMergeMode,
         backup_before_write: bool,
         mode: &DeployMode,
+        seat_commands_inherited: bool,
     ) -> DeployClientResult {
         let Some(path) = target_path.and_then(normalize_optional_path) else {
             return DeployClientResult {
@@ -2177,7 +2205,7 @@ impl ManagerService {
         // Sprint 25a D1: the sections a deploy of this client touches, seat
         // artifacts included (Preview/DryRun report them without writing).
         let mut planned_sections = vec!["mcpConfig".to_string(), "rules".to_string()];
-        if derive_seat_commands_dir(client, &path).is_some() {
+        if derive_seat_commands_dir(client, &path).is_some() && !seat_commands_inherited {
             planned_sections.push("seatCommands".into());
         }
 
@@ -2519,7 +2547,7 @@ impl ManagerService {
                     // on purpose: dropping the mapping would strand the
                     // existing files forever, with nothing left that knows
                     // where they are. Same shape as `remove_legacy_rule_sibling`.
-                    if !client_still_receives_seat_commands(client) {
+                    if !client_still_receives_seat_commands(client) || seat_commands_inherited {
                         if let Some(commands_dir) = derive_seat_commands_dir(client, &path) {
                             // Utility commands first: `remove_managed_seat_commands`
                             // prunes `.agent/workflows` when it empties, and a
@@ -3872,6 +3900,64 @@ fn client_still_receives_seat_commands(client: &str) -> bool {
     crate::client_dialect::client(client)
         .map(|c| c.supported)
         .unwrap_or(true)
+}
+
+/// studio#19: which client's directory a machine's seat files actually live in.
+///
+/// Cursor loads skills from the CLAUDE skills directory **for compatibility** —
+/// its own documentation says so in as many words (cursor.com/docs/context/skills,
+/// read 2026-09-08: *"For compatibility, Cursor also loads skills from Claude and
+/// Codex directories"*, naming the project-level and home-level `.claude/skills`
+/// and `.codex/skills`). So on a machine where jawata writes BOTH targets, one
+/// reader has two sources and every seat is listed twice; measured at v3.11.0 and
+/// reported again on the live install at v4.1 — eight seats under the Cursor
+/// commands directory, the same eight under the Claude skills directory, each one
+/// shown twice, while Cursor's own built-ins appeared once.
+///
+/// That makes WHOSE files a client reads a per-MACHINE fact rather than a
+/// per-client one, and a client that INHERITS them writes none of its own. It is
+/// the shape the roster already uses for IntelliJ, whose coverage is inherited
+/// from the four agents it hosts rather than driven directly.
+///
+/// This says only WHERE the files would come from. Whether they are actually
+/// there is [`seat_commands_inherited`]'s question, and it has to be asked:
+/// trading a visible duplicate for an invisible absence would be worse than the
+/// defect.
+fn seat_commands_inherited_from(client: &str) -> Option<&'static str> {
+    match client {
+        "cursor" => Some("claude"),
+        _ => None,
+    }
+}
+
+/// studio#19: whether `client` must write NO seat files of its own on this run.
+///
+/// Pure, and separate from the deploy, because this IS the fix: everything else
+/// in the change is plumbing that carries the answer to the write. Both inputs
+/// are needed and neither implies the other — a source deployed in this very run
+/// leaves the directory behind afterwards even when it is empty now (the roster
+/// visits Cursor before Claude Code, so a filesystem probe alone would answer
+/// "absent" on a first deploy and write the duplicate anyway), and a source that
+/// is NOT in this run can still carry seats an earlier one left, which Cursor
+/// goes on reading whether or not the user has since unticked that client.
+fn seat_commands_inherited(
+    client: &str,
+    source_deployed: bool,
+    source_dir_carries_seats: bool,
+) -> bool {
+    seat_commands_inherited_from(client).is_some() && (source_deployed || source_dir_carries_seats)
+}
+
+/// Does this client's seat directory already hold the managed seat files?
+///
+/// Reads ONE of them rather than all: they are written and removed together, so
+/// the first is the whole answer, and a partial directory would be reported by
+/// the write path rather than here.
+fn seat_dir_carries_managed_seats(client: &str, commands_dir: &Path) -> bool {
+    seat_artifact_paths(client, commands_dir)
+        .first()
+        .map(|(_, path)| path.exists())
+        .unwrap_or(false)
 }
 
 fn derive_seat_commands_dir(client: &str, mcp_target_path: &str) -> Option<PathBuf> {
@@ -10324,6 +10410,60 @@ judge was never told to give"
         // is a real gap in the gate's reach on that client, recorded here
         // rather than papered over with a file it would ignore.
         assert!(derive_agents_dir("cursor", &display_path(&cfg)).is_none());
+    }
+
+    /// studio#19: Cursor reads the Claude skills directory for compatibility, so
+    /// a machine that gets both targets lists every seat twice. The decision is
+    /// pure, and so is its test — a duplicate is a fact about a MACHINE, and no
+    /// per-client assertion can see one.
+    #[test]
+    fn cursor_inherits_the_seat_files_it_would_otherwise_duplicate() {
+        // Both ways the shared directory can be there, and each ALONE is enough:
+        // the roster visits Cursor first, so on a first deploy the directory is
+        // still empty and only `source_deployed` can answer; and a source the
+        // user has since unticked still leaves files Cursor goes on reading, so
+        // only the probe can answer that one.
+        assert!(seat_commands_inherited("cursor", true, false), "deployed in this run");
+        assert!(seat_commands_inherited("cursor", false, true), "left by an earlier run");
+        assert!(seat_commands_inherited("cursor", true, true));
+
+        // AND THE CASE THAT KEEPS THE FIX HONEST: no shared directory, so Cursor
+        // keeps its own files. Trading a visible duplicate for an invisible
+        // absence would be the worse defect.
+        assert!(
+            !seat_commands_inherited("cursor", false, false),
+            "a Cursor-only machine has nothing to inherit FROM"
+        );
+
+        // The source itself never inherits — it is where the files come from —
+        // and neither does a client that reads no other client's directory.
+        for client in ["claude", "codex", "vscode", "copilot_cli", "grok"] {
+            assert!(
+                !seat_commands_inherited(client, true, true),
+                "{client} must keep writing its own seat files"
+            );
+        }
+        assert_eq!(Some("claude"), seat_commands_inherited_from("cursor"));
+        assert_eq!(None, seat_commands_inherited_from("claude"));
+    }
+
+    /// The probe the "left by an earlier run" half rides on, against a real
+    /// directory rather than a flag — with the absent case first, so a probe
+    /// that answered `true` unconditionally could not pass.
+    #[test]
+    fn the_probe_reads_the_seat_directory_it_is_given() {
+        let (_, seats) = loaded_seats("seat-probe");
+        let base = unique_tempdir("seat-probe-tree");
+        let cfg = base.join("config.json");
+        fs::write(&cfg, "{}").unwrap();
+        let dir = derive_seat_commands_dir("claude", &display_path(&cfg)).unwrap();
+
+        assert!(
+            !seat_dir_carries_managed_seats("claude", &dir),
+            "nothing is deployed yet"
+        );
+        write_managed_seat_commands("claude", &dir, &seats, false).unwrap();
+        assert!(seat_dir_carries_managed_seats("claude", &dir));
     }
 
     #[test]
