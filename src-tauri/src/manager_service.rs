@@ -1117,10 +1117,17 @@ impl ManagerService {
     /// reach counters and utilization number, the `/report` lane state, and the
     /// last canary reading.
     ///
-    /// FILE READS ONLY. No HTTP happens here, so an open view may poll it from
-    /// the main thread — the canary's two round-trips run on their own thread
-    /// and leave their verdict behind.
+    /// NO HTTP happens here, so an open view may poll it from the main thread —
+    /// the canary's two round-trips run on their own thread and leave their
+    /// verdict behind.
+    ///
+    /// It is not read-ONLY, and studio#22 is why: the go-silent switch is a
+    /// machine fact cached per workspace, and a workspace that appeared after
+    /// the user went silent has no cached copy. This is the first moment studio
+    /// sees such a workspace, so it is where the copy is written — and only
+    /// there, since the reconcile is silent when the two already agree.
     pub fn field_status(&self) -> crate::field_view::FieldStatus {
+        self.reconcile_field_silence();
         crate::field_view::status_from(
             &self.field_workspaces(),
             &crate::field_view::silence_log_paths(),
@@ -1130,8 +1137,14 @@ impl ManagerService {
         )
     }
 
-    /// Set one or both of the field switches for a workspace and hand back the
-    /// refreshed status. `None` leaves a switch exactly as it was.
+    /// Set one or both of the field switches and hand back the refreshed status.
+    /// `None` leaves a switch exactly as it was.
+    ///
+    /// studio#22: `nudges` is per workspace and `silenced` is NOT — the go-silent
+    /// switch is one fact about the machine (Harald, 2026-08-18), so setting it
+    /// here RECORDS it in the settings and settles every workspace, including
+    /// ones this caller never named. The `workspace` argument still selects
+    /// whose `nudges` changes, which is why it stays required.
     pub fn field_set_silence(
         &self,
         workspace: &str,
@@ -1139,8 +1152,32 @@ impl ManagerService {
         silenced: Option<bool>,
     ) -> Result<crate::field_view::FieldStatus, String> {
         let dir = self.field_dir_for(workspace)?;
-        crate::field_view::write_state(&dir, nudges, silenced)?;
+        if nudges.is_some() {
+            crate::field_view::write_state(&dir, nudges, None)?;
+        }
+        // ONE writer for the cache. Recording the machine value and then also
+        // writing this workspace's copy would make the setter a second writer of
+        // one fact — and it would hide a dropped recording, because the clicked
+        // workspace would fall silent either way while every other one did not.
+        if let Some(value) = silenced {
+            self.config_store.set_field_reminders_silenced(value)?;
+        }
+        self.reconcile_field_silence();
         Ok(self.field_status())
+    }
+
+    /// studio#22: settle every workspace's cached copy of the go-silent switch
+    /// against the machine's recorded value.
+    ///
+    /// Called from the status read as well as from the setter, because the
+    /// window this closes opens without anyone clicking anything: a workspace
+    /// added after the user went silent has no state file, which reads as NOT
+    /// silenced, and the reminders come back for it. The status read is the
+    /// first moment studio can see that workspace at all.
+    fn reconcile_field_silence(&self) {
+        let silenced = self.config_store.get_settings().field_reminders_silenced;
+        let dirs: Vec<PathBuf> = self.field_workspaces().into_iter().map(|(_, dir)| dir).collect();
+        crate::field_view::reconcile_silence(&dirs, silenced);
     }
 
     /// Resolve a workspace to its field directory. Studio keys workspaces by

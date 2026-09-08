@@ -310,6 +310,41 @@ pub fn write_state(
         .map_err(|e| format!("wrote {} but could not read it back: {e}", target.display()))
 }
 
+/// studio#22: bring every workspace's CACHED copy of the go-silent switch to
+/// the machine's value, and report the directories it had to write.
+///
+/// The switch is one fact about the machine (Harald, 2026-08-18) while the file
+/// the hook reads is per workspace, so the two can disagree — and they do, in
+/// the one direction nobody clicks: a workspace added AFTER the user went
+/// silent has no state file at all, `read_state` folds that to *not silenced*,
+/// and the reminders come back for it without the user changing anything.
+///
+/// Two properties this has to have, and both are asserted:
+///
+/// - **Silent about agreement.** It runs on every status read, so a write per
+///   poll would churn a file the hook reads on every prompt.
+/// - **It does not CREATE a file to record "not silenced".** That one needs no
+///   clause of its own and deliberately does not have one: an absent file
+///   already READS as not silenced, from both sides — the hook makes the same
+///   call — so it already agrees and is skipped by the same comparison. A
+///   separate guard would be a condition that cannot change the outcome.
+///
+/// Only `silenced` is reconciled. `nudges` is the OTHER switch, it is not
+/// ruled per machine, and `write_state` preserves it.
+pub fn reconcile_silence(field_dirs: &[PathBuf], silenced: bool) -> Vec<PathBuf> {
+    let mut written = Vec::new();
+    for dir in field_dirs {
+        if read_state(dir).silenced == silenced {
+            continue;
+        }
+        match write_state(dir, None, Some(silenced)) {
+            Ok(_) => written.push(dir.clone()),
+            Err(error) => eprintln!("[jawata-studio] field silence not reconciled: {error}"),
+        }
+    }
+    written
+}
+
 /// EXACTLY what a first click of the go-silent checkbox leaves on disk.
 ///
 /// This is a CONTRACT, not a formatting detail. The hook decides by substring
@@ -1392,6 +1427,44 @@ mod tests {
         let after = write_state(&dir, Some(true), None).unwrap();
         assert!(after.nudges);
         assert!(after.silenced, "the two switches are independent");
+    }
+
+    /// studio#22: the go-silent switch is a fact about the MACHINE and the file
+    /// the hook reads is per workspace, so the cache has to be settled against
+    /// the value rather than written once at the click.
+    #[test]
+    fn a_workspace_that_appears_later_inherits_the_machines_silence() {
+        // THE DEFECT ITSELF: a workspace added after the user went silent. It
+        // has no state file at all, which reads as NOT silenced from both
+        // sides, so the reminders came back for it with nothing changed by the
+        // user.
+        let fresh = scratch("later-workspace");
+        assert!(!fresh.join("state.json").exists());
+        assert_eq!(vec![fresh.clone()], reconcile_silence(&[fresh.clone()], true));
+        let raw = std::fs::read_to_string(fresh.join("state.json")).unwrap();
+        assert!(raw.contains("\"silenced\":true"), "the bytes the hook reads: {raw}");
+
+        // AND IT DOES NOT RUN THE OTHER WAY. A machine that is not silenced
+        // writes no file to say so — an absent file already says it, and the
+        // hook makes the same call — so there is nothing here to create.
+        let untouched = scratch("never-silenced");
+        assert!(reconcile_silence(&[untouched.clone()], false).is_empty());
+        assert!(
+            !untouched.join("state.json").exists(),
+            "a file recording 'not silenced' is state that says nothing"
+        );
+
+        // SILENT ABOUT AGREEMENT, because this runs on every status poll and
+        // the hook reads the file on every prompt.
+        assert!(reconcile_silence(&[fresh.clone()], true).is_empty());
+
+        // And it settles the disagreement WITHOUT touching the other switch:
+        // `nudges` is not ruled per machine.
+        write_state(&fresh, Some(false), None).unwrap();
+        assert_eq!(vec![fresh.clone()], reconcile_silence(&[fresh.clone()], false));
+        let after = read_state(&fresh);
+        assert!(!after.silenced, "the machine's value won");
+        assert!(!after.nudges, "the OTHER switch survived");
     }
 
     /// The hook decides by SUBSTRING on this file. A pretty-printed or

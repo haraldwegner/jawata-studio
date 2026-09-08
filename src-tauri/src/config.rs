@@ -238,6 +238,20 @@ pub struct ManagerSettings {
     /// (primer + recall) has content from day one. Default ON.
     #[serde(default = "default_auto_seed_on_deploy")]
     pub auto_seed_on_deploy: bool,
+    /// studio#22: the go-silent switch, which is a fact about the MACHINE.
+    ///
+    /// Harald's ruling, 2026-08-18, on the live Reporting page: *"Silence per
+    /// machine and not per workspace. I report tool failures for jawata. Why
+    /// should I want to report for one workspace and not for the other?"*
+    ///
+    /// The per-workspace `state.json` the hook reads is a CACHE of this value,
+    /// not the value itself. Recording the intent HERE is what makes it apply
+    /// to a workspace that appears LATER: before this, the user's decision was
+    /// written to every workspace that existed at the moment of the click and
+    /// to nothing afterwards, so adding a third workspace silently brought the
+    /// reminders back with nothing changed by the user.
+    #[serde(default)]
+    pub field_reminders_silenced: bool,
     /// Sprint 21a (item F/H): where the experience store lives — `shared` (the
     /// user-level store, DEFAULT), `workspace` (per-workspace at the stable root),
     /// `memory`, or an explicit directory path. Passed to the resident as
@@ -358,6 +372,7 @@ impl ManagerSettings {
             gateway_port: default_gateway_port(),
             gateway_token: None,
             auto_seed_on_deploy: default_auto_seed_on_deploy(),
+            field_reminders_silenced: false,
             experience_store_mode: default_experience_store_mode(),
             memory_roots: Vec::new(),
             backup_retention: default_backup_retention(),
@@ -1061,6 +1076,18 @@ impl ConfigStore {
     pub fn set_autostart_on_boot(&self, enabled: bool) -> Result<ManagerSettings, String> {
         let mut settings = self.settings.lock().expect("settings mutex poisoned");
         settings.autostart_on_boot = enabled;
+        write_json(&self.paths.settings_file, &*settings)?;
+        Ok(settings.clone())
+    }
+
+    /// studio#22: record the go-silent switch. It is a fact about the MACHINE
+    /// (Harald, 2026-08-18), so this file is where it LIVES; the per-workspace
+    /// `state.json` the hook reads is a cache settled against this value, and a
+    /// workspace that appears later reads it here rather than starting
+    /// un-silenced.
+    pub fn set_field_reminders_silenced(&self, silenced: bool) -> Result<ManagerSettings, String> {
+        let mut settings = self.settings.lock().expect("settings mutex poisoned");
+        settings.field_reminders_silenced = silenced;
         write_json(&self.paths.settings_file, &*settings)?;
         Ok(settings.clone())
     }
@@ -2239,6 +2266,39 @@ mod tests {
             }),
             settings: Mutex::new(ManagerSettings::default_for_paths(&paths)),
         }
+    }
+
+    // ---- studio#22: the go-silent switch lives on the machine ----
+
+    /// It must be on DISK rather than in the lock: the whole defect is that the
+    /// user's intent was not there to be found when a NEW workspace appeared,
+    /// and a value that lives only in memory is not there after a restart
+    /// either. Read the file back rather than the store's own cache, or this
+    /// asserts nothing about persistence.
+    #[test]
+    fn the_go_silent_switch_is_recorded_on_the_machine_and_survives_a_reload() {
+        let dir = unique_tempdir("field-silence");
+        let store = store_with_empty_state(&dir);
+        assert!(
+            !store.get_settings().field_reminders_silenced,
+            "reminders are ON until the user says otherwise"
+        );
+
+        store.set_field_reminders_silenced(true).expect("silence");
+        let raw = std::fs::read_to_string(&paths_in(&dir).settings_file).expect("settings on disk");
+        // The settings file is camelCase — the key a restart reads is
+        // `fieldRemindersSilenced`, and reading the FILE rather than the struct
+        // is what said so.
+        assert!(
+            raw.contains("\"fieldRemindersSilenced\": true")
+                || raw.contains("\"fieldRemindersSilenced\":true"),
+            "the switch must be in the file a restart reads: {raw}"
+        );
+
+        // And it comes back OFF the same way, so this is a switch rather than a
+        // one-way latch.
+        store.set_field_reminders_silenced(false).expect("unsilence");
+        assert!(!store.get_settings().field_reminders_silenced);
     }
 
     // ---- studio#28: the per-workspace heap ceiling ----
