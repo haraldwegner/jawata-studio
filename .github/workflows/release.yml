@@ -111,19 +111,30 @@ jobs:
       # does nothing" shape the step exists to catch, one level up. Asserting
       # the number means the step fails loudly if it ever stops selecting.
       #
-      # NOT on Windows, and the reason is a real gap rather than a preference:
-      # the studio crate's TEST target does not compile there. Its fixtures use
-      # `std::os::unix::fs::PermissionsExt`, `set_mode` and `#!/bin/sh` scripts
-      # in a dozen places, because "Test the studio crate" above is Linux-only
-      # and nothing had ever built that target on Windows. This step was the
-      # first thing to ask, and it failed to compile before it could check a
-      # single path (v3.9.0's first release run). Tracked as jawata-studio#10.
+      # WINDOWS IS BACK IN, and it is the point of the step rather than an
+      # extra platform. `dirs::config_dir()` answers a different directory on
+      # each OS, and Windows (%APPDATA%) is both the least like the one we
+      # develop against and the only one this check could not reach.
       #
-      # macOS still runs it, and that is not a consolation prize: macOS is where
-      # `dirs::config_dir()` returns ~/Library/Application Support rather than
-      # ~/.config, which is half of the exact hazard this step exists to catch.
+      # It was excluded because the studio crate's TEST target did not compile
+      # there: its fixtures reached Unix-only permission APIs outside any
+      # `#[cfg(unix)]`, "Test the studio crate" above is Linux-only, and nothing
+      # had ever built that target on Windows — so this step was the first thing
+      # to ask and died before checking a single path (v3.9.0's first release
+      # run, jawata-studio#10).
+      #
+      # Every such call is now gated, and
+      # `tests/the_test_target_compiles_on_windows.rs` is what keeps it that
+      # way: the Linux suite is structurally blind to this defect, so without a
+      # source-level guard the next one would be found here again, by a release
+      # run. THIS STEP IS STILL THE ONLY THING THAT COMPILES THE TARGET on
+      # Windows — the guard pins our own calls, not the whole build.
+      #
+      # Running the FULL studio suite on Windows is deliberately not done here.
+      # The issue names it as a separate consideration, and it is: a suite whose
+      # fixtures are shell scripts would skip its way to a green that means less
+      # than this one path check does.
       - name: Deploy paths resolve correctly on this platform
-        if: "!startsWith(matrix.platform, 'windows-')"
         shell: bash
         working-directory: src-tauri
         run: |
