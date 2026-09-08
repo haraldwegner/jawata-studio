@@ -917,6 +917,8 @@ fn note_autonomy_from_prompt(payload: &str) -> Option<String> {
     let session = session_id_in(payload).unwrap_or_default();
     let prompt = string_at(&v, &["prompt"])?;
     let dir = studio_dir()?;
+    // studio#35: `note_prompt` marks the CHANNEL alive itself, so a later stop
+    // can tell "he did not grant" from "nothing ever asked him".
     if crate::autonomy::note_prompt(&dir, &session, &prompt) {
         crate::observer::emit_signal(
             &dir,

@@ -208,6 +208,14 @@ pub fn note_prompt(base: &Path, session: &str, prompt: &str) -> bool {
     if session.is_empty() {
         return false;
     }
+    // studio#35: the marker goes HERE, in the event itself, rather than in the
+    // caller that happens to drive it today. Eight of this module's own tests
+    // caught the first version, which put it in the pipeline: they exercise a
+    // prompt without that caller, so the channel read as never-alive and every
+    // ungranted session reported `Unknown`. A fact about "a prompt happened"
+    // belongs to the function that means a prompt happened, where no future
+    // caller can forget it.
+    note_seen(base, session);
     // THE MACHINE IS NOT HIM, and this line is the whole of v3.17.2's defect.
     //
     // His rule named a CHANNEL — "I am sitting in front = I am typing = keyboard
@@ -280,10 +288,50 @@ pub fn state(base: &Path, session: &str) -> Autonomy {
         return Autonomy::Unknown;
     }
     if file(base, session).exists() {
-        Autonomy::Granted
-    } else {
-        Autonomy::NotGranted
+        return Autonomy::Granted;
     }
+    // studio#35: A MISSING GRANT FILE IS TWO DIFFERENT FACTS, and returning
+    // `NotGranted` for both is what made Rule B go inert silently.
+    //
+    // "He did not grant" and "the UserPrompt hook never ran for this session"
+    // produce the identical absent file — so an install where the hook is not
+    // deployed, or a client that has no prompt event, reports exactly what a
+    // deliberate refusal reports, and the stop role logs `StopAllowed` either
+    // way. That is the same inert shape the v3.14.x fix repaired one layer
+    // down, relocated up here.
+    //
+    // The discriminator is a POSITIVE marker: [`note_seen`] records that a
+    // prompt was processed for this session. With the marker, an absent grant
+    // is a real `NotGranted`; without it, we were never in a position to know,
+    // and `Unknown` is the honest answer — which the stop role already records
+    // as `autonomy-unknown` rather than swallowing.
+    if seen(base, session) {
+        Autonomy::NotGranted
+    } else {
+        Autonomy::Unknown
+    }
+}
+
+/// Whether the prompt hook has been through this session at all.
+fn seen_file(base: &Path, session: &str) -> PathBuf {
+    dir(base).join(format!("{}.seen", crate::pipeline::sanitize_session(session)))
+}
+
+/// Whether a prompt event has been processed for this session.
+pub fn seen(base: &Path, session: &str) -> bool {
+    !session.is_empty() && seen_file(base, session).exists()
+}
+
+/// Record that the prompt hook ran for this session.
+///
+/// Called on EVERY prompt event, granting or not — its whole job is to say the
+/// channel is alive, so it must not be conditional on what the prompt said.
+pub fn note_seen(base: &Path, session: &str) {
+    if session.is_empty() {
+        return;
+    }
+    let _ = std::fs::create_dir_all(dir(base));
+    let _ = std::fs::write(seen_file(base, session), "1");
 }
 
 /// How many consecutive empty turns this session has had under the grant.
@@ -446,6 +494,49 @@ mod tests {
         ));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// studio#35: "he did not grant" and "nothing ever asked him" must not be
+    /// the same answer.
+    ///
+    /// Both produce an absent grant file, and both used to return `NotGranted`
+    /// — so an install where the UserPrompt hook is not deployed, or a client
+    /// with no prompt event, reported exactly what a deliberate refusal reports
+    /// and Rule B went inert with nothing recording that it had. `Unknown` is
+    /// the honest answer for the second, and the stop role already logs it as
+    /// `autonomy-unknown` rather than swallowing it.
+    #[test]
+    fn a_channel_that_never_ran_is_not_the_same_as_a_grant_withheld() {
+        let d = tmp();
+
+        // Nothing has ever asked him in this session.
+        assert_eq!(
+            Autonomy::Unknown,
+            state(&d, "s"),
+            "no prompt has been processed, so we were never in a position to know"
+        );
+        assert!(!seen(&d, "s"), "and the channel is not marked alive");
+
+        // A prompt arrives that does NOT arm. Now the absence is a real answer.
+        note_prompt(&d, "s", "have a look at the failing test");
+        assert!(seen(&d, "s"), "the channel is alive once a prompt is processed");
+        assert_eq!(
+            Autonomy::NotGranted,
+            state(&d, "s"),
+            "he was asked and did not grant — which is a fact, not an absence"
+        );
+
+        // And the grant still works on top of it.
+        note_prompt(&d, "s", "autocontinue");
+        assert_eq!(Autonomy::Granted, state(&d, "s"), "his word still arms it");
+
+        // A DIFFERENT session in the same install is still unknown: the marker
+        // is per session, because the question is per session.
+        assert_eq!(
+            Autonomy::Unknown,
+            state(&d, "other"),
+            "one session's prompt says nothing about another's"
+        );
     }
 
     #[test]
