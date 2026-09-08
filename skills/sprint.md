@@ -628,6 +628,43 @@ annotated expected-vs-actual; never advance after a failure and never deviate fr
 plan without the user's decision; commits per checkpoint; push/tag/release only on the
 user's explicit word; update the plan file when a user-approved change lands.
 
+**THE FULL SUITE RUNS AT CHECKPOINTS AND AT RELEASES. NOWHERE ELSE.** (Harald,
+2026-09-08, verbatim: *"Full suite runs at the checkpoints and when we release
+only."*)
+
+Between checkpoints: the touched classes and their siblings, plus whatever the
+mutation needs. That is the whole budget.
+
+THE TWO REASONS, and the first one dissolves the usual excuse. **Nothing is
+production until a release** — every edit before that is working state, so
+"this change touches production code" is true of everything and discriminates
+nothing. And **the checkpoint is the only border**: it is where a claim is
+made, so it is the only place a green suite is evidence rather than
+reassurance. A suite run over an unfinished stage proves something no one has
+been asked to believe yet.
+
+THE FAILURE SHAPE TO REFUSE, IN YOUR OWN CADENCE: a full suite per issue, or
+per pair of issues, defended as *"only the full suite says what else the change
+did"*. That sentence is TRUE and it is not a reason. Damage to a class you did
+not touch surfaces at the checkpoint either way; finding it three issues
+earlier, inside a stage that is not finished, buys nothing and costs the human
+the wall clock. If a checkpoint's suite goes red across several issues,
+bisecting is cheaper than the runs spent making bisection unnecessary.
+
+MEASURED, on Sprint 28e's first night (2026-09-07 17:09 → 2026-09-08 08:05, ~14
+hours): **17 full runs, mean 11m20s, 3¼ hours — a quarter of the sprint.** Under
+this rule about 13 of them should not have happened: ~2½ hours. The agent
+proposed the rule *"run it when a change touches production code"* and Harald
+struck it in one line.
+
+**AND THE SEAT ALREADY KNEW WHY THIS HAPPENS** — check 9 states it: a full suite
+*"costs the agent nothing — it sleeps through the wall-clock — while every
+minute lands on the person waiting."* That asymmetry was written down to argue
+for defaulting diligence ON. It argues just as directly that an agent will
+over-run the suite, because it is the one participant that cannot feel the
+price. An agent choosing its own cadence will choose too many; the cadence is
+therefore fixed here rather than left to judgement.
+
 **AUTOCONTINUE IS A FLAG, AND IT BELONGS TO PLAN EXECUTION ONLY** (Harald,
 2026-08-11). Scope and effect, exactly:
 
