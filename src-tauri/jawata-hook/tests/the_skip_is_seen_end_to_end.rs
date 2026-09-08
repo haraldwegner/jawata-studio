@@ -79,7 +79,15 @@ fn run_as(role: &str, home: &std::path::Path, url: &str, payload: &str) -> Strin
     } else {
         format!("jawata-hook-{role}")
     });
-    std::fs::copy(HOOK, &exe).expect("copy the built binary to its role name");
+    // macOS validates a binary's code signature PER INODE, so overwriting an
+    // executable that has already been run gets the NEXT exec SIGKILLed — the
+    // process dies with no exit code at all, which reads as "the guard crashed"
+    // rather than as a harness fault. It took down the v4.1.7 release job on
+    // macos-14 and nowhere else. Copy ONCE per path: the file is written before
+    // any exec and never overwritten after one.
+    if !exe.exists() {
+        std::fs::copy(HOOK, &exe).expect("copy the built binary to its role name");
+    }
     std::fs::write(
         bin.join("hook_config.json"),
         serde_json::json!({ "url": url, "token": "t", "client": "claude-code" }).to_string(),

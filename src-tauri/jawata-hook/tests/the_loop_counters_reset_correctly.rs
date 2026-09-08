@@ -62,7 +62,15 @@ fn window_transcript(dir: &std::path::Path, opener: &str, assistant: &str) -> st
 fn linked(home: &std::path::Path, role: &str) -> std::path::PathBuf {
     let link = home.join(format!("jawata-hook-{role}"));
     if !link.exists() {
-        std::fs::copy(HOOK, &link).unwrap();
+        // macOS validates a binary's code signature PER INODE, so overwriting an
+        // executable that has already been run gets the NEXT exec SIGKILLed — the
+        // process dies with no exit code at all, which reads as "the guard crashed"
+        // rather than as a harness fault. It took down the v4.1.7 release job on
+        // macos-14 and nowhere else. Copy ONCE per path: the file is written before
+        // any exec and never overwritten after one.
+        if !link.exists() {
+            std::fs::copy(HOOK, &link).unwrap();
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;

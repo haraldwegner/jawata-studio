@@ -46,7 +46,15 @@ fn userprompt_says_at(payload: &str, home: &std::path::Path, url: &str) -> Strin
     // which is why the local suite was green while three CI platforms went
     // red at exit 101 — v3.17.5's first attempt, 2026-08-31.
     if !exe.exists() {
-        std::fs::copy(HOOK, &exe).expect("copy the built binary to its role name");
+        // macOS validates a binary's code signature PER INODE, so overwriting an
+        // executable that has already been run gets the NEXT exec SIGKILLed — the
+        // process dies with no exit code at all, which reads as "the guard crashed"
+        // rather than as a harness fault. It took down the v4.1.7 release job on
+        // macos-14 and nowhere else. Copy ONCE per path: the file is written before
+        // any exec and never overwritten after one.
+        if !exe.exists() {
+            std::fs::copy(HOOK, &exe).expect("copy the built binary to its role name");
+        }
     }
     // Claude Code dialect — the client this line ships to first — and a DEAD
     // resident address, which is the point: the grant's state must not depend

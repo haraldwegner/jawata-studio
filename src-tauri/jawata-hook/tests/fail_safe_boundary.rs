@@ -66,15 +66,23 @@ fn deploy(tag: &str, role_binary: &str, config: Option<&str>) -> (std::path::Pat
     // "Text file busy" — observed once here, and the same hazard the design
     // names for re-deploy. A test that fails this way teaches people to re-run
     // rather than to read, which is worse than the flake.
-    let mut attempt = 0;
-    loop {
-        match std::fs::copy(HOOK, &target) {
-            Ok(_) => break,
-            Err(e) if e.raw_os_error() == Some(26) && attempt < 20 => {
-                attempt += 1;
-                std::thread::sleep(Duration::from_millis(50));
+    // macOS validates a binary's code signature PER INODE, so overwriting an
+    // executable that has already been run gets the NEXT exec SIGKILLed — the
+    // process dies with no exit code at all, which reads as "the guard crashed"
+    // rather than as a harness fault. It took down the v4.1.7 release job on
+    // macos-14 and nowhere else. Copy ONCE per path: the file is written before
+    // any exec and never overwritten after one.
+    if !target.exists() {
+        let mut attempt = 0;
+        loop {
+            match std::fs::copy(HOOK, &target) {
+                Ok(_) => break,
+                Err(e) if e.raw_os_error() == Some(26) && attempt < 20 => {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => panic!("copy the binary under its role name: {e}"),
             }
-            Err(e) => panic!("copy the binary under its role name: {e}"),
         }
     }
     #[cfg(unix)]
