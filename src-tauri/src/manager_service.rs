@@ -10646,6 +10646,83 @@ judge was never told to give"
         assert!(seat_dir_carries_managed_seats("claude", &dir));
     }
 
+    // ---- studio#45: the service itself, over a temp directory ----
+
+    /// A REAL `ManagerService`, assembled the way `lib.rs` assembles it.
+    ///
+    /// Nothing here was constructible before, so every fact that lives in a
+    /// service method's WIRING — that it calls what it says it calls — was
+    /// asserted by nothing. The crate's answer had been to keep extracting pure
+    /// functions beside the service and test those, which is right and is why
+    /// its coverage is good; it stops exactly where a method's job IS to call
+    /// two collaborators.
+    ///
+    /// The three pieces are cheap and touch nothing outside `dir`:
+    /// `ReleaseManager::new` builds two HTTP clients and makes no request,
+    /// `RuntimeManager::new` reads one optional state file, and the gateway
+    /// spawn inside `ManagerService::new` is behind `gateway_enabled`, which a
+    /// default settings file leaves off.
+    fn service_over(dir: &Path) -> ManagerService {
+        let store = crate::config::ConfigStore::over(dir);
+        let paths = store.paths();
+        ManagerService::new(
+            store,
+            crate::release_manager::ReleaseManager::new().expect("http clients"),
+            crate::runtime_manager::RuntimeManager::new(paths),
+        )
+    }
+
+    /// studio#22's wiring, which studio#45 was filed because nothing could see.
+    ///
+    /// The measurement that filed it: deleting the service's call to the
+    /// recorder left 415 of 415 tests green. The recorder had a control and the
+    /// reconcile had a control; the line between them had none, and this is it.
+    #[test]
+    fn asking_the_service_to_go_silent_records_it_on_the_machine() {
+        let dir = unique_tempdir("service-silence");
+        let service = service_over(&dir);
+        // A workspace only gets a field directory once its resident RESOLVES,
+        // and a temp directory has no managed runtime — so point the source at
+        // a local jar, which is the same seam a developer running an unpackaged
+        // build uses.
+        let jar = dir.join("jawata.jar");
+        fs::write(&jar, b"not really a jar").unwrap();
+        {
+            let mut settings = service.config_store.get_settings();
+            settings.global_runtime_source = crate::config::RuntimeSource::LocalJar {
+                jar_path: display_path(&jar),
+            };
+            service.config_store.write_settings(settings).unwrap();
+        }
+        service
+            .add_project(crate::config::AddProjectInput {
+                name: "alpha".into(),
+                project_path: dir.join("alpha").display().to_string(),
+                workspace_name: "alpha-ws".into(),
+            })
+            .expect("a workspace to ask about");
+
+        assert!(
+            !service.get_settings().field_reminders_silenced,
+            "reminders are on until the user says otherwise"
+        );
+
+        service
+            .field_set_silence("alpha-ws", None, Some(true))
+            .expect("the tile's own call");
+
+        assert!(
+            service.get_settings().field_reminders_silenced,
+            "the switch is a machine fact, so asking ONE workspace for it records it \
+             for the machine — without this the setter writes a cache and the value \
+             it is a cache OF is never set"
+        );
+
+        // And back, so it is a switch rather than a one-way latch.
+        service.field_set_silence("alpha-ws", None, Some(false)).expect("off");
+        assert!(!service.get_settings().field_reminders_silenced);
+    }
+
     /// studio#44: Cursor's seats moved to the location its own documentation
     /// names, and the move TAKES THE OLD COPIES WITH IT.
     ///

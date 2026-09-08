@@ -701,6 +701,44 @@ impl ConfigStore {
         })
     }
 
+    /// studio#45: a store over SUPPLIED paths, reachable from tests outside
+    /// this module.
+    ///
+    /// `ConfigStore::new` detects the real user directories, so every test in
+    /// the crate that needed one either lived in this module — where the
+    /// private fields are in reach — or did without. Doing without is why a
+    /// `ManagerService` could not be built in a test at all, and why a method
+    /// whose job is to call two collaborators had nothing asserting it did:
+    /// deleting the call that records the machine-level go-silent switch left
+    /// 415 of 415 tests green.
+    ///
+    /// `#[cfg(test)]` because that is the truth about it — it exists so a test
+    /// can assemble the real service over a temp directory, and shipping it
+    /// would widen the crate's API for nobody.
+    #[cfg(test)]
+    pub(crate) fn over(dir: &Path) -> Self {
+        let paths = AppPaths {
+            config_dir: dir.to_path_buf(),
+            state_dir: dir.to_path_buf(),
+            cache_dir: dir.to_path_buf(),
+            projects_file: dir.join("projects.json"),
+            settings_file: dir.join("settings.json"),
+            runtime_state_file: dir.join("runtime-state.json"),
+            default_data_root: dir.to_path_buf(),
+            log_dir: dir.join("logs"),
+        };
+        fs::create_dir_all(&paths.log_dir).expect("log dir");
+        Self {
+            settings: Mutex::new(ManagerSettings::default_for_paths(&paths)),
+            projects: Mutex::new(ProjectsFile {
+                version: 1,
+                projects: Vec::new(),
+                workspaces: Vec::new(),
+            }),
+            paths,
+        }
+    }
+
     pub fn paths(&self) -> AppPaths {
         self.paths.clone()
     }
@@ -2362,16 +2400,9 @@ mod tests {
     // ===== Sprint 15 Stage 9: workspace state allocation =====
 
     fn store_with_empty_state(dir: &Path) -> ConfigStore {
-        let paths = paths_in(dir);
-        ConfigStore {
-            paths: paths.clone(),
-            projects: Mutex::new(ProjectsFile {
-                version: 1,
-                projects: Vec::new(),
-                workspaces: Vec::new(),
-            }),
-            settings: Mutex::new(ManagerSettings::default_for_paths(&paths)),
-        }
+        // studio#45: one construction, shared with the tests outside this
+        // module that can now build a service.
+        ConfigStore::over(dir)
     }
 
     // ---- D4: automatic update becomes the real behaviour EVERYWHERE ----
