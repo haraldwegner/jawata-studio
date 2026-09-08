@@ -29,6 +29,45 @@ use crate::config::HookConfig;
 use crate::roles::Client;
 use crate::safety::{Outcome, SilenceReason};
 
+/// studio#43: record every `.java` file this command changed outside a declared
+/// authoring window.
+///
+/// **NO BOUND MEANS NO CLAIM.** Without a stamp from the PRE side there is no
+/// honest way to say a file changed because of THIS command, so nothing is
+/// recorded — an instrument that fabricates findings when it cannot see is
+/// worse than one that stays quiet, because the findings are the product.
+///
+/// The root is the command's own working directory when the payload carries
+/// one and this process's otherwise, which is where the client invoked the
+/// hook. A command that `cd`s elsewhere writes outside it and is not seen; that
+/// is a bound on the detector rather than a defect in it, and it is written
+/// here rather than discovered later.
+fn record_java_writes(home: &Path, session: &str, doc: &serde_json::Value) {
+    if session.is_empty() {
+        return;
+    }
+    let Some(started) = crate::javawatch::command_started_at(home, session) else {
+        return;
+    };
+    let root = doc
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok());
+    let Some(root) = root else { return };
+
+    let changed = crate::javawatch::java_files_changed_since(&root, started);
+    if changed.is_empty() {
+        return;
+    }
+    let command = doc
+        .pointer("/tool_input/command")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let open = crate::editgate::window_is_open(home, session);
+    crate::javawatch::record(home, &crate::javawatch::misses(&changed, open, command));
+}
+
 /// The slip steering payload — byte-identical to the script's, because the
 /// selftest and the real path share it and agents have learned its wording.
 pub const SLIP_CONTEXT: &str = "jawata-fallback recorded. Next: verify with compile_workspace + get_diagnostics. A declared fallback is a JAWATA feature request — if a newer JAWATA version can do it, prefer JAWATA next time.";
@@ -111,6 +150,18 @@ pub fn observe_in(
         }
         slipped
     } else if matches!(tool, "Bash" | "Grep") {
+        // studio#43: what the command actually DID to `.java` files, before
+        // anything is inferred from what it SAID. The text tripwire in the PRE
+        // guard reads an opaque string; this reads the effect, so a path that
+        // arrived from a variable, a substitution, a glob, a file list or a
+        // script one level down cannot hide from it.
+        //
+        // It records and never blocks — it runs after the command, and a
+        // detector presented as a gate would be the over-claim that made the
+        // tripwire look patchable three times.
+        if tool == "Bash" {
+            record_java_writes(home, session, &doc);
+        }
         let flat = request_only
             .replace("\\n", " ")
             .replace("\\r", " ")
@@ -497,6 +548,57 @@ mod tests {
             "tool_name": tool, "session_id": "s1", "tool_input": input
         })
         .to_string()
+    }
+
+    /// studio#43: WIRED, not merely built. The detector is reached from the
+    /// real observer entry with a real PostToolUse payload — a unit test of the
+    /// module would pass with nothing calling it, which is how this project has
+    /// shipped a capability employed by nobody three times.
+    #[test]
+    fn a_shell_write_of_a_java_file_outside_a_window_is_recorded() {
+        let home = scratch("javawatch-wired");
+        let work = home.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+
+        // The PRE side stamps, then the command changes a file. The route is
+        // one the text tripwire's own header names as passing it: the path
+        // arrives from a variable.
+        crate::javawatch::stamp_command_start(&home, "s1");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(work.join("Touched.java"), "class Touched {}").unwrap();
+
+        let p = serde_json::json!({
+            "tool_name": "Bash",
+            "session_id": "s1",
+            "cwd": work.display().to_string(),
+            "tool_input": {"command": "F=Touched.java; printf 'class Touched {}' > \"$F\""},
+            "tool_response": {"stdout": ""}
+        })
+        .to_string();
+        let _ = observe_in(&home, Client::ClaudeCode, &p, None);
+
+        let ledger = std::fs::read_to_string(crate::javawatch::ledger_path(&home))
+            .expect("a miss the tripwire could not see is recorded");
+        assert!(ledger.contains("Touched.java"), "the FILE: {ledger}");
+        assert!(ledger.contains("printf"), "and the ROUTE: {ledger}");
+
+        // AND THE OTHER HALF OF THE MEASURE. Inside a declared window the same
+        // write is expected, so nothing new is recorded — without this the
+        // ledger is a list of every Java edit and a real miss is unfindable.
+        let before = ledger.lines().count();
+        crate::editgate::open_window(&home, "s1", "authoring");
+        crate::javawatch::stamp_command_start(&home, "s1");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(work.join("Touched.java"), "class Touched { int x; }").unwrap();
+        let _ = observe_in(&home, Client::ClaudeCode, &p, None);
+        assert_eq!(
+            before,
+            std::fs::read_to_string(crate::javawatch::ledger_path(&home))
+                .unwrap()
+                .lines()
+                .count(),
+            "a declared write is not a miss"
+        );
     }
 
     /// A field pile carrying one shape at the nudge threshold — the state in

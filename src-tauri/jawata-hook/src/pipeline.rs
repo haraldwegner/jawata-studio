@@ -288,6 +288,15 @@ fn guard(client: Client, payload: &str) -> Outcome {
     // reading or editing tool is about to touch — a containment rule that
     // watched only Bash would be satisfied while Read walked out of the
     // workspace.
+    // studio#43: stamp when this command started, so the POST side has an
+    // honest lower bound for "changed by THIS command". It happens before any
+    // verdict because it is a fact about the command rather than about the
+    // decision — and a denied command changes nothing, so a bound left behind
+    // by one costs a scan that finds nothing.
+    if let (Some(home), Some(session)) = (home_dir(), session_id_in(payload)) {
+        crate::javawatch::stamp_command_start(&home, &session);
+    }
+
     let mut scan = command.clone();
     if let Some(path) = edit_path_in(payload) {
         scan.push(' ');
