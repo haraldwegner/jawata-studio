@@ -49,13 +49,18 @@ pub struct ManagerDashboard {
     /// Deliberately NOT the `WorkspaceState` itself: that record carries the
     /// resident's bearer token, and studio#14 was a credential reaching a place
     /// it did not need to be. The UI needs two numbers and a name.
-    pub workspace_heap_settings: Vec<WorkspaceHeapSetting>,
+    pub workspace_runtime_settings: Vec<WorkspaceRuntimeSetting>,
 }
 
-/// studio#28: one workspace's heap ceiling as the UI needs to see it.
+/// One workspace's per-resident launch settings, as the UI needs to see them.
+///
+/// studio#28 created it for the heap ceiling; studio#29 added the debug agent,
+/// and the name moved with it. Both are decided when the JVM starts and neither
+/// can be changed on a running one, which is what makes them one row rather
+/// than two lists the UI would have to zip by workspace name.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct WorkspaceHeapSetting {
+pub struct WorkspaceRuntimeSetting {
     pub workspace_name: String,
     /// What the user chose, or `None` if they never chose.
     pub max_heap_mb: Option<u32>,
@@ -63,6 +68,12 @@ pub struct WorkspaceHeapSetting {
     /// default. Computed here so the UI never re-derives the default and drifts
     /// from the launcher.
     pub effective_max_heap_mb: u32,
+    /// studio#29: whether this workspace's resident launches with a debug agent.
+    pub debuggable: bool,
+    /// The JDWP port it listens on when it does — loopback only. Shown so a
+    /// user can point a debugger at it without guessing, and `None` whenever
+    /// `debuggable` is false, because the port IS the toggle.
+    pub debug_port: Option<u16>,
 }
 
 /// Represents a discovered project candidate in a workspace.
@@ -1529,7 +1540,7 @@ impl ManagerService {
             self.collect_runtime_statuses(&projects, &settings, installed_runtime.as_ref());
         let suggested_workspace_name = self.suggest_next_workspace_name();
         let services_inventory = self.get_services_inventory_with(installed_runtime.as_ref());
-        let workspace_heap_settings = self.workspace_heap_settings();
+        let workspace_runtime_settings = self.workspace_runtime_settings();
 
         Ok(ManagerDashboard {
             bootstrap,
@@ -1540,24 +1551,26 @@ impl ManagerService {
             runtime_statuses,
             suggested_workspace_name,
             services_inventory,
-            workspace_heap_settings,
+            workspace_runtime_settings,
         })
     }
 
-    /// studio#28: every workspace's heap ceiling, for the Settings view.
+    /// Every workspace's per-resident launch settings, for the Settings view.
     ///
-    /// The effective number is computed HERE, from the same
-    /// `effective_max_heap_mb()` the launcher uses, so the UI cannot show one
-    /// default while the resident starts with another.
-    fn workspace_heap_settings(&self) -> Vec<WorkspaceHeapSetting> {
-        let mut rows: Vec<WorkspaceHeapSetting> = self
+    /// Both numbers are computed HERE, from the same accessors the launcher
+    /// uses, so the UI cannot show one default while the resident starts with
+    /// another.
+    fn workspace_runtime_settings(&self) -> Vec<WorkspaceRuntimeSetting> {
+        let mut rows: Vec<WorkspaceRuntimeSetting> = self
             .config_store
             .list_workspace_states()
             .into_iter()
-            .map(|w| WorkspaceHeapSetting {
+            .map(|w| WorkspaceRuntimeSetting {
                 workspace_name: w.workspace_name.clone(),
                 max_heap_mb: w.max_heap_mb,
                 effective_max_heap_mb: w.effective_max_heap_mb(),
+                debuggable: w.is_debuggable(),
+                debug_port: w.debug_port,
             })
             .collect();
         rows.sort_by(|a, b| a.workspace_name.cmp(&b.workspace_name));
@@ -1577,6 +1590,23 @@ impl ManagerService {
     ) -> Result<ManagerDashboard, String> {
         self.config_store
             .set_workspace_max_heap(workspace_name, max_heap_mb)?;
+        self.load_dashboard()
+    }
+
+    /// studio#29: turn the debug agent on or off for one workspace.
+    ///
+    /// Takes effect at the workspace's NEXT start, and unlike the heap ceiling
+    /// that is not a policy choice: a debug agent CANNOT be added to a running
+    /// JVM, which is the fact the issue measured. Nothing is restarted here —
+    /// bouncing a resident out from under a running agent is worse than a
+    /// setting that waits.
+    pub fn set_workspace_debuggable(
+        &self,
+        workspace_name: &str,
+        debuggable: bool,
+    ) -> Result<ManagerDashboard, String> {
+        self.config_store
+            .set_workspace_debuggable(workspace_name, debuggable)?;
         self.load_dashboard()
     }
 
@@ -1930,6 +1960,9 @@ impl ManagerService {
         // studio#28: resolved here, once, so both runtime-source arms below get
         // the same answer and neither can construct a reference without one.
         let max_heap_mb = workspace_state.effective_max_heap_mb();
+        // studio#29: and the debug agent, the same way — resolved once so
+        // neither runtime-source arm can construct a reference that forgot it.
+        let debug_port = workspace_state.debug_port;
 
         match &settings.global_runtime_source {
             RuntimeSource::Managed => {
@@ -1944,6 +1977,7 @@ impl ManagerService {
                     resolved_jar_path: runtime.jar_path.clone(),
                     jvm_properties: knowledge_jvm_properties(settings),
                     max_heap_mb,
+                    debug_port,
                     resident_port: workspace_state.resident_port,
                     resident_token: workspace_state.resident_token,
                     // studio#14: a managed runtime knows its version, so the
@@ -1959,6 +1993,7 @@ impl ManagerService {
                 resolved_jar_path: jar_path.clone(),
                 jvm_properties: knowledge_jvm_properties(settings),
                 max_heap_mb,
+                debug_port,
                 resident_port: workspace_state.resident_port,
                 resident_token: workspace_state.resident_token,
                 // A hand-built jar's version is unknowable, so the token stays

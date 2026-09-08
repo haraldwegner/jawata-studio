@@ -272,6 +272,11 @@ pub struct RuntimeReference {
     /// the call site rather than here keeps "unbounded" unrepresentable: there
     /// is no value of this field that launches a resident without a bound.
     pub max_heap_mb: u32,
+    /// studio#29: the JDWP port for this resident, when the workspace has debug
+    /// turned on. `None` — the default — launches with no debug agent, and no
+    /// agent can be added to a JVM afterwards, which is exactly why the setting
+    /// has to reach the LAUNCH LINE rather than a running process.
+    pub debug_port: Option<u16>,
     /// Sprint 15 Stage 10: bind port for the resident-JVM HTTP transport.
     /// Allocated once per workspace via
     /// `ConfigStore::get_or_allocate_workspace_state` and stable across
@@ -969,6 +974,28 @@ impl RuntimeManager {
         // An unbounded heap simply never has to.
         args.push(format!("-Xmx{}m", reference.max_heap_mb));
 
+        // studio#29: the debug agent, when this workspace asked for one. Like
+        // every JVM option it MUST precede -jar.
+        //
+        // Measured 2026-08-21: `debug(action=discover)` listed all three
+        // residents `debuggable: false`, so the product's own debug and profile
+        // seats could not examine the fleet the studio itself launched — the
+        // #28 heap measurement had to fall back to `jcmd`. An agent cannot be
+        // added to a running JVM, so the only place this can be decided is here.
+        //
+        // THE HOST IS WRITTEN OUT, and that is the security decision rather than
+        // a formatting one. An open JDWP port executes arbitrary code in the
+        // resident's JVM. A bare `address=<port>` binds every interface on a
+        // JDK 8 agent and loopback only from JDK 9 — so leaving it off would
+        // make the blast radius depend on which JVM happened to launch it.
+        // `suspend=n` for the obvious reason: a resident that halts before main
+        // never comes up.
+        if let Some(port) = reference.debug_port {
+            args.push(format!(
+                "-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:{port}"
+            ));
+        }
+
         // Sprint 21a (item F): knowledge-store + memory-crawl configuration as system
         // properties — like -javaagent these MUST precede -jar.
         args.extend(reference.jvm_properties.iter().cloned());
@@ -1574,6 +1601,7 @@ mod tests {
                 // An explicit, non-default number so a test asserting the bound
                 // cannot pass by coincidence if the default were substituted.
                 max_heap_mb: 3072,
+                debug_port: None,
                 resident_port: 8800,
                 resident_token: "test-token".into(),
                 // Deliberately an OLD engine: this request drives the
@@ -1716,6 +1744,71 @@ mod tests {
             xmx < jar,
             "-Xmx must precede -jar; args were {:?}",
             spec.args
+        );
+    }
+
+    // ---- studio#29: the debug agent reaches the launch line, or nowhere ----
+    //
+    // Measured 2026-08-21: `debug(action=discover)` listed all three residents
+    // `debuggable: false`, so jawata's own debug and profile seats could not
+    // examine the fleet the studio itself launched. An agent CANNOT be added to
+    // a running JVM, so the launch line is the only place this can be decided —
+    // which is why these tests read the argv rather than a setting.
+
+    #[test]
+    fn a_workspace_that_never_asked_launches_with_no_debug_agent() {
+        let manager = RuntimeManager::new(fake_paths());
+        let launch_request = fake_launch_request();
+        assert_eq!(None, launch_request.reference.debug_port, "the default is OFF");
+
+        let spec = manager.command_spec_for(&launch_request);
+
+        assert!(
+            !spec.args.iter().any(|a| a.starts_with("-agentlib:jdwp")),
+            "an open JDWP port runs arbitrary code in the resident; it is not a default. Got {:?}",
+            spec.args
+        );
+    }
+
+    #[test]
+    fn a_debuggable_workspace_gets_a_loopback_agent_before_the_jar() {
+        let manager = RuntimeManager::new(fake_paths());
+        let mut launch_request = fake_launch_request();
+        launch_request.reference.debug_port = Some(9801);
+
+        let spec = manager.command_spec_for(&launch_request);
+
+        // The HOST is asserted, not just the port. A bare `address=<port>` binds
+        // every interface on a JDK 8 agent and loopback only from JDK 9, so
+        // leaving it off would make the blast radius depend on which JVM
+        // happened to launch — which is not a thing to leave to chance for a
+        // port that executes arbitrary code.
+        assert!(
+            spec.args.contains(
+                &"-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:9801"
+                    .to_string()
+            ),
+            "the agent must be bound to loopback on the workspace's own port; got {:?}",
+            spec.args
+        );
+
+        // Position is not cosmetic, for the same reason the heap bound's is:
+        // everything after -jar is the PROGRAM's argv, so an agent placed there
+        // is handed to jawata as a nonsense argument and the JVM starts with no
+        // debug agent at all — the defect wearing the costume of a fix.
+        let agent = spec
+            .args
+            .iter()
+            .position(|a| a.starts_with("-agentlib:jdwp"))
+            .expect("the agent must be present at all");
+        let jar = spec.args.iter().position(|a| a == "-jar").expect("-jar");
+        assert!(agent < jar, "-agentlib must precede -jar; args were {:?}", spec.args);
+
+        // And it does not suspend: a resident that halts before main never
+        // comes up, and the studio would report it as a failed start.
+        assert!(
+            spec.args.iter().any(|a| a.contains("suspend=n")),
+            "a suspended resident never finishes starting"
         );
     }
 
@@ -1919,6 +2012,7 @@ mod tests {
             resolved_jar_path: "/dev/null".into(),
             jvm_properties: vec![],
             max_heap_mb: crate::resident::DEFAULT_MAX_HEAP_MB,
+            debug_port: None,
             resident_port: 8800,
             resident_token: "test-token".into(),
             // These lifecycle tests never spawn a real engine, so the token

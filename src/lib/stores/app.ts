@@ -22,6 +22,7 @@ import {
   renameWorkspace as renameWorkspaceApi,
   deleteWorkspace as deleteWorkspaceApi,
   setWorkspaceMaxHeap as setWorkspaceMaxHeapApi,
+  setWorkspaceDebuggable as setWorkspaceDebuggableApi,
   renameProject as renameProjectApi,
   updateSettings,
   type AddProjectInput,
@@ -196,6 +197,18 @@ export function createAppStore() {
     update((state) => ({ ...state, isBusy: true, error: undefined }));
     try {
       syncDashboard(await setWorkspaceMaxHeapApi(workspaceName, maxHeapMb));
+    } catch (error) {
+      update((state) => ({ ...state, error: String(error) }));
+    } finally {
+      update((state) => ({ ...state, isBusy: false }));
+    }
+  }
+
+  /** studio#29: turn the debug agent on or off for one workspace's resident. */
+  async function setWorkspaceDebuggable(workspaceName: string, debuggable: boolean) {
+    update((state) => ({ ...state, isBusy: true, error: undefined }));
+    try {
+      syncDashboard(await setWorkspaceDebuggableApi(workspaceName, debuggable));
     } catch (error) {
       update((state) => ({ ...state, error: String(error) }));
     } finally {
@@ -679,6 +692,7 @@ export function createAppStore() {
     renameWorkspaceEntry,
     deleteWorkspaceEntry,
     setWorkspaceHeapBound,
+    setWorkspaceDebuggable,
     renameProjectEntry,
     deleteProjectEntry,
     deleteAllProjectEntries,

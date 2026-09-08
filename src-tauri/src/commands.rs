@@ -117,6 +117,17 @@ pub fn rename_project(
 /// Applies at the workspace's next start — a JVM cannot be re-bounded while it
 /// runs, and the UI says so rather than implying an immediate effect.
 #[tauri::command]
+pub fn set_workspace_debuggable(
+    state: State<'_, AppState>,
+    workspace_name: String,
+    debuggable: bool,
+) -> Result<ManagerDashboard, String> {
+    state
+        .manager_service
+        .set_workspace_debuggable(&workspace_name, debuggable)
+}
+
+#[tauri::command]
 pub fn set_workspace_max_heap(
     state: State<'_, AppState>,
     workspace_name: String,

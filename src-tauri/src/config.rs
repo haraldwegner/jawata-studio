@@ -983,6 +983,59 @@ impl ConfigStore {
     /// Takes effect on the workspace's NEXT start: a JVM's heap ceiling is
     /// fixed at launch and cannot be changed in a running process. The caller
     /// is responsible for telling the user that.
+    /// studio#29: turn the debug agent on or off for one workspace's resident.
+    ///
+    /// `debuggable: true` ALLOCATES a JDWP port from the debug range and stores
+    /// it; `false` clears it. Storing the port is what makes the toggle
+    /// meaningful — see `WorkspaceState::debug_port` — and allocating it here
+    /// rather than at launch is what makes it STABLE, so a resident keeps the
+    /// same port across restarts and a session attached to it survives one.
+    ///
+    /// The taken set is the other workspaces' DEBUG ports. Resident ports cannot
+    /// collide with these because the two ranges are disjoint, which is why that
+    /// is a fact about the constants rather than a check here.
+    ///
+    /// It takes effect at the workspace's NEXT start: a debug agent cannot be
+    /// added to a running JVM — the very fact the issue measured — so nothing
+    /// here restarts anything, and the caller is told which state it left.
+    pub fn set_workspace_debuggable(
+        &self,
+        workspace_name: &str,
+        debuggable: bool,
+    ) -> Result<crate::resident::WorkspaceState, String> {
+        let mut projects = self.projects.lock().expect("projects mutex poisoned");
+        let taken: std::collections::HashSet<u16> = projects
+            .workspaces
+            .iter()
+            .filter(|w| w.workspace_name != workspace_name)
+            .filter_map(|w| w.debug_port)
+            .collect();
+        let Some(state) = projects
+            .workspaces
+            .iter_mut()
+            .find(|w| w.workspace_name == workspace_name)
+        else {
+            return Err(format!("workspace '{workspace_name}' has no allocated state"));
+        };
+        match (debuggable, state.debug_port) {
+            // Already in the asked-for state: keep the port it has rather than
+            // allocating a second one, so turning the toggle on twice does not
+            // move a port something may already be attached to.
+            (true, Some(_)) | (false, None) => {}
+            (true, None) => {
+                let allocator = crate::resident::PortAllocator::with_range(
+                    crate::resident::DEBUG_PORT_RANGE_START,
+                    crate::resident::DEBUG_PORT_RANGE_END,
+                );
+                state.debug_port = Some(allocator.allocate(&taken)?);
+            }
+            (false, Some(_)) => state.debug_port = None,
+        }
+        let updated = state.clone();
+        write_json(&self.paths.projects_file, &*projects)?;
+        Ok(updated)
+    }
+
     pub fn set_workspace_max_heap(
         &self,
         workspace_name: &str,
@@ -2266,6 +2319,81 @@ mod tests {
             }),
             settings: Mutex::new(ManagerSettings::default_for_paths(&paths)),
         }
+    }
+
+    // ---- studio#29: the debug agent is opt-in, per workspace ----
+
+    #[test]
+    fn debugging_is_off_until_asked_and_the_port_is_the_toggle() {
+        let dir = unique_tempdir("debuggable");
+        let store = store_with_empty_state(&dir);
+        store.get_or_allocate_workspace_state("alpha").expect("alpha");
+        store.get_or_allocate_workspace_state("beta").expect("beta");
+
+        // OFF is the default, and it is an ABSENT port rather than a flag
+        // beside one — there is no state that says "on" without saying where.
+        let alpha = store
+            .list_workspace_states()
+            .into_iter()
+            .find(|w| w.workspace_name == "alpha")
+            .expect("alpha");
+        assert_eq!(None, alpha.debug_port);
+        assert!(!alpha.is_debuggable());
+
+        let on = store.set_workspace_debuggable("alpha", true).expect("on");
+        let port = on.debug_port.expect("turning it on allocates a port");
+        assert!(on.is_debuggable());
+        assert!(
+            (crate::resident::DEBUG_PORT_RANGE_START..=crate::resident::DEBUG_PORT_RANGE_END)
+                .contains(&port),
+            "a debug port must come from the debug range, which is disjoint from the \
+             resident range so the two can never be handed the same number: got {port}"
+        );
+        assert!(
+            port < crate::resident::DEFAULT_PORT_RANGE_START
+                || port > crate::resident::DEFAULT_PORT_RANGE_END,
+            "the ranges must not overlap"
+        );
+
+        // A second workspace gets a different one.
+        let beta = store.set_workspace_debuggable("beta", true).expect("beta on");
+        let beta_port = beta.debug_port.expect("beta port");
+        assert_ne!(beta_port, port, "two residents cannot share a JDWP port");
+
+        // TURNING IT ON AGAIN KEEPS THE SAME PORT — reallocating would move one
+        // a debugger may already be attached to.
+        //
+        // THE OBVIOUS FORM OF THIS ASSERTION CANNOT FAIL, and a mutation is what
+        // said so: the allocator is deterministic and excludes only OTHER
+        // workspaces, so re-allocating hands back the very port it handed back
+        // last time and "kept" is indistinguishable from "recomputed". It
+        // discriminates only where the workspace's own port is NOT the lowest
+        // free one — so a hole is opened BELOW it first.
+        store.get_or_allocate_workspace_state("gamma").expect("gamma");
+        let gamma_port = store
+            .set_workspace_debuggable("gamma", true)
+            .expect("gamma on")
+            .debug_port
+            .expect("gamma port");
+        store.set_workspace_debuggable("beta", false).expect("beta off");
+
+        let again = store.set_workspace_debuggable("gamma", true).expect("again");
+        assert_eq!(
+            Some(gamma_port),
+            again.debug_port,
+            "an already-debuggable workspace must keep its port even when a lower one \
+             has just been freed ({beta_port} is free now)"
+        );
+
+        // And OFF clears it, so nothing reserves a port for a resident that
+        // will not listen on it.
+        let off = store.set_workspace_debuggable("alpha", false).expect("off");
+        assert_eq!(None, off.debug_port);
+        assert!(!off.is_debuggable());
+
+        // It is on DISK: the launcher reads this after a manager restart.
+        let raw = std::fs::read_to_string(&paths_in(&dir).projects_file).expect("projects.json");
+        assert!(raw.contains("debugPort"), "the field must persist: {raw}");
     }
 
     // ---- studio#22: the go-silent switch lives on the machine ----

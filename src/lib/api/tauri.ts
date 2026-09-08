@@ -211,12 +211,15 @@ export interface ManagerDashboard {
    * means the UI falls back to a fresh name. */
   suggestedWorkspaceName?: string | null;
   servicesInventory: ServicesInventory;
-  /** studio#28: each workspace's resident heap ceiling. */
-  workspaceHeapSettings: WorkspaceHeapSetting[];
+  /** Each workspace's per-resident launch settings. */
+  workspaceRuntimeSettings: WorkspaceRuntimeSetting[];
 }
 
-/** studio#28: one workspace's heap ceiling, as the Settings view needs it. */
-export interface WorkspaceHeapSetting {
+/** One workspace's per-resident launch settings, as the Settings view needs
+ * them. studio#28 created this for the heap ceiling; studio#29 added the debug
+ * agent. Both are fixed when the JVM starts and neither can be changed on a
+ * running one, which is why they travel as one row. */
+export interface WorkspaceRuntimeSetting {
   workspaceName: string;
   /** What the user chose, or null if they never chose. */
   maxHeapMb?: number | null;
@@ -224,6 +227,11 @@ export interface WorkspaceHeapSetting {
    * Computed in the backend from the same function the launcher uses, so this
    * number and the resident's `-Xmx` cannot drift apart. */
   effectiveMaxHeapMb: number;
+  /** studio#29: whether this workspace's resident launches with a debug agent. */
+  debuggable: boolean;
+  /** The JDWP port it listens on when it does — loopback only. Null whenever
+   * `debuggable` is false, because the port IS the toggle. */
+  debugPort?: number | null;
 }
 
 /** Inventory of available runtime services. */
@@ -373,6 +381,17 @@ export function setWorkspaceMaxHeap(
   maxHeapMb: number | null
 ): Promise<ManagerDashboard> {
   return invoke("set_workspace_max_heap", { workspaceName, maxHeapMb });
+}
+
+/** studio#29: turn the debug agent on or off for a workspace's resident. Takes
+ * effect at that workspace's NEXT start, and unlike the heap ceiling that is
+ * not a choice: a debug agent cannot be added to a running JVM. The port is
+ * allocated by the backend and bound to loopback. */
+export function setWorkspaceDebuggable(
+  workspaceName: string,
+  debuggable: boolean
+): Promise<ManagerDashboard> {
+  return invoke("set_workspace_debuggable", { workspaceName, debuggable });
 }
 
 export function deleteWorkspace(workspaceName: string): Promise<ManagerDashboard> {

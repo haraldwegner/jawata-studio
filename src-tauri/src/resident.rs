@@ -22,6 +22,14 @@ use std::net::TcpListener;
 pub const DEFAULT_PORT_RANGE_START: u16 = 8800;
 pub const DEFAULT_PORT_RANGE_END: u16 = 8999;
 
+/// studio#29: the JDWP range, DISJOINT from the resident range above so a debug
+/// port can never be handed out to a resident's HTTP transport or the reverse.
+/// Separate constants rather than a shared allocator with an offset: the two
+/// ranges answer to different things, and a resident port moving would silently
+/// move every debug port with it.
+pub const DEBUG_PORT_RANGE_START: u16 = 9800;
+pub const DEBUG_PORT_RANGE_END: u16 = 9999;
+
 /// The heap ceiling a resident gets when its workspace names no other.
 ///
 /// studio#28: residents launched with no `-Xmx` at all, so each inherited the
@@ -56,6 +64,22 @@ pub struct WorkspaceState {
     /// keeps every `projects.json` written before this field existed loadable.
     #[serde(default)]
     pub max_heap_mb: Option<u32>,
+    /// studio#29: the JDWP port this workspace's resident listens on, when the
+    /// user has turned debugging on for it. `None` — the default, and what
+    /// every existing `projects.json` deserialises to — launches with **no
+    /// debug agent at all**.
+    ///
+    /// The PORT is the toggle rather than a boolean beside one, for the reason
+    /// `max_heap_mb`'s own doc gives about its shape: it makes the broken state
+    /// unrepresentable. There is no value of this field that says "debugging is
+    /// on" without saying where, and none that reserves a port for a resident
+    /// that will not listen on it.
+    ///
+    /// It is deliberately OFF by default. An open JDWP port executes arbitrary
+    /// code in the resident's JVM, so this is a thing a user turns on for a
+    /// workspace they are debugging, not a thing the product does for them.
+    #[serde(default)]
+    pub debug_port: Option<u16>,
 }
 
 impl WorkspaceState {
@@ -65,12 +89,18 @@ impl WorkspaceState {
             resident_port,
             resident_token,
             max_heap_mb: None,
+            debug_port: None,
         }
     }
 
     /// The bound this workspace's resident actually launches with.
     pub fn effective_max_heap_mb(&self) -> u32 {
         self.max_heap_mb.unwrap_or(DEFAULT_MAX_HEAP_MB)
+    }
+
+    /// studio#29: whether this workspace's resident launches with a debug agent.
+    pub fn is_debuggable(&self) -> bool {
+        self.debug_port.is_some()
     }
 }
 

@@ -17,7 +17,7 @@
     ServiceProbeResult,
     UpdateSettingsInput,
     UpdatePolicy,
-    WorkspaceHeapSetting
+    WorkspaceRuntimeSetting
   } from "../api/tauri";
 
   export let settings: ManagerSettings | undefined;
@@ -29,7 +29,7 @@
   export let serviceProbeBusy = false;
   export let serviceProbeError: string | undefined;
   /** studio#28: each workspace's resident heap ceiling. */
-  export let workspaceHeapSettings: WorkspaceHeapSetting[] = [];
+  export let workspaceRuntimeSettings: WorkspaceRuntimeSetting[] = [];
 
   // studio#28. Only the shape check lives here — the call itself goes through
   // the store like every other operation, so one dashboard sync keeps the UI
@@ -89,6 +89,8 @@
     redetectMcpPaths: void;
     /** studio#28: `maxHeapMb: null` clears the bound back to the default. */
     setWorkspaceHeapBound: { workspaceName: string; maxHeapMb: number | null };
+    /** studio#29: turn the resident's debug agent on or off for this workspace. */
+    setWorkspaceDebuggable: { workspaceName: string; debuggable: boolean };
   }>();
 
   const SUCCESS_FADE_MS = 3000;
@@ -766,16 +768,16 @@
         </section>
 
         <section class="machine-control-card compact-card stack">
-          <h4>Workspace Memory</h4>
+          <h4>Workspace Runtime</h4>
           <p class="muted">
             Each workspace's resident gets this heap ceiling. Leave a box empty to use the
-            2048 MB default. Applies the next time that workspace starts — a running JVM's
-            ceiling cannot be changed.
+            2048 MB default. Both settings apply the next time that workspace starts —
+            neither a running JVM's ceiling nor its debug agent can be changed.
           </p>
-          {#if workspaceHeapSettings.length === 0}
+          {#if workspaceRuntimeSettings.length === 0}
             <p class="muted">No workspaces yet.</p>
           {:else}
-            {#each workspaceHeapSettings as row (row.workspaceName)}
+            {#each workspaceRuntimeSettings as row (row.workspaceName)}
               <label class="field">
                 <span>{row.workspaceName}</span>
                 <div class="field-row">
@@ -795,6 +797,29 @@
                 {:else}
                   <span class="muted">Starts with {row.effectiveMaxHeapMb} MB{row.maxHeapMb == null ? " (default)" : ""}.</span>
                 {/if}
+                <!-- studio#29: an open JDWP port runs arbitrary code in that
+                     resident's JVM, so this is off unless the user asks, it
+                     binds loopback only, and the label says both. -->
+                <label class="checkbox-row compact">
+                  <input
+                    checked={row.debuggable}
+                    disabled={interactionDisabled}
+                    on:change={(event) =>
+                      dispatch("setWorkspaceDebuggable", {
+                        workspaceName: row.workspaceName,
+                        debuggable: event.currentTarget.checked
+                      })}
+                    type="checkbox"
+                  />
+                  <span>
+                    Allow debugging
+                    {#if row.debuggable && row.debugPort != null}
+                      <span class="muted">— 127.0.0.1:{row.debugPort} at next start</span>
+                    {:else}
+                      <span class="muted">— lets jawata's own debug and profile tools attach; loopback only</span>
+                    {/if}
+                  </span>
+                </label>
               </label>
             {/each}
           {/if}

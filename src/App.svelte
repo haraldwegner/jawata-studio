@@ -647,9 +647,11 @@
           saveMessage={$appStore.settingsSaveMessage}
           saveStatus={$appStore.settingsSaveStatus ?? "idle"}
           settings={$appStore.settings}
-          workspaceHeapSettings={$appStore.workspaceHeapSettings ?? []}
+          workspaceRuntimeSettings={$appStore.workspaceRuntimeSettings ?? []}
           on:setWorkspaceHeapBound={(event) =>
             appStore.setWorkspaceHeapBound(event.detail.workspaceName, event.detail.maxHeapMb)}
+          on:setWorkspaceDebuggable={(event) =>
+            appStore.setWorkspaceDebuggable(event.detail.workspaceName, event.detail.debuggable)}
           on:cleanGeneratedData={() => appStore.cleanAllGeneratedData()}
           on:cleanLogs={() => appStore.cleanAllLogs()}
           on:cleanWorkspaces={() => appStore.cleanAllWorkspaces()}
