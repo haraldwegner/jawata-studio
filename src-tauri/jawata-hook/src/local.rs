@@ -148,6 +148,19 @@ fn home_paths_in(text: &str, home: &str) -> Vec<String> {
 ///
 /// A remote address commonly embeds `user:TOKEN@host`, and printing one puts it
 /// in the transcript for good. This blocked a real leak on 2026-05-19.
+///
+/// THE CONFIG HALF POLICES THE REASON, NOT THE SPELLING, and that is the
+/// correction of 2026-09-08 (Harald: "this should be prohibited as well"). The
+/// first version listed the argument forms it had seen — the two dump flags and
+/// the literal `remote.` WITH the dot — so a `--get-regexp remote` query printed
+/// `remote.origin.url` and its token while satisfying none of the three. A list of
+/// spellings is only ever as complete as the day it was written, and git has
+/// many ways to ask one question.
+///
+/// So the rule became: a whole-config dump, or ANY config read that names a
+/// remote or a URL, however it asks. A read of `user.name` is untouched,
+/// because it cannot reach a credential — a refusal has to stay narrow enough
+/// to be right, or it teaches people to route around it.
 fn exposes_credentials(text: &str) -> bool {
     let t = text.replace(char::is_whitespace, " ");
     let squashed = t.split(' ').filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
@@ -156,10 +169,17 @@ fn exposes_credentials(text: &str) -> bool {
     if remote_probe.iter().any(|p| squashed.contains(p)) {
         return true;
     }
-    squashed.contains("git config")
-        && (squashed.contains("--list")
-            || squashed.contains(" -l")
-            || squashed.contains("remote."))
+    if !squashed.contains("git config") {
+        return false;
+    }
+    // A whole-config dump always carries the remotes with it.
+    if squashed.contains("--list") || squashed.contains(" -l") {
+        return true;
+    }
+    // Otherwise: does the question reach a remote address at all? The bare
+    // word catches the regexp form, which the dotted literal missed; "url"
+    // catches the urlmatch form and a regexp over URLs.
+    squashed.contains("remote") || squashed.contains("url")
 }
 
 /// The whole-payload verdict: the rules that police PATHS and credentials,
@@ -318,6 +338,39 @@ mod tests {
         assert!(!denied(judge_payload("git status --porcelain")));
         assert!(!denied(judge_payload("git log --oneline -3")));
         assert!(!denied(judge_payload("git config user.name")));
+    }
+
+    #[test]
+    fn every_config_read_that_can_reach_a_remote_address_is_refused() {
+        // The gap this closes, measured on the deployed 4.1.6 binary before
+        // the fix: the regexp form was ALLOWED while its dotted sibling was
+        // denied — same question, same output, different spelling. Each of
+        // these prints the remote URL, and the URL is where the token is.
+        for q in [
+            "git config --get-regexp remote",
+            "git config --get-regexp url",
+            "git config --get-urlmatch http https://x",
+            "git config --get remote.origin.url",
+            "git config --list",
+            "git config -l",
+        ] {
+            assert!(exposes_credentials(q), "must refuse: {q}");
+        }
+    }
+
+    #[test]
+    fn a_config_read_that_cannot_reach_a_credential_is_left_alone() {
+        // The other half of the claim, and the reason the rule is not just
+        // "any config read": a refusal wide enough to catch ordinary work
+        // gets routed around, and then it guards nothing at all.
+        for q in [
+            "git config --get user.name",
+            "git config user.email me@example.com",
+            "git config --get core.editor",
+            "git status --short",
+        ] {
+            assert!(!exposes_credentials(q), "must allow: {q}");
+        }
     }
 
     #[test]
