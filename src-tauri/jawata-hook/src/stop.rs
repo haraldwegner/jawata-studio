@@ -164,17 +164,50 @@ fn undefined_terms(text: &str) -> Vec<String> {
     // the rule was matching shape rather than meaning. Tokens whose immediate
     // neighbour (across spaces or hyphens only) is also capitalised are skipped.
     let words: Vec<&str> = text.split_whitespace().collect();
+    let core_of = |w: &str| -> String { w.chars().filter(|c| c.is_ascii_alphanumeric()).collect() };
+    // jawata-studio#31: a DIGIT is not uppercase, so the first version of this
+    // predicate answered false for `C5` and `v4` — tokens that are plainly part
+    // of the label they sit in. A token counts as capitalised when it carries at
+    // least one uppercase letter and nothing lowercase.
     let is_caps = |w: &str| {
-        let core: String = w.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
-        core.len() >= 2 && core.chars().all(|c| c.is_ascii_uppercase())
+        let core = core_of(w);
+        core.len() >= 2
+            && core.chars().any(|c| c.is_ascii_uppercase())
+            && core.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+    };
+    // A pure NUMBER — `25`, `2026-07-10`, `v2.7.1` — is TRANSPARENT to a run: it
+    // neither starts one nor breaks one. That is the whole of #31's defect: in
+    // `SPRINT 25 EXECUTING` the two capitalised words are not adjacent, so under
+    // an immediate-neighbour test neither is in a run and BOTH are reported as
+    // undefined abbreviations. Skipping over numbers makes them adjacent again.
+    //
+    // It must not START a run, which is why this is a skip rather than a widening
+    // of `is_caps`: `we saw ETXTBSY 3 times` must still report ETXTBSY, and it
+    // does, because the nearest non-number token on each side is ordinary prose.
+    let is_number_like = |w: &str| {
+        let core = core_of(w);
+        !core.is_empty()
+            && core.chars().any(|c| c.is_ascii_digit())
+            && !core.chars().any(|c| c.is_ascii_uppercase())
     };
     let mut in_run: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (i, w) in words.iter().enumerate() {
         if !is_caps(w) {
             continue;
         }
-        let neighbour_caps = (i > 0 && is_caps(words[i - 1]))
-            || (i + 1 < words.len() && is_caps(words[i + 1]));
+        let nearest = |mut range: Box<dyn Iterator<Item = usize>>| -> Option<&str> {
+            range.find(|&j| !is_number_like(words[j])).map(|j| words[j])
+        };
+        let left = nearest(Box::new((0..i).rev()));
+        let right = nearest(Box::new((i + 1)..words.len()));
+        // The label runs to the edge of the text with only numbers between —
+        // `v2.7.1 RELEASED 2026-07-10` as a line of its own, where RELEASED has
+        // no word neighbour at all on either side.
+        let numbers_to_the_edge = (i > 0 && is_number_like(words[i - 1]) && left.is_none())
+            || (i + 1 < words.len() && is_number_like(words[i + 1]) && right.is_none());
+        let neighbour_caps = left.is_some_and(&is_caps)
+            || right.is_some_and(&is_caps)
+            || numbers_to_the_edge;
         if neighbour_caps {
             for part in w.split(|c: char| !c.is_ascii_alphanumeric()) {
                 if !part.is_empty() {
@@ -3900,6 +3933,53 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
             undefined_terms(quoted).contains(&"SIGPIPE".to_string()),
             "a quoted acronym is still an acronym: {:?}",
             undefined_terms(quoted)
+        );
+    }
+
+    /// jawata-studio#31, the live reproduction verbatim.
+    ///
+    /// A number is TRANSPARENT to a run of capitals. Before this, `is_caps("25")`
+    /// was false — a digit is not uppercase — so in `SPRINT 25 EXECUTING` the two
+    /// capitalised words were not adjacent, neither was seen as part of a run, and
+    /// BOTH were reported as undefined abbreviations. Quoting a stored entry's own
+    /// title back at the reader tripped the gate.
+    #[test]
+    fn a_number_inside_a_label_does_not_break_the_run() {
+        let live = "\"SPRINT 25 EXECUTING\" was true when written and is now false.";
+        assert!(
+            undefined_terms(live).is_empty(),
+            "a label with a number in it is still one label: {:?}",
+            undefined_terms(live)
+        );
+
+        // The label at the edge of the text, with only numbers between it and the
+        // edge — the issue's second shape, where the caps word has no word
+        // neighbour on either side.
+        let edge = "v2.7.1 RELEASED 2026-07-10";
+        assert!(
+            undefined_terms(edge).is_empty(),
+            "a version and a date are not prose neighbours: {:?}",
+            undefined_terms(edge)
+        );
+
+        // THE CONTROL, and it is what stops this being a licence to skip any
+        // acronym that happens to sit beside a number. A number must not START a
+        // run: here the nearest non-number token on each side is ordinary prose,
+        // so the acronym is still reported.
+        let acronym = "we saw ETXTBSY 3 times before the copy succeeded";
+        assert!(
+            undefined_terms(acronym).contains(&"ETXTBSY".to_string()),
+            "a number beside an acronym does not make it a label: {:?}",
+            undefined_terms(acronym)
+        );
+
+        // And a digit INSIDE a capitalised token no longer hides it from the run,
+        // which is the same defect on the other axis.
+        let checkpoint = "C5 CLOSED on the folded round";
+        assert!(
+            undefined_terms(checkpoint).is_empty(),
+            "C5 is capitalised, so CLOSED has a capitalised neighbour: {:?}",
+            undefined_terms(checkpoint)
         );
     }
 
