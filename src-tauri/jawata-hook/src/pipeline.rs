@@ -772,6 +772,56 @@ fn unusable_or_failed(e: QueryError) -> SilenceReason {
 /// Both clients put it under `prompt`; Claude's `PreToolUse` payload instead
 /// carries a tool input. `serde_json`, never a regex — a payload whose shape
 /// moved must be a named failure, not an empty prompt.
+/// The payload's SHAPE — key NAMES only, plus `tool_name`'s value.
+///
+/// studio#6 and studio#7: both degrade paths below report that "the event shape
+/// moved" and then do not say WHAT ARRIVED. Diagnosing either needs someone on
+/// the affected platform to capture a raw payload by hand — which is literally
+/// the "Next step" both issues carry, and why both have sat open since
+/// 2026-08-15 waiting for a session nobody schedules. Naming the keys makes the
+/// next run on that platform diagnose itself, as a side effect of running.
+///
+/// VALUES ARE NEVER INCLUDED, with one deliberate exception. A key NAME cannot
+/// carry a file's contents, a typed prompt or a credential; a value can carry
+/// all three, and this text goes to a log the user may hand to us. `tool_name`
+/// is the exception because it is the harness's own enum — `Read`, `Bash`,
+/// `Edit` — never user data, and it is the single most diagnostic field for a
+/// shape that moved: it says WHICH event arrived in the shape we did not
+/// recognise.
+fn shape_of(value: &serde_json::Value) -> String {
+    fn names(v: Option<&serde_json::Value>) -> String {
+        match v {
+            None => "<absent>".to_string(),
+            Some(serde_json::Value::Object(map)) if map.is_empty() => "<empty>".to_string(),
+            Some(serde_json::Value::Object(map)) => {
+                let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+                keys.sort_unstable();
+                keys.join(",")
+            }
+            Some(other) => format!("<not an object: {}>", kind_of(other)),
+        }
+    }
+    fn kind_of(v: &serde_json::Value) -> &'static str {
+        match v {
+            serde_json::Value::Null => "null",
+            serde_json::Value::Bool(_) => "bool",
+            serde_json::Value::Number(_) => "number",
+            serde_json::Value::String(_) => "string",
+            serde_json::Value::Array(_) => "array",
+            serde_json::Value::Object(_) => "object",
+        }
+    }
+    let tool = value
+        .get("tool_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("<absent>");
+    format!(
+        " [tool_name={tool} top={} tool_input={}]",
+        names(Some(value)),
+        names(value.get("tool_input"))
+    )
+}
+
 /// Cues for a recall, derived PER ROLE — because the two roles receive
 /// different kinds of text and the difference is load-bearing.
 ///
@@ -785,9 +835,10 @@ fn cues_for(role: Role, payload: &str) -> Result<crate::cue::Cues, SilenceReason
     match role {
         Role::UserPrompt => {
             let prompt = string_at(&value, &["prompt"]).ok_or_else(|| {
-                SilenceReason::PayloadUnreadable(
-                    "the payload carried no `prompt` — the event shape moved".into(),
-                )
+                SilenceReason::PayloadUnreadable(format!(
+                    "the payload carried no `prompt` — the event shape moved.{}",
+                    shape_of(&value)
+                ))
             })?;
             crate::cue::extract(&prompt)
                 .map_err(|skip| SilenceReason::NoCues(format!("{skip:?}")))
@@ -826,9 +877,10 @@ fn tool_cues(value: &serde_json::Value) -> Result<crate::cue::Cues, SilenceReaso
         return crate::cue::extract_tool_target(&cmd)
             .map_err(|skip| SilenceReason::NoCues(format!("{skip:?}")));
     }
-    Err(SilenceReason::PayloadUnreadable(
-        "the payload carried no recognised tool input — the event shape moved".into(),
-    ))
+    Err(SilenceReason::PayloadUnreadable(format!(
+        "the payload carried no recognised tool input — the event shape moved.{}",
+        shape_of(value)
+    )))
 }
 
 /// A leading byte-order mark, removed.
@@ -1557,6 +1609,50 @@ fn read_tail(path: &str, max: u64) -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// studio#6 / studio#7: when the event shape moves, the degrade line must say
+    /// WHAT ARRIVED — otherwise diagnosing it needs a human sitting on the
+    /// affected platform capturing a payload by hand, which is why both issues
+    /// have been open since 2026-08-15.
+    ///
+    /// The third assertion is the one that matters: a VALUE must never reach the
+    /// log. Key names are safe; values carry prompts, file contents and
+    /// credentials, and this text goes somewhere a user may share.
+    #[test]
+    fn a_moved_event_shape_names_the_keys_that_arrived_and_never_their_values() {
+        let payload = serde_json::json!({
+            "tool_name": "Read",
+            "session_id": "s-1",
+            "tool_input": { "unexpected_field": "/home/u/SECRET-DO-NOT-LEAK" }
+        });
+        let Err(SilenceReason::PayloadUnreadable(why)) = tool_cues(&payload) else {
+            panic!("an unrecognised tool input must report payload-unreadable");
+        };
+        assert!(why.contains("tool_name=Read"), "names WHICH event arrived: {why}");
+        assert!(why.contains("unexpected_field"), "names the key that arrived: {why}");
+        assert!(
+            !why.contains("SECRET-DO-NOT-LEAK"),
+            "a VALUE must never reach the log — only key names: {why}"
+        );
+
+        // The prompt half (studio#7), through the role dispatcher.
+        let prompt_payload = r#"{"tool_name":"UserPromptSubmit","typed":"SECRET-PROMPT-TEXT"}"#;
+        let Err(SilenceReason::PayloadUnreadable(why)) =
+            cues_for(Role::UserPrompt, prompt_payload)
+        else {
+            panic!("a payload with no `prompt` must report payload-unreadable");
+        };
+        assert!(why.contains("typed"), "names the key that arrived instead: {why}");
+        assert!(
+            !why.contains("SECRET-PROMPT-TEXT"),
+            "the typed prompt must never reach the log: {why}"
+        );
+
+        // And the control: a payload we DO understand still yields cues, so the
+        // instrumentation did not turn a working path into a reported one.
+        let good = serde_json::json!({"tool_name":"Edit","tool_input":{"symbol":"com.foo.Bar"}});
+        assert!(tool_cues(&good).is_ok(), "a recognised shape is unaffected");
+    }
 
     /// studio#41: the guard's matcher was widened to the READING tools, and a
     /// containment rule can only judge a path it can find. `edit_path_in` had

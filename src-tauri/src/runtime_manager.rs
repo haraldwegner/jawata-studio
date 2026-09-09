@@ -155,9 +155,57 @@ pub(crate) fn pid_listening_on(port: u16) -> Option<u32> {
     }
     #[cfg(windows)]
     {
-        let _ = port;
-        None
+        // studio#13: this returned None UNCONDITIONALLY, and the consequence is
+        // the issue. The doc above says the pid is "stored at adopt time so an
+        // adopted resident can later be stopped" — so on Windows no resident's
+        // pid was ever discovered, none could be stopped, and none could be
+        // restarted onto a pulled runtime. The header then showed the version
+        // that had been DOWNLOADED while the services kept serving the old one.
+        //
+        // `netstat -ano` is present on every Windows install and needs nothing
+        // extra. The PARSING is a pure function so it is tested on every
+        // platform; only the invocation is gated, which is what kept this hole
+        // untested for as long as it existed.
+        Command::new("netstat")
+            .args(["-ano"])
+            .output()
+            .ok()
+            .and_then(|out| {
+                parse_netstat_pid(&String::from_utf8_lossy(&out.stdout), port)
+            })
     }
+}
+
+/// The listening pid for `port` out of `netstat -ano` output.
+///
+/// studio#13. A line reads
+/// `  TCP    0.0.0.0:8890    0.0.0.0:0    LISTENING    12345`, and the IPv6
+/// form is `[::]:8890`. Both are matched by the local address ENDING in
+/// `:<port>`, which is why the needle carries the colon: without it, port 889
+/// would match `:8890`.
+///
+/// Only LISTENING rows count. An ESTABLISHED row names a client of that port,
+/// not its owner, and killing it would stop somebody else's process.
+// Called only from the `#[cfg(windows)]` branch above, so it is dead code on a
+// Unix BUILD — but it is exercised by the tests on EVERY platform, which is the
+// whole reason the parsing was split out of the gated block. A parser that can
+// only run on the platform that has the bug is a parser nobody checks.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn parse_netstat_pid(text: &str, port: u16) -> Option<u32> {
+    let suffix = format!(":{port}");
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 5 || !fields[0].eq_ignore_ascii_case("TCP") {
+            continue;
+        }
+        if !fields[1].ends_with(&suffix) || !fields[3].eq_ignore_ascii_case("LISTENING") {
+            continue;
+        }
+        if let Ok(pid) = fields[4].parse::<u32>() {
+            return Some(pid);
+        }
+    }
+    None
 }
 
 /// Extract `pid=<N>` from an `ss -ltnpH` line
@@ -167,6 +215,49 @@ fn parse_ss_pid(line: &str) -> Option<u32> {
     let rest = &line[start..];
     let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
     rest[..end].parse::<u32>().ok()
+}
+
+#[cfg(test)]
+mod netstat_tests {
+    use super::parse_netstat_pid;
+
+    /// Real `netstat -ano` output, including the rows that must NOT match.
+    const SAMPLE: &str = "\r
+Active Connections\r
+\r
+  Proto  Local Address          Foreign Address        State           PID\r
+  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1044\r
+  TCP    0.0.0.0:8890           0.0.0.0:0              LISTENING       12345\r
+  TCP    127.0.0.1:8890         127.0.0.1:51122        ESTABLISHED     9999\r
+  TCP    [::]:8891              [::]:0                 LISTENING       6789\r
+  UDP    0.0.0.0:5353           *:*                                    2222\r
+";
+
+    #[test]
+    fn the_listening_owner_of_a_port_is_found_and_a_client_of_it_is_not() {
+        assert_eq!(Some(12345), parse_netstat_pid(SAMPLE, 8890),
+            "the LISTENING row owns the port");
+        assert_eq!(Some(6789), parse_netstat_pid(SAMPLE, 8891),
+            "the IPv6 form [::]:port is the same listener");
+
+        // The control that matters: an ESTABLISHED row on 8890 names a CLIENT of
+        // that port (pid 9999). Returning it would have us kill someone else's
+        // process, so the row is skipped and the listener still wins.
+        assert_ne!(Some(9999), parse_netstat_pid(SAMPLE, 8890),
+            "an ESTABLISHED row is a client of the port, never its owner");
+
+        // A port nothing listens on is an absence, not a wrong answer.
+        assert_eq!(None, parse_netstat_pid(SAMPLE, 9999), "nothing listens on 9999");
+        // UDP is not a TCP listener.
+        assert_eq!(None, parse_netstat_pid(SAMPLE, 5353), "the UDP row is not matched");
+    }
+
+    #[test]
+    fn a_shorter_port_does_not_match_a_longer_one() {
+        // Without the leading colon in the needle, 889 would match ":8890".
+        assert_eq!(None, parse_netstat_pid(SAMPLE, 889), "889 must not match :8890");
+        assert_eq!(None, parse_netstat_pid("", 8890), "empty output is an absence");
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
