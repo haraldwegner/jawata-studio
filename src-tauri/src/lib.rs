@@ -72,6 +72,18 @@ const TRAY_REFRESH_INTERVAL_SECS: u64 = 1;
 /// Sprint 28b (D6): how long the canary waits before its first round, so a
 /// resident that is still booting (OSGi + JDT, ~30 s) is not called degraded
 /// for being slow to start.
+///
+/// A CEILING, NOT A FLOOR — and until now it was a floor. It was a plain
+/// `thread::sleep`, so the wake channel could not reach it: a wake that arrives
+/// while it is sleeping is buffered and consumed at the END of the first loop
+/// iteration, which is after the first round has already run. The tray therefore
+/// stayed amber for the full 45 s even when every resident was ready in ten, and
+/// the one signal that says "booting finished" could not shorten it.
+///
+/// The deferral itself is right: without it a resident mid-boot is reported
+/// degraded for being slow. What was wrong is that it ignored evidence. It is a
+/// `recv_timeout` now, so "a resident just started" starts the first round at
+/// once and the 45 s is only what happens when nothing says otherwise.
 const CANARY_FIRST_DELAY_SECS: u64 = 45;
 
 /// And how often it asks again WHEN THE LAST ANSWER WAS GOOD. Two real
@@ -531,7 +543,11 @@ pub fn run() {
             let (wake_tx, wake_rx) = std::sync::mpsc::sync_channel::<()>(1);
             let _ = CANARY_WAKE.set(wake_tx);
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(CANARY_FIRST_DELAY_SECS));
+                // The first wait is INTERRUPTIBLE, for the reason on
+                // CANARY_FIRST_DELAY_SECS: a wake means a resident just came up, which
+                // is exactly the news that makes deferring pointless.
+                let _ = wake_rx.recv_timeout(
+                    std::time::Duration::from_secs(CANARY_FIRST_DELAY_SECS));
                 loop {
                     let health = run_canary_round(&canary_handle);
                     // studio#21: how long to wait depends on WHAT WE JUST LEARNED.
@@ -1092,6 +1108,58 @@ mod tray_icon_tests {
     /// This pins the RULE (which wait follows which verdict) rather than the
     /// thread, because the thread's sleep is not observable from a test — and a
     /// rule nothing asserts is how a constant drifts back.
+    /// The FIRST wait must be interruptible, and the wake must survive arriving early.
+    ///
+    /// The canary defers its first round by 45 s so a resident still booting is not
+    /// called degraded. That deferral was a plain `thread::sleep`, which the wake
+    /// channel could not reach — so the tray stayed amber for the full 45 s even when
+    /// every resident was ready in ten, and the signal saying "booting finished" could
+    /// not shorten it. Reported as a couple of minutes of amber after an upgrade.
+    ///
+    /// What this pins is the CHANNEL BEHAVIOUR the fix rests on, not the thread — the
+    /// thread's wait is no more observable from a test than the sleep was. The crux is
+    /// ordering: the wake is sent when a resident comes up, which is BEFORE the canary
+    /// thread reaches its wait. `sync_channel(1)` buffers exactly that one send, so the
+    /// wait returns at once instead of losing the wake and sitting out the timeout.
+    #[test]
+    fn a_wake_sent_before_the_first_wait_is_not_lost() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
+
+        // The resident comes up FIRST — the ordering that matters.
+        tx.send(()).expect("the buffered slot takes one wake");
+
+        let started = std::time::Instant::now();
+        let woke = rx.recv_timeout(std::time::Duration::from_secs(CANARY_FIRST_DELAY_SECS));
+        let waited = started.elapsed();
+
+        assert!(woke.is_ok(), "the early wake must be delivered, not dropped");
+        assert!(
+            waited < std::time::Duration::from_secs(1),
+            "the first wait must END on the wake rather than run out the {}s deferral - it waited {:?}",
+            CANARY_FIRST_DELAY_SECS,
+            waited
+        );
+    }
+
+    /// The control: with no wake, the wait is the deferral and not zero.
+    ///
+    /// Without this the assertion above passes against a channel that returns
+    /// immediately whatever happens, which would defeat the deferral entirely and
+    /// report a booting resident as degraded — the defect the 45 s exists to prevent.
+    #[test]
+    fn with_no_wake_the_first_wait_actually_waits() {
+        let (_tx, rx) = std::sync::mpsc::sync_channel::<()>(1);
+
+        let started = std::time::Instant::now();
+        let woke = rx.recv_timeout(std::time::Duration::from_millis(150));
+
+        assert!(woke.is_err(), "no wake means the wait times out rather than returning");
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(140),
+            "and it must actually have waited"
+        );
+    }
+
     #[test]
     fn an_unhappy_verdict_is_rechecked_soon_a_happy_one_is_not() {
         let wait_for = |health: field_view::CanaryHealth| match health {
