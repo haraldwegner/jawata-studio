@@ -72,3 +72,4 @@ src/runner.rs|struct `TestWriterGates` is never constructed
 src/runner.rs|trait `CliAdapter` is never used
 src/runner.rs|trait `GateExecutor` is never used
 src/runner.rs|trait `StoreRecorder` is never used
+src/runtime_manager.rs|function `parse_netstat_pid` is never used
