@@ -11966,9 +11966,39 @@ judge was never told to give"
             .filter(|e| e.file_name().to_string_lossy().contains(".bak"))
             .count();
         assert_eq!(siblings, 0, "zero .bak siblings beside the user's file");
-        assert!(
-            latest_backup_path(&settings_path).is_some(),
-            "the pre-write state landed in the managed area"
+
+        // studio#46: read THIS TEST'S OWN managed area, never the process-wide one.
+        //
+        // The load-bearing assertion used to be `latest_backup_path(&settings_path)`,
+        // which resolves through `BACKUPS_ROOT` — a single global. Any other code in
+        // the process that sets that variable between this test's `set_backups_root`
+        // and this line sends the lookup to a different folder, where it finds
+        // nothing, and the test reports "the pre-write state landed in the managed
+        // area" as FALSE while the file sat correctly in ours. That is exactly what
+        // happened: a test reached `deploy_to_agents`, which sets the root and takes
+        // no lock.
+        //
+        // Reading `dir` directly cannot be moved by anything, and it does not weaken
+        // the claim — the managed area IS the folder this test declared, and the
+        // subject is still PLACEMENT: nothing beside the file, one version inside.
+        // It deliberately does NOT reconstruct `key_for`'s mangling; a test that
+        // mirrors an algorithm the module owns is the next thing to drift.
+        let managed = dir.join("backups");
+        let versions: usize = std::fs::read_dir(&managed)
+            .unwrap_or_else(|e| panic!("no managed area at {}: {e}", managed.display()))
+            .flatten()
+            .filter(|key| key.path().is_dir())
+            .map(|key| {
+                std::fs::read_dir(key.path())
+                    .map(|files| files.flatten().filter(|f| f.path().is_file()).count())
+                    .unwrap_or(0)
+            })
+            .sum();
+        assert_eq!(
+            versions, 1,
+            "exactly one version of the pre-write state, inside this test's own managed \
+             area ({})",
+            managed.display()
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
