@@ -6118,6 +6118,20 @@ fi
 /// unanchored regex: `Bash|Grep` (search gate), `Edit|Write|MultiEdit` (edit
 /// enforcement), and `mcp__jawata.*` (jawata-call logging for the try-first gate).
 /// Kept deterministic so the settings.json write is idempotent.
+///
+/// studio#41 WIDENED it to the READING tools — `Read`, `Glob`, `NotebookEdit`,
+/// `NotebookRead` — and that is what makes the superseded `guard-workspace.sh`
+/// safe to unregister. The shell script it replaces matched all four; this one
+/// did not, so unregistering the script without this change would have stopped
+/// workspace containment applying to `Read` at all: an absolute path outside
+/// the workspace would have been readable. The rule was always ready for them —
+/// `pipeline`'s own comment says a containment rule that watched only Bash
+/// "would be satisfied while Read walked out of the workspace" — only the
+/// registration withheld the tools.
+///
+/// The other rules cannot leak onto a reading tool: `gate_without_absolute_cd`,
+/// `uncaptured_gate` and `guard::judge` all read the COMMAND, which is empty
+/// for a Read, and the answering-then-working gate keys on `is_mutating_tool`.
 /// A path rendered as a COMMAND the client's shell will actually execute.
 ///
 /// Claude Code on Windows hands each hook command to bash (`/usr/bin/bash -c`).
@@ -6143,7 +6157,7 @@ fn hook_command_for(path: &Path, platform: HostPlatform) -> String {
 fn build_managed_hook_entry(guard_path: &Path) -> serde_json::Value {
     let command = hook_command_for(guard_path, HostPlatform::host());
     serde_json::json!({
-        "matcher": "Bash|Grep|Edit|Write|MultiEdit|mcp__jawata.*",
+        "matcher": "Bash|Grep|Read|Glob|Edit|Write|MultiEdit|NotebookEdit|NotebookRead|mcp__jawata.*",
         "hooks": [
             { "type": "command", "timeout": HOOK_TIMEOUT_SECS, "command": command }
         ]
@@ -11354,8 +11368,11 @@ judge was never told to give"
         let guard = PathBuf::from("/home/u/.claude/jawata-studio/pretooluse-guard.sh");
         let entry = build_managed_hook_entry(&guard);
         assert_eq!(
-            entry["matcher"], "Bash|Grep|Edit|Write|MultiEdit|mcp__jawata.*",
-            "fires for search (Bash|Grep), edits (Edit|Write|MultiEdit) and jawata calls (mcp__jawata.*)"
+            entry["matcher"], "Bash|Grep|Read|Glob|Edit|Write|MultiEdit|NotebookEdit|NotebookRead|mcp__jawata.*",
+            "fires for search (Bash|Grep), READS (Read|Glob|NotebookRead), edits \
+             (Edit|Write|MultiEdit|NotebookEdit) and jawata calls (mcp__jawata.*). The \
+             reading tools are studio#41: without them, unregistering guard-workspace.sh \
+             would stop containment applying to Read."
         );
         let cmd = entry["hooks"][0]["command"].as_str().unwrap();
         assert!(cmd.contains(JAWATA_HOOK_SENTINEL), "command references the managed guard");

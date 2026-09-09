@@ -359,8 +359,14 @@ pub(crate) fn edit_path_in(payload: &str) -> Option<String> {
     for path in [
         &["tool_input", "file_path"][..], // Claude Code, Edit/Write/MultiEdit
         &["tool_input", "path"][..],
+        // studio#41: the notebook tools name their target differently, and the
+        // shell guard this replaces read this field explicitly. Without it,
+        // widening the matcher to NotebookEdit/NotebookRead would fire the hook
+        // and judge nothing — a guard that runs and looks at no path.
+        &["tool_input", "notebook_path"][..],
         &["file_path"][..], // Cursor
         &["path"][..],
+        &["notebook_path"][..],
     ] {
         let mut cursor = &value;
         let mut found = true;
@@ -1551,6 +1557,40 @@ fn read_tail(path: &str, max: u64) -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// studio#41: the guard's matcher was widened to the READING tools, and a
+    /// containment rule can only judge a path it can find. `edit_path_in` had
+    /// three production callers and no test at all, so the field list was
+    /// asserted by nothing.
+    ///
+    /// The notebook case is the discriminator: `notebook_path` is the field the
+    /// superseded `guard-workspace.sh` read explicitly, and without it widening
+    /// the matcher to NotebookEdit/NotebookRead fires the hook and judges
+    /// nothing — a guard that runs and looks at no path, which reads from
+    /// outside exactly like a guard that allowed it.
+    #[test]
+    fn the_path_a_reading_tool_names_is_found_however_it_spells_it() {
+        let read = r#"{"tool_name":"Read","tool_input":{"file_path":"/x/a.txt"}}"#;
+        assert_eq!(edit_path_in(read).as_deref(), Some("/x/a.txt"));
+
+        let glob = r#"{"tool_name":"Glob","tool_input":{"path":"/x/dir","pattern":"*.rs"}}"#;
+        assert_eq!(edit_path_in(glob).as_deref(), Some("/x/dir"));
+
+        // The one the widening actually needed.
+        let notebook = r#"{"tool_name":"NotebookRead","tool_input":{"notebook_path":"/x/n.ipynb"}}"#;
+        assert_eq!(
+            edit_path_in(notebook).as_deref(),
+            Some("/x/n.ipynb"),
+            "a notebook names its target differently, and an unfound path is judged as no path"
+        );
+
+        // Cursor's flat spelling, and the absence case — so the test cannot
+        // pass by the extractor returning something for everything.
+        let flat = r#"{"file_path":"/x/b.txt"}"#;
+        assert_eq!(edit_path_in(flat).as_deref(), Some("/x/b.txt"));
+        let none = r#"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#;
+        assert_eq!(edit_path_in(none), None, "a command names no file");
+    }
 
     struct Stub(Result<Answer, QueryError>);
     impl Store for Stub {

@@ -426,6 +426,23 @@ fn mentions_expensive_gate(segment: &str) -> bool {
 ///
 /// Measured 2026-08-28: two avoidable full runs cost roughly twenty minutes.
 pub fn uncaptured_gate(command: &str) -> Option<Verdict> {
+    // THE DECLARED WAY PAST, ported from `guard-gate-output.sh` (studio#41).
+    //
+    // This rule matches command TEXT, so it cannot tell a gate being INVOKED
+    // from one mentioned as DATA — a script that tests this hook, a heredoc
+    // documenting the right form, a commit message describing the rule itself.
+    // All of them trip it. A guard with no declared way past becomes one people
+    // route around by mangling the command until it stops matching, which is
+    // worse than no guard at all: the mangling is invisible and the intent is
+    // lost, while a declaration is logged and reviewable.
+    //
+    // Measured 2026-09-09, porting this: the shell version refused four correct
+    // commands in one session — and the fourth was the commit that DOCUMENTED
+    // the first, because documenting a rule requires writing the literal it
+    // matches.
+    if command.contains("gate-output-ok:") {
+        return None;
+    }
     for segment in command.replace("&&", ";").split(';') {
         if !mentions_expensive_gate(segment) {
             continue;
@@ -815,6 +832,20 @@ mod tests {
     fn an_uncaptured_expensive_gate_is_denied() {
         let cmd = format!("cd /repo && ./build/run-{}.sh 4", "suite");
         assert!(uncaptured_gate(&cmd).is_some());
+    }
+
+    #[test]
+    fn a_declared_exception_passes_an_uncaptured_gate() {
+        // studio#41: the shell guard's escape hatch, and the reason it exists —
+        // a text rule cannot tell an invocation from a mention.
+        let cmd = "./build/run-suite.sh 4  # gate-output-ok: documenting the rule";
+        assert!(uncaptured_gate(cmd).is_none(), "a declared exception is honoured");
+        // The control: the SAME command without the declaration is refused, so
+        // the test cannot pass because the rule stopped firing altogether.
+        assert!(
+            uncaptured_gate("./build/run-suite.sh 4").is_some(),
+            "without the declaration the gate still refuses"
+        );
     }
 
     #[test]
