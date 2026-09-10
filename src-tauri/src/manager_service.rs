@@ -1141,6 +1141,33 @@ impl ManagerService {
     /// it: a runtime that was started and died IS supposed to be running, so probing it
     /// and reporting `Degraded` is correct — that is a fault and it should say so. Only
     /// `Stopped` is a decision.
+    /// The population the canary would probe, as NAMES, so a caller can notice when it
+    /// changed without being able to change it.
+    ///
+    /// This exists so nothing has to ANNOUNCE a start or a stop. The tray kept its last
+    /// verdict for up to five minutes after "Stop all services" because the tray menu's
+    /// own handler calls straight into this service and never asked for a fresh round,
+    /// while the dashboard command did — one operation, two callers, and only one of them
+    /// remembering the follow-up. Adding the missing call would have left the sixth caller
+    /// free to forget again.
+    ///
+    /// So the change is DETECTED instead. A watcher comparing this against its previous
+    /// answer sees every start, stop, reload and single-project change — including ones
+    /// this application did not perform.
+    pub(crate) fn canary_population_names(&self) -> (Vec<String>, Vec<String>) {
+        let population = self.canary_population();
+        let mut probing: Vec<String> = population
+            .probe
+            .iter()
+            .map(|server| server.workspace_name.clone())
+            .collect();
+        // Sorted for the same reason `switched_off` already is: the deploy-server order
+        // follows project insertion, so an unsorted list would report a change that is
+        // only a reordering.
+        probing.sort();
+        (probing, population.switched_off)
+    }
+
     pub(crate) fn canary_population(&self) -> CanaryPopulation {
         let settings = self.config_store.get_settings();
         let projects = self.config_store.list_projects();

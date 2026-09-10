@@ -675,11 +675,30 @@ pub fn run() {
             // bad is on screen within that.
             let readability_handle = app.handle().clone();
             std::thread::spawn(move || {
+                // What the canary was last asked ABOUT. Held here rather than announced
+                // by whoever changed it: "Stop all services" from the tray menu left the
+                // icon on its previous verdict for up to five minutes, because that
+                // handler calls the manager directly while only the dashboard command
+                // asked for a fresh round. The stale wait was the worst one available —
+                // the verdict before a stop is healthy, and healthy is deliberately on
+                // the slow cadence, so stopping invalidated exactly the verdict that is
+                // rechecked least often.
+                //
+                // Detecting the change rather than being told about it covers every
+                // path at once — start, stop, reload, a single project, and anything
+                // that changes a phase without going through a menu at all.
+                let mut last_population: Option<(Vec<String>, Vec<String>)> = None;
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(
                         READABILITY_INTERVAL_SECS,
                     ));
                     let state = readability_handle.state::<AppState>();
+
+                    let population = state.manager_service.canary_population_names();
+                    if population_change_wakes_the_canary(&last_population, &population) {
+                        request_canary_round();
+                    }
+                    last_population = Some(population);
                     // studio#48: this asks for no server list any more — the refresher
                     // derives the population itself, so this loop and the deep round
                     // cannot disagree about which residents are supposed to be running.
@@ -887,6 +906,28 @@ pub fn run() {
 /// once, a window regaining focus while the Field view mounts — costs one extra
 /// round, not one per event. Silent when the thread is not up yet; a missed
 /// wake only means the periodic cadence applies, never a wrong verdict.
+/// Whether a change in what the canary would probe should cut its wait short.
+///
+/// TWO CLAUSES, and the second is the one that is easy to get wrong. A change wakes the
+/// canary — that is the whole point, because the verdict standing before a stop is
+/// healthy, and healthy is deliberately on the slow cadence, so a stop invalidates
+/// exactly the answer that is rechecked least often.
+///
+/// But the FIRST observation wakes nothing. There is no previous answer for it to differ
+/// from, and treating "I have not looked before" as a change would fire a round seconds
+/// after launch — pre-empting the deliberate first delay that exists so a resident still
+/// booting is not probed and called dead. That delay is a design decision this watcher
+/// must not quietly overturn.
+fn population_change_wakes_the_canary(
+    last: &Option<(Vec<String>, Vec<String>)>,
+    current: &(Vec<String>, Vec<String>),
+) -> bool {
+    match last {
+        None => false,
+        Some(previous) => previous != current,
+    }
+}
+
 static CANARY_WAKE: std::sync::OnceLock<std::sync::mpsc::SyncSender<()>> =
     std::sync::OnceLock::new();
 
@@ -1422,6 +1463,53 @@ mod tray_icon_tests {
         assert!(
             started.elapsed() >= std::time::Duration::from_millis(140),
             "and it must actually have waited"
+        );
+    }
+
+    #[test]
+    fn stopping_a_workspace_wakes_the_canary_and_starting_the_app_does_not() {
+        // THE DEFECT THIS CLOSES, in its own terms: "Stop all services" from the tray
+        // menu left the icon showing the previous verdict for up to five minutes. That
+        // handler calls the manager directly, and only the dashboard command asked for a
+        // fresh round — one operation, two callers, one of them remembering. The change
+        // is now DETECTED, so a caller cannot forget and a caller that does not exist yet
+        // is covered too.
+        let all_running = (
+            vec!["javata-dev".to_string(), "orb-strategy".to_string()],
+            vec![],
+        );
+        let one_stopped = (
+            vec!["javata-dev".to_string()],
+            vec!["orb-strategy".to_string()],
+        );
+        let all_stopped = (
+            vec![],
+            vec!["javata-dev".to_string(), "orb-strategy".to_string()],
+        );
+
+        assert!(
+            !population_change_wakes_the_canary(&None, &all_running),
+            "the FIRST observation must wake nothing — there is nothing to differ from, \
+             and firing here would pre-empt the deliberate first delay that keeps a \
+             still-booting resident from being probed and called dead"
+        );
+        assert!(
+            !population_change_wakes_the_canary(&Some(all_running.clone()), &all_running),
+            "an unchanged population must not wake it every five seconds"
+        );
+        assert!(
+            population_change_wakes_the_canary(&Some(all_running.clone()), &one_stopped),
+            "stopping ONE workspace moves it from probed to switched-off, and the tray \
+             owes a fresh verdict"
+        );
+        assert!(
+            population_change_wakes_the_canary(&Some(one_stopped), &all_stopped),
+            "and stopping the rest is the case that was slowest of all — the verdict it \
+             invalidates is the healthy one, which is rechecked least often"
+        );
+        assert!(
+            population_change_wakes_the_canary(&Some(all_stopped), &all_running),
+            "starting again must wake it too, or the tray stays blue over a running machine"
         );
     }
 
