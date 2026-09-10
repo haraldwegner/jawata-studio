@@ -2912,7 +2912,6 @@ mod tests {
 
     #[test]
     fn read_projects_prunes_orphaned_workspace_states() {
-        let _guard = crate::backups::test_lock().lock().unwrap();
         let dir = unique_tempdir("prune-orphans");
         crate::backups::set_backups_root(dir.to_string_lossy().as_ref());
         let path = projects_json_with_orphans(&dir);

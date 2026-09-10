@@ -12185,7 +12185,6 @@ judge was never told to give"
     fn managed_write_backs_up_centrally_never_beside_the_file() {
         // Sprint 21a (item E) acceptance: a managed write with backups ON produces ZERO
         // .bak siblings and exactly one version in the managed area.
-        let _guard = crate::backups::test_lock().lock().unwrap();
         let dir = unique_tempdir("central-backup");
         crate::backups::set_backups_root(dir.to_string_lossy().as_ref());
         let settings = dir.join(".claude").join("settings.json");

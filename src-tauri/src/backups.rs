@@ -34,10 +34,73 @@ static BACKUPS_ROOT: RwLock<Option<String>> = RwLock::new(None);
 /// Tie-breaker so two backups in the same millisecond stay distinct + ordered.
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// studio#47: IN TEST BUILDS THE ROOT IS PER-THREAD, and the global is not written at
+/// all.
+///
+/// The test harness runs each test on its own thread, so a thread-local root cannot be
+/// seen or moved by another test — which closes both halves of a race that had been
+/// repaired once from one side only.
+///
+/// The first half is studio#46's: another test reached production code that sets the
+/// root, so this test's own lookup resolved somewhere else and reported its file
+/// missing. That was fixed by having the test read its directory directly.
+///
+/// The second half is the mirror, seen once in five runs and filed as this issue: a
+/// write landing INSIDE this test's declared area, because the area was whatever the
+/// global last said and any thread could be pointed at it. Reading the directory
+/// directly cannot help there — the extra file is genuinely in it.
+///
+/// A mutex was the obvious repair and is the wrong one: five tests took `test_lock`
+/// while FOUR production entry points set the root and take nothing, so the lock
+/// excluded the lock-holders and nothing else. A mutex only some participants take is
+/// not a mutex, and the next unlocked setter would reintroduce this silently.
+#[cfg(test)]
+thread_local! {
+    static THREAD_ROOT: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 pub fn set_backups_root(data_root: &str) {
     let trimmed = data_root.trim();
-    if !trimmed.is_empty() {
+    if trimmed.is_empty() {
+        return;
+    }
+    #[cfg(test)]
+    {
+        THREAD_ROOT.with(|slot| *slot.borrow_mut() = Some(trimmed.to_string()));
+    }
+    #[cfg(not(test))]
+    {
         *BACKUPS_ROOT.write().expect("backups root lock poisoned") = Some(trimmed.to_string());
+    }
+}
+
+/// Set this thread's root to a RAW value, including the ones `set_backups_root`
+/// refuses — empty, blank, relative. Tests of `backups_dir`'s absoluteness rule need
+/// exactly those, and they must reach the source the lookup actually reads: writing
+/// `BACKUPS_ROOT` directly used to work and now silently exercises nothing, because in
+/// a test build the lookup never consults the global.
+#[cfg(test)]
+pub(crate) fn set_root_raw(value: Option<String>) {
+    THREAD_ROOT.with(|slot| *slot.borrow_mut() = value);
+}
+
+/// The root this thread should use, or `None` to fall back.
+fn configured_root() -> Option<String> {
+    #[cfg(test)]
+    {
+        // Deliberately NOT falling through to the global: a thread that never declared a
+        // root must not inherit some other test's area, which is the write half of the
+        // race. It gets the scratch fallback in `backups_dir` instead — somewhere real,
+        // absolute, and asserted on by nobody.
+        THREAD_ROOT.with(|slot| slot.borrow().clone())
+    }
+    #[cfg(not(test))]
+    {
+        BACKUPS_ROOT
+            .read()
+            .expect("backups root lock poisoned")
+            .clone()
     }
 }
 
@@ -58,11 +121,18 @@ pub fn set_backups_root(data_root: &str) {
 /// back to an absolute temp location and says so, rather than writing next to whatever
 /// directory the process happens to be in.
 fn backups_dir() -> PathBuf {
-    let root = BACKUPS_ROOT
-        .read()
-        .expect("backups root lock poisoned")
-        .clone()
-        .unwrap_or_else(crate::config::default_data_root);
+    // studio#47: in a test build an undeclared root falls back to a scratch area rather
+    // than to the real data root, so a stray managed write cannot reach the developer's
+    // own cache directory either.
+    #[cfg(test)]
+    let root = configured_root().unwrap_or_else(|| {
+        std::env::temp_dir()
+            .join("jawata-studio-test-backups")
+            .to_string_lossy()
+            .to_string()
+    });
+    #[cfg(not(test))]
+    let root = configured_root().unwrap_or_else(crate::config::default_data_root);
     let base = PathBuf::from(&root);
     if base.is_absolute() {
         return base.join("backups");
@@ -250,13 +320,6 @@ pub fn gc_scattered_backups(dirs: &[PathBuf], dry_run: bool) -> GcReport {
     }
 }
 
-/// Serializes root-mutating tests (the root is process-global).
-#[cfg(test)]
-pub(crate) fn test_lock() -> &'static std::sync::Mutex<()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    &LOCK
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,10 +333,12 @@ mod tests {
     /// symptom: no root value can produce a path that lands somewhere relative.
     #[test]
     fn backups_dir_is_always_absolute() {
-        let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
-
+        // studio#47: no lock. The root is per-thread now, so this test cannot be moved
+        // by another and cannot move another — and when it USED to hold the lock, its own
+        // panic poisoned two unrelated tests, which is how one failure was reported as
+        // three.
         for root in ["", "   ", "relative/path", "./also-relative"] {
-            *BACKUPS_ROOT.write().expect("lock") = Some(root.to_string());
+            set_root_raw(Some(root.to_string()));
             let dir = backups_dir();
             assert!(
                 dir.is_absolute(),
@@ -286,11 +351,94 @@ mod tests {
 
         // An absolute root is used as given — the fallback must not hijack a valid root.
         let real = std::env::temp_dir().join("jawata-backups-absolute-root");
-        *BACKUPS_ROOT.write().expect("lock") = Some(real.to_string_lossy().to_string());
+        set_root_raw(Some(real.to_string_lossy().to_string()));
         assert_eq!(backups_dir(), real.join("backups"));
 
-        *BACKUPS_ROOT.write().expect("lock") = None;
+        set_root_raw(None);
         assert!(backups_dir().is_absolute(), "the unset default is absolute too");
+    }
+
+    /// studio#47, and it is the DETERMINISTIC repro the issue asked for — the original
+    /// was seen once in five runs and could not be reproduced on demand.
+    ///
+    /// No timing anywhere: the other threads are joined, so this either holds or it does
+    /// not. Before the per-thread root both halves failed, and they failed for opposite
+    /// reasons, which is why one repair had not covered the other:
+    ///
+    ///   * the FIRST spawned thread declares its own root, which used to move the global
+    ///     out from under this one — studio#46's half, where this test's own lookup went
+    ///     somewhere else and reported its file missing;
+    ///   * the SECOND declares nothing, so it used to inherit whatever the global last
+    ///     said, which was THIS test's area — the half filed as this issue, where a
+    ///     foreign backup lands inside the directory this test declared and the count
+    ///     comes back 2 where 1 was expected. Reading the directory directly, which is
+    ///     how studio#46 was fixed, cannot help there: the extra file is genuinely in it.
+    #[test]
+    fn another_thread_can_neither_move_this_root_nor_write_into_its_area() {
+        let mine = tempdir("mine");
+        set_backups_root(mine.to_string_lossy().as_ref());
+
+        let original = mine.join("kept.txt");
+        fs::write(&original, b"v1").unwrap();
+        backup_before_write(&original)
+            .unwrap()
+            .expect("PROOF OF LIFE: a backup was actually taken, or the counts below \
+                     would be asserting about an empty directory");
+
+        let theirs = tempdir("theirs");
+        let declared = theirs.clone();
+        std::thread::spawn(move || {
+            set_backups_root(declared.to_string_lossy().as_ref());
+            let other = declared.join("other.txt");
+            fs::write(&other, b"v1").unwrap();
+            let _ = backup_before_write(&other);
+        })
+        .join()
+        .unwrap();
+
+        let undeclared = theirs.clone();
+        std::thread::spawn(move || {
+            // Declares NO root — the case that used to inherit this test's area.
+            let stray = undeclared.join("stray.txt");
+            fs::write(&stray, b"v1").unwrap();
+            let _ = backup_before_write(&stray);
+        })
+        .join()
+        .unwrap();
+
+        assert_eq!(
+            backups_dir(),
+            mine.join("backups"),
+            "this thread's root must survive another thread declaring its own"
+        );
+        assert_eq!(
+            1,
+            versions_under(&mine.join("backups")),
+            "exactly the one version this thread put there — no foreign write may land \
+             in an area a test declared"
+        );
+    }
+
+    /// Every file, at any depth, under the managed area — the same thing the
+    /// manager-service placement test counts, and for the same reason: the area is
+    /// `<root>/backups/<path-key>/<version>`, so a foreign write shows up as an extra
+    /// file under a DIFFERENT key rather than as an extra version under this one.
+    fn versions_under(area: &Path) -> usize {
+        fn walk(dir: &Path, found: &mut usize) {
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        walk(&path, found);
+                    } else {
+                        *found += 1;
+                    }
+                }
+            }
+        }
+        let mut found = 0;
+        walk(area, &mut found);
+        found
     }
 
     fn tempdir(tag: &str) -> PathBuf {
@@ -319,7 +467,6 @@ mod tests {
 
     #[test]
     fn backup_versions_prune_and_latest_no_siblings() {
-        let _guard = test_lock().lock().unwrap();
         let root = tempdir("root");
         set_backups_root(root.to_string_lossy().as_ref());
 
@@ -353,7 +500,6 @@ mod tests {
 
     #[test]
     fn gc_dry_run_reports_and_touches_nothing_then_moves() {
-        let _guard = test_lock().lock().unwrap();
         let root = tempdir("gc-root");
         set_backups_root(root.to_string_lossy().as_ref());
 
