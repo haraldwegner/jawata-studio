@@ -646,15 +646,33 @@ pub fn run() {
                         READABILITY_INTERVAL_SECS,
                     ));
                     let state = readability_handle.state::<AppState>();
-                    let servers = state.manager_service.knowledge_servers();
-                    if servers.is_empty() {
+                    // studio#48: THE SAME POPULATION AS THE DEEP ROUND. This loop asked
+                    // `knowledge_servers()` — every workspace with a port — so it probed
+                    // residents nobody had asked to run and would have flipped the tray
+                    // back to Degraded on its own five-second timer, undoing the fix in
+                    // the round beside it. A fix applied to one of two probe paths is not
+                    // applied.
+                    let population = state.manager_service.canary_population();
+                    if population.probe.is_empty() {
                         continue;
                     }
                     if let Some(health) = state
                         .manager_service
-                        .refresh_workspace_readability(&servers)
+                        .refresh_workspace_readability(&population.probe)
                     {
-                        apply_canary_health_to_tray(&readability_handle, health);
+                        let health = field_view::fold_switched_off(
+                            health,
+                            population.probe.len(),
+                            population.switched_off.len(),
+                        );
+                        let board = state.manager_service.canary_board();
+                        let tooltip = field_view::canary_tooltip(
+                            health,
+                            &board,
+                            &population.switched_off,
+                            field_view::now_millis(),
+                        );
+                        apply_canary_health_to_tray(&readability_handle, health, &tooltip);
                     }
                 }
             });
@@ -875,16 +893,54 @@ fn run_canary_round<R: Runtime>(app: &AppHandle<R>) -> field_view::CanaryHealth 
     let probed = results.len();
     let health = app.state::<AppState>().manager_service.publish_canary(results);
     let health = field_view::fold_switched_off(health, probed, population.switched_off.len());
-    apply_canary_health_to_tray(app, health);
+    // The board is read back rather than kept, so the words describe the SAME rows the
+    // verdict was taken over — publish_canary stitches loading runs into them, and a
+    // tooltip built from the pre-stitch copy would report a fresh import every round.
+    let board = app.state::<AppState>().manager_service.canary_board();
+    let tooltip = field_view::canary_tooltip(
+        health,
+        &board,
+        &population.switched_off,
+        field_view::now_millis(),
+    );
+    apply_canary_health_to_tray(app, health, &tooltip);
     health
 }
 
 /// Swap the tray icon when — and only when — the verdict changed. Every swap is
 /// a D-Bus message the shell re-renders, and the tray menu ticker already
 /// taught this file what a per-second swap looks like to a user.
-fn apply_canary_health_to_tray<R: Runtime>(app: &AppHandle<R>, health: field_view::CanaryHealth) {
+fn apply_canary_health_to_tray<R: Runtime>(
+    app: &AppHandle<R>,
+    health: field_view::CanaryHealth,
+    tooltip: &str,
+) {
     use std::sync::Mutex;
     static LAST: Mutex<Option<field_view::CanaryHealth>> = Mutex::new(None);
+    static LAST_TOOLTIP: Mutex<Option<String>> = Mutex::new(None);
+
+    // studio#48: THE TOOLTIP IS TRACKED SEPARATELY FROM THE VERDICT, because its text
+    // moves while the verdict does not — a load's minute count climbs, and a second
+    // workspace can break while the tray is already amber. Gating the words on the
+    // colour would freeze them at whatever was true when the colour last changed, which
+    // is the same staleness studio#21 fixed one layer up.
+    let tooltip_changed = {
+        let last = LAST_TOOLTIP.lock().unwrap();
+        last.as_deref() != Some(tooltip)
+    };
+    if tooltip_changed {
+        if let Some(tray) = app.tray_by_id(TRAY_ICON_ID) {
+            if let Err(e) = tray.set_tooltip(Some(tooltip)) {
+                // Not fatal and deliberately not an early return: the COLOUR is the
+                // load-bearing half, and a platform that refuses tooltips must not cost
+                // the user their icon as well.
+                eprintln!("jawata-studio: tray.set_tooltip failed: {e}");
+            } else {
+                *LAST_TOOLTIP.lock().unwrap() = Some(tooltip.to_string());
+            }
+        }
+    }
+
     {
         let last = LAST.lock().unwrap();
         if *last == Some(health) {

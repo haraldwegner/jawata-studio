@@ -992,6 +992,99 @@ pub enum CanaryHealth {
 /// [`canary_health`] necessarily calls [`Unknown`] because it has no results to judge.
 /// That is not "we have not looked" — there is nothing to look at, by choice — so it
 /// is the one place an [`Unknown`] becomes a settled verdict.
+/// The tray's verdict IN WORDS.
+///
+/// studio#48. This is not a nicety beside the colour — it is the channel that still
+/// works when the colour channel fails, and one pair in the palette genuinely fails:
+/// green against amber is what deuteranopia flattens, and unlike the two greens it has
+/// no shape difference to fall back on. So the state is carried in words on EVERY
+/// verdict, not only on the interesting ones.
+///
+/// It is also what lets the disc stop trying to encode three different things. A
+/// decision, a wait and a fault needed three hues and a shape between them; with the
+/// words present, the disc says how worried to be and the tooltip says about what.
+///
+/// Written for someone reading a 22-px icon out of the corner of their eye: the SUBJECT
+/// first (which workspace), then what is true of it. A workspace name is what the reader
+/// can act on; "degraded" alone is not.
+pub fn canary_tooltip(
+    health: CanaryHealth,
+    results: &[CanaryResult],
+    switched_off: &[String],
+    now_millis: u64,
+) -> String {
+    let running = results.len();
+    let total = running + switched_off.len();
+
+    match health {
+        CanaryHealth::Unknown => "jawata — not probed yet".to_string(),
+
+        CanaryHealth::Green => {
+            format!("jawata — {running} of {total} residents healthy")
+        }
+
+        CanaryHealth::Reduced => {
+            // The names, not just the count: "one is off" leaves the reader to work out
+            // WHICH, and the whole reason this state exists is that they may have
+            // forgotten.
+            format!(
+                "jawata — {running} of {total} running; switched off: {}",
+                switched_off.join(", ")
+            )
+        }
+
+        CanaryHealth::Loading => {
+            let mut names: Vec<String> = results
+                .iter()
+                .filter(|r| r.loading)
+                .map(|r| match r.loading_since_millis {
+                    // Minutes rather than seconds: a cold start is measured in minutes,
+                    // and a number that ticks every second in a tooltip is noise.
+                    Some(since) => {
+                        let mins = now_millis.saturating_sub(since) / 60_000;
+                        format!("{} (importing, {} min)", r.workspace, mins)
+                    }
+                    None => format!("{} (importing)", r.workspace),
+                })
+                .collect();
+            names.sort();
+            format!("jawata — still starting: {}", names.join(", "))
+        }
+
+        CanaryHealth::Degraded => {
+            // WHAT is wrong, per workspace, because the two halves fail for different
+            // reasons and the cure differs: a store that will not answer is not the same
+            // problem as a compiler that cannot read the workspace.
+            let mut broken: Vec<String> = results
+                .iter()
+                .filter(|r| !r.green && !r.loading)
+                .map(|r| {
+                    let why = if !r.recall_ok {
+                        "store not answering"
+                    } else if !r.workspace_readable {
+                        "workspace not readable"
+                    } else if !r.compiler_ok {
+                        "compiler not answering"
+                    } else {
+                        // Green is false and no half explains it: say so rather than
+                        // inventing a cause. Reachable if a future clause makes a result
+                        // not-green without setting one of the three above.
+                        "not healthy"
+                    };
+                    format!("{}: {}", r.workspace, why)
+                })
+                .collect();
+            broken.sort();
+            if broken.is_empty() {
+                // Degraded with nothing to name should not happen; saying THAT is more
+                // useful than an empty string, which reads as a rendering bug.
+                return "jawata — degraded".to_string();
+            }
+            format!("jawata — {}", broken.join(", "))
+        }
+    }
+}
+
 pub fn fold_switched_off(health: CanaryHealth, probed: usize, switched_off: usize) -> CanaryHealth {
     if switched_off == 0 {
         return health;
@@ -2410,6 +2503,130 @@ mod tests {
             canary_health(std::slice::from_ref(&result), LOADING_GRACE_MILLIS),
             "past the grace period an unfinished load is a fault"
         );
+    }
+
+    // ===== studio#48: the verdict in WORDS =====
+
+    /// A genuinely green result — the payload shapes the judge actually accepts, taken
+    /// from `a_resident_that_answers_both_questions_is_green` rather than guessed. The
+    /// first version of this helper passed a bare `success: true` for the compiler half
+    /// and produced a result reading "compiler not answering", which turned the healthy
+    /// row of the degraded test into a second broken one.
+    fn healthy_result(workspace: &str) -> CanaryResult {
+        let result = judge_canary(
+            workspace,
+            "http://127.0.0.1:1/mcp",
+            ok(serde_json::json!({"success": true, "data": {"entries": []}})),
+            ok(serde_json::json!({"success": true, "data": {"sourceLength": 12345}})),
+            5,
+            0,
+        );
+        assert!(result.green, "PROOF OF LIFE: {}", result.compiler_detail);
+        result
+    }
+
+    #[test]
+    fn the_reduced_tooltip_names_which_workspace_is_off() {
+        // The whole reason this state exists is that the reader may have FORGOTTEN they
+        // switched it off. A count alone ("2 of 3") leaves them to work out which, which
+        // is the question they cannot answer from memory - it is why they are looking.
+        let board = vec![healthy_result("orb"), healthy_result("dev")];
+        let off = vec!["patterns".to_string()];
+
+        let words = canary_tooltip(CanaryHealth::Reduced, &board, &off, 0);
+
+        assert!(words.contains("patterns"), "must NAME it: {words}");
+        assert!(words.contains("2 of 3"), "and say how much is running: {words}");
+    }
+
+    #[test]
+    fn the_degraded_tooltip_says_which_half_failed() {
+        // A store that will not answer and a compiler that cannot read the workspace are
+        // different problems with different cures, and the colour cannot tell them apart.
+        let broken = judge_canary(
+            "patterns",
+            "http://127.0.0.1:1/mcp",
+            Err("request failed: connection refused".into()),
+            ok(serde_json::json!({"success": true})),
+            0,
+            0,
+        );
+        let board = vec![healthy_result("orb"), broken];
+
+        let words = canary_tooltip(CanaryHealth::Degraded, &board, &[], 0);
+
+        assert!(words.contains("patterns"), "names the workspace: {words}");
+        assert!(words.contains("store not answering"), "and the half: {words}");
+        assert!(
+            !words.contains("orb"),
+            "and does NOT name the healthy one - the tooltip is what is WRONG: {words}"
+        );
+    }
+
+    #[test]
+    fn the_loading_tooltip_reports_minutes_not_seconds() {
+        // A cold start is measured in minutes. A number that ticks every second is noise
+        // in a tooltip, and it would also rewrite the tray text on every round.
+        let mut loading = judge_canary(
+            "patterns",
+            "http://127.0.0.1:1/mcp",
+            ok(serde_json::json!({"success": true})),
+            ok(serde_json::json!({"success": false, "error": {"code": LOADING_ERROR_CODE}})),
+            5,
+            0,
+        );
+        loading.loading_since_millis = Some(0);
+
+        let words = canary_tooltip(CanaryHealth::Loading, &[loading], &[], 4 * 60_000);
+
+        assert!(words.contains("patterns"), "names it: {words}");
+        assert!(words.contains("4 min"), "in minutes: {words}");
+    }
+
+    #[test]
+    fn every_verdict_has_words() {
+        // THE ACCESSIBILITY CLAUSE, asserted rather than intended. Green against amber is
+        // the pair deuteranopia flattens, and unlike the two greens it has no shape to
+        // fall back on - so the words are the fallback channel and a verdict that renders
+        // an empty tooltip has no fallback at all.
+        let board = vec![healthy_result("orb")];
+        let off = vec!["patterns".to_string()];
+        for health in [
+            CanaryHealth::Unknown,
+            CanaryHealth::Green,
+            CanaryHealth::Reduced,
+            CanaryHealth::Loading,
+            CanaryHealth::Degraded,
+        ] {
+            let words = canary_tooltip(health, &board, &off, 0);
+            assert!(
+                !words.trim().is_empty(),
+                "{health:?} must say something in words"
+            );
+            assert!(words.contains("jawata"), "{health:?}: {words}");
+        }
+    }
+
+    #[test]
+    fn the_words_differ_between_verdicts() {
+        // The control for the test above: five non-empty strings that are all the same
+        // string would pass it and carry no information at all.
+        let board = vec![healthy_result("orb")];
+        let off = vec!["patterns".to_string()];
+        let all: Vec<String> = [
+            CanaryHealth::Unknown,
+            CanaryHealth::Green,
+            CanaryHealth::Reduced,
+            CanaryHealth::Loading,
+            CanaryHealth::Degraded,
+        ]
+        .into_iter()
+        .map(|h| canary_tooltip(h, &board, &off, 0))
+        .collect();
+        let mut unique = all.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(all.len(), unique.len(), "each verdict reads differently: {all:?}");
     }
 
     // ===== studio#48: switching a workspace off is a decision, not a fault =====
