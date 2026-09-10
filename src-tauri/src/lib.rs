@@ -646,30 +646,17 @@ pub fn run() {
                         READABILITY_INTERVAL_SECS,
                     ));
                     let state = readability_handle.state::<AppState>();
-                    // studio#48: THE SAME POPULATION AS THE DEEP ROUND. This loop asked
-                    // `knowledge_servers()` — every workspace with a port — so it probed
-                    // residents nobody had asked to run and would have flipped the tray
-                    // back to Degraded on its own five-second timer, undoing the fix in
-                    // the round beside it. A fix applied to one of two probe paths is not
-                    // applied.
-                    let population = state.manager_service.canary_population();
-                    if population.probe.is_empty() {
-                        continue;
-                    }
-                    if let Some(health) = state
-                        .manager_service
-                        .refresh_workspace_readability(&population.probe)
+                    // studio#48: this asks for no server list any more — the refresher
+                    // derives the population itself, so this loop and the deep round
+                    // cannot disagree about which residents are supposed to be running.
+                    if let Some((health, switched_off)) =
+                        state.manager_service.refresh_workspace_readability()
                     {
-                        let health = field_view::fold_switched_off(
-                            health,
-                            population.probe.len(),
-                            population.switched_off.len(),
-                        );
                         let board = state.manager_service.canary_board();
                         let tooltip = field_view::canary_tooltip(
                             health,
                             &board,
-                            &population.switched_off,
+                            &switched_off,
                             field_view::now_millis(),
                         );
                         apply_canary_health_to_tray(&readability_handle, health, &tooltip);

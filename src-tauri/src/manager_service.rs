@@ -1405,10 +1405,26 @@ impl ManagerService {
     /// every workspace answered exactly as the board already said. Returning
     /// the health only when it CHANGED keeps the tray from being repainted
     /// every five seconds for no reason.
+    /// studio#48: THIS TAKES NO SERVER LIST, and that is the fix rather than a tidy-up.
+    ///
+    /// It used to accept one, and its only caller passed `knowledge_servers()` — every
+    /// workspace with a port — so this timer probed residents nobody had asked to run and
+    /// flipped the tray to Degraded on its own, five seconds after the deep round had
+    /// correctly not done so. Two probe paths, one of them fixed.
+    ///
+    /// Passing the population in was the first repair, and a mutation showed it was the
+    /// weaker one: reverting that caller to the old list left 448 of 448 tests green,
+    /// because nothing can drive this loop — it lives inside the Tauri setup with an
+    /// `AppHandle`. A defect a guard cannot see is one to make IMPOSSIBLE instead, so the
+    /// parameter is gone: there is no longer a wrong set to hand it.
     pub(crate) fn refresh_workspace_readability(
         &self,
-        servers: &[ManagedDeployServer],
-    ) -> Option<crate::field_view::CanaryHealth> {
+    ) -> Option<(crate::field_view::CanaryHealth, Vec<String>)> {
+        let population = self.canary_population();
+        if population.probe.is_empty() {
+            return None;
+        }
+        let servers = &population.probe;
         let mut board = self.canary_board();
         if board.is_empty() {
             return None;
@@ -1430,7 +1446,15 @@ impl ManagerService {
         if let Ok(mut held) = self.canary.write() {
             *held = board;
         }
-        Some(health)
+        // Folded HERE rather than at the caller, for the same reason the parameter went:
+        // the two probe paths must not be able to disagree about what a switched-off
+        // workspace means.
+        let health = crate::field_view::fold_switched_off(
+            health,
+            population.probe.len(),
+            population.switched_off.len(),
+        );
+        Some((health, population.switched_off))
     }
 
     /// One canary round against every reachable resident — BLOCKING, two real
