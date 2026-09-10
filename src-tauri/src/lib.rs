@@ -101,6 +101,39 @@ const CANARY_INTERVAL_SECS: u64 = 300;
 /// verdict is re-checked quickly and a happy one is not.
 const CANARY_RECHECK_SECS: u64 = 15;
 
+impl field_view::CanaryHealth {
+    /// How long to wait before asking again, given what this round just learned.
+    ///
+    /// EXHAUSTIVE ON PURPOSE — there is no `_` arm, so adding a variant to
+    /// `CanaryHealth` does not compile until someone decides its cadence. That is the
+    /// property this method exists for, and it is the one a catch-all destroys.
+    ///
+    /// It is here rather than at the call site because the answer is a fact about the
+    /// VERDICT, not about the loop: `StoreHealth::word` already states the same
+    /// principle one type over. Written as a `match` in the thread, `Reduced` fell
+    /// through `_` into the 15-second recheck the moment it was introduced — so a
+    /// machine with one workspace deliberately switched off probed every remaining
+    /// resident twenty times more often than intended, permanently, in exactly the
+    /// configuration studio#48 exists to render correctly. Nothing failed; the light
+    /// was right; only the cost was wrong, which is why no test and no user could see
+    /// it.
+    pub(crate) fn recheck_after_secs(self) -> u64 {
+        match self {
+            // Nothing is wrong, so there is nothing to confirm the recovery of.
+            field_view::CanaryHealth::Green => CANARY_INTERVAL_SECS,
+            // Nor here: a workspace switched off is a DECISION, not a fault. It earns
+            // the slow cadence for the same reason Green does, and giving it the fast
+            // one would charge a user for having configured their machine.
+            field_view::CanaryHealth::Reduced => CANARY_INTERVAL_SECS,
+            // These three are the ones a user is most likely to be staring at while
+            // they are already out of date.
+            field_view::CanaryHealth::Degraded
+            | field_view::CanaryHealth::Loading
+            | field_view::CanaryHealth::Unknown => CANARY_RECHECK_SECS,
+        }
+    }
+}
+
 /// How often the studio re-asks the one CHEAP question: can each resident read
 /// its own workspace?
 ///
@@ -626,11 +659,8 @@ pub fn run() {
                     // resident just started, the Field view just opened) cuts
                     // either wait short — and `sync_channel(1)` collapses a burst
                     // of them into a single extra round.
-                    let wait = match health {
-                        field_view::CanaryHealth::Green => CANARY_INTERVAL_SECS,
-                        _ => CANARY_RECHECK_SECS,
-                    };
-                    let _ = wake_rx.recv_timeout(std::time::Duration::from_secs(wait));
+                    let _ = wake_rx.recv_timeout(
+                        std::time::Duration::from_secs(health.recheck_after_secs()));
                 }
             });
 
@@ -1366,12 +1396,21 @@ mod tray_icon_tests {
 
     #[test]
     fn an_unhappy_verdict_is_rechecked_soon_a_happy_one_is_not() {
-        let wait_for = |health: field_view::CanaryHealth| match health {
-            field_view::CanaryHealth::Green => CANARY_INTERVAL_SECS,
-            _ => CANARY_RECHECK_SECS,
-        };
+        // IT CALLS THE PRODUCTION RULE. The previous version declared its own copy of
+        // the `match` and looped over three of the five variants, so it was blind twice
+        // over: a changed arm would not have reached it, and `Reduced` was simply not in
+        // the list. Both halves were live — `Reduced` fell through the production `_`
+        // into the fast cadence and this test stayed green.
+        let wait_for = field_view::CanaryHealth::recheck_after_secs;
 
         assert_eq!(CANARY_INTERVAL_SECS, wait_for(field_view::CanaryHealth::Green));
+        assert_eq!(
+            CANARY_INTERVAL_SECS,
+            wait_for(field_view::CanaryHealth::Reduced),
+            "a workspace switched off is a DECISION, not a fault, so it earns the slow \
+             cadence — charging a user twenty times the probe load for having configured \
+             their machine is what the catch-all arm did"
+        );
         for unhappy in [
             field_view::CanaryHealth::Degraded,
             field_view::CanaryHealth::Loading,
