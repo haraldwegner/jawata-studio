@@ -119,6 +119,11 @@ impl field_view::CanaryHealth {
     /// it.
     pub(crate) fn recheck_after_secs(self) -> u64 {
         match self {
+            // Nothing is RUNNING, so there is nobody to ask and nothing a faster
+            // cadence could learn. A resident coming up sends a wake, which is the
+            // event that ends this state — polling for it would be asking an empty
+            // machine the same question twenty times a minute.
+            field_view::CanaryHealth::Idle => CANARY_INTERVAL_SECS,
             // Nothing is wrong, so there is nothing to confirm the recovery of.
             field_view::CanaryHealth::Green => CANARY_INTERVAL_SECS,
             // Nor here: a workspace switched off is a DECISION, not a fault. It earns
@@ -186,7 +191,11 @@ fn selected_tray_icon_variant() -> TrayIconVariant {
 /// alpha channel alone, and that is what made the icon disappear. v3.6.1 then
 /// changed the template's SHAPE, which was fixing the wrong thing twice.
 fn build_tray_icon(variant: TrayIconVariant) -> Image<'static> {
-    build_tray_icon_for(variant, field_view::CanaryHealth::Green)
+    // IDLE, NOT GREEN. This is the icon the tray wears before the first probe has run,
+    // and it hard-coded Green — a claim that every resident was asked and every one
+    // answered, made before anything had been asked. Harald caught it dogfooding
+    // v4.2.1: a fresh install showed full health while nothing was even started.
+    build_tray_icon_for(variant, field_view::CanaryHealth::Idle)
 }
 
 /// The same mark, tinted by the canary verdict (Sprint 28b, D6).
@@ -337,6 +346,12 @@ enum DiscStyle {
 
 fn tray_disc_style(health: field_view::CanaryHealth) -> DiscStyle {
     match health {
+        // Batik indigo (#1d2f4e) — the company mark, and the ONLY state that wears it.
+        // Harald, 2026-09-10: "not yet started anything" and "All off -> blue". This is
+        // not the rule about semantics-not-hanging-off-a-brand being broken, it is that
+        // rule holding: the blue makes no claim about health, it is what the product
+        // looks like when it is merely present. Every VERDICT is still its own colour.
+        field_view::CanaryHealth::Idle => DiscStyle::Filled([29, 47, 78, 255]),
         // Dark green (#1b5e20) — legible against a light and a dark menu bar alike.
         field_view::CanaryHealth::Green => DiscStyle::Filled([27, 94, 32, 255]),
         // Grass green (#7cb342), hollow: running as configured, and visibly less.
@@ -888,9 +903,9 @@ pub(crate) fn request_canary_round() {
 fn run_canary_round<R: Runtime>(app: &AppHandle<R>) -> field_view::CanaryHealth {
     let population = app.state::<AppState>().manager_service.canary_population();
     if population.probe.is_empty() && population.switched_off.is_empty() {
-        // Nothing deployed yet — an absence, not a failure. Reported as Unknown
-        // rather than swallowed, so the caller does not read it as health.
-        return field_view::CanaryHealth::Unknown;
+        // Nothing deployed yet — an absence, not a failure, and the SAME truth as
+        // everything being stopped: there is nobody to ask. Both are Idle.
+        return field_view::CanaryHealth::Idle;
     }
     // studio#48: only the residents that are SUPPOSED to be running are probed. A
     // stopped one is not asked and so cannot be classified — which is the fix, rather
@@ -1318,6 +1333,20 @@ mod tray_icon_tests {
     #[test]
     fn healthy_is_not_the_brand_colour() {
         let batik_indigo = [29, 47, 78, 255];
+
+        // THE ONE STATE THAT WEARS THE BRAND, and pinning it here is what keeps the rule
+        // above honest rather than merely narrowed. Idle makes NO health claim: it is
+        // what the product looks like when nothing is running and nothing has been
+        // asked. So a rebrand changes how "nothing running" looks and leaves every
+        // verdict about a running system alone — which is exactly the property the rest
+        // of this test exists to protect. Without this assertion the rule could be
+        // satisfied by the blue disappearing entirely, which is not what was decided.
+        assert_eq!(
+            batik_indigo,
+            tray_disc_colour(field_view::CanaryHealth::Idle),
+            "nothing-running is the company mark, by Harald's ruling of 2026-09-10"
+        );
+
         for health in [
             field_view::CanaryHealth::Green,
             field_view::CanaryHealth::Reduced,

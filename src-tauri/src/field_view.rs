@@ -953,6 +953,23 @@ pub fn stitch_loading_runs(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CanaryHealth {
+    /// NOTHING IS RUNNING, so nothing has been asked — the company blue.
+    ///
+    /// Harald, 2026-09-10, dogfooding v4.2.1: *"not yet started anything"* and
+    /// *"All off -> blue"*. Two situations, one truth: nothing was deployed and started
+    /// yet, or everything that was is deliberately stopped. Either way there is no
+    /// resident to put a question to, so every health word would be a claim about
+    /// something nobody asked.
+    ///
+    /// It is the one state that may wear the brand, and that is not an exception to
+    /// "semantics must not hang off a brand asset" — it is the rule holding. The blue
+    /// makes no health claim at all; it is the mark the product wears when it is merely
+    /// present. A rebrand changes how *nothing running* looks and leaves every verdict
+    /// about a running system untouched.
+    ///
+    /// Distinct from [`Unknown`], which means we ARE waiting on an answer. Idle means
+    /// there is nobody to answer.
+    Idle,
     /// Nothing has been probed yet — never rendered as green.
     Unknown,
     Green,
@@ -1014,6 +1031,19 @@ pub fn canary_tooltip(
                 "jawata — {running} of {total} running; switched off: {}",
                 switched_off.join(", ")
             )
+        }
+
+        // Nothing to report ON, which is different from nothing to report. The words
+        // say which of the two situations produced it, because "off" and "never
+        // started" look identical in the tray and are not the same thing to fix.
+        CanaryHealth::Idle => {
+            if switched_off.is_empty() {
+                "jawata — nothing started yet".to_string()
+            } else {
+                let mut off: Vec<String> = switched_off.to_vec();
+                off.sort();
+                format!("jawata — nothing running; switched off: {}", off.join(", "))
+            }
         }
 
         CanaryHealth::Loading => {
@@ -1100,7 +1130,13 @@ pub fn fold_switched_off(health: CanaryHealth, probed: usize, switched_off: usiz
     }
     match health {
         CanaryHealth::Green => CanaryHealth::Reduced,
-        CanaryHealth::Unknown if probed == 0 => CanaryHealth::Reduced,
+        // EVERYTHING OFF IS NOT A REDUCED KIND OF HEALTHY. This returned `Reduced`
+        // until Harald dogfooded v4.2.1 and found the tray showing the grass-green
+        // ring — "running as configured, and visibly less" — over a machine running
+        // nothing at all. His ruling about a switched-off workspace being a decision
+        // was about SOME off while others run and answer well; with none running there
+        // is no healthy remainder for `Reduced` to be reduced FROM.
+        CanaryHealth::Unknown if probed == 0 => CanaryHealth::Idle,
         other => other,
     }
 }
@@ -2714,13 +2750,29 @@ mod tests {
     }
 
     #[test]
-    fn everything_switched_off_is_reduced_rather_than_unknown() {
-        // With nothing to probe, `canary_health` necessarily answers Unknown - it has no
-        // results to judge. That is not "we have not looked": there is nothing to look at,
-        // by choice. It is the one place an Unknown becomes a settled verdict.
+    fn everything_switched_off_is_idle_rather_than_a_reduced_kind_of_healthy() {
+        // THIS TEST PINNED THE DEFECT. It asserted `Reduced`, on the reasoning that with
+        // nothing to probe there is "nothing to look at, by choice", which made the
+        // all-off case the one place an Unknown became a settled verdict.
+        //
+        // Harald dogfooded v4.2.1 and saw what that reasoning renders: the grass-green
+        // ring — whose own meaning is "running as configured, and visibly less" — over a
+        // machine running nothing whatsoever. `Reduced` is a REDUCTION of something, and
+        // with no resident running there is no healthy remainder for it to be reduced
+        // from. His ruling: "All off -> blue".
+        assert_eq!(
+            CanaryHealth::Idle,
+            fold_switched_off(CanaryHealth::Unknown, 0, 3),
+            "nothing running is not a healthy configuration with fewer members in it"
+        );
+
+        // AND THE NEIGHBOUR IT MUST NOT SWALLOW. Some off while the rest answered well is
+        // still Reduced — that is the case Harald's original ruling was about, and this
+        // change must not have quietly taken it too.
         assert_eq!(
             CanaryHealth::Reduced,
-            fold_switched_off(CanaryHealth::Unknown, 0, 3)
+            fold_switched_off(CanaryHealth::Green, 2, 1),
+            "some off while the others are healthy is still a decision, not idleness"
         );
     }
 
