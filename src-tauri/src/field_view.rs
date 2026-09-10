@@ -956,11 +956,51 @@ pub enum CanaryHealth {
     /// Nothing has been probed yet — never rendered as green.
     Unknown,
     Green,
+    /// Every resident that is SUPPOSED to be running is healthy, and at least one
+    /// workspace is deliberately switched off.
+    ///
+    /// studio#48, Harald: *"If I switch off the patterns workspace then this is a
+    /// decision and not an error case."* It is a third thing rather than a shade of
+    /// either — not a fault, because nothing is wrong; and not [`Green`], because
+    /// "2 of 3 running by choice" is a different truth from "3 of 3 running", and a
+    /// tray that renders them identically cannot tell you which configuration you
+    /// are actually in. The failure that costs: switch a workspace off to escape a
+    /// long cold start, forget, and later wonder why its queries come back empty —
+    /// with the tray showing full health throughout.
+    Reduced,
     /// Every not-green resident answered correctly and is still importing, and
     /// has not been doing so past [`LOADING_GRACE_MILLIS`]. A cold start of a
     /// large workspace takes minutes; that is not a fault to alarm about.
     Loading,
     Degraded,
+}
+
+/// Fold "some workspaces are deliberately off" into a verdict taken over the ones
+/// that are supposed to be running.
+///
+/// The canary judges only the residents it was asked to probe — a stopped one is not
+/// in its population at all (see `ManagerService::canary_population`), because the
+/// question it answers is *is what should be running, running*. This adds the second
+/// half of the sentence: whether what should be running is ALL of it.
+///
+/// Only the two clean verdicts move. A fault stays a fault and a load stays a load:
+/// switching one workspace off does not make another one's broken store less broken,
+/// and a reader shown [`Reduced`] while something is degraded would be told the
+/// quieter of two true things.
+///
+/// `probed == 0` with something switched off is the everything-off case, which
+/// [`canary_health`] necessarily calls [`Unknown`] because it has no results to judge.
+/// That is not "we have not looked" — there is nothing to look at, by choice — so it
+/// is the one place an [`Unknown`] becomes a settled verdict.
+pub fn fold_switched_off(health: CanaryHealth, probed: usize, switched_off: usize) -> CanaryHealth {
+    if switched_off == 0 {
+        return health;
+    }
+    match health {
+        CanaryHealth::Green => CanaryHealth::Reduced,
+        CanaryHealth::Unknown if probed == 0 => CanaryHealth::Reduced,
+        other => other,
+    }
 }
 
 impl CanaryResult {
@@ -2369,6 +2409,72 @@ mod tests {
             CanaryHealth::Degraded,
             canary_health(std::slice::from_ref(&result), LOADING_GRACE_MILLIS),
             "past the grace period an unfinished load is a fault"
+        );
+    }
+
+    // ===== studio#48: switching a workspace off is a decision, not a fault =====
+
+    #[test]
+    fn a_clean_round_with_something_switched_off_is_reduced() {
+        // The headline. Everything that is supposed to be running IS running, and one
+        // workspace is off by choice: not a fault, and not the same truth as all-running.
+        assert_eq!(
+            CanaryHealth::Reduced,
+            fold_switched_off(CanaryHealth::Green, 2, 1)
+        );
+    }
+
+    #[test]
+    fn switching_one_off_does_not_soften_a_fault_or_a_load() {
+        // THE CONTROL, and it is the one that matters: the fold must not become a way for
+        // a broken resident to be reported as "running as configured". Switching workspace
+        // A off says nothing about workspace B's dead store.
+        assert_eq!(
+            CanaryHealth::Degraded,
+            fold_switched_off(CanaryHealth::Degraded, 2, 1),
+            "a fault stays a fault"
+        );
+        assert_eq!(
+            CanaryHealth::Loading,
+            fold_switched_off(CanaryHealth::Loading, 2, 1),
+            "a load stays a load - it is still transitional, and will settle into Reduced"
+        );
+    }
+
+    #[test]
+    fn with_nothing_switched_off_the_verdict_is_untouched() {
+        // The second control: the fold is inert on the ordinary configuration, so it can
+        // never be what makes a normal round read differently.
+        for health in [
+            CanaryHealth::Green,
+            CanaryHealth::Degraded,
+            CanaryHealth::Loading,
+            CanaryHealth::Unknown,
+        ] {
+            assert_eq!(health, fold_switched_off(health, 3, 0));
+        }
+    }
+
+    #[test]
+    fn everything_switched_off_is_reduced_rather_than_unknown() {
+        // With nothing to probe, `canary_health` necessarily answers Unknown - it has no
+        // results to judge. That is not "we have not looked": there is nothing to look at,
+        // by choice. It is the one place an Unknown becomes a settled verdict.
+        assert_eq!(
+            CanaryHealth::Reduced,
+            fold_switched_off(CanaryHealth::Unknown, 0, 3)
+        );
+    }
+
+    #[test]
+    fn an_unprobed_round_with_residents_to_probe_stays_unknown() {
+        // THE DISCRIMINATOR for the case above. Unknown with something still to probe is
+        // genuinely "not measured yet" and must not be dressed up as a settled state -
+        // otherwise the first round after a start would claim a configuration it has not
+        // looked at.
+        assert_eq!(
+            CanaryHealth::Unknown,
+            fold_switched_off(CanaryHealth::Unknown, 2, 1)
         );
     }
 

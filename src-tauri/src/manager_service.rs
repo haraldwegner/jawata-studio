@@ -287,6 +287,57 @@ struct ProbeRuntime {
 /// writer (`build_client_mcp_json`) serializes
 /// `{ url, headers: { Authorization: Bearer <token> } }` per the
 /// Cursor + Claude MCP-config schema.
+/// Split the deploy servers by INTENT: the ones supposed to be running, and the ones
+/// deliberately stopped.
+///
+/// Pure, and separate from `ManagerService::canary_population` for a reason the crate
+/// already records about itself — the runtime snapshot map is private to
+/// `runtime_manager`, so a service-level test cannot put a workspace into `Running` and
+/// the discriminating cases would be untestable inside the wiring. Here every phase can
+/// be stated directly.
+///
+/// A workspace counts as supposed-to-run if ANY of its projects is in a phase other than
+/// `Stopped` — projects sharing a workspace name are one resident, so one member wanting
+/// to be up means the resident should be up.
+fn partition_by_intent(
+    servers: Vec<ManagedDeployServer>,
+    statuses: &HashMap<String, RuntimeStatusRecord>,
+) -> CanaryPopulation {
+    let mut supposed: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for status in statuses.values() {
+        if !matches!(status.phase, RuntimePhase::Stopped) {
+            supposed.insert(status.workspace_name.as_str());
+        }
+    }
+
+    let (probe, off): (Vec<ManagedDeployServer>, Vec<ManagedDeployServer>) = servers
+        .into_iter()
+        .partition(|server| supposed.contains(server.workspace_name.as_str()));
+
+    let mut switched_off: Vec<String> =
+        off.into_iter().map(|server| server.workspace_name).collect();
+    // Sorted so the tooltip names them in a stable order: the deploy-server order follows
+    // project insertion, which changes when a project is added elsewhere, and a tooltip
+    // that reorders itself between rounds reads as movement.
+    switched_off.sort();
+    CanaryPopulation {
+        probe,
+        switched_off,
+    }
+}
+
+/// What the canary is allowed to ask about, and what it deliberately is not.
+///
+/// studio#48. Two lists rather than one count, because the tray needs both halves:
+/// `probe` decides the verdict, and `switched_off` is what turns a clean verdict into
+/// [`crate::field_view::CanaryHealth::Reduced`] and gives the tooltip the names to
+/// say. A single "how many are off" number would render the disc correctly and leave
+/// the tooltip unable to say WHICH.
+pub(crate) struct CanaryPopulation {
+    pub(crate) probe: Vec<ManagedDeployServer>,
+    pub(crate) switched_off: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ManagedDeployServer {
@@ -1071,6 +1122,38 @@ impl ManagerService {
     /// the main thread. The blocking HTTP half lives in the `*_for`/`*_on` functions and
     /// runs via `spawn_blocking` (sync Tauri commands execute on the MAIN thread; the
     /// 2×5 s status poll froze the whole UI while residents were booting).
+    /// The residents the canary is allowed to ask about, and the workspaces that are
+    /// deliberately not among them.
+    ///
+    /// studio#48. The canary used to probe every workspace it knew about, filtering only
+    /// on an empty url or token — and both are allocated when a workspace is created,
+    /// whether or not anything is listening. So a resident you had stopped was probed,
+    /// did not answer, and was classified `Degraded`: your decision reported as a fault,
+    /// for as long as it stayed off.
+    ///
+    /// The fix is the POPULATION, not a fifth verdict for it to land in. The question the
+    /// canary answers is *is what should be running, running* — and a resident nobody
+    /// asked to run is not in that question. Leaving the probe in place and adding an
+    /// `Off` outcome would keep the decision and the fault in one instrument, which is
+    /// the defect rather than a rendering of it.
+    ///
+    /// SUPPOSED TO RUN IS ANY PHASE BUT `Stopped`, and `Failed` is deliberately inside
+    /// it: a runtime that was started and died IS supposed to be running, so probing it
+    /// and reporting `Degraded` is correct — that is a fault and it should say so. Only
+    /// `Stopped` is a decision.
+    pub(crate) fn canary_population(&self) -> CanaryPopulation {
+        let settings = self.config_store.get_settings();
+        let projects = self.config_store.list_projects();
+        let servers = self.build_deploy_servers(&settings, &projects).0;
+        let installed = self
+            .release_manager
+            .get_installed_runtime(&settings)
+            .ok()
+            .flatten();
+        let statuses = self.collect_runtime_statuses(&projects, &settings, installed.as_ref());
+        partition_by_intent(servers, &statuses)
+    }
+
     pub(crate) fn knowledge_servers(&self) -> Vec<ManagedDeployServer> {
         let settings = self.config_store.get_settings();
         let projects = self.config_store.list_projects();
@@ -9548,6 +9631,136 @@ mod tests {
             field_dir: String::new(),
             disabled,
         }
+    }
+
+    // ===== studio#48: the canary's population is INTENT, not "has a port" =====
+
+    /// A status record for `workspace` in `phase`, which is all `partition_by_intent`
+    /// reads. Everything else is filler the partition never looks at.
+    fn status_in(project: &str, workspace: &str, phase: RuntimePhase) -> RuntimeStatusRecord {
+        RuntimeStatusRecord {
+            project_id: project.into(),
+            phase,
+            workspace_name: workspace.into(),
+            transport: "http".into(),
+            pid: None,
+            workspace_dir: String::new(),
+            log_path: String::new(),
+            runtime_label: String::new(),
+            resolved_jar_path: String::new(),
+            service_mode: String::new(),
+            detail: String::new(),
+            exit_code: None,
+        }
+    }
+
+    fn statuses_of(rows: &[(&str, &str, RuntimePhase)]) -> HashMap<String, RuntimeStatusRecord> {
+        rows.iter()
+            .map(|(project, workspace, phase)| {
+                (
+                    (*project).to_string(),
+                    status_in(project, workspace, phase.clone()),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_stopped_workspace_is_not_probed_and_is_named_as_switched_off() {
+        // THE DEFECT, in one case: `patterns` is stopped by choice. Before studio#48 it
+        // was probed anyway, answered nothing, and was classified Degraded - the tray
+        // reporting a decision as a fault, for as long as it stayed off.
+        let servers = vec![
+            url_server("orb", 1, "t", false),
+            url_server("patterns", 2, "t", false),
+            url_server("dev", 3, "t", false),
+        ];
+        let statuses = statuses_of(&[
+            ("p1", "orb", RuntimePhase::Running),
+            ("p2", "patterns", RuntimePhase::Stopped),
+            ("p3", "dev", RuntimePhase::Running),
+        ]);
+
+        let population = partition_by_intent(servers, &statuses);
+
+        let probed: Vec<&str> = population
+            .probe
+            .iter()
+            .map(|s| s.workspace_name.as_str())
+            .collect();
+        assert_eq!(
+            vec!["orb", "dev"],
+            probed,
+            "a resident nobody asked to run is not in the question the canary answers"
+        );
+        assert_eq!(vec!["patterns".to_string()], population.switched_off);
+    }
+
+    #[test]
+    fn a_failed_runtime_is_still_probed_because_it_is_supposed_to_be_running() {
+        // THE CONTROL that keeps the rule from being "skip anything not Running". A
+        // runtime that was started and died IS supposed to be up, so it must stay in the
+        // population and be reported as the fault it is. Read the other way, this is what
+        // stops the fix from silencing real breakage.
+        let servers = vec![url_server("orb", 1, "t", false)];
+        let statuses = statuses_of(&[("p1", "orb", RuntimePhase::Failed)]);
+
+        let population = partition_by_intent(servers, &statuses);
+
+        assert_eq!(1, population.probe.len(), "Failed is a fault, not a decision");
+        assert!(population.switched_off.is_empty());
+    }
+
+    #[test]
+    fn starting_is_probed_too() {
+        let servers = vec![url_server("orb", 1, "t", false)];
+        let statuses = statuses_of(&[("p1", "orb", RuntimePhase::Starting)]);
+        assert_eq!(1, partition_by_intent(servers, &statuses).probe.len());
+    }
+
+    #[test]
+    fn one_member_wanting_to_be_up_keeps_the_whole_workspace_in() {
+        // Projects sharing a workspace name are ONE resident. If any member is not
+        // stopped the resident should be up, so the workspace stays in the population -
+        // otherwise a two-project workspace with one member stopped would go unwatched
+        // while its resident is genuinely serving.
+        let servers = vec![url_server("orb", 1, "t", false)];
+        let statuses = statuses_of(&[
+            ("p1", "orb", RuntimePhase::Stopped),
+            ("p2", "orb", RuntimePhase::Running),
+        ]);
+
+        let population = partition_by_intent(servers, &statuses);
+
+        assert_eq!(1, population.probe.len());
+        assert!(population.switched_off.is_empty());
+    }
+
+    #[test]
+    fn a_workspace_with_no_status_at_all_is_treated_as_stopped() {
+        // Fails CLOSED in the quiet direction, and that is the right one here: an
+        // unknown workspace has never been started in this session, so probing it would
+        // manufacture exactly the fault this issue is about.
+        let servers = vec![url_server("orb", 1, "t", false)];
+        let population = partition_by_intent(servers, &HashMap::new());
+        assert!(population.probe.is_empty());
+        assert_eq!(vec!["orb".to_string()], population.switched_off);
+    }
+
+    #[test]
+    fn the_switched_off_names_are_sorted() {
+        // The deploy-server order follows project insertion, so an unsorted list
+        // reorders itself when an unrelated project is added - which reads as movement
+        // in a tooltip that should be still.
+        let servers = vec![
+            url_server("zeta", 1, "t", false),
+            url_server("alpha", 2, "t", false),
+        ];
+        let population = partition_by_intent(servers, &HashMap::new());
+        assert_eq!(
+            vec!["alpha".to_string(), "zeta".to_string()],
+            population.switched_off
+        );
     }
 
     // ===== Sprint A0 (v0.17.0): sharpened rule block =====

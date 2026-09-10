@@ -162,10 +162,21 @@ fn build_tray_icon_for(
     health: field_view::CanaryHealth,
 ) -> Image<'static> {
     let mut rgba = vec![0u8; (TRAY_ICON_SIZE * TRAY_ICON_SIZE * 4) as usize];
-    draw_base_circle_in(&mut rgba, tray_disc_colour(health));
-    match variant {
-        TrayIconVariant::ArchCircle => draw_arch_glyph(&mut rgba),
-        TrayIconVariant::CoffeeCircle => draw_coffee_glyph(&mut rgba),
+    match tray_disc_style(health) {
+        DiscStyle::Filled(fill) => {
+            draw_base_circle_in(&mut rgba, fill);
+            match variant {
+                TrayIconVariant::ArchCircle => draw_arch_glyph(&mut rgba),
+                TrayIconVariant::CoffeeCircle => draw_coffee_glyph(&mut rgba),
+            }
+        }
+        DiscStyle::Hollow(stroke) => {
+            draw_base_ring_in(&mut rgba, stroke);
+            match variant {
+                TrayIconVariant::ArchCircle => draw_arch_glyph_in(&mut rgba, stroke),
+                TrayIconVariant::CoffeeCircle => draw_coffee_glyph_in(&mut rgba, stroke),
+            }
+        }
     }
     Image::new_owned(rgba, TRAY_ICON_SIZE, TRAY_ICON_SIZE)
 }
@@ -250,28 +261,74 @@ fn draw_ring(rgba: &mut [u8], cx: i32, cy: i32, radius: i32, thickness: i32, col
     }
 }
 
-/// The disc colour the tray wears for a given canary verdict.
+/// How the tray disc is drawn for a given canary verdict: a colour, and whether the
+/// disc is filled or an outline.
 ///
-/// Sprint 28b (D6): a failing canary is a PASSIVE state change — the icon's
-/// disc goes amber and the dashboard goes non-green. Nothing pops, nothing
-/// beeps, nothing steals focus; the user finds out when he next looks at his
-/// tray, which is the same way he finds out a service stopped.
+/// studio#48, and the palette is Harald's (2026-09-10). Two things changed at once and
+/// they are separate claims.
 ///
-/// `Unknown` keeps the brand colour: nothing has been probed yet, and painting
-/// an alarm for "we have not looked" would train the user to ignore the alarm.
-fn tray_disc_colour(health: field_view::CanaryHealth) -> [u8; 4] {
+/// **Healthy stopped being the brand colour.** It was batik-indigo `#1d2f4e`, which made
+/// health the LOGO rather than a signal: meaning existed only in the departure from it,
+/// so the tray carried one bit, and a rebrand would silently change what it meant.
+/// Semantics must not hang off a brand asset. Every state now has a colour chosen for
+/// meaning.
+///
+/// **`Unknown` moved to GREY rather than to amber.** Unknown is "not probed yet" — not
+/// measured, not broken. Painted amber, every studio start would show a fault until the
+/// first round landed, which is the complaint this issue came from. So grey is the
+/// catch-all and what it catches is *we do not know*; amber is reserved for *we looked,
+/// and it is wrong*, which is what makes amber worth reacting to.
+///
+/// It also honours a promise the enum makes and the tray used to break: `Unknown`
+/// documents itself as "never rendered as green" while being painted byte-identical to
+/// [`field_view::CanaryHealth::Green`].
+///
+/// **The reduced state is a SHAPE, not a fourth hue.** A hollow disc reads as "less"
+/// without reading as "wrong", needs no extra colour at 22 px, and survives both a
+/// rebrand and a colour-blind reader. Grass green rather than the dark green for that
+/// one is practical: a hollow disc in the dark green nearly vanishes against a dark
+/// shell panel, and a ring needs contrast to read as a ring.
+///
+/// The one weak pair is green against amber, which deuteranopia flattens and which —
+/// unlike the two greens — has no shape difference to fall back on. That is why the
+/// state is also carried in WORDS in the tray tooltip: it is the channel that still
+/// works when the colour channel fails, not a nicety.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiscStyle {
+    /// A filled disc, with the glyph in its own contrast colour.
+    Filled([u8; 4]),
+    /// An outline, with the glyph drawn in the same stroke — see `draw_arch_glyph_in`
+    /// for why the glyph cannot keep its cream here.
+    Hollow([u8; 4]),
+}
+
+fn tray_disc_style(health: field_view::CanaryHealth) -> DiscStyle {
     match health {
-        // Brand batik-indigo (#1d2f4e, the jawata palette). `Loading` joins them:
-        // a resident still importing is answering correctly, and alarming on a
-        // healthy cold start trains the user to ignore the alarm just as surely
-        // as alarming on "we have not looked" would.
-        field_view::CanaryHealth::Unknown
-        | field_view::CanaryHealth::Green
-        | field_view::CanaryHealth::Loading => [29, 47, 78, 255],
-        // Amber (#a8621a) — legible against both a light and a dark menu bar,
-        // and unmistakably not the brand colour at 32 px.
-        field_view::CanaryHealth::Degraded => [168, 98, 26, 255],
+        // Dark green (#1b5e20) — legible against a light and a dark menu bar alike.
+        field_view::CanaryHealth::Green => DiscStyle::Filled([27, 94, 32, 255]),
+        // Grass green (#7cb342), hollow: running as configured, and visibly less.
+        field_view::CanaryHealth::Reduced => DiscStyle::Hollow([124, 179, 66, 255]),
+        // Amber (#a8621a) — we looked, and it is wrong.
+        field_view::CanaryHealth::Degraded => DiscStyle::Filled([168, 98, 26, 255]),
+        // Grey (#6e7278) — we do not know yet: mid-import, or not yet probed.
+        field_view::CanaryHealth::Loading | field_view::CanaryHealth::Unknown => {
+            DiscStyle::Filled([110, 114, 120, 255])
+        }
     }
+}
+
+/// The disc colour alone, for callers that only need the hue.
+fn tray_disc_colour(health: field_view::CanaryHealth) -> [u8; 4] {
+    match tray_disc_style(health) {
+        DiscStyle::Filled(colour) | DiscStyle::Hollow(colour) => colour,
+    }
+}
+
+/// The ring the hollow variant draws, at the filled disc's own outer radius so the two
+/// marks occupy the same slot and swapping between them does not appear to resize.
+fn draw_base_ring_in(rgba: &mut [u8], stroke: [u8; 4]) {
+    let center = (TRAY_ICON_SIZE as i32) / 2;
+    draw_ring(rgba, center, center, center, 2, stroke);
 }
 
 fn draw_base_circle(rgba: &mut [u8]) {
@@ -310,8 +367,17 @@ fn draw_disc(rgba: &mut [u8], cx: i32, cy: i32, radius: i32, color: [u8; 4]) {
 /// abstraction of Javanese *ja*, concept sheet rev 5) — rasterized for the tray:
 /// the cubic segments + flat tail of the agreed path (native box ~8..160 x 0..188)
 /// sampled and stroked as discs, scaled into the 32×32 tray slot.
+/// The arch, in the disc's own contrast colour.
+///
+/// studio#48 parameterised this: on a HOLLOW disc there is no dark fill behind the
+/// glyph, so cream-on-transparent is legible over a dark menu bar and vanishes over a
+/// light one. The hollow variant passes its own green instead, so the mark reads as an
+/// outlined version of itself on either.
 fn draw_arch_glyph(rgba: &mut [u8]) {
-    let cream = [234, 227, 210, 255]; // #EAE3D2, per the concept sheet
+    draw_arch_glyph_in(rgba, [234, 227, 210, 255]); // #EAE3D2, per the concept sheet
+}
+
+fn draw_arch_glyph_in(rgba: &mut [u8], cream: [u8; 4]) {
     // Control points of the agreed path, cubic segments in order.
     let segs: [[(f32, f32); 4]; 6] = [
         [(52.0, 174.0), (40.0, 170.0), (33.0, 160.0), (33.0, 146.0)],
@@ -354,7 +420,10 @@ fn draw_arch_glyph(rgba: &mut [u8]) {
 }
 
 fn draw_coffee_glyph(rgba: &mut [u8]) {
-    let white = [20, 24, 30, 255];
+    draw_coffee_glyph_in(rgba, [20, 24, 30, 255]);
+}
+
+fn draw_coffee_glyph_in(rgba: &mut [u8], white: [u8; 4]) {
     // Slightly larger coffee cup glyph for parity with the "J" icon.
     draw_rect(rgba, 7, 12, 21, 14, white);
     draw_rect(rgba, 7, 21, 21, 23, white);
@@ -793,14 +862,19 @@ pub(crate) fn request_canary_round() {
 ///
 /// Returns the verdict so the caller can decide how soon to ask again.
 fn run_canary_round<R: Runtime>(app: &AppHandle<R>) -> field_view::CanaryHealth {
-    let servers = app.state::<AppState>().manager_service.knowledge_servers();
-    if servers.is_empty() {
+    let population = app.state::<AppState>().manager_service.canary_population();
+    if population.probe.is_empty() && population.switched_off.is_empty() {
         // Nothing deployed yet — an absence, not a failure. Reported as Unknown
         // rather than swallowed, so the caller does not read it as health.
         return field_view::CanaryHealth::Unknown;
     }
-    let results = ManagerService::canary_round_for(&servers);
+    // studio#48: only the residents that are SUPPOSED to be running are probed. A
+    // stopped one is not asked and so cannot be classified — which is the fix, rather
+    // than probing it and giving its silence a gentler name.
+    let results = ManagerService::canary_round_for(&population.probe);
+    let probed = results.len();
     let health = app.state::<AppState>().manager_service.publish_canary(results);
+    let health = field_view::fold_switched_off(health, probed, population.switched_off.len());
     apply_canary_health_to_tray(app, health);
     health
 }
@@ -1070,8 +1144,8 @@ mod tray_icon_tests {
         assert_eq!(field_view::CanaryHealth::Degraded, health);
 
         let alarmed = tray_disc_colour(health);
-        let brand = tray_disc_colour(field_view::CanaryHealth::Green);
-        assert_ne!(brand, alarmed, "the tray must LOOK different, not merely know");
+        let healthy = tray_disc_colour(field_view::CanaryHealth::Green);
+        assert_ne!(healthy, alarmed, "the tray must LOOK different, not merely know");
 
         // The centre pixel of the built icon carries the alarmed colour, so the
         // flip reaches the image the tray is handed and not just a helper.
@@ -1090,11 +1164,98 @@ mod tray_icon_tests {
             "the disc wears the alarmed colour"
         );
 
-        // And "we have not looked yet" is NOT an alarm.
-        assert_eq!(brand, tray_disc_colour(field_view::CanaryHealth::Unknown));
-        // Nor is "still starting up" — issue #16: every healthy launch of a
-        // large workspace used to wear the alarm for five minutes.
-        assert_eq!(brand, tray_disc_colour(field_view::CanaryHealth::Loading));
+        // studio#48 CHANGED WHAT THESE TWO CLAIM, and the change is the point.
+        //
+        // They used to assert that "not looked yet" and "still starting up" are painted
+        // the SAME as healthy — true then, because all three shared the brand colour, and
+        // the claim being made was only "this is not an alarm". That is the weaker half of
+        // what a reader needs: it says the tray will not cry wolf, and says nothing about
+        // whether the tray can tell them apart. It could not. Three states, one colour.
+        //
+        // Now each is its own state, so both halves are asserted: NOT the alarm, and NOT
+        // healthy either. Grey is the catch-all and what it catches is "we do not know" —
+        // which is also the promise `CanaryHealth::Unknown` makes in its own doc comment
+        // ("never rendered as green") and which the tray used to break by painting it
+        // byte-identical to Green.
+        let unknown = tray_disc_colour(field_view::CanaryHealth::Unknown);
+        let loading = tray_disc_colour(field_view::CanaryHealth::Loading);
+        assert_ne!(alarmed, unknown, "not looked yet is not an alarm");
+        assert_ne!(healthy, unknown, "and it must not claim health either");
+        // issue #16: every healthy launch of a large workspace used to wear the alarm for
+        // five minutes. It must still not — and it must still not read as finished.
+        assert_ne!(alarmed, loading, "still starting up is not an alarm");
+        assert_ne!(healthy, loading, "nor is it done");
+        assert_eq!(unknown, loading, "both are the one state: we do not know yet");
+    }
+
+    /// studio#48: the reduced state is a SHAPE, and the shape is what carries it.
+    ///
+    /// A hollow disc reads as "less" without reading as "wrong". The test is therefore
+    /// about PIXELS rather than about the enum: the centre of a reduced icon is
+    /// transparent where every other state's centre is opaque, and the ring is present
+    /// at the edge — so the two claims a hollow mark makes (it is still there; it is
+    /// visibly less) are checked separately.
+    #[test]
+    fn the_reduced_state_is_drawn_hollow_and_the_others_are_not() {
+        let centre = ((TRAY_ICON_SIZE / 2) * TRAY_ICON_SIZE + TRAY_ICON_SIZE / 2) as usize;
+        let edge = ((TRAY_ICON_SIZE / 2) * TRAY_ICON_SIZE + 1) as usize;
+
+        let reduced = build_tray_icon_for(
+            TrayIconVariant::ArchCircle,
+            field_view::CanaryHealth::Reduced,
+        );
+        let rgba = reduced.rgba();
+        assert_eq!(
+            0,
+            rgba[centre * 4 + 3],
+            "the middle of a hollow disc is empty — that IS the signal"
+        );
+        assert_eq!(
+            255,
+            rgba[edge * 4 + 3],
+            "and the ring is drawn, or the mark would simply be missing"
+        );
+
+        // THE CONTROL. Without it, a build that drew NOTHING for every state would
+        // satisfy the assertion above.
+        for filled in [
+            field_view::CanaryHealth::Green,
+            field_view::CanaryHealth::Degraded,
+            field_view::CanaryHealth::Loading,
+            field_view::CanaryHealth::Unknown,
+        ] {
+            let icon = build_tray_icon_for(TrayIconVariant::ArchCircle, filled);
+            assert_eq!(
+                255,
+                icon.rgba()[centre * 4 + 3],
+                "{filled:?} is a filled disc"
+            );
+        }
+    }
+
+    /// studio#48: healthy stopped being the company colour, deliberately.
+    ///
+    /// Harald, 2026-09-10, on why: *"if we give it real meaning all the time and not only
+    /// showing company color which might change."* With healthy painted in the brand, the
+    /// tray carried ONE bit — meaning lived only in the departure from the logo — and a
+    /// rebrand would silently change what the tray meant. Semantics must not hang off a
+    /// brand asset.
+    #[test]
+    fn healthy_is_not_the_brand_colour() {
+        let batik_indigo = [29, 47, 78, 255];
+        for health in [
+            field_view::CanaryHealth::Green,
+            field_view::CanaryHealth::Reduced,
+            field_view::CanaryHealth::Degraded,
+            field_view::CanaryHealth::Loading,
+            field_view::CanaryHealth::Unknown,
+        ] {
+            assert_ne!(
+                batik_indigo,
+                tray_disc_colour(health),
+                "{health:?} must mean something on its own, not borrow the logo"
+            );
+        }
     }
 
     /// studio#21: an UNHAPPY verdict is re-checked soon, a happy one is not.
