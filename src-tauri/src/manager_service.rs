@@ -2866,12 +2866,36 @@ impl ManagerService {
             // truncated file.
             if let Some(primer_path) = managed_primer_script_path() {
                 if let Some(hooks_dir) = primer_path.parent() {
-                    let client_key = if client.eq_ignore_ascii_case("cursor") {
-                        "cursor"
-                    } else {
-                        "claude-code"
-                    };
-                    match write_hook_config(hooks_dir, &server.url, &server.token, client_key,
+                    // THE CLIENT BELONGS TO THE DIRECTORY, NOT TO THE DEPLOY.
+                    //
+                    // This wrote whichever client was being deployed - and `hooks_dir` is
+                    // `claude_scripts_dir()` unconditionally. So deploying Cursor stamped
+                    // `client: cursor` into CLAUDE CODE's own hooks directory, and the
+                    // binaries registered in ~/.claude/settings.json then read it and
+                    // believed they were running under Cursor.
+                    //
+                    // What that cost: `roles::spec(Stop, Cursor)` is
+                    // `Availability::Absent` - Cursor has no agent-stop event - so the
+                    // stop gate returned silent on EVERY stop. Rule A, Rule B, the
+                    // autocontinue push, the ask gate, the audit-fix loop and the
+                    // seat-discipline check were all inert, in the client Harald actually
+                    // works in. Measured 2026-09-10 on a live session:
+                    // `hook_silence.log` holds 32 stop events and all 32 are
+                    // `role-absent-on-client`, while `outcomes.log` shows the grant was
+                    // genuinely `Granted` across them.
+                    //
+                    // It is DEPLOY-ORDER dependent, which is why it survived two sprints:
+                    // deploy Claude Code last and the file is right, deploy Cursor last
+                    // and it is wrong. The 01:03 deploy on 2026-09-10 put Cursor last.
+                    //
+                    // Cursor is not losing anything here. Its config is written by
+                    // `write_managed_cursor_hooks` into `~/.cursor/hooks`, beside its own
+                    // binaries - which is where a binary looks (`config::config_path_for`
+                    // resolves `<dir of the exe>/hook_config.json`). That writer exists
+                    // BECAUSE of the mirror of this bug: the Claude deploy used to be the
+                    // only writer, so Cursor's binaries loaded NotConfigured and went
+                    // silent. The same defect, pointing the other way, fixed on one side.
+                    match write_hook_config(hooks_dir, &server.url, &server.token,
                         Some(server.field_dir.as_str()).filter(|d| !d.is_empty())) {
                         Ok(true) => changed_sections.push("hook_config".into()),
                         Ok(false) => {}
@@ -7901,13 +7925,40 @@ fn rotate_silence_log(hooks_dir: &Path) -> bool {
 /// The hook's read side already treats a zero-length file as a TORN DEPLOY
 /// rather than as "not configured" — this function makes that state
 /// unreachable, and the reader stays loud if it ever happens anyway.
+/// The client that OWNS a hooks directory.
+///
+/// studio: THE CLIENT IS A PROPERTY OF THE DIRECTORY, so it is derived from the
+/// directory rather than passed beside it. A hook binary resolves its config as
+/// `<dir of the exe>/hook_config.json`, so the file in a directory describes the
+/// binaries in THAT directory - and nothing else can be true of it.
+///
+/// It used to be a parameter, and the pairing was wrong in both directions within
+/// three sprints: first the Claude deploy was the only writer, so Cursor's binaries
+/// found no config and went silent; then the fix for that left the Claude deploy
+/// stamping whichever client it happened to be deploying into Claude's own directory,
+/// so Claude Code's binaries believed they were Cursor and the whole stop gate went
+/// silent. Two clients, one file, one hand-supplied field: the parameter was the defect.
+fn client_for_hooks_dir(hooks_dir: &Path) -> &'static str {
+    // Cursor's managed hooks live in `~/.cursor/hooks`; everything else this product
+    // deploys is Claude Code's `~/.claude/jawata-studio`. Matched on the `.cursor`
+    // component rather than on the whole path, so a non-default home still resolves.
+    let cursor_owned = hooks_dir
+        .components()
+        .any(|c| c.as_os_str().to_string_lossy() == ".cursor");
+    if cursor_owned {
+        "cursor"
+    } else {
+        "claude-code"
+    }
+}
+
 fn write_hook_config(
     hooks_dir: &Path,
     mcp_url: &str,
     token: &str,
-    client: &str,
     field_dir: Option<&str>,
 ) -> Result<bool, String> {
+    let client = client_for_hooks_dir(hooks_dir);
     fs::create_dir_all(hooks_dir)
         .map_err(|e| format!("failed to create hooks dir {}: {e}", hooks_dir.display()))?;
     // Housekeeping rides the config cadence: this function runs on every
@@ -9021,7 +9072,7 @@ fn write_managed_cursor_hooks(
     //    URL and token baked into its text. The cutover to binaries moved the
     //    configuration mechanism and left the configuration behind — the same
     //    half-finished shape as the cutover itself.
-    if let Err(e) = write_hook_config(hooks_dir, mcp_url, token, "cursor", field_dir) {
+    if let Err(e) = write_hook_config(hooks_dir, mcp_url, token, field_dir) {
         return Err(format!("failed writing the cursor hook config: {e}"));
     }
 
@@ -9655,6 +9706,81 @@ mod tests {
             field_dir: String::new(),
             disabled,
         }
+    }
+
+    // ===== the hook config's client belongs to the DIRECTORY =====
+
+    /// THE DEFECT THIS PINS, measured on a live session 2026-09-10.
+    ///
+    /// `deploy_to_agents` wrote `hook_config.json` into `claude_scripts_dir()` -
+    /// unconditionally Claude Code's own directory - and stamped it with whichever client
+    /// was being deployed. So deploying Cursor put `client: cursor` in front of the
+    /// binaries registered in `~/.claude/settings.json`. Those binaries then asked
+    /// `roles::spec(Stop, Cursor)`, which is `Availability::Absent` because Cursor has no
+    /// agent-stop event, and returned silent on EVERY stop.
+    ///
+    /// The cost was the entire stop gate in the client Harald actually works in: Rule A,
+    /// Rule B, the autocontinue push, the ask gate, the audit-fix loop, the
+    /// seat-discipline check. `hook_silence.log` held 32 stop events, all 32
+    /// `role-absent-on-client`, while `outcomes.log` showed the autonomy grant genuinely
+    /// `Granted` across them - so the agent stopped mid-plan and nothing bounced it.
+    ///
+    /// It survived two sprints because it is DEPLOY-ORDER dependent: deploy Claude Code
+    /// last and the file is right.
+    #[test]
+    fn a_claude_hooks_dir_is_never_stamped_as_cursor() {
+        let dir = unique_tempdir("hookcfg-claude").join(".claude").join("jawata-studio");
+        fs::create_dir_all(&dir).unwrap();
+
+        write_hook_config(&dir, "http://127.0.0.1:1/mcp", "t", None).unwrap();
+
+        let body = fs::read_to_string(dir.join("hook_config.json")).unwrap();
+        assert!(
+            body.contains("\"client\":\"claude-code\""),
+            "the config in Claude's own hooks dir must say claude-code, whatever deploy \
+             wrote it: {body}"
+        );
+        assert!(
+            !body.contains("\"client\":\"cursor\""),
+            "a cursor stamp here turns off the whole stop gate: {body}"
+        );
+    }
+
+    /// THE CONTROL, and without it the assertion above is satisfied by hard-coding
+    /// claude-code everywhere - which would silence Cursor's binaries instead, the mirror
+    /// defect this product already shipped once.
+    #[test]
+    fn a_cursor_hooks_dir_is_stamped_as_cursor() {
+        let dir = unique_tempdir("hookcfg-cursor").join(".cursor").join("hooks");
+        fs::create_dir_all(&dir).unwrap();
+
+        write_hook_config(&dir, "http://127.0.0.1:1/mcp", "t", None).unwrap();
+
+        let body = fs::read_to_string(dir.join("hook_config.json")).unwrap();
+        assert!(
+            body.contains("\"client\":\"cursor\""),
+            "Cursor's own hooks dir must say cursor, or its binaries load NotConfigured \
+             and go silent: {body}"
+        );
+    }
+
+    #[test]
+    fn the_client_is_read_off_the_path_not_the_home() {
+        // Matched on the `.cursor` COMPONENT, so a non-default home still resolves - and
+        // a directory merely containing the letters is not enough.
+        assert_eq!(
+            "cursor",
+            client_for_hooks_dir(Path::new("/srv/box/.cursor/hooks"))
+        );
+        assert_eq!(
+            "claude-code",
+            client_for_hooks_dir(Path::new("/srv/box/.claude/jawata-studio"))
+        );
+        assert_eq!(
+            "claude-code",
+            client_for_hooks_dir(Path::new("/home/cursor-user/.claude/jawata-studio")),
+            "a home that merely contains the word is not Cursor's directory"
+        );
     }
 
     // ===== studio#48: the canary's population is INTENT, not "has a port" =====
@@ -12948,7 +13074,7 @@ judge was never told to give"
         }
         fs::write(&live, &body).unwrap();
 
-        write_hook_config(&dir, "http://u/mcp", "tw", "claude-code", None).unwrap();
+        write_hook_config(&dir, "http://u/mcp", "tw", None).unwrap();
 
         assert!(!live.exists(), "the deploy pass must have rotated the oversized log");
         assert_eq!(
@@ -12967,7 +13093,7 @@ judge was never told to give"
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        write_hook_config(&dir, "http://u/mcp", "t", "claude-code", Some("/w/ws/field")).unwrap();
+        write_hook_config(&dir, "http://u/mcp", "t", Some("/w/ws/field")).unwrap();
         let written = fs::read_to_string(dir.join("hook_config.json")).unwrap();
         assert!(written.contains("\"field_dir\":\"/w/ws/field\""),
             "the hook reads the pile from this path; without it no nudge can ever fire: {written}");
@@ -12977,7 +13103,7 @@ judge was never told to give"
         let bare = std::env::temp_dir().join(format!("jawata-mgr-nofield-{}", std::process::id()));
         let _ = fs::remove_dir_all(&bare);
         fs::create_dir_all(&bare).unwrap();
-        write_hook_config(&bare, "http://u/mcp", "t", "claude-code", None).unwrap();
+        write_hook_config(&bare, "http://u/mcp", "t", None).unwrap();
         assert!(!fs::read_to_string(bare.join("hook_config.json")).unwrap().contains("field_dir"),
             "no field dir must mean no key — never a guessed path");
     }
@@ -13018,7 +13144,7 @@ judge was never told to give"
         // DEPLOY. This makes that state unreachable.
         let dir = unique_tempdir("hookcfg-race");
         let hooks = dir.join("hooks");
-        write_hook_config(&hooks, "http://u/mcp", "t0", "claude-code", None).unwrap();
+        write_hook_config(&hooks, "http://u/mcp", "t0", None).unwrap();
         let target = hooks.join("hook_config.json");
 
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -13050,7 +13176,7 @@ judge was never told to give"
         });
 
         for i in 0..300 {
-            write_hook_config(&hooks, "http://u/mcp", &format!("token-{i}"), "claude-code", None)
+            write_hook_config(&hooks, "http://u/mcp", &format!("token-{i}"), None)
                 .unwrap();
         }
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -13083,7 +13209,7 @@ judge was never told to give"
         assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
 
         // Byte-stable: rewriting the same content changes nothing.
-        assert!(!write_hook_config(&hooks, "http://u/mcp", "token-299", "claude-code", None).unwrap(),
+        assert!(!write_hook_config(&hooks, "http://u/mcp", "token-299", None).unwrap(),
             "an unchanged rewrite must be a no-op");
 
         let _ = std::fs::remove_dir_all(&dir);
