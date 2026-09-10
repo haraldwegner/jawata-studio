@@ -350,22 +350,11 @@ fn tray_disc_style(health: field_view::CanaryHealth) -> DiscStyle {
     }
 }
 
-/// The disc colour alone, for callers that only need the hue.
-fn tray_disc_colour(health: field_view::CanaryHealth) -> [u8; 4] {
-    match tray_disc_style(health) {
-        DiscStyle::Filled(colour) | DiscStyle::Hollow(colour) => colour,
-    }
-}
-
 /// The ring the hollow variant draws, at the filled disc's own outer radius so the two
 /// marks occupy the same slot and swapping between them does not appear to resize.
 fn draw_base_ring_in(rgba: &mut [u8], stroke: [u8; 4]) {
     let center = (TRAY_ICON_SIZE as i32) / 2;
     draw_ring(rgba, center, center, center, 2, stroke);
-}
-
-fn draw_base_circle(rgba: &mut [u8]) {
-    draw_base_circle_in(rgba, tray_disc_colour(field_view::CanaryHealth::Green));
 }
 
 fn draw_base_circle_in(rgba: &mut [u8], fill: [u8; 4]) {
@@ -1149,6 +1138,19 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) {
 
 #[cfg(test)]
 mod tray_icon_tests {
+    /// The disc colour alone, for assertions that are about the hue and not the shape.
+    ///
+    /// It lived in production until the tray gained a hollow style: the only caller that
+    /// wanted a bare colour was a fixed-green wrapper that the parameterised drawing
+    /// superseded, and once that went this had none. The hollow-wiring gate is what said
+    /// so — dead without `cfg(test)`, alive with it, which is its definition of a
+    /// function the product does not run and the tests keep alive.
+    fn tray_disc_colour(health: super::field_view::CanaryHealth) -> [u8; 4] {
+        match super::tray_disc_style(health) {
+            super::DiscStyle::Filled(colour) | super::DiscStyle::Hollow(colour) => colour,
+        }
+    }
+
     use super::*;
 
     /// Sprint 28 (v3.6.3): the tray icon is the BRANDED, FULL-COLOUR mark on every
