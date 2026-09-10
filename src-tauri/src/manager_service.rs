@@ -7942,6 +7942,18 @@ fn client_for_hooks_dir(hooks_dir: &Path) -> &'static str {
     // Cursor's managed hooks live in `~/.cursor/hooks`; everything else this product
     // deploys is Claude Code's `~/.claude/jawata-studio`. Matched on the `.cursor`
     // component rather than on the whole path, so a non-default home still resolves.
+    //
+    // NB-9, RECORDED AT C12 AND NOT CLOSED: the `else` is a silent catch-all, and it is
+    // the same shape as the defect this whole function exists to fix. A THIRD client
+    // deployed into a directory that is neither would be stamped `claude-code`, its
+    // binaries would ask for a role that client does not have, and every hook would go
+    // silent — which is exactly what happened to Cursor, measured at 32 stop events and
+    // all 32 role-absent. Nothing fails; the hooks simply stop.
+    //
+    // It is latent rather than live: there is no third client. Closing it means making
+    // the unrecognised case LOUD, which changes what `write_hook_config` does for any
+    // caller handing it a directory that is neither — including the test path. Two
+    // admissible answers with different costs, so it is raised rather than chosen here.
     let cursor_owned = hooks_dir
         .components()
         .any(|c| c.as_os_str().to_string_lossy() == ".cursor");

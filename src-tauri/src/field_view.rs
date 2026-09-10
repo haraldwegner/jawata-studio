@@ -975,23 +975,6 @@ pub enum CanaryHealth {
     Degraded,
 }
 
-/// Fold "some workspaces are deliberately off" into a verdict taken over the ones
-/// that are supposed to be running.
-///
-/// The canary judges only the residents it was asked to probe — a stopped one is not
-/// in its population at all (see `ManagerService::canary_population`), because the
-/// question it answers is *is what should be running, running*. This adds the second
-/// half of the sentence: whether what should be running is ALL of it.
-///
-/// Only the two clean verdicts move. A fault stays a fault and a load stays a load:
-/// switching one workspace off does not make another one's broken store less broken,
-/// and a reader shown [`Reduced`] while something is degraded would be told the
-/// quieter of two true things.
-///
-/// `probed == 0` with something switched off is the everything-off case, which
-/// [`canary_health`] necessarily calls [`Unknown`] because it has no results to judge.
-/// That is not "we have not looked" — there is nothing to look at, by choice — so it
-/// is the one place an [`Unknown`] becomes a settled verdict.
 /// The tray's verdict IN WORDS.
 ///
 /// studio#48. This is not a nicety beside the colour — it is the channel that still
@@ -1048,6 +1031,15 @@ pub fn canary_tooltip(
                 })
                 .collect();
             names.sort();
+            if names.is_empty() {
+                // The SAME guard the Degraded branch below carries, and it was missing
+                // here: a verdict with nothing to name renders "still starting: " with
+                // an empty list, which reads as a rendering bug rather than as a state.
+                // Reachable whenever the verdict is Loading and no result carries the
+                // `loading` flag — the two are decided in different places, so nothing
+                // makes them agree.
+                return "jawata — still starting".to_string();
+            }
             format!("jawata — still starting: {}", names.join(", "))
         }
 
@@ -1085,6 +1077,23 @@ pub fn canary_tooltip(
     }
 }
 
+/// Fold "some workspaces are deliberately off" into a verdict taken over the ones
+/// that are supposed to be running.
+///
+/// The canary judges only the residents it was asked to probe — a stopped one is not
+/// in its population at all (see `ManagerService::canary_population`), because the
+/// question it answers is *is what should be running, running*. This adds the second
+/// half of the sentence: whether what should be running is ALL of it.
+///
+/// Only the two clean verdicts move. A fault stays a fault and a load stays a load:
+/// switching one workspace off does not make another one's broken store less broken,
+/// and a reader shown [`Reduced`] while something is degraded would be told the
+/// quieter of two true things.
+///
+/// `probed == 0` with something switched off is the everything-off case, which
+/// [`canary_health`] necessarily calls [`Unknown`] because it has no results to judge.
+/// That is not "we have not looked" — there is nothing to look at, by choice — so it
+/// is the one place an [`Unknown`] becomes a settled verdict.
 pub fn fold_switched_off(health: CanaryHealth, probed: usize, switched_off: usize) -> CanaryHealth {
     if switched_off == 0 {
         return health;
@@ -2581,6 +2590,38 @@ mod tests {
 
         assert!(words.contains("patterns"), "names it: {words}");
         assert!(words.contains("4 min"), "in minutes: {words}");
+    }
+
+    #[test]
+    fn a_loading_verdict_with_nothing_to_name_still_reads_as_a_state() {
+        // NB-11. The Degraded branch has carried this guard from the start; the Loading
+        // branch did not, and the two render the same shape. The verdict and the per-row
+        // `loading` flag are decided in different places, so nothing makes them agree —
+        // and when they do not, the tooltip read "jawata — still starting: " with an
+        // empty list, which a user parses as a rendering bug rather than as a state.
+        //
+        // This is the accessibility clause's own case: the words ARE the fallback
+        // channel for the pair deuteranopia flattens, so a trailing colon and nothing
+        // after it is the fallback failing in the one place it is load-bearing.
+        let quiet = judge_canary(
+            "patterns",
+            "http://127.0.0.1:1/mcp",
+            ok(serde_json::json!({"success": true})),
+            ok(serde_json::json!({"success": true})),
+            5,
+            0,
+        );
+
+        let words = canary_tooltip(CanaryHealth::Loading, &[quiet], &[], 0);
+
+        assert!(
+            !words.ends_with(": ") && !words.ends_with(':'),
+            "a list with no members must not be rendered as a list: {words:?}"
+        );
+        assert!(
+            words.contains("still starting"),
+            "and it must still say WHICH state it is: {words:?}"
+        );
     }
 
     #[test]
