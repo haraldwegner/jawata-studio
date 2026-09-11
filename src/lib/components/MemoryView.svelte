@@ -480,7 +480,13 @@
     busyAction = "restore";
     showResult("restore", "…");
     try {
-      const response = await experienceVerb(selectedRow.targets[0], "restore", { name });
+      // `confirm` is the ENGINE's gate, not a second dialog: the resident refuses a
+      // named restore without it, because a confirmation the caller performs is one a
+      // caller can skip. The dialog above is what earns passing it.
+      const response = await experienceVerb(selectedRow.targets[0], "restore", {
+        name,
+        confirm: true
+      });
       showResult("restore", response.success ? response.data : response);
       await refreshStatus();
       await readBackups(true);

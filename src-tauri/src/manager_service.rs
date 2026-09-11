@@ -9644,7 +9644,7 @@ mod tests {
         let answer = ManagerService::experience_verb_on(
             &server,
             "restore",
-            serde_json::json!({ "name": chosen }),
+            serde_json::json!({ "name": chosen, "confirm": true }),
         )
         .expect("the bridge must reach the resident");
 
@@ -9660,6 +9660,14 @@ mod tests {
             .expect("the resident is called through tools/call params.arguments");
 
         assert_eq!("restore", arguments["kind"].as_str().unwrap_or_default());
+        // The engine refuses a named restore without this, so a bridge that dropped it
+        // would make every click fail at the resident with a confirm error the user
+        // already answered in the dialog.
+        assert_eq!(
+            Some(true),
+            arguments["confirm"].as_bool(),
+            "the dialog's answer must travel with the version it was about"
+        );
         assert_eq!(
             chosen,
             arguments["name"].as_str().unwrap_or_default(),
