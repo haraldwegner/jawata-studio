@@ -772,6 +772,15 @@ pub struct CanaryResult {
     pub compiler_ok: bool,
     pub compiler_detail: String,
     pub green: bool,
+    /// The resident's process is up but it has not yet signalled that it is ready, so
+    /// it cannot answer anything at all.
+    ///
+    /// Distinct from `loading`, which is the resident ANSWERING that it is still
+    /// importing. This is the window before it can answer — and until v4.2.4 the tray
+    /// called it degraded, because up-and-not-answering is also what broken looks like.
+    /// The two are told apart by the ready signal and by nothing else: the phase reports
+    /// `Running` two seconds after spawn whether the resident is ready or not.
+    pub starting: bool,
     /// The resident answered the compiler question CORRECTLY, with
     /// `PROJECT_LOADING` — it is still importing. Not green, and not a failure.
     pub loading: bool,
@@ -909,6 +918,10 @@ pub fn judge_canary(
     };
     CanaryResult {
         workspace: workspace.to_string(),
+        // Set by the caller that knows: only the manager holds the ready signal. A
+        // judgement made from these two answers alone cannot tell "up and broken" from
+        // "not up yet" — both fail both questions, which is the whole defect.
+        starting: false,
         // Readable until something says otherwise: this judge asks the store
         // and the compiler, never the workspace. `with_workspace_readable`
         // carries the third answer in.
@@ -1264,6 +1277,21 @@ pub fn canary_health(results: &[CanaryResult], now_millis: u64) -> CanaryHealth 
         return CanaryHealth::Green;
     }
     let not_green: Vec<&CanaryResult> = results.iter().filter(|r| !r.green).collect();
+    // A resident on its way up is not a fault and never was. It is excluded here rather
+    // than given a grace period, because the ready signal bounds it: the moment the
+    // resident can answer, it stops being in this set and starts being judged on what it
+    // says. A resident that never becomes ready holds the tray at "starting" — which is
+    // true, and which the words say — rather than being called broken on a timer.
+    let not_green: Vec<&CanaryResult> =
+        not_green.into_iter().filter(|r| !r.starting).collect();
+    if not_green.is_empty() {
+        // Everything that is not green is merely on its way up.
+        return if results.iter().any(|r| r.green) {
+            CanaryHealth::PartlyUp
+        } else {
+            CanaryHealth::Loading
+        };
+    }
     let all_loading_and_fresh = not_green.iter().all(|r| {
         // `loading` is set from the COMPILER answer alone. A resident whose STORE is dead
         // is also not green, and without this second clause its dead store would be
@@ -2191,6 +2219,71 @@ mod tests {
     }
 
     #[test]
+    fn a_resident_on_its_way_up_is_not_a_fault() {
+        // Harald, dogfooding v4.2.3: "there is nothing degraded, we are starting -> the
+        // appearance of amber does not make sense."
+        //
+        // He saw amber on EVERY start-up, and the cause is that the phase says Running
+        // two seconds after spawn whether the resident is ready or not — a fallback for
+        // stub test commands that never print a ready line. A real resident signals after
+        // five to ten seconds, so for most of its start-up it is "up and not answering",
+        // which is indistinguishable from broken unless something carries the ready
+        // signal. Nothing did.
+        let mut coming_up = judge_canary(
+            "alpha",
+            "u",
+            Err("connection refused".to_string()),
+            Err("connection refused".to_string()),
+            0,
+            0,
+        );
+        assert!(!coming_up.green, "it cannot answer, so it is certainly not green");
+        assert_eq!(
+            CanaryHealth::Degraded,
+            canary_health(&[coming_up.clone()], 1_000),
+            "PROOF OF LIFE: unmarked, this IS what a fault looks like — which is exactly \
+             why the mark has to come from somewhere else"
+        );
+
+        coming_up.starting = true;
+        assert_eq!(
+            CanaryHealth::Loading,
+            canary_health(&[coming_up.clone()], 1_000),
+            "marked, the same unanswerable resident is on its way up and nothing is wrong"
+        );
+
+        let live = judge_canary(
+            "beta",
+            "u",
+            ok(serde_json::json!({"success": true, "data": {"entries": []}})),
+            ok(serde_json::json!({"success": true, "data": {"sourceLength": 12345}})),
+            12,
+            0,
+        );
+        assert_eq!(
+            CanaryHealth::PartlyUp,
+            canary_health(&[live.clone(), coming_up], 1_000),
+            "and one answering beside one still coming up is partial health, not a fault"
+        );
+
+        // THE CONTROL THAT MATTERS. A resident that is genuinely broken while another is
+        // fine must still be a fault — the mark must not become a way of silencing amber.
+        let broken = judge_canary(
+            "gamma",
+            "u",
+            ok(serde_json::json!({"success": true, "data": {"entries": []}})),
+            ok(serde_json::json!({"success": false, "error": {"code": "BOOM"}})),
+            12,
+            0,
+        );
+        assert_eq!(
+            CanaryHealth::Degraded,
+            canary_health(&[live, broken], 1_000),
+            "a real fault is still a fault"
+        );
+    }
+
+    #[test]
     fn some_live_while_the_rest_import_is_transient_partial_health() {
         // Harald, dogfooding v4.2.2: "when some of them are live fresh green hollow
         // should be shown, because some of them are live". A cold start brings residents
@@ -2336,6 +2429,7 @@ mod tests {
     fn reading(workspace: &str, ok: bool, millis: u64, loading: bool) -> CanaryResult {
         CanaryResult {
             workspace: workspace.to_string(),
+            starting: false,
             workspace_readable: true,
             url: "u".into(),
             recall_ok: ok,

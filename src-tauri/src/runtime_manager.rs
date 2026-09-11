@@ -857,6 +857,32 @@ impl RuntimeManager {
     /// Sprint 10 v0.10.4: stop the entire workspace process unconditionally.
     /// All members' snapshots become Stopped. Used by the "Stop workspace"
     /// button in the grouped Dashboard view.
+    /// Workspaces whose process is up but has NOT yet signalled that it is ready.
+    ///
+    /// The phase cannot answer this. It reports `Starting` for two seconds and then
+    /// `Running` whether the process is ready or not — a fallback added for stub test
+    /// commands that never print a ready line, which applies to real residents too. A
+    /// real one takes five to ten seconds to signal, so for most of its start-up it is
+    /// reported as running while it cannot yet answer anything.
+    ///
+    /// Harald, dogfooding v4.2.3: "there is nothing degraded, we are starting -> the
+    /// appearance of amber does not make sense." He is right, and this is why it
+    /// happened: "up but not answering" is exactly what a fault looks like, so the tray
+    /// was reading a true signal about a false premise. The ready flag is the premise,
+    /// and it is the only thing here that tells a resident on its way up from one that
+    /// is broken.
+    pub fn workspaces_not_yet_ready(&self) -> Vec<String> {
+        let handles = match self.handles.lock() {
+            Ok(handles) => handles,
+            Err(_) => return Vec::new(),
+        };
+        handles
+            .iter()
+            .filter(|(_, handle)| !handle.ready.load(Ordering::Acquire))
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
     pub fn stop_workspace_runtime(&self, workspace_name: &str) -> Result<(), String> {
         let stopped = self.stop_workspace_runtime_inner(workspace_name);
         crate::notify_runtime_changed();

@@ -733,10 +733,17 @@ pub fn run() {
                         .is_ok();
                     let state = readability_handle.state::<AppState>();
 
-                    if woke_on_a_change {
-                        // FROM INTENT, not from a probe. We already know what is supposed
-                        // to be running and what the others last answered, so the tray can
-                        // be right immediately and the round that follows only confirms it.
+                    {
+                        // EVERY TICK, not only when an event arrived. The event fires the
+                        // instant a start is requested, which is BEFORE the phase it
+                        // depends on has been written — so the immediate repaint drew the
+                        // old answer and, with nothing repainting afterwards, it stayed
+                        // there. Harald, dogfooding v4.2.3: "I switch on all. Long time
+                        // still blue."
+                        //
+                        // Affordable because it asks nobody anything, and the tray applier
+                        // already skips a repaint when the verdict has not moved.
+                        let _ = woke_on_a_change;
                         let (health, switched_off) = state.manager_service.verdict_now();
                         let board = state.manager_service.canary_board();
                         let tooltip = field_view::canary_tooltip(
@@ -1029,7 +1036,13 @@ fn run_canary_round<R: Runtime>(app: &AppHandle<R>) -> field_view::CanaryHealth 
     // studio#48: only the residents that are SUPPOSED to be running are probed. A
     // stopped one is not asked and so cannot be classified — which is the fix, rather
     // than probing it and giving its silence a gentler name.
-    let results = ManagerService::canary_round_for(&population.probe);
+    // MARKED, so a resident whose process is up but not yet ready is not counted a
+    // fault. Both judging paths must use the marked form or they disagree, and the deep
+    // round is the one that runs while a cold start is actually happening.
+    let results = app
+        .state::<AppState>()
+        .manager_service
+        .canary_round_marked(&population.probe);
     let probed = results.len();
     let health = app.state::<AppState>().manager_service.publish_canary(results);
     let health = field_view::fold_switched_off(health, probed, population.switched_off.len());

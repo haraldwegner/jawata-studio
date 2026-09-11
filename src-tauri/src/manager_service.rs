@@ -1474,8 +1474,15 @@ impl ManagerService {
             .map(|server| server.workspace_name.clone())
             .collect();
         let probing: Vec<String> = probing.into_iter().collect();
+        let coming_up = self.runtime_manager.workspaces_not_yet_ready();
+        let mut board = self.canary_board();
+        for result in board.iter_mut() {
+            if !result.green && coming_up.iter().any(|name| name == &result.workspace) {
+                result.starting = true;
+            }
+        }
         let health = crate::field_view::verdict_for(
-            &self.canary_board(),
+            &board,
             &probing,
             population.switched_off.len(),
             crate::field_view::now_millis(),
@@ -1534,6 +1541,25 @@ impl ManagerService {
             .filter(|server| !server.url.is_empty() && !server.token.is_empty())
             .map(|server| canary_probe(&server.workspace_name, &server.url, &server.token))
             .collect()
+    }
+
+    /// The same round, with the residents that are still coming up MARKED as such.
+    ///
+    /// Without the mark a resident whose process is up but not yet ready reads exactly
+    /// like a broken one — it fails both questions — and the tray called it degraded for
+    /// the whole of a five-to-ten-second start-up.
+    pub(crate) fn canary_round_marked(
+        &self,
+        servers: &[ManagedDeployServer],
+    ) -> Vec<crate::field_view::CanaryResult> {
+        let coming_up = self.runtime_manager.workspaces_not_yet_ready();
+        let mut results = Self::canary_round_for(servers);
+        for result in results.iter_mut() {
+            if !result.green && coming_up.iter().any(|name| name == &result.workspace) {
+                result.starting = true;
+            }
+        }
+        results
     }
 
     /// Sprint 21a (item E): GC the historically scattered `.bak` files (dry-run first).
