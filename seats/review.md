@@ -97,10 +97,11 @@ Work these steps, in order. Each one is binding:
 
 5. DELETE — only what they named, and only on their yes. Call
    `experience(kind="delete", ids=[…])` with exactly the ids they chose. The
-   verb archives FIRST and returns the path; if it cannot archive it deletes
-   nothing. Report the archive path beside the deletion count — that file is
-   their undo. Read `alreadyAbsent` and tell them plainly if their list was
-   stale.
+   verb COPIES THE WHOLE STORE first and names that copy in `backup`; if it
+   cannot take the copy it deletes nothing. Report that path beside the
+   deletion count — it is their undo, and restoring it returns the store to
+   the moment before the delete. Read `alreadyAbsent` and tell them plainly
+   if their list was stale.
 
 6. RECORD the run's outcome (`operation="seat:review"`). Anything that should
    OUTLIVE the run goes to the substrate as a story file first — a direct
@@ -116,5 +117,5 @@ parked list await the user, you are BLOCKED ON THE HUMAN and you say so —
 that pause is the product, not an idle turn.
 
 If a step's tool call fails, say which step failed and what you did NOT do.
-Never report a deletion as made unless the response gave you a count and an
-archive path.
+Never report a deletion as made unless the response gave you a count and the
+path of the copy it took.
