@@ -994,6 +994,16 @@ button:disabled {
   color: #cbd5e1;
 }
 
+.aggregate-pill.partial {
+  background: rgba(124, 179, 66, 0.16);
+  color: #a3d977;
+}
+
+.aggregate-pill.failed {
+  background: rgba(248, 113, 113, 0.18);
+  color: #fca5a5;
+}
+
 .aggregate-pill.starting {
   background: rgba(245, 158, 11, 0.22);
   color: #fbbf24;
@@ -1459,6 +1469,17 @@ button:disabled {
 .status-lamp.running {
   background: #34d399;
   box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.3);
+}
+
+/* SOME running: the tray's mark, in the dashboard's vocabulary — a green ring
+   around a grey centre. Harald, 2026-09-11: "greenish border with gray middle".
+   It is deliberately NOT amber: amber is reserved for something being wrong, and
+   a workspace you switched off is a decision. */
+.status-lamp.partial {
+  background: #6e7278;
+  box-shadow:
+    inset 0 0 0 3px #7cb342,
+    0 0 0 2px rgba(124, 179, 66, 0.3);
 }
 
 .status-lamp.failed {

@@ -545,31 +545,38 @@
   }
 
   /** Reduce a list of per-project phases to a single workspace phase.
-   * Empty workspaces are stopped by definition; uniform-running members
-   * → running; uniform-stopped → stopped; anything mixed → starting. */
-  type Phase = "running" | "stopped" | "starting" | "failed";
+   *
+   * MIXED IS ITS OWN ANSWER. This used to collapse anything mixed into
+   * "starting", which is painted amber — so two workspaces running and one
+   * deliberately stopped was reported the same way as something being wrong.
+   * Harald, dogfooding v4.2.3: "amber does not make sense for a mixed setup
+   * either ... some are running" is a state of its own.
+   *
+   * Same four answers as the tray, in the same order of precedence: anything
+   * failed is a fault whatever else is true; all running is running; some
+   * running is partial; nothing running is stopped — including while things
+   * are on their way up, because nothing is ready yet either way. */
+  type Phase = "running" | "stopped" | "starting" | "failed" | "partial";
   function deriveWorkspacePhase(phases: Phase[]): Phase {
     if (phases.length === 0) return "stopped";
+    if (phases.some((p) => p === "failed")) return "failed";
     if (phases.every((p) => p === "running")) return "running";
-    if (phases.every((p) => p === "stopped")) return "stopped";
-    return "starting";
+    if (phases.some((p) => p === "running")) return "partial";
+    return "stopped";
   }
 
   $: phases = projects.map((project) => runtimeStatuses[project.id]?.phase ?? "stopped");
-  $: aggregatePhase =
-    phases.length === 0
-      ? "stopped"
-      : phases.every((phase) => phase === "running")
-        ? "running"
-        : phases.every((phase) => phase === "stopped")
-          ? "stopped"
-          : "starting";
+  $: aggregatePhase = deriveWorkspacePhase(phases as Phase[]);
   $: aggregateLabel =
     aggregatePhase === "running"
       ? "all running"
       : aggregatePhase === "stopped"
         ? "all stopped"
-        : "mixed";
+        : aggregatePhase === "failed"
+          ? "degraded"
+          // "mixed" said that the states differ and nothing about WHICH way, so
+          // the reader had to go and count. The numbers are already here.
+          : `${runningProjects} of ${totalProjects} running`;
   $: totalProjects = projects.length;
   $: runningProjects = projects.filter((project) => runtimeStatuses[project.id]?.phase === "running").length;
   $: stoppedProjects = totalProjects - runningProjects;

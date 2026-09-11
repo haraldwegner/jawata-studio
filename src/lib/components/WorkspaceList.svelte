@@ -75,15 +75,18 @@
   let isCreating = false;
   let newName = "";
 
-  type Phase = "running" | "stopped" | "starting";
+  type Phase = "running" | "stopped" | "starting" | "partial";
   /** Reduce a (count, running) tally to the workspace's aggregate phase.
-   * Empty (count=0) → stopped; all running → running; none running →
-   * stopped; mixed → starting. */
+   *
+   * The same collapse ProjectList had, one file over: mixed became "starting",
+   * which is amber, so a partly-running workspace was reported as though
+   * something were wrong. Empty → stopped; all running → running; none
+   * running → stopped; SOME running → partial. */
   function derivePhase(count: number, running: number): Phase {
     if (count === 0) return "stopped";
     if (running === count) return "running";
     if (running === 0) return "stopped";
-    return "starting";
+    return "partial";
   }
 
   /** Per-workspace summary derived from the union of `knownWorkspaces`
