@@ -77,6 +77,16 @@
   }
   $: selectedRow = storeRows.find((row) => row.key === selected);
 
+  // A version list belongs to ONE store. Switching the selection must clear it rather
+  // than leave the previous store's copies on screen beside a Restore button that would
+  // now act on a different database — showing a list that is not of the selected store
+  // is worse than showing none.
+  $: if (selected) {
+    backupNames = [];
+    backupDepth = 0;
+    backupsShown = false;
+  }
+
   function buildStoreRows(list: KnowledgeWorkspaceStatus[], mode: string): StoreRow[] {
     if (list.length === 0) return [];
     if (mode !== "workspace") {
@@ -226,10 +236,49 @@
         if (asCount(p.skipped) !== undefined) lines.push(`${p.skipped} duplicate(s) skipped`);
         break;
       }
+      case "backup":
+        if (typeof p.backup === "string") {
+          lines.push(
+            `Copy taken: ${p.backup}` +
+              (asCount(p.kept) !== undefined
+                ? ` — ${p.kept} of ${asCount(p.depth) ?? "?"} kept`
+                : "")
+          );
+        }
+        break;
+      case "restore": {
+        // The same verb answers two different questions — asked with no name it
+        // LISTS, asked with one it restores — so both shapes are summarized here.
+        if (Array.isArray(p.backups)) {
+          lines.push(
+            p.backups.length === 0
+              ? "No copies yet."
+              : `${p.backups.length} version(s), newest first — ${asCount(p.depth) ?? "?"} kept`
+          );
+        }
+        if (typeof p.restored === "string") {
+          lines.push(`Restored from ${p.restored}`);
+          if (asCount(p.rows) !== undefined) {
+            lines.push(`The store now holds ${p.rows} entr(ies)`);
+          }
+        }
+        break;
+      }
     }
     const refresh = p.refresh as Record<string, unknown> | undefined;
     if (refresh && Array.isArray(refresh.staled) && refresh.staled.length > 0) {
       lines.push(`${refresh.staled.length} stale Java pointer(s) flagged automatically`);
+    }
+    // Sprint 28f D2: a destructive verb returns the copy it took in its OWN response,
+    // and this is where a person sees it. The null branch is not decoration — "no copy
+    // was taken" and "a copy was taken and nobody mentioned it" must not read alike,
+    // which is the one case where the safety net is absent and it matters most.
+    if (kind !== "backup") {
+      if (typeof p.backup === "string") {
+        lines.push(`A copy of the previous state was kept: ${p.backup}`);
+      } else if (p.backup === null && typeof p.backupNote === "string") {
+        lines.push(`No copy was taken — ${p.backupNote}`);
+      }
     }
     return lines;
   }
@@ -251,6 +300,10 @@
       if (["load", "wipe", "import"].includes(kind)) {
         await refreshStatus();
       }
+      // A destructive verb has just left a new copy, so a list already on screen is
+      // stale — and a stale list is worse than none here, because the entry it is
+      // missing is the newest one, which is the one worth going back to.
+      if (backupsShown) await readBackups(true);
     } catch (error) {
       showResult(kind, { error: String(error) });
     } finally {
@@ -320,6 +373,7 @@
         outputRaw = JSON.stringify(report, null, 2);
       }
       await refreshStatus();
+      if (backupsShown) await readBackups(true);   // prune left a copy
     } catch (error) {
       report["error"] = String(error);
       outputRaw = JSON.stringify(report, null, 2);
@@ -352,6 +406,89 @@
     });
     if (!path || typeof path !== "string") return;
     await runVerb("import", { path });
+  }
+
+  // --- versions: take a copy now, list the copies, put one back ------------------------
+  //
+  // Sprint 28f D2. The destructive verbs each take their own copy server-side, so the
+  // safety net exists whether or not anyone opens this view. What the view adds is the
+  // half a prompt is worst at — SEEING which versions exist and choosing between them:
+  // "Restore is a click in studio, by version."
+
+  let backupNames: string[] = [];
+  let backupDepth = 0;
+  let backupsShown = false;
+
+  /** Read the version list off the resident.
+   *
+   * The engine's restore verb LISTS when it is handed no name — deliberately, so that a
+   * verb's no-argument form is never the destructive reading of its own name — so this
+   * is the SAME verb the Restore buttons run, asked without a choice.
+   *
+   * `quiet` leaves the result panel showing whatever the caller just did: the version
+   * list is a picker, not the outcome of an action. */
+  async function readBackups(quiet: boolean) {
+    if (!selectedRow || selectedRow.targets.length === 0) return;
+    try {
+      const response = await experienceVerb(selectedRow.targets[0], "restore", {});
+      const payload = response.success ? response.data : response;
+      const p = (payload ?? {}) as Record<string, unknown>;
+      backupNames = Array.isArray(p.backups) ? p.backups.map(String) : [];
+      backupDepth = asCount(p.depth) ?? 0;
+      backupsShown = true;
+      if (!quiet) showResult("restore", payload);
+    } catch (error) {
+      backupNames = [];
+      backupsShown = true;
+      if (!quiet) showResult("restore", { error: String(error) });
+    }
+  }
+
+  async function showBackups() {
+    if (!selectedRow || selectedRow.targets.length === 0 || busyAction) return;
+    busyAction = "restore";
+    showResult("restore", "…");
+    try {
+      await readBackups(false);
+    } finally {
+      busyAction = "";
+    }
+  }
+
+  /** Take a copy NOW — before something this product does not know about. The
+   * destructive verbs need no help; a hand edit, an upgrade or a machine move does. */
+  async function runBackup() {
+    await runVerb("backup");
+    if (backupsShown) await readBackups(true);
+  }
+
+  /** Put ONE version back.
+   *
+   * Destructive by construction — every entry is replaced by the ones that version
+   * holds — so it confirms first, and the question NAMES the version rather than asking
+   * about "the backup". It also says that the current state is copied first, because a
+   * user who does not know that will not dare press the button at all. */
+  async function restoreBackup(name: string) {
+    if (!selectedRow || selectedRow.targets.length === 0 || busyAction) return;
+    const confirmed = await confirmDestructive(
+      `Restore “${name}”?\n\n` +
+        "Every entry in this store is replaced by the ones that version holds — anything" +
+        " written since it was taken is gone from the store.\n\n" +
+        "A copy of the CURRENT state is taken first, so this is itself undoable."
+    );
+    if (!confirmed) return;
+    busyAction = "restore";
+    showResult("restore", "…");
+    try {
+      const response = await experienceVerb(selectedRow.targets[0], "restore", { name });
+      showResult("restore", response.success ? response.data : response);
+      await refreshStatus();
+      await readBackups(true);
+    } catch (error) {
+      showResult("restore", { error: String(error) });
+    } finally {
+      busyAction = "";
+    }
   }
 
   // --- memory roots: pickers + removable list ------------------------------------------
@@ -591,6 +728,22 @@
         </button>
         <button
           type="button"
+          disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
+          on:click={runBackup}
+          title={'Take a copy of the whole store right now — before something this product does not know about. Wipe, Clean up, Import and Restore each take their own automatically. Say: "back up the store"'}
+        >
+          Back up now
+        </button>
+        <button
+          type="button"
+          disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
+          on:click={showBackups}
+          title={'List the kept versions, newest first, and put one back. Say: "restore the store"'}
+        >
+          {backupsShown ? "Refresh versions" : "Restore…"}
+        </button>
+        <button
+          type="button"
           class="danger"
           disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
           on:click={() =>
@@ -603,6 +756,45 @@
           <span class="hint">running “{busyAction}”…</span>
         {/if}
       </div>
+
+      <!-- Sprint 28f D2: the versions, above the result panel, because choosing one IS
+           the action here and the panel below reports what it did. -->
+      {#if backupsShown}
+        <div class="result-block">
+          <h4>
+            Versions{backupDepth
+              ? ` — ${backupNames.length} kept, ${backupDepth} deep`
+              : ""}
+          </h4>
+          {#if backupNames.length === 0}
+            <p class="hint">
+              No copies yet. One is taken automatically before Wipe, Clean up, Import and
+              Restore — and “Back up now” takes one on demand.
+            </p>
+          {:else}
+            <ul class="root-list">
+              {#each backupNames as name (name)}
+                <li>
+                  <span class="mono">{name}</span>
+                  <button
+                    type="button"
+                    class="danger"
+                    disabled={!!busyAction || interactionDisabled}
+                    on:click={() => restoreBackup(name)}
+                    title="Replace every entry in this store with the ones this version holds"
+                  >
+                    Restore
+                  </button>
+                </li>
+              {/each}
+            </ul>
+            <p class="hint">
+              Newest first. A name is when the copy was taken and the action it preceded, so
+              “…-wipe.zip” is the state as it stood just before that wipe.
+            </p>
+          {/if}
+        </div>
+      {/if}
 
       <!-- Results live right below the actions (Harald, 2026-07-06) — the right
            column grows, the sources column breathes. -->

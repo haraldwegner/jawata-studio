@@ -459,7 +459,12 @@ export function knowledgeStatus(): Promise<KnowledgeWorkspaceStatus[]> {
 
 /** Run one experience(kind=…) verb on a workspace's resident. The UI action names ARE
  * the prompt vocabulary — load/reseed/wipe/refresh/list/promote/export/import/prune/
- * dedup/compact/stats. Returns the decoded ToolResponse ({success, data, ...}). */
+ * dedup/compact/stats, and since Sprint 28f backup/restore. Returns the decoded
+ * ToolResponse ({success, data, ...}).
+ *
+ * This list is PROSE and the enforcement is `EXPERIENCE_KINDS` in manager_service.rs —
+ * a verb missing from THAT is refused here and never reaches an engine that implements
+ * it perfectly, which is the failure this comment cannot catch. */
 export function experienceVerb(
   workspace: string,
   kind: string,

@@ -6919,9 +6919,18 @@ pub(crate) fn canary_probe_at(
 
 /// Sprint 21a (item F): the exact verb vocabulary — the Knowledge view's actions are
 /// these names 1:1 (Harald 2026-07-05: what you click is what you'd say in a prompt).
+/// Sprint 28f D2 adds `backup` and `restore`, because the spec makes restoring a
+/// CLICK: *"Restore is a click in studio, by version."* A verb missing from this
+/// list is refused here and never reaches the resident, so the button would fail
+/// against an engine that implements it perfectly.
+///
+/// This list is deliberately NARROWER than the engine's verb table and is not
+/// drifting from it: the engine publishes verbs an agent calls (`nominate`,
+/// `decide`, `review_sweep`, `fallback`) which no human clicks. What governs
+/// membership is the sentence above — a name here is a name you would say.
 const EXPERIENCE_KINDS: &[&str] = &[
     "record", "recall", "primer", "list", "load", "reseed", "refresh", "wipe", "promote",
-    "export", "import", "prune", "dedup", "compact", "stats",
+    "export", "import", "prune", "dedup", "compact", "stats", "backup", "restore",
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -9514,6 +9523,130 @@ fn aggregate_workspace_phase(phases: &[RuntimePhase]) -> RuntimePhase {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sprint 28f D2 — the restore button can reach the resident at all.
+    ///
+    /// The bridge refuses any verb outside `EXPERIENCE_KINDS` before a request is
+    /// ever made, so a button wired to a verb missing from that list fails against
+    /// an engine that implements it perfectly — and fails in studio, where the
+    /// engine's own tests cannot see it. This pins the two verbs the spec makes
+    /// clickable: *"Restore is a click in studio, by version."*
+    ///
+    /// It asserts MEMBERSHIP rather than the list's length, deliberately. A count
+    /// would have to be edited by whoever adds the next verb, which makes it a
+    /// second copy of the same fact and guarantees one of the two goes stale.
+    #[test]
+    fn the_backup_and_restore_verbs_can_reach_the_resident() {
+        assert!(
+            EXPERIENCE_KINDS.contains(&"backup"),
+            "the backup verb must be reachable from studio, or the button is decoration"
+        );
+        assert!(
+            EXPERIENCE_KINDS.contains(&"restore"),
+            "the restore verb must be reachable from studio — D2 makes restoring a click"
+        );
+    }
+
+    /// The refusal names what IS allowed, so a caller is not left guessing.
+    ///
+    /// The control for the test above: without it, a bridge that accepted every
+    /// verb would pass the membership check while proving nothing about the
+    /// allowlist doing any work.
+    #[test]
+    fn an_unknown_verb_is_refused_with_the_vocabulary() {
+        assert!(
+            !EXPERIENCE_KINDS.contains(&"obliterate"),
+            "the allowlist must actually exclude things, or membership proves nothing"
+        );
+    }
+
+    /// Sprint 28f D2 — the bridge half of *"Restore is a click in studio, by version."*
+    ///
+    /// The two tests above prove the ALLOWLIST admits the verb. This proves what the
+    /// bridge then SENDS. A bridge that forwarded `restore` and dropped its argument
+    /// would leave the engine to pick a version, which is the one thing a
+    /// restore-BY-VERSION must never do — and it would look identical from here: the
+    /// call succeeds, the store changes, and the wrong day comes back.
+    ///
+    /// THE SEAM IS NAMED, because a stub can only ever prove one side of a wire. What
+    /// the resident does with this payload is pinned in the engine's own test —
+    /// `DestructiveVerbsBackUpFirstTest#restore_copies_first` drives
+    /// `experience(kind=restore, name=…)` and asserts the rows come back and a copy of
+    /// the replaced state is left behind. The two halves meet at the JSON asserted
+    /// below; if the engine ever renames that argument, the Java test moves and this
+    /// one must move with it or the pair stops meaning anything.
+    ///
+    /// What NEITHER half covers, said out loud rather than left to be assumed: the
+    /// button's own click path. This repository has no frontend test framework, so
+    /// `MemoryView.svelte` is uncovered by construction — which is exactly the gap the
+    /// dev-path lesson in this project's memory is about.
+    #[test]
+    fn the_bridge_forwards_the_version_the_user_clicked() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let Some(Ok(mut stream)) = listener.incoming().next() else {
+                return;
+            };
+            let mut buf = [0u8; 8192];
+            let read = stream.read(&mut buf).unwrap_or(0);
+            let _ = tx.send(String::from_utf8_lossy(&buf[..read]).to_string());
+            let inner =
+                r#"{"success":true,"data":{"restored":"/s/backups/x-wipe.zip","rows":12}}"#;
+            let body = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"result":{{"content":[{{"type":"text","text":{}}}]}}}}"#,
+                serde_json::to_string(inner).unwrap()
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+
+        let server = url_server("ws", addr.port(), "tok", false);
+        let chosen = "2026-09-11T20-14-02.000000000-wipe.zip";
+        let answer = ManagerService::experience_verb_on(
+            &server,
+            "restore",
+            serde_json::json!({ "name": chosen }),
+        )
+        .expect("the bridge must reach the resident");
+
+        let request = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the bridge sent no request at all");
+        let sent: serde_json::Value = serde_json::from_str(
+            request.split("\r\n\r\n").nth(1).expect("the request carried no body"),
+        )
+        .expect("the bridge must send JSON");
+        let arguments = sent
+            .pointer("/params/arguments")
+            .expect("the resident is called through tools/call params.arguments");
+
+        assert_eq!("restore", arguments["kind"].as_str().unwrap_or_default());
+        assert_eq!(
+            chosen,
+            arguments["name"].as_str().unwrap_or_default(),
+            "the version the user clicked must reach the resident unchanged"
+        );
+        // A NAME, never a path. The engine resolves it against its OWN backup
+        // directory, which is what "restore without touching the filesystem" means:
+        // studio never learns where the store lives and cannot point it at a file.
+        assert!(
+            !arguments["name"].as_str().unwrap_or_default().contains('/'),
+            "restore is by version NAME; sending a path would make the caller the one \
+             deciding which file becomes the database"
+        );
+        assert_eq!(
+            12,
+            answer.pointer("/data/rows").and_then(serde_json::Value::as_u64).unwrap_or(0),
+            "and the resident's own answer comes back to the caller, decoded"
+        );
+    }
 
     #[test]
     fn aggregate_workspace_phase_two_running_returns_running() {
