@@ -973,18 +973,16 @@ pub enum CanaryHealth {
     /// Nothing has been probed yet — never rendered as green.
     Unknown,
     Green,
-    /// SOME of what could be healthy is, and some is not yet — for either of two
-    /// reasons, and the tooltip is what says which.
+    /// Every resident that is SUPPOSED to be running is healthy, and at least one
+    /// workspace is deliberately switched off — the SETTLED partial state.
     ///
-    /// Originally this meant only the first reason: every resident supposed to be running
-    /// is healthy, and at least one workspace is deliberately switched off. Dogfooding
-    /// v4.2.2 added the second: during a cold start, residents come up one at a time, and
-    /// reporting the machine as merely "working" while two of three are answering
-    /// understates what the user has — for minutes, on a large workspace.
+    /// Its twin is [`PartlyUp`], which is the same "some are healthy" with one difference
+    /// that decides what a user does: nothing more is coming here. This is how the machine
+    /// will stay until somebody changes it.
     ///
-    /// A FAULT IS NOT ONE OF THE TWO REASONS. A resident that is not healthy for any
-    /// reason other than a fresh import still makes the whole verdict a fault, because
-    /// "some are fine" must never be the way a broken one is reported.
+    /// A FAULT IS NOT A REASON TO BE HERE. A resident that is not healthy for any reason
+    /// other than a fresh import makes the whole verdict a fault, because "some are fine"
+    /// must never be how a broken one is reported.
     ///
     /// studio#48, Harald: *"If I switch off the patterns workspace then this is a
     /// decision and not an error case."* It is a third thing rather than a shade of
@@ -995,6 +993,13 @@ pub enum CanaryHealth {
     /// long cold start, forget, and later wonder why its queries come back empty —
     /// with the tray showing full health throughout.
     Reduced,
+    /// SOME residents are answering and the rest are still importing.
+    ///
+    /// Harald, dogfooding v4.2.2. It is the transient twin of [`Reduced`]: both mean
+    /// "some of what could be healthy is", and they differ in whether anything more is
+    /// coming. That difference is what a user needs — one says wait, the other says this
+    /// is how it will stay — so the marks differ in their FILL rather than sharing one.
+    PartlyUp,
     /// Every not-green resident answered correctly and is still importing, and
     /// has not been doing so past [`LOADING_GRACE_MILLIS`]. A cold start of a
     /// large workspace takes minutes; that is not a fault to alarm about.
@@ -1053,6 +1058,23 @@ pub fn canary_tooltip(
                 let mut off: Vec<String> = switched_off.to_vec();
                 off.sort();
                 format!("jawata — nothing running; switched off: {}", off.join(", "))
+            }
+        }
+
+        // Same sentence as Loading, plus what is ALREADY answering — the difference the
+        // fill is drawing, said in words for the surfaces that can show them.
+        CanaryHealth::PartlyUp => {
+            let live = results.iter().filter(|r| r.green).count();
+            let mut names: Vec<String> = results
+                .iter()
+                .filter(|r| r.loading)
+                .map(|r| r.workspace.clone())
+                .collect();
+            names.sort();
+            if names.is_empty() {
+                format!("jawata — {live} running")
+            } else {
+                format!("jawata — {live} running; still starting: {}", names.join(", "))
             }
         }
 
@@ -1272,7 +1294,7 @@ pub fn canary_health(results: &[CanaryResult], now_millis: u64) -> CanaryHealth 
         // the shape of the truth, which is identical. A fault is untouched — any resident
         // that is not green for a reason other than a fresh import still lands below.
         if results.iter().any(|r| r.green) {
-            CanaryHealth::Reduced
+            CanaryHealth::PartlyUp
         } else {
             CanaryHealth::Loading
         }
@@ -2169,7 +2191,7 @@ mod tests {
     }
 
     #[test]
-    fn some_live_while_the_rest_import_is_partial_health_not_nothing_yet() {
+    fn some_live_while_the_rest_import_is_transient_partial_health() {
         // Harald, dogfooding v4.2.2: "when some of them are live fresh green hollow
         // should be shown, because some of them are live". A cold start brings residents
         // up one at a time, and calling the whole machine "still working" while two of
@@ -2203,11 +2225,11 @@ mod tests {
         };
 
         assert_eq!(
-            CanaryHealth::Reduced,
+            CanaryHealth::PartlyUp,
             canary_health(&[live("alpha"), importing("beta")], 1_000),
-            "one answering and one importing is PARTIAL health, and it wears the same \
-             hollow mark as a workspace switched off by choice — the disc says the shape \
-             of the truth, the tooltip says which of the two reasons it is"
+            "one answering and one importing is PARTIAL health, and it is the TRANSIENT \
+             kind — same ring as a workspace switched off by choice, different fill, \
+             because the user's next move differs: wait, versus this is how it stays"
         );
 
         // THE CONTROL THAT MAKES THE ABOVE MEAN SOMETHING. With none live yet there is no

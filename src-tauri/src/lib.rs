@@ -130,6 +130,10 @@ impl field_view::CanaryHealth {
             // the slow cadence for the same reason Green does, and giving it the fast
             // one would charge a user for having configured their machine.
             field_view::CanaryHealth::Reduced => CANARY_INTERVAL_SECS,
+            // Something is still on its way, so the verdict is about to change on its
+            // own — the short cadence is what makes the tray catch up rather than sit on
+            // a state it already knows is temporary.
+            field_view::CanaryHealth::PartlyUp => CANARY_RECHECK_SECS,
             // These three are the ones a user is most likely to be staring at while
             // they are already out of date.
             field_view::CanaryHealth::Degraded
@@ -212,11 +216,15 @@ fn build_tray_icon_for(
                 TrayIconVariant::CoffeeCircle => draw_coffee_glyph(&mut rgba),
             }
         }
-        DiscStyle::Hollow(stroke) => {
-            draw_base_ring_in(&mut rgba, stroke);
+        DiscStyle::RingOn { ring, fill } => {
+            // Fill first, then the ring over its edge, then the glyph in the ring's own
+            // colour — the glyph has to read against the FILL, and the ring colour is the
+            // one guaranteed to contrast with it.
+            draw_base_circle_in(&mut rgba, fill);
+            draw_base_ring_in(&mut rgba, ring);
             match variant {
-                TrayIconVariant::ArchCircle => draw_arch_glyph_in(&mut rgba, stroke),
-                TrayIconVariant::CoffeeCircle => draw_coffee_glyph_in(&mut rgba, stroke),
+                TrayIconVariant::ArchCircle => draw_arch_glyph_in(&mut rgba, ring),
+                TrayIconVariant::CoffeeCircle => draw_coffee_glyph_in(&mut rgba, ring),
             }
         }
     }
@@ -339,9 +347,21 @@ fn draw_ring(rgba: &mut [u8], cx: i32, cy: i32, radius: i32, thickness: i32, col
 enum DiscStyle {
     /// A filled disc, with the glyph in its own contrast colour.
     Filled([u8; 4]),
-    /// An outline, with the glyph drawn in the same stroke — see `draw_arch_glyph_in`
-    /// for why the glyph cannot keep its cream here.
-    Hollow([u8; 4]),
+    /// TWO CHANNELS: a ring saying how the RUNNING residents are doing, on a fill saying
+    /// what is happening with the rest.
+    ///
+    /// This replaced a hollow outline, on Harald's ruling of 2026-09-11, for a reason that
+    /// is not aesthetic: a hollow mark's centre is whatever the user's menu bar happens to
+    /// be. Its appearance is the only one in this file we do not control, it changes with
+    /// the desktop theme, and it is the state that means "this is how things will stay" —
+    /// so it is the one looked at longest.
+    ///
+    /// Filling it also makes the mark COMPOSE, which is what earns the second channel: the
+    /// solid states stop being exceptions and become the case where both channels agree.
+    /// All healthy is a green ring on green; nothing running is blue on blue. A hollow
+    /// mark could never take part in that, because "no fill" is not a value — it is the
+    /// absence of one, which is why it needed its own rule to explain.
+    RingOn { ring: [u8; 4], fill: [u8; 4] },
 }
 
 fn tray_disc_style(health: field_view::CanaryHealth) -> DiscStyle {
@@ -354,8 +374,21 @@ fn tray_disc_style(health: field_view::CanaryHealth) -> DiscStyle {
         field_view::CanaryHealth::Idle => DiscStyle::Filled([29, 47, 78, 255]),
         // Dark green (#1b5e20) — legible against a light and a dark menu bar alike.
         field_view::CanaryHealth::Green => DiscStyle::Filled([27, 94, 32, 255]),
-        // Grass green (#7cb342), hollow: running as configured, and visibly less.
-        field_view::CanaryHealth::Reduced => DiscStyle::Hollow([124, 179, 66, 255]),
+        // Grass green (#7cb342) on the company blue: the running ones are healthy, and
+        // the rest are off BY CHOICE. The blue fill is the same thing it means on its own
+        // — present, nothing being asked of it — scoped to the part you switched off. So
+        // nothing more is coming, and this is how the machine stays.
+        field_view::CanaryHealth::Reduced => DiscStyle::RingOn {
+            ring: [124, 179, 66, 255],
+            fill: [29, 47, 78, 255],
+        },
+        // The same ring on GREY: some are answering and the rest are still importing.
+        // Identical claim about the running ones, different claim about the remainder —
+        // more is coming, so wait rather than act.
+        field_view::CanaryHealth::PartlyUp => DiscStyle::RingOn {
+            ring: [124, 179, 66, 255],
+            fill: [110, 114, 120, 255],
+        },
         // Amber (#a8621a) — we looked, and it is wrong.
         field_view::CanaryHealth::Degraded => DiscStyle::Filled([168, 98, 26, 255]),
         // Grey (#6e7278) — we do not know yet: mid-import, or not yet probed.
@@ -1248,7 +1281,10 @@ mod tray_icon_tests {
     /// function the product does not run and the tests keep alive.
     fn tray_disc_colour(health: super::field_view::CanaryHealth) -> [u8; 4] {
         match super::tray_disc_style(health) {
-            super::DiscStyle::Filled(colour) | super::DiscStyle::Hollow(colour) => colour,
+            super::DiscStyle::Filled(colour) => colour,
+            // The RING is the hue these assertions are about — it is what says how the
+            // running residents are doing. The fill answers a different question.
+            super::DiscStyle::RingOn { ring, .. } => ring,
         }
     }
 
@@ -1372,40 +1408,60 @@ mod tray_icon_tests {
     /// at the edge — so the two claims a hollow mark makes (it is still there; it is
     /// visibly less) are checked separately.
     #[test]
-    fn the_reduced_state_is_drawn_hollow_and_the_others_are_not() {
+    fn the_two_partial_states_share_a_ring_and_differ_in_what_fills_it() {
+        // THE MARK HAS TWO CHANNELS, and each assertion below reads one of them.
+        //
+        // It used to be a hollow ring with nothing inside, which this test pinned as "the
+        // middle is empty — that IS the signal". Harald's ruling of 2026-09-11 filled it:
+        // a hollow centre is the only part of this icon whose appearance belongs to the
+        // user's menu bar rather than to us, and it is the mark that means "this is how
+        // things will stay", so it is the one looked at longest.
         let centre = ((TRAY_ICON_SIZE / 2) * TRAY_ICON_SIZE + TRAY_ICON_SIZE / 2) as usize;
-        let edge = ((TRAY_ICON_SIZE / 2) * TRAY_ICON_SIZE + 1) as usize;
+        let fill_of = |health| {
+            let icon = build_tray_icon_for(TrayIconVariant::ArchCircle, health);
+            let rgba = icon.rgba();
+            [
+                rgba[centre * 4],
+                rgba[centre * 4 + 1],
+                rgba[centre * 4 + 2],
+                rgba[centre * 4 + 3],
+            ]
+        };
 
-        let reduced = build_tray_icon_for(
-            TrayIconVariant::ArchCircle,
-            field_view::CanaryHealth::Reduced,
-        );
-        let rgba = reduced.rgba();
+        // CHANNEL ONE — the ring. Both partial states make the same claim about the
+        // residents that ARE answering, so both rings are the same green.
         assert_eq!(
-            0,
-            rgba[centre * 4 + 3],
-            "the middle of a hollow disc is empty — that IS the signal"
-        );
-        assert_eq!(
-            255,
-            rgba[edge * 4 + 3],
-            "and the ring is drawn, or the mark would simply be missing"
+            tray_disc_colour(field_view::CanaryHealth::Reduced),
+            tray_disc_colour(field_view::CanaryHealth::PartlyUp),
+            "both mean 'the running ones are healthy', so the ring must not differ"
         );
 
-        // THE CONTROL. Without it, a build that drew NOTHING for every state would
-        // satisfy the assertion above.
-        for filled in [
+        // CHANNEL TWO — the fill, which is the whole reason there are two states. Blue
+        // says nothing more is coming; grey says more is.
+        assert_eq!([29, 47, 78, 255], fill_of(field_view::CanaryHealth::Reduced),
+            "the rest are off BY CHOICE — the company blue, the same 'present, nothing \
+             being asked' it means on its own, scoped to the part switched off");
+        assert_eq!([110, 114, 120, 255], fill_of(field_view::CanaryHealth::PartlyUp),
+            "the rest are still coming — grey, so the user waits rather than acts");
+        assert_ne!(
+            fill_of(field_view::CanaryHealth::Reduced),
+            fill_of(field_view::CanaryHealth::PartlyUp),
+            "settled and transient must be tellable apart, or the second state buys nothing"
+        );
+
+        // AND NOTHING IS TRANSPARENT ANY MORE. Without this a build that drew no fill at
+        // all would satisfy the ring assertions above, and the mark would once again take
+        // its centre from whatever the menu bar happens to be.
+        for health in [
+            field_view::CanaryHealth::Idle,
             field_view::CanaryHealth::Green,
+            field_view::CanaryHealth::Reduced,
+            field_view::CanaryHealth::PartlyUp,
             field_view::CanaryHealth::Degraded,
             field_view::CanaryHealth::Loading,
             field_view::CanaryHealth::Unknown,
         ] {
-            let icon = build_tray_icon_for(TrayIconVariant::ArchCircle, filled);
-            assert_eq!(
-                255,
-                icon.rgba()[centre * 4 + 3],
-                "{filled:?} is a filled disc"
-            );
+            assert_eq!(255, fill_of(health)[3], "{health:?} must be opaque at its centre");
         }
     }
 
