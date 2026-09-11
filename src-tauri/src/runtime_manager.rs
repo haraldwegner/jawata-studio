@@ -548,7 +548,11 @@ impl RuntimeManager {
         launch_request: &RuntimeLaunchRequest,
     ) -> Result<RuntimeStatusRecord, String> {
         let spec = self.command_spec_for(launch_request);
-        self.start_runtime_with_spec(&launch_request.reference, spec)
+        let started = self.start_runtime_with_spec(&launch_request.reference, spec);
+        // The tray repaints on the ACTION. Announced here rather than by the five service
+        // methods above, because every start in this product arrives through this one.
+        crate::notify_runtime_changed();
+        started
     }
 
     /// Internal entry point that takes the already-built `CommandSpec`.
@@ -784,6 +788,18 @@ impl RuntimeManager {
         &self,
         reference: &RuntimeReference,
     ) -> Result<RuntimeStatusRecord, String> {
+        let stopped = self.stop_runtime_inner(reference);
+        // Announced whatever the outcome: a stop that failed part-way has still changed
+        // what is running, and that is exactly when the tray must not keep saying the old
+        // thing. Wrapped rather than placed at a return site, so no path can miss it.
+        crate::notify_runtime_changed();
+        stopped
+    }
+
+    fn stop_runtime_inner(
+        &self,
+        reference: &RuntimeReference,
+    ) -> Result<RuntimeStatusRecord, String> {
         // studio #1 (F1): a stop must ACT even when the handle map is cold — the
         // tray "Stop all" can fire before any dashboard poll adopted the
         // orphans. Self-adopt first, so a resident that outlived Studio becomes
@@ -842,6 +858,12 @@ impl RuntimeManager {
     /// All members' snapshots become Stopped. Used by the "Stop workspace"
     /// button in the grouped Dashboard view.
     pub fn stop_workspace_runtime(&self, workspace_name: &str) -> Result<(), String> {
+        let stopped = self.stop_workspace_runtime_inner(workspace_name);
+        crate::notify_runtime_changed();
+        stopped
+    }
+
+    fn stop_workspace_runtime_inner(&self, workspace_name: &str) -> Result<(), String> {
         let removed = {
             let mut handles = self.handles.lock().expect("runtime mutex poisoned");
             handles.remove(workspace_name)

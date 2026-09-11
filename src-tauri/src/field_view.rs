@@ -1134,6 +1134,29 @@ pub fn canary_tooltip(
 /// [`canary_health`] necessarily calls [`Unknown`] because it has no results to judge.
 /// That is not "we have not looked" — there is nothing to look at, by choice — so it
 /// is the one place an [`Unknown`] becomes a settled verdict.
+/// The verdict over the residents currently being probed, from a board that may still
+/// hold readings for residents that are not.
+///
+/// THE FILTER IS THE POINT. A workspace switched off a second ago still carries its last
+/// GREEN reading, and a verdict taken over the whole board would answer "everything
+/// healthy" across a set that no longer includes it — reporting health for something
+/// nobody is running. That is the same mistake as judging the machine by what it used to
+/// be, and it is invisible in any test whose board and population agree.
+pub fn verdict_for(
+    board: &[CanaryResult],
+    probing: &[String],
+    switched_off: usize,
+    now_millis: u64,
+) -> CanaryHealth {
+    let relevant: Vec<CanaryResult> = board
+        .iter()
+        .filter(|result| probing.iter().any(|name| name == &result.workspace))
+        .cloned()
+        .collect();
+    let health = canary_health(&relevant, now_millis);
+    fold_switched_off(health, relevant.len(), switched_off)
+}
+
 pub fn fold_switched_off(health: CanaryHealth, probed: usize, switched_off: usize) -> CanaryHealth {
     if switched_off == 0 {
         return health;
@@ -2103,6 +2126,48 @@ mod tests {
     /// question correctly — with PROJECT_LOADING — and used to be counted a
     /// compiler failure, painting the tray amber for five minutes on every
     /// healthy launch.
+    #[test]
+    fn a_switched_off_resident_stops_voting_with_its_last_green_reading() {
+        // Harald, dogfooding v4.2.2: the colour must change the moment he changes
+        // something. Answering that fast means answering WITHOUT probing — from what is
+        // supposed to be running and what the others last said — and the trap in that is
+        // the board still holds a reading for the workspace just switched off.
+        let live = |name: &str| {
+            judge_canary(
+                name,
+                "u",
+                ok(serde_json::json!({"success": true, "data": {"entries": []}})),
+                ok(serde_json::json!({"success": true, "data": {"sourceLength": 12345}})),
+                12,
+                0,
+            )
+        };
+        let board = vec![live("alpha"), live("beta")];
+
+        assert_eq!(
+            CanaryHealth::Green,
+            verdict_for(&board, &["alpha".to_string(), "beta".to_string()], 0, 1_000),
+            "both probed and both answering is the full mark"
+        );
+
+        assert_eq!(
+            CanaryHealth::Reduced,
+            verdict_for(&board, &["alpha".to_string()], 1, 1_000),
+            "beta switched off must not keep voting with the green it left behind — the \
+             verdict is over what is RUNNING, and one of two running healthily with one \
+             off by choice is partial"
+        );
+
+        assert_eq!(
+            CanaryHealth::Idle,
+            verdict_for(&board, &[], 2, 1_000),
+            "and with everything off the answer is nothing-running, immediately — not the \
+             stale green of two residents that stopped. This is the case the cheap \
+             five-second path could not express at all: it returns early on an empty probe \
+             set, so the tray could only reach blue via the five-minute round"
+        );
+    }
+
     #[test]
     fn some_live_while_the_rest_import_is_partial_health_not_nothing_yet() {
         // Harald, dogfooding v4.2.2: "when some of them are live fresh green hollow

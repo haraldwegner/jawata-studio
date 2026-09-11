@@ -1444,6 +1444,45 @@ impl ManagerService {
     /// because nothing can drive this loop — it lives inside the Tauri setup with an
     /// `AppHandle`. A defect a guard cannot see is one to make IMPOSSIBLE instead, so the
     /// parameter is gone: there is no longer a wrong set to hand it.
+    /// The verdict RIGHT NOW, from intent and the last health we measured — no probing.
+    ///
+    /// Harald, dogfooding v4.2.2: *"If I change something this should be immediately
+    /// reflected in a new color ... The color change should be event based and immediate.
+    /// The pull after x seconds is just to prove and check on a regular basis."*
+    ///
+    /// Switching a workspace off changes what the tray should say WITHOUT changing
+    /// anything we would have to ask a resident about: we already know it is not supposed
+    /// to be running, and we already know what the others last answered. So this composes
+    /// the two and repaints, and the probe that follows is confirmation rather than the
+    /// source.
+    ///
+    /// IT ANSWERS IN EVERY CASE, which is what distinguishes it from
+    /// [`Self::refresh_workspace_readability`]. That one returns `None` when the probe set
+    /// is empty, when the board is empty, and when no readability answer changed — so with
+    /// everything switched off it reports nothing at all, and the tray could only reach
+    /// blue via the five-minute round. An indicator that cannot express a state is worse
+    /// than a slow one, because nothing about it looks wrong.
+    ///
+    /// The board is filtered to the residents actually being probed. A workspace just
+    /// switched off still carries its last green reading, and counting that would answer
+    /// "all healthy" over a set that no longer includes it.
+    pub(crate) fn verdict_now(&self) -> (crate::field_view::CanaryHealth, Vec<String>) {
+        let population = self.canary_population();
+        let probing: std::collections::HashSet<String> = population
+            .probe
+            .iter()
+            .map(|server| server.workspace_name.clone())
+            .collect();
+        let probing: Vec<String> = probing.into_iter().collect();
+        let health = crate::field_view::verdict_for(
+            &self.canary_board(),
+            &probing,
+            population.switched_off.len(),
+            crate::field_view::now_millis(),
+        );
+        (health, population.switched_off)
+    }
+
     pub(crate) fn refresh_workspace_readability(
         &self,
     ) -> Option<(crate::field_view::CanaryHealth, Vec<String>)> {

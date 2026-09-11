@@ -688,11 +688,32 @@ pub fn run() {
                 // path at once — start, stop, reload, a single project, and anything
                 // that changes a phase without going through a menu at all.
                 let mut last_population: Option<(Vec<String>, Vec<String>)> = None;
+                let (changed_tx, changed_rx) = std::sync::mpsc::sync_channel::<()>(1);
+                let _ = RUNTIME_CHANGED.set(changed_tx);
                 loop {
-                    std::thread::sleep(std::time::Duration::from_secs(
-                        READABILITY_INTERVAL_SECS,
-                    ));
+                    // THE WAIT IS INTERRUPTIBLE, which is what makes the colour event-based
+                    // rather than polled. A start or a stop ends it at once and the repaint
+                    // below needs no probe to answer; the five-second tick that remains is
+                    // the regular check, not the mechanism.
+                    let woke_on_a_change = changed_rx
+                        .recv_timeout(std::time::Duration::from_secs(READABILITY_INTERVAL_SECS))
+                        .is_ok();
                     let state = readability_handle.state::<AppState>();
+
+                    if woke_on_a_change {
+                        // FROM INTENT, not from a probe. We already know what is supposed
+                        // to be running and what the others last answered, so the tray can
+                        // be right immediately and the round that follows only confirms it.
+                        let (health, switched_off) = state.manager_service.verdict_now();
+                        let board = state.manager_service.canary_board();
+                        let tooltip = field_view::canary_tooltip(
+                            health,
+                            &board,
+                            &switched_off,
+                            field_view::now_millis(),
+                        );
+                        apply_canary_health_to_tray(&readability_handle, health, &tooltip);
+                    }
 
                     let population = state.manager_service.canary_population_names();
                     if population_change_wakes_the_canary(&last_population, &population) {
@@ -925,6 +946,30 @@ fn population_change_wakes_the_canary(
     match last {
         None => false,
         Some(previous) => previous != current,
+    }
+}
+
+/// Fired whenever a runtime actually starts or stops, so the tray repaints on the ACTION.
+///
+/// Harald, dogfooding v4.2.2: *"The color change should be event based and immediate. The
+/// pull after x seconds is just to prove and check on a regular basis."*
+///
+/// It is sent from `RuntimeManager`'s own three mutators rather than from the five service
+/// methods above them, and that is the whole design: every start and every stop in this
+/// product passes through those three, so a caller cannot forget to announce what it just
+/// did. The tray menu forgetting exactly that is what made a stop take five minutes to
+/// show.
+///
+/// `sync_channel(1)` deliberately: a burst — "stop all" across three workspaces — collapses
+/// into one repaint rather than three, and a full buffer means a repaint is already owed.
+static RUNTIME_CHANGED: std::sync::OnceLock<std::sync::mpsc::SyncSender<()>> =
+    std::sync::OnceLock::new();
+
+/// Announce that a runtime's state changed. Never blocks, so it is safe to call while
+/// holding the runtime lock.
+pub(crate) fn notify_runtime_changed() {
+    if let Some(tx) = RUNTIME_CHANGED.get() {
+        let _ = tx.try_send(());
     }
 }
 
