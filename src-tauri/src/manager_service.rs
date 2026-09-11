@@ -9549,14 +9549,46 @@ mod tests {
 
     /// The refusal names what IS allowed, so a caller is not left guessing.
     ///
-    /// The control for the test above: without it, a bridge that accepted every
-    /// verb would pass the membership check while proving nothing about the
-    /// allowlist doing any work.
+    /// **This drives the BRIDGE, and the first version of it did not — which is the
+    /// defect it exists to prevent, committed inside the commit preventing it.** That
+    /// version asserted `!EXPERIENCE_KINDS.contains("obliterate")` and called itself
+    /// the control for the test above. It was not one: it never reached
+    /// `experience_verb_on`, so deleting the allowlist check entirely left it green,
+    /// along with every other test here. A membership assertion about a literal can
+    /// only ever prove what the literal says. Measured after the repair: with the
+    /// guard deleted this is the ONLY failure of 204.
+    ///
+    /// It needs no listening socket, which is the point: the refusal happens BEFORE
+    /// any request is made, so reaching the network at all would mean the guard did
+    /// not fire.
     #[test]
     fn an_unknown_verb_is_refused_with_the_vocabulary() {
+        // Port 1 — nothing listens. If the guard ever stops firing this becomes a
+        // connection error instead, and the last assertion names that difference.
+        let server = url_server("ws", 1, "tok", false);
+        let refusal = ManagerService::experience_verb_on(
+            &server,
+            "obliterate",
+            serde_json::json!({}),
+        )
+        .expect_err("a verb outside the vocabulary must be refused, not forwarded");
+
         assert!(
-            !EXPERIENCE_KINDS.contains(&"obliterate"),
-            "the allowlist must actually exclude things, or membership proves nothing"
+            refusal.contains("obliterate"),
+            "the refusal must name the verb it refused: {refusal}"
+        );
+        assert!(
+            refusal.contains("allowed"),
+            "a refusal that does not say what IS allowed leaves the caller guessing: {refusal}"
+        );
+        assert!(
+            refusal.contains("restore"),
+            "and the vocabulary it prints must be the real one: {refusal}"
+        );
+        assert!(
+            !refusal.contains("request failed"),
+            "this must be the ALLOWLIST refusing, not the network — a guard that let \
+             the call through would fail here for a completely different reason: {refusal}"
         );
     }
 
