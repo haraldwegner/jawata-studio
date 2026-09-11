@@ -973,8 +973,18 @@ pub enum CanaryHealth {
     /// Nothing has been probed yet — never rendered as green.
     Unknown,
     Green,
-    /// Every resident that is SUPPOSED to be running is healthy, and at least one
-    /// workspace is deliberately switched off.
+    /// SOME of what could be healthy is, and some is not yet — for either of two
+    /// reasons, and the tooltip is what says which.
+    ///
+    /// Originally this meant only the first reason: every resident supposed to be running
+    /// is healthy, and at least one workspace is deliberately switched off. Dogfooding
+    /// v4.2.2 added the second: during a cold start, residents come up one at a time, and
+    /// reporting the machine as merely "working" while two of three are answering
+    /// understates what the user has — for minutes, on a large workspace.
+    ///
+    /// A FAULT IS NOT ONE OF THE TWO REASONS. A resident that is not healthy for any
+    /// reason other than a fresh import still makes the whole verdict a fault, because
+    /// "some are fine" must never be the way a broken one is reported.
     ///
     /// studio#48, Harald: *"If I switch off the patterns workspace then this is a
     /// decision and not an error case."* It is a third thing rather than a shade of
@@ -1225,7 +1235,24 @@ pub fn canary_health(results: &[CanaryResult], now_millis: u64) -> CanaryHealth 
             }
     });
     if all_loading_and_fresh {
-        CanaryHealth::Loading
+        // SOME LIVE IS NOT THE SAME AS NONE LIVE, and the tray owes the difference.
+        //
+        // Harald, dogfooding v4.2.2: *"when some of them are live fresh green hollow
+        // should be shown, because some of them are live"*. Reporting the whole machine
+        // as still-working while two of three residents are answering understates what
+        // the user has — and during a cold start of a large workspace that understatement
+        // can stand for minutes.
+        //
+        // This is the SAME mark as a workspace deliberately switched off, and that is the
+        // point rather than a collision: both are "some of what could be healthy is, and
+        // some is not yet". The reason differs and the tooltip says which; the disc says
+        // the shape of the truth, which is identical. A fault is untouched — any resident
+        // that is not green for a reason other than a fresh import still lands below.
+        if results.iter().any(|r| r.green) {
+            CanaryHealth::Reduced
+        } else {
+            CanaryHealth::Loading
+        }
     } else {
         CanaryHealth::Degraded
     }
@@ -2076,6 +2103,79 @@ mod tests {
     /// question correctly — with PROJECT_LOADING — and used to be counted a
     /// compiler failure, painting the tray amber for five minutes on every
     /// healthy launch.
+    #[test]
+    fn some_live_while_the_rest_import_is_partial_health_not_nothing_yet() {
+        // Harald, dogfooding v4.2.2: "when some of them are live fresh green hollow
+        // should be shown, because some of them are live". A cold start brings residents
+        // up one at a time, and calling the whole machine "still working" while two of
+        // three answer understates what the user has — for minutes, on a big workspace.
+        let live = |name: &str| {
+            judge_canary(
+                name,
+                "u",
+                ok(serde_json::json!({"success": true, "data": {"entries": []}})),
+                ok(serde_json::json!({"success": true, "data": {"sourceLength": 12345}})),
+                12,
+                0,
+            )
+        };
+        let importing = |name: &str| {
+            let mut r = judge_canary(
+                name,
+                "u",
+                ok(serde_json::json!({"success": true, "data": {"entries": []}})),
+                ok(serde_json::json!({
+                    "success": false,
+                    "error": {"code": LOADING_ERROR_CODE, "message": "project is loading"}
+                })),
+                12,
+                0,
+            );
+            // Stitched, exactly as publish_canary does — an unstitched loading result
+            // deliberately gets no grace.
+            r.loading_since_millis = Some(0);
+            r
+        };
+
+        assert_eq!(
+            CanaryHealth::Reduced,
+            canary_health(&[live("alpha"), importing("beta")], 1_000),
+            "one answering and one importing is PARTIAL health, and it wears the same \
+             hollow mark as a workspace switched off by choice — the disc says the shape \
+             of the truth, the tooltip says which of the two reasons it is"
+        );
+
+        // THE CONTROL THAT MAKES THE ABOVE MEAN SOMETHING. With none live yet there is no
+        // partial health to report, and grey is still right.
+        assert_eq!(
+            CanaryHealth::Loading,
+            canary_health(&[importing("alpha"), importing("beta")], 1_000),
+            "nothing answering yet is still just working"
+        );
+
+        // AND A FAULT IS NOT SOFTENED BY A HEALTHY NEIGHBOUR. This is the clause that
+        // would make the change dangerous if it were wrong.
+        let broken = judge_canary(
+            "gamma",
+            "u",
+            ok(serde_json::json!({"success": true, "data": {"entries": []}})),
+            ok(serde_json::json!({"success": false, "error": {"code": "BOOM"}})),
+            12,
+            0,
+        );
+        assert_eq!(
+            CanaryHealth::Degraded,
+            canary_health(&[live("alpha"), broken], 1_000),
+            "some are fine must never be how a broken one is reported"
+        );
+
+        assert_eq!(
+            CanaryHealth::Green,
+            canary_health(&[live("alpha"), live("beta")], 1_000),
+            "and all live is still the full mark"
+        );
+    }
+
     #[test]
     fn a_still_loading_resident_reads_as_loading_not_degraded() {
         let result = judge_canary(
