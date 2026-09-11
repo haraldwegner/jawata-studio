@@ -6929,7 +6929,7 @@ pub(crate) fn canary_probe_at(
 /// `decide`, `review_sweep`, `fallback`) which no human clicks. What governs
 /// membership is the sentence above — a name here is a name you would say.
 const EXPERIENCE_KINDS: &[&str] = &[
-    "record", "recall", "primer", "list", "load", "reseed", "refresh", "wipe", "promote",
+    "record", "recall", "primer", "list", "load", "wipe_and_import", "refresh", "wipe", "promote",
     "export", "import", "prune", "dedup", "compact", "stats", "backup", "restore",
 ];
 

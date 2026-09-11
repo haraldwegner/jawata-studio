@@ -80,7 +80,7 @@ Work these steps, in order. Each one is binding:
    Keep count: repaired-in-files, repaired-in-store, parked.
 
 3. VERIFY. File edits: the store is derived — the fixes LAND only at the next
-   reseed, and a reseed is the user's word (it wipes first). Store edits
+   wipe_and_import, and that is the user's word (it wipes first). Store edits
    (`set_form`): re-recall one rewritten entry by its new situation and show
    it answers. Never report a repair as done without its verification.
 

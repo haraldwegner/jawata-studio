@@ -457,7 +457,7 @@ The test for anything you want to keep is one question: **after the next wipe, w
 
 1. Ask the store where the substrate is: `experience(kind=stats)` → `substrate.root`. **Never invent this path.** If it comes back null, the store has no file substrate — say so and stop rather than choosing a directory.
 2. Write the story as one `.md` file under that root, named for its claim, with the frontmatter the template requires: `name`, `description` (the claim), `type`, `situation`, `verdict` for an experience, and **`reviewed:` with today's date — but only if the cold reader in STEP 4 actually passed it.** The stamp says a review HAPPENED. Writing it after a reader you did not run, or after a verdict you overrode, is forging the one thing the reseed gate trusts.
-3. `experience(kind=reseed, path=<substrate.root>, recursive=true, confirm=true)` — then read the report. Your file must appear in `loaded`. If it is in `skipped`, the reason says why and nothing was stored.
+3. `experience(kind=wipe_and_import, path=<substrate.root>, recursive=true, confirm=true)` — then read the report. Your file must appear in `loaded`. If it is in `skipped`, the reason says why and nothing was stored.
 
 `lesson` and `failure_mode` are experiences: they owe a `situation` and a `verdict` (`worked` / `failed_avoid` / `unproven`), or the gate refuses them. A `domain_fact` owes NEITHER, and nor does an `api_contract`, a `naming_convention` or a `reference` — they never turned out any way at all, and inventing a verdict for one makes retrieval rank on fiction.
 

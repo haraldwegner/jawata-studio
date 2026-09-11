@@ -878,9 +878,9 @@ pub fn judge(facts: &StopFacts) -> StopVerdict {
         return StopVerdict::Block {
             reason: format!(
                 "{} ({} of {}): {} file(s) under the knowledge substrate at \
-{} are not in the store — {}. Writing the file and reseeding it in are ONE job; until the \
-second half runs, nothing you wrote is recallable and the next wipe takes it silently. Run \
-experience(kind=reseed, path={}, recursive=true, confirm=true) and READ the report: a file \
+{} are not in the store — {}. Writing the file and loading it in are ONE job; until the \
+second half runs, nothing you wrote is recallable. Run \
+experience(kind=load, path={}, recursive=true) and READ the report: a file \
 that comes back under `skipped` was refused, and the reason says what it owes — most often \
 a `reviewed:` stamp it has actually earned from a cold reader.",
                 UNSTORED_STORY,
@@ -2308,7 +2308,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
         };
         assert!(reason.contains("the-cure-was-a-report.md"), "{reason}");
         assert!(
-            reason.contains("kind=reseed") && reason.contains("/home/h/knowledge/stories"),
+            reason.contains("kind=load") && reason.contains("/home/h/knowledge/stories"),
             "the hold must carry the CURE, with the store's own root: {reason}"
         );
         assert!(
