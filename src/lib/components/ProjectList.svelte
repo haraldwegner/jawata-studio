@@ -574,9 +574,11 @@
         ? "all stopped"
         : aggregatePhase === "failed"
           ? "degraded"
-          // "mixed" said that the states differ and nothing about WHICH way, so
-          // the reader had to go and count. The numbers are already here.
-          : `${runningProjects} of ${totalProjects} running`;
+          // The RUNNING count alone. It first read "33 of 230 running", and the 230
+          // is already on screen a line below in the Projects pill — so the badge
+          // was spending its width restating a number the reader could see, next
+          // to the one thing it is actually for.
+          : `${runningProjects} running`;
   $: totalProjects = projects.length;
   $: runningProjects = projects.filter((project) => runtimeStatuses[project.id]?.phase === "running").length;
   $: stoppedProjects = totalProjects - runningProjects;
