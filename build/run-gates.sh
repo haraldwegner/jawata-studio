@@ -51,6 +51,32 @@ elif [ "$UNWIRED" -ne 0 ]; then
     exit "$UNWIRED"
 fi
 
+echo
+echo "=== gate: the frontend type pass ==="
+# THE ONLY AUTOMATED READING THE FRONTEND GETS. This repository has no frontend
+# test framework, so every .svelte file is uncovered BY CONSTRUCTION — the Rust
+# suite above cannot see one line of it. `svelte-check` is therefore not a nicety
+# here; it is the whole of the frontend's verification, and until Sprint 28f it
+# was wired into no gate at all. Found at C1, while shipping a MemoryView change
+# that nothing else in this tree could have read.
+#
+# EXIT 2 IS NOT A PASS, for the same reason the gate above says so: a missing
+# node_modules or an npm that is not there must fail distinctly rather than look
+# green. `npm run check` exits 1 on a type error and non-zero when it cannot run,
+# so the two are separated by asking whether the tool is present first.
+if [ ! -d "$ROOT/node_modules" ]; then
+    echo "FAILED: the frontend type pass could NOT RUN — no node_modules in $ROOT."
+    echo "Run 'npm install' first. Nothing about the frontend was checked."
+    exit 2
+fi
+( cd "$ROOT" && npm run --silent check )
+TYPES=$?
+if [ "$TYPES" -ne 0 ]; then
+    echo "FAILED: the frontend type pass. A .svelte or .ts error is invisible to every"
+    echo "other gate here, because nothing else in this repository reads that code."
+    exit 1
+fi
+
 # NOT RUN HERE, AND EACH FOR ITS OWN STATED REASON rather than by omission:
 #
 #   build/seam-gate.sh   — drives the REAL hook binary against the REAL published
