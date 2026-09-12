@@ -52,6 +52,16 @@ pub struct HookConfig {
     /// than in the store so it can be reached without the resident being up.
     #[serde(default)]
     pub recall_gate: Option<String>,
+    /// The duplicate gate's authority: `off` | `observe` | `block`.
+    ///
+    /// Absent means `observe` — show what may already do this job and hold
+    /// nothing. Its own module records why that is the default rather than the
+    /// `block` the plan ruled: the lane's ranking carries no score threshold, so
+    /// rank one always comes back and a denial on it would refuse every Java
+    /// write. The DOCUMENTED KILL SWITCH is `off`, and like its sibling it lives
+    /// here rather than in the store so it can be reached with the resident down.
+    #[serde(default)]
+    pub dup_gate: Option<String>,
 }
 
 impl HookConfig {
@@ -214,7 +224,7 @@ mod tests {
             other => panic!("an unknown client must not resolve: {other:?}"),
         }
         assert_eq!(Ok(crate::roles::Client::Cursor),
-            HookConfig { url: "u".into(), token: "t".into(), client: "cursor".into(), timeout_ms: None, field_dir: None, recall_gate: None }.client());
+            HookConfig { url: "u".into(), token: "t".into(), client: "cursor".into(), timeout_ms: None, field_dir: None, recall_gate: None, dup_gate: None }.client());
     }
 
     #[test]

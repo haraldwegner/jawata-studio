@@ -108,9 +108,17 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
             // the area says what the part of the codebase you have just entered is FOR.
             // Opening an unfamiliar package is worth that once; the eleventh file in it
             // is not, so it fires once per package per session.
-            None => match area_on_open(client, payload, store) {
+            // Sprint 28f Stage 8 D3 — the duplicate gate, on a WRITE rather than a
+            // read. It goes before the area because the two are disjoint by
+            // construction (one fires on an edit, one on a Read) and because a write
+            // is the more consequential moment: the area is worth saying once when
+            // you arrive somewhere, and this is worth saying before you add to it.
+            None => match dup_gate(client, config, payload, store) {
                 Some(outcome) => outcome,
-                None => recall(role, client, payload, store, None),
+                None => match area_on_open(client, payload, store) {
+                    Some(outcome) => outcome,
+                    None => recall(role, client, payload, store, None),
+                },
             },
         },
         Role::UserPrompt => {
@@ -604,6 +612,88 @@ fn recall_gate(
                 ))
             }
             crate::recallgate::Mode::Off => None,
+        },
+    }
+}
+
+/// Sprint 28f Stage 8 D3: the duplicate gate's I/O half — the pure decision
+/// lives in [`crate::dupgate`].
+///
+/// `Some(outcome)` means the gate has spoken for this write; `None` means it has
+/// nothing to say.
+///
+/// # Why it hangs on `ToolRecall` and not on the guard
+///
+/// The guard role "decides locally and never asks", and that is load-bearing: it
+/// must answer while the resident is down, and a guard that asked and failed open
+/// would leak exactly the calls it exists to deny. This gate DOES ask, and fails
+/// open by design, so putting it there would have traded that invariant away for
+/// an advisory. `ToolRecall` already holds the store and already receives the
+/// edit payloads — D6 made the experience and domain lanes go silent on a bare
+/// `Edit`, and this is the lane whose moment an edit actually IS.
+///
+/// # Observe SHOWS; it does not merely count
+///
+/// Its sibling's Observe records a would-block and stays silent, because there
+/// the withheld action IS the block. Here the useful half is the LOOK — being
+/// told what may already do this, with an address — and that costs the agent
+/// nothing and denies nothing. A silent Observe would ship a gate that does
+/// nothing at all until somebody flips a switch nobody has a reason to flip.
+fn dup_gate(
+    client: Client,
+    config: &HookConfig,
+    payload: &str,
+    store: &dyn Store,
+) -> Option<Outcome> {
+    let tool = tool_name_in(payload)?;
+    let path = edit_path_in(payload)?;
+    let mode = crate::dupgate::Mode::parse(config.dup_gate.as_deref());
+    let verdict = crate::dupgate::judge(mode, &tool, &path, payload, |file, draft| {
+        store.ask_value(serde_json::json!({
+            "kind": "duplicate_check",
+            "filePath": file,
+            "draft": draft,
+        }))
+    });
+
+    match verdict {
+        crate::dupgate::Verdict::Disabled
+        | crate::dupgate::Verdict::NotAJavaEdit
+        | crate::dupgate::Verdict::NoDraftMethods
+        | crate::dupgate::Verdict::NoNominee => None,
+
+        // The agent said why a second implementation is right here. Recorded so
+        // the architect's watch can read the reason, then out of the way.
+        crate::dupgate::Verdict::Dispositioned { reason } => {
+            emit_gate_signal("duplicate-declared", &reason);
+            None
+        }
+
+        // Recorded as ITS OWN fact. Folding it into "nothing to say" would throw
+        // away the one distinction this sprint exists to keep.
+        crate::dupgate::Verdict::Unavailable { why } => {
+            emit_gate_signal("duplicate-gate-unavailable", &why);
+            None
+        }
+
+        crate::dupgate::Verdict::Nominated { method, job, location } => match mode {
+            crate::dupgate::Mode::Observe => {
+                emit_gate_signal("duplicate-nominated", &location);
+                Some(emit_body(
+                    client,
+                    Role::ToolRecall,
+                    crate::dupgate::steering(&method, &job, &location),
+                ))
+            }
+            crate::dupgate::Mode::Block => {
+                emit_gate_signal("duplicate-held", &location);
+                Some(emit_permission(
+                    client,
+                    false,
+                    crate::dupgate::steering(&method, &job, &location),
+                ))
+            }
+            crate::dupgate::Mode::Off => None,
         },
     }
 }
@@ -1955,6 +2045,7 @@ mod tests {
             timeout_ms: Some(50),
             field_dir: None,
             recall_gate: None,
+            dup_gate: None,
         }
     }
 
@@ -3070,11 +3161,97 @@ mod payload_parsing_tests {
             timeout_ms: Some(50),
             field_dir: None,
             recall_gate: None,   // absent = Observe, the shipping default
+            dup_gate: None,      // absent = Observe too; left at the real default on
+                                 // purpose, so this test would notice the duplicate gate
+                                 // answering on a payload the recall gate owns
         }
     }
 
     fn gate_store(asked: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> GateStore {
         GateStore { anchor: "com.example.Importer#addDependencyEntries", asked_structured: asked }
+    }
+
+    /// The payload a real `Write` of a `.java` file arrives as — the write NESTED
+    /// under `tool_input`, which is where it actually comes from.
+    fn java_write() -> &'static str {
+        r#"{"tool_name":"Write","tool_input":{"file_path":"/p/src/Reader.java",
+            "content":"/** Parses a unit and resolves bindings. */\nclass R { Tree go(S s){return null;} }"}}"#
+    }
+
+    /// The store the duplicate gate talks to: it asserts the question it is
+    /// asked, so a gate that reached it with the wrong verb fails here rather
+    /// than silently getting an answer meant for something else.
+    struct DupStore {
+        asked: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        draft_seen: std::sync::Arc<std::sync::Mutex<String>>,
+    }
+    impl Store for DupStore {
+        fn ask(&self, _: serde_json::Value) -> Result<Answer, QueryError> {
+            Ok(Answer::Text("[lesson] the ordinary injection".into()))
+        }
+        fn ask_value(&self, args: serde_json::Value) -> Result<serde_json::Value, QueryError> {
+            assert_eq!("duplicate_check", args["kind"], "the duplicate gate's own verb");
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            *self.draft_seen.lock().unwrap() =
+                args["draft"].as_str().unwrap_or_default().to_string();
+            Ok(serde_json::json!({
+                "nominees": [{
+                    "method": "go",
+                    "job": "Parse a compilation unit with binding resolution",
+                    "location": "org.jawata.mcp.tools.shared.SourceScan#parse"
+                }]
+            }))
+        }
+    }
+
+    /// THE WIRING, for the duplicate gate — and it caught a real defect.
+    ///
+    /// `dupgate::judge` is unit-tested on its own, and every one of those tests
+    /// handed it a payload shaped the way the module expected: the write at the
+    /// TOP LEVEL. A real payload nests it under `tool_input`, so the gate read no
+    /// draft, answered "no draft methods" and asked the store nothing — inert on
+    /// every real write while eleven unit tests stayed green. That is this
+    /// repository's recorded failure shape, and only driving `run()` finds it.
+    #[test]
+    fn the_duplicate_gate_is_on_the_edit_path_and_sees_the_real_payload_shape() {
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let draft = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let store = DupStore { asked: asked.clone(), draft_seen: draft.clone() };
+        let out = run(Role::ToolRecall, &gate_config("claude-code"), java_write(), &store);
+
+        assert_eq!(
+            1,
+            asked.load(std::sync::atomic::Ordering::SeqCst),
+            "the gate never asked the store — it is present but not wired"
+        );
+        assert!(
+            draft.lock().unwrap().contains("Tree go"),
+            "and it must forward the DRAFT, not an empty string: {:?}",
+            draft.lock().unwrap()
+        );
+        match out {
+            Outcome::Emitted(text) => assert!(
+                text.contains("SourceScan#parse") && text.contains("may already be done"),
+                "Observe SHOWS the nominee — a silent Observe would ship a gate that does \
+                 nothing until somebody flips a switch nobody has a reason to flip: {text}"
+            ),
+            other => panic!("expected the advisory, got {other:?}"),
+        }
+    }
+
+    /// A NON-Java write must not reach the gate at all — the commonest call in
+    /// any session, and paying a round trip on each would be the cost that gets
+    /// a gate switched off.
+    #[test]
+    fn a_non_java_write_never_asks() {
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let store = DupStore {
+            asked: asked.clone(),
+            draft_seen: std::sync::Arc::new(std::sync::Mutex::new(String::new())),
+        };
+        let payload = r#"{"tool_name":"Write","tool_input":{"file_path":"/p/notes.md","content":"hi"}}"#;
+        let _ = run(Role::ToolRecall, &gate_config("claude-code"), payload, &store);
+        assert_eq!(0, asked.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     /// THE WIRING. `recallgate::judge` is unit-tested on its own, but a pure

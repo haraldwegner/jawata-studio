@@ -138,21 +138,32 @@ pub fn disposition_in(payload: &str) -> Option<String> {
 /// the engine decides what to do with them — it is the side that holds JDT and
 /// can parse a working copy, and a gate that tried to assemble the resulting
 /// file here would be a second, worse implementation of the engine's job.
+/// It looks under `tool_input` AND at the top level, and the first version looked
+/// only at the top level — which is where none of this arrives. A Claude Code
+/// payload nests the write under `tool_input`, so the gate would have answered
+/// "no draft methods" for every real write while passing every unit test, because
+/// the unit tests handed it the shape it expected. [`edit_path_in`] already reads
+/// both spellings for the same reason; this follows it rather than inventing a
+/// third convention.
+///
+/// [`edit_path_in`]: crate::pipeline
 pub fn draft_text(payload: &str) -> Option<String> {
     let value: Value = serde_json::from_str(payload).ok()?;
-    if let Some(content) = value.get("content").and_then(Value::as_str) {
-        return Some(content.to_string());
-    }
-    if let Some(new_string) = value.get("new_string").and_then(Value::as_str) {
-        return Some(new_string.to_string());
-    }
-    if let Some(edits) = value.get("edits").and_then(Value::as_array) {
-        let joined: Vec<&str> = edits
-            .iter()
-            .filter_map(|e| e.get("new_string").and_then(Value::as_str))
-            .collect();
-        if !joined.is_empty() {
-            return Some(joined.join("\n"));
+    for scope in [value.get("tool_input"), Some(&value)].into_iter().flatten() {
+        if let Some(content) = scope.get("content").and_then(Value::as_str) {
+            return Some(content.to_string());
+        }
+        if let Some(new_string) = scope.get("new_string").and_then(Value::as_str) {
+            return Some(new_string.to_string());
+        }
+        if let Some(edits) = scope.get("edits").and_then(Value::as_array) {
+            let joined: Vec<&str> = edits
+                .iter()
+                .filter_map(|e| e.get("new_string").and_then(Value::as_str))
+                .collect();
+            if !joined.is_empty() {
+                return Some(joined.join("\n"));
+            }
         }
     }
     None
