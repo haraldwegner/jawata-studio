@@ -101,7 +101,17 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
         // held and falls through; only in Block mode does it stop the call.
         Role::ToolRecall => match recall_gate(client, config, payload, store) {
             Some(outcome) => outcome,
-            None => recall(role, client, payload, store, None),
+            // Sprint 28f Stage 8 D2 — THE AREA, on first opening a file in a package.
+            //
+            // Tried BEFORE the recall and returning in its own right, because the two
+            // answer different questions: the recall says what is known about a symbol,
+            // the area says what the part of the codebase you have just entered is FOR.
+            // Opening an unfamiliar package is worth that once; the eleventh file in it
+            // is not, so it fires once per package per session.
+            None => match area_on_open(client, payload, store) {
+                Some(outcome) => outcome,
+                None => recall(role, client, payload, store, None),
+            },
         },
         Role::UserPrompt => {
             // His word is the only grant, and this is the only place it is
@@ -752,6 +762,70 @@ fn finish(
 /// The one place a body becomes an emission, so "was it actually delivered?"
 /// has a single answer for every caller — the question D9's ledger has to ask
 /// before it burns a week's slot.
+/// Sprint 28f Stage 8 D2 — WHAT THIS PART OF THE CODEBASE IS FOR, once per package.
+///
+/// Fires on a tool call naming a `.java` file. The engine derives the package (which is
+/// JDT's answer, not a directory name's) and answers with the area describing it and the
+/// jobs inside it; this shows that ONCE per package per session, because opening an
+/// unfamiliar package is worth an orientation and opening the eleventh file in it is not.
+///
+/// **`None` means "this is not that moment", and the caller falls through to the ordinary
+/// recall.** Every reason to decline lands there: not a `.java` path, already shown, no
+/// session to memo against, the store could not answer, or the package genuinely has
+/// nothing written about it. An absence is NOT injected — the map at the prompt speaks its
+/// absences because a reader asked a question there; here nobody asked, and a paragraph
+/// saying "nothing is known about this package" on every file open is noise.
+///
+/// **The memo is written only when something was actually SHOWN.** Marking on the attempt
+/// would spend the one injection on a store that was down, and the session would never see
+/// that package again with nothing saying why.
+fn area_on_open(client: Client, payload: &str, store: &dyn Store) -> Option<Outcome> {
+    let path = edit_path_in(payload)?;
+    if !path.ends_with(".java") {
+        return None;
+    }
+    let session = session_id_in(payload)?;
+    let home = home_dir()?;
+
+    let answer = store
+        .ask_value(serde_json::json!({
+            "kind": "describe",
+            "action": "area",
+            "filePath": path,
+        }))
+        .ok()?;
+    // The engine names the package it derived; without it there is nothing to memo AGAINST,
+    // and a memo keyed on the file path would re-inject for every file in the package —
+    // which is the whole thing this is here to avoid.
+    let package = answer.get("data")?.get("package")?.as_str()?.to_string();
+    if crate::areamemo::already_shown(&home, &session, &package) {
+        return None;
+    }
+
+    let text = store
+        .ask(serde_json::json!({
+            "kind": "describe",
+            "action": "area",
+            "filePath": path,
+            "format": "text",
+        }))
+        .ok()?;
+    let body = match text {
+        Answer::Text(t) if !t.trim().is_empty() => t,
+        _ => return None,
+    };
+
+    crate::areamemo::mark_shown(&home, &session, &package);
+    Some(finish(
+        client,
+        Role::ToolRecall,
+        Ok(Answer::Text(body)),
+        "JAWATA — what this part of the codebase is for. These rows were written ABOUT it \
+         by the cataloguer; they describe, they do not advise:",
+        &session,
+    ))
+}
+
 /// Sprint 28f Stage 8 D1 — THE MAP A TASK OPENS WITH.
 ///
 /// A second store query at UserPrompt, on the CODE lane, carrying the prompt's own words.
@@ -1849,6 +1923,39 @@ mod tests {
         }
         fn ask_value(&self, _: serde_json::Value) -> Result<serde_json::Value, QueryError> {
             Err(QueryError::ShapeChanged("this stub answers only the text path".into()))
+        }
+    }
+
+    /// Sprint 28f Stage 8 D2 — the area injection is scoped to JAVA, and a non-Java path
+    /// must not even ask.
+    ///
+    /// **WHAT THIS DOES NOT COVER, said rather than implied.** The end-to-end injection —
+    /// ask, memo, show once — is not driven here, because `area_on_open` resolves the home
+    /// directory through `home_dir()` and a test that exercised it would write into the
+    /// developer's real `~/.claude`. That seam is a pre-existing limit of this crate (the
+    /// editgate paths in this same file have it too). What IS covered: the memo's own
+    /// behaviour, in `areamemo`'s four unit tests — unshown until marked, per session and
+    /// per package, a name that cannot walk out of its directory, and an unreadable memo
+    /// reading as NOT shown so a failure costs a repeated paragraph rather than a lost
+    /// orientation — plus the ordering below.
+    #[test]
+    fn the_area_injection_does_not_fire_on_a_non_java_file() {
+        // The stub answers the TEXT path only, so if this reached the area query at all it
+        // would fall through anyway — which is why the assertion is about WHICH answer
+        // arrives: the ordinary recall's, with its own heading.
+        let store = Stub(Ok(Answer::Text("[lesson] a line".into())));
+        let out = run(
+            Role::ToolRecall,
+            &config("claude-code"),
+            r#"{"tool_input":{"symbol":"com.example.Importer#classify","file_path":"/src/notes.md"}}"#,
+            &store,
+        );
+        match out {
+            Outcome::Emitted(s) => assert!(
+                s.contains("NOMINEES"),
+                "a non-Java path is the recall's business and not the area's: {s}"
+            ),
+            other => panic!("expected the ordinary recall: {other:?}"),
         }
     }
 

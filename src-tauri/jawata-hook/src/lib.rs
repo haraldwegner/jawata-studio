@@ -12,6 +12,7 @@
 pub mod autonomy;
 pub mod config;
 pub mod cue;
+pub mod areamemo;
 pub mod editgate;
 pub mod javawatch;
 pub mod emit;
