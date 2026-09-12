@@ -119,6 +119,13 @@ silence_reasons! {
     NoCues(String) => "no-cues", SilenceReason::NoCues("TooFewContentTokens".into());
     /// The store was asked and genuinely had nothing.
     StoreHadNothing => "store-had-nothing", SilenceReason::StoreHadNothing;
+    /// Sprint 28f Stage 8 D6: the cue exists but THIS is not that lane's moment, so
+    /// nothing was asked. Its own reason and deliberately not `StoreHadNothing`: that
+    /// one is a claim ABOUT THE STORE, and reporting a question we never put as an
+    /// answer the store gave is the exact confusion this vocabulary exists to prevent.
+    /// The payload names the moment, so the silence rows say which rule was applied.
+    NotThisLanesMoment(String) => "not-this-lanes-moment",
+        SilenceReason::NotThisLanesMoment("a file edit carries no symbol".into());
     /// The store could not be asked, or answered in a shape we do not know.
     QueryFailed(String) => "query-failed", SilenceReason::QueryFailed("ConnectionRefused".into());
 

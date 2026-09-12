@@ -634,16 +634,54 @@ fn recall(
         Err(reason) => return Outcome::Silent(reason),
     };
 
+    // Sprint 28f Stage 8 D6 — A FILE EDIT ALONE TRIGGERS NOTHING.
+    //
+    // Each lane has a MOMENT, and a tool call is not the symptom lane's. An `Edit` or a
+    // `Write` carries a PATH, and a path yields content tokens, so the symptom cue fires
+    // on the file's own name and asks the store what it knows about a word like
+    // "importer" — a question nobody asked, answered into every edit of every file.
+    //
+    // What survives on a tool call is the SYMBOL cue: a payload naming `Type#member` IS a
+    // precise question, and it is the recall gate's own case. Symptoms keep their moment
+    // at UserPrompt, where the words are the user's rather than a filename's.
+    //
+    // Scoped by ROLE and not by payload shape, because the rule is about which moment
+    // this is — the same path text arriving at a prompt would be the user typing it.
+    // A MEMBER cue, not merely a dotted one, and the difference is the whole rule. The
+    // first version kept every symbol cue on a tool call and the bare-edit test stayed
+    // green: `/src/importer/Classifier.java` is dotted, so the extractor reads a type name
+    // out of the FILE NAME and asks the store about it. `Type#member` is what a tool call
+    // genuinely names — it is the recall gate's own case — and a path carries no `#`.
+    let symbols: Vec<String> = match role {
+        Role::ToolRecall => cues
+            .symbols
+            .iter()
+            .filter(|c| c.contains('#'))
+            .cloned()
+            .collect(),
+        _ => cues.symbols.clone(),
+    };
+    let symptoms: &[String] = match role {
+        Role::ToolRecall => &[],
+        _ => &cues.symptoms,
+    };
+    if symbols.is_empty() && symptoms.is_empty() {
+        // NOT `StoreHadNothing`: nothing was asked, and reporting an unasked question as
+        // an answer the store gave is the confusion this vocabulary exists to prevent.
+        return Outcome::Silent(SilenceReason::NotThisLanesMoment(
+            "a tool call with no symbol cue is not the symptom lane's moment".into(),
+        ));
+    }
+
     // Symbol cues first — they are precise, and they fire independently of the
     // two-token gate. Then symptoms. The FIRST answer wins; an absence falls
     // through to the next cue, which is why an observed absence must be
     // distinguishable from a failure here.
     let mut last_failure: Option<QueryError> = None;
-    for (key, cue) in cues
-        .symbols
+    for (key, cue) in symbols
         .iter()
         .map(|c| ("symbol", c))
-        .chain(cues.symptoms.iter().map(|c| ("symptom", c)))
+        .chain(symptoms.iter().map(|c| ("symptom", c)))
     {
         if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
             // Out of budget with a mode line waiting. Reported as a FAILURE,
@@ -1814,6 +1852,69 @@ mod tests {
         }
     }
 
+    /// Sprint 28f Stage 8 D6 — A FILE EDIT ALONE TRIGGERS NOTHING.
+    ///
+    /// An `Edit` carries a PATH, a path yields content tokens, and the symptom cue used to
+    /// fire on the file's own name — asking the store what it knows about a word like
+    /// "importer", into every edit of every file. A tool call is not that lane's moment.
+    #[test]
+    fn a_bare_edit_asks_nothing_and_says_which_rule_stopped_it() {
+        // The stub would ANSWER if asked, so a silence here is the rule and not an
+        // empty store — without that, this passes against a store with nothing in it.
+        let store = Stub(Ok(Answer::Text("[lesson] a line".into())));
+        let out = run(
+            Role::ToolRecall,
+            &config("claude-code"),
+            r#"{"tool_name":"Edit","tool_input":{"file_path":"/src/importer/Classifier.java"}}"#,
+            &store,
+        );
+        match out {
+            Outcome::Silent(SilenceReason::NotThisLanesMoment(why)) => {
+                assert!(why.contains("no symbol cue"), "the reason names the rule: {why}");
+            }
+            other => panic!(
+                "a bare edit must ask nothing, and must not report it as the store having \
+                 nothing — that is a claim about the store: {other:?}"
+            ),
+        }
+    }
+
+    /// THE CONTROL, and without it the rule above is satisfied by a tool path that asks
+    /// nothing ever. A payload naming `Type#member` IS a precise question and still fires.
+    #[test]
+    fn a_tool_call_naming_a_member_still_asks() {
+        let store = Stub(Ok(Answer::Text("[lesson] a line".into())));
+        let out = run(
+            Role::ToolRecall,
+            &config("claude-code"),
+            r#"{"tool_name":"Read","tool_input":{"file_path":"com.example.Importer#classify"}}"#,
+            &store,
+        );
+        match out {
+            Outcome::Emitted(s) => assert!(s.contains("[lesson] a line"), "asked: {s}"),
+            other => panic!("a symbol cue keeps its moment on a tool call: {other:?}"),
+        }
+    }
+
+    /// AND THE SYMPTOM LANE KEEPS ITS OWN MOMENT — the user's words, not a filename's.
+    #[test]
+    fn a_prompt_still_fires_the_symptom_lane() {
+        let store = Stub(Ok(Answer::Text("[lesson] a line".into())));
+        let out = run(
+            Role::UserPrompt,
+            &config("claude-code"),
+            r#"{"prompt":"the importer classifier regression"}"#,
+            &store,
+        );
+        match out {
+            Outcome::Emitted(s) => assert!(
+                s.contains("[lesson] a line"),
+                "the rule is scoped to the tool-call moment, not to the cue's shape: {s}"
+            ),
+            other => panic!("expected an emission: {other:?}"),
+        }
+    }
+
     #[test]
     fn the_map_rides_above_the_nominees_and_is_a_different_block() {
         let store = ByKind {
@@ -2369,13 +2470,18 @@ mod tests {
     /// which shares an arm with `ToolRecall`, so the recall role was never
     /// itself exercised. Asserting the EVENT NAME pins the role rather than
     /// merely the shared code path.
+    ///
+    /// Sprint 28f Stage 8 D6 CHANGED ITS PAYLOAD, not its subject. This test is about the
+    /// ROLE reaching the store and emitting a `PreToolUse` envelope; it used a bare `.java`
+    /// PATH, which no longer asks anything — a tool call fires on a `Type#member` cue now,
+    /// and a path is not one. The member form keeps the test measuring what it names.
     #[test]
     fn tool_recall_reaches_the_store_through_run() {
         let store = Stub(Ok(Answer::Text("[lesson] a line".into())));
         let out = run(
             Role::ToolRecall,
             &config("claude-code"),
-            r#"{"tool_input":{"file_path":"src/main/java/com/example/Importer.java"}}"#,
+            r#"{"tool_input":{"symbol":"com.example.Importer#classify"}}"#,
             &store,
         );
         match out {
@@ -2387,28 +2493,34 @@ mod tests {
         }
     }
 
-    /// 3.7.2 dogfood F2, pinned at the run() level: an ABSOLUTE path must
-    /// recall, not be skipped as a slash command. The existing test above used
-    /// a relative path, which is why the bug lived through it.
+    /// 3.7.2 dogfood F2, pinned at the run() level: an ABSOLUTE path is not a SLASH
+    /// COMMAND. On Linux every absolute path begins with `/`, and applying the typed
+    /// slash-command rule to a tool target made every Read/Edit recall silent.
+    ///
+    /// **Sprint 28f Stage 8 D6 changed the OUTCOME and not the SUBJECT, and this is the
+    /// one place that distinction has to be held.** The path is silent now — a tool call
+    /// fires on a `Type#member` cue, and a path is not one — so the old assertion (it must
+    /// recall, with the `.java` stem as the cue) is gone with the behaviour it guarded.
+    /// What survives is the bug this test exists for: the silence must be
+    /// `NotThisLanesMoment` and must NEVER be `NoCues(SlashCommand)`, which is the 3.7.2
+    /// signature. Asserting the REASON is what keeps the guard pointed at its own subject
+    /// rather than at whichever silence happens to be current.
     #[test]
-    fn tool_recall_on_an_absolute_path_queries_the_type_symbol() {
-        struct SymbolAsserting;
-        impl Store for SymbolAsserting {
-            fn ask(&self, args: serde_json::Value) -> Result<Answer, QueryError> {
-                assert_eq!("ProjectImporter", args["symbol"], "the .java stem is the cue");
-                Ok(Answer::Text("[lesson] a line".into()))
-            }
-            fn ask_value(&self, _: serde_json::Value) -> Result<serde_json::Value, QueryError> {
-                Err(QueryError::ShapeChanged("text path only".into()))
-            }
-        }
+    fn an_absolute_path_is_silent_for_its_lane_and_never_as_a_slash_command() {
+        let store = Stub(Ok(Answer::Text("[lesson] a line".into())));
         let out = run(
             Role::ToolRecall,
             &config("claude-code"),
             r#"{"tool_input":{"file_path":"/home/u/org/jawata/core/ProjectImporter.java"}}"#,
-            &SymbolAsserting,
+            &store,
         );
-        assert!(matches!(out, Outcome::Emitted(_)), "an absolute path must recall: {out:?}");
+        match out {
+            Outcome::Silent(SilenceReason::NotThisLanesMoment(_)) => {}
+            Outcome::Silent(SilenceReason::NoCues(why)) => panic!(
+                "the 3.7.2 bug, back: an absolute path read as a slash command ({why})"
+            ),
+            other => panic!("expected the lane-moment silence: {other:?}"),
+        }
     }
 
     /// The subject-key priority carried over from the script generation: a

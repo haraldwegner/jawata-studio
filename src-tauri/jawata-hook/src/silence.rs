@@ -225,7 +225,7 @@ mod tests {
         let expected = [
             "unknown-role", "role-absent-on-client", "not-configured",
             "stdin-timed-out", "payload-unreadable", "no-cues",
-            "store-had-nothing", "query-failed", "contract-mismatch",
+            "store-had-nothing", "not-this-lanes-moment", "query-failed", "contract-mismatch",
             "cannot-inject", "recorded-not-injected", "nothing-to-observe",
             "answer-unusable", "watchdog-fired", "no-transcript",
             "autonomy-unknown", "stop-allowed", "panicked",
