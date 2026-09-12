@@ -139,7 +139,7 @@ fires when you are already suspicious:
     cannot, which is what a re-derived job is. Run BOTH — a group either finds is
     a group the other may be blind to.
   - `experience(kind="recall", package="<the package you are reviewing>",
-    lane="code")` — the described half. What the store already says this part
+    lane="code", limit=200)` — the described half. What the store already says this part
     of the codebase does. A job recorded here and re-derived in the diff you
     are reviewing is the same finding arriving from the other direction.
 
@@ -160,6 +160,14 @@ fires when you are already suspicious:
     regenerated from the code it came from. An engine older than this seat
     drops it and answers the package unfiltered, which is degraded rather
     than broken — the cue is what the call cannot do without.
+
+    AND `limit` IS NOT DECORATION HERE. Without it the answer is the hook's
+    five-row page, and five rows of a package is not a population: measured at
+    C8 on a package holding fourteen jobs, the five that came back carried a
+    re-derived job and NOT the job it re-derives. D-SIX's finding is the PAIR,
+    so being shown one half of it is being shown nothing. A capped answer says
+    `capped_from`; if you see it, you are reading a sample and must raise the
+    limit before concluding anything about the population.
 
 Neither is evidence on its own and the report must not present them as such.
 The detector's four conditions are structural — same shape, shared
