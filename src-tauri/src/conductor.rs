@@ -12,8 +12,9 @@ use std::path::Path;
 /// fails the build on a seat that exists on disk and is registered here).
 /// Materialized into `<config>/seats/` where absent; the materialized copy
 /// wins so a user-edited seat regenerates every channel on redeploy.
-pub const EMBEDDED_SEATS: [(&str, &str); 9] = [
+pub const EMBEDDED_SEATS: [(&str, &str); 10] = [
     ("architect.md", include_str!("../../seats/architect.md")),
+    ("cataloguer.md", include_str!("../../seats/cataloguer.md")),
     ("debugger.md", include_str!("../../seats/debugger.md")),
     ("javadoc-writer.md", include_str!("../../seats/javadoc-writer.md")),
     ("profiler.md", include_str!("../../seats/profiler.md")),
@@ -30,7 +31,12 @@ pub const EMBEDDED_SEATS: [(&str, &str); 9] = [
 /// every row renders into the deployed command list — both pinned, so the
 /// counts in the generated prose and in the deploy inventory are derived
 /// from this array rather than typed beside it.
-pub const COMMAND_MAP: [(&str, &str, &str); 7] = [
+pub const COMMAND_MAP: [(&str, &str, &str); 8] = [
+    (
+        "cataloguer",
+        "catalogue",
+        "Describe what each member and each package is FOR, resumably (jawata cataloguer seat)",
+    ),
     (
         "javadoc-writer",
         "javadocs",
@@ -340,8 +346,9 @@ pub fn render_antigravity_workflow(seat: &SeatDefinition) -> Option<String> {
 /// language entry everywhere). One row per command-bearing seat — that is the
 /// rule the table is built on, and `phrase_table_covers_every_command` fails
 /// the build on a command that has no way in through plain words.
-pub const PHRASE_MAP: [(&str, &str); 7] = [
+pub const PHRASE_MAP: [(&str, &str); 8] = [
     ("\"document this class\" / \"add javadocs\"", "javadocs"),
+    ("\"what is this package for\" / \"describe this code\"", "catalogue"),
     ("\"write tests for this\" / \"improve coverage\"", "cover"),
     ("\"clean this up\" / \"review the architecture\"", "refactor"),
     ("\"find this bug\" / \"why does this fail\"", "debug"),
@@ -995,6 +1002,42 @@ mod tests {
     }
 
     
+    /// Sprint 28f Stage 7 deliverable 4 — the /catalogue command RENDERS FROM the seat
+    /// file, rather than from prose typed beside it.
+    ///
+    /// The seat's binding half is its FAILURE SHAPE — the three bad summaries it tells the
+    /// agent to refuse in its own draft. A command that carried the loop and dropped that
+    /// text would look complete and would let through exactly the output the store's form
+    /// gate then rejects, which is how a whole batch's budget gets spent on refusals. So the
+    /// assertion is on the stance reaching the command verbatim, not on the command merely
+    /// existing.
+    #[test]
+    fn the_catalogue_command_renders_from_the_cataloguer_seat() {
+        let seat = seats()
+            .into_iter()
+            .find(|s| s.name == "cataloguer")
+            .expect("the cataloguer seat must be embedded");
+        let cmd = render_claude_skill(&seat).expect("cataloguer maps to a command");
+
+        assert!(cmd.contains("name: catalogue"), "the slash name is catalogue:\n{cmd}");
+        assert!(
+            cmd.contains(&seat.stance),
+            "the seat's stance is embedded VERBATIM — a paraphrase is a second copy that \
+             drifts from the file it came from"
+        );
+        assert!(
+            seat.stance.contains("Parses a compilation unit."),
+            "the stance must carry the FAILURE SHAPE by example; without it the seat \
+             describes the wanted output and leaves the wrong one unnamed, which is this \
+             project's recorded reason a seat drifts"
+        );
+        assert!(
+            seat.stance.contains("action=done") && seat.stance.contains("contentHash"),
+            "and the loop must name the verb that closes a unit, with the hash it needs — \
+             a run that never closes a unit re-describes it next time"
+        );
+    }
+
     #[test]
     fn phrase_table_covers_every_command() {
         let table = render_phrase_table(&seats());
