@@ -78,6 +78,18 @@
      * is stated in the hint beside it — a lane with no entries does not appear at all.
      */
     lanes?: Record<string, number>;
+    /**
+     * Sprint 28f Stage 7: how many source units have been DESCRIBED, per bundle — the
+     * cataloguer's progress, exactly as the resident groups it.
+     *
+     * Studio keeps no list of bundles, for the reason `lanes` gives one line up: a
+     * hardcoded set here would be a second copy of a fact the engine owns, and a bundle
+     * added or renamed upstream would show under its old name with a count of zero
+     * forever. A bundle nobody has described does not appear at all.
+     */
+    described?: Record<string, number>;
+    /** Bookkeeping writes the describing ledger LOST — absent when there are none. */
+    describedLost?: number;
   };
   $: storeRows = buildStoreRows(statuses, storeMode);
   // Self-healing selection: switching store mode regroups the rows and can orphan the key.
@@ -113,7 +125,9 @@
           targets: reachable.map((s) => s.workspace),
           reachable: reachable.length > 0,
           error: reachable.length === 0 ? "No resident reachable — retrying…" : null,
-          lanes: laneSplit(first?.stats)
+          lanes: laneSplit(first?.stats),
+          described: describedSplit(first?.stats),
+          describedLost: lostDescribeWrites(first?.stats)
         }
       ];
     }
@@ -126,7 +140,9 @@
       targets: status.reachable ? [status.workspace] : [],
       reachable: status.reachable,
       error: status.error,
-      lanes: laneSplit(status.stats)
+      lanes: laneSplit(status.stats),
+      described: describedSplit(status.stats),
+      describedLost: lostDescribeWrites(status.stats)
     }));
   }
 
@@ -152,6 +168,54 @@
       if (Number.isFinite(count)) out[key] = count;
     }
     return Object.keys(out).length > 0 ? out : undefined;
+  }
+
+  /** The `describing` block the resident reports, or undefined on an older engine. */
+  function describingBlock(
+    stats: KnowledgeWorkspaceStatus["stats"]
+  ): Record<string, unknown> | undefined {
+    const raw = (stats as Record<string, unknown> | null | undefined)?.describing;
+    return raw && typeof raw === "object" ? (raw as Record<string, unknown>) : undefined;
+  }
+
+  /**
+   * Sprint 28f Stage 7 — units described per bundle.
+   *
+   * THE NUMERATOR ONLY, and the hint below says so rather than the view inventing the
+   * other half. How many units a bundle HOLDS is a question only a loaded project can
+   * answer, and the resident's stats cannot see one; a percentage rendered here would be
+   * a ratio made up at the point of display, which is the shape this product has paid
+   * for before.
+   */
+  function describedSplit(
+    stats: KnowledgeWorkspaceStatus["stats"]
+  ): Record<string, number> | undefined {
+    const raw = describingBlock(stats)?.describedPerBundle;
+    if (!raw || typeof raw !== "object") return undefined;
+    const source = raw as Record<string, unknown>;
+    const out: Record<string, number> = {};
+    // Same ordering rule as the lanes, and for the same reason: a bracketed or
+    // lower-case placeholder like "unattributed" is a collector, and it reads last.
+    for (const key of Object.keys(source).sort(
+      (a, b) => Number(a === "unattributed") - Number(b === "unattributed")
+    )) {
+      const count = Number(source[key]);
+      if (Number.isFinite(count)) out[key] = count;
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  }
+
+  /**
+   * Ledger writes that were LOST, or undefined when none were.
+   *
+   * Surfaced beside the counts rather than swallowed: progress computed over dropped rows
+   * reads as "these units were never described" when the truth is "we failed to write it
+   * down", and the two lead to opposite next actions.
+   */
+  function lostDescribeWrites(stats: KnowledgeWorkspaceStatus["stats"]): number | undefined {
+    const raw = describingBlock(stats)?.lostBookkeepingWrites;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
   }
 
   // Auto-reload while residents are unreachable: a freshly (re)started resident needs
@@ -929,6 +993,34 @@
           superseded, a domain fact simply holds, a rule is versioned and retired. A lane
           with no entries is not listed. “Unclassified” is entries whose type no lane rule
           covers — counted here rather than filed under a default, so the gap is visible.
+        </p>
+      {/if}
+
+      <!-- Sprint 28f Stage 7: how much of the CODE has been described. Its own block and
+           not folded into the lanes above: a lane count says what the store HOLDS, this
+           says how far a job has got, and one strip mixing the two reads as neither. -->
+      {#if selectedRow?.described}
+        <div class="lane-split">
+          {#each Object.entries(selectedRow.described) as [bundle, count] (bundle)}
+            <span class="lane" class:lane-unclassified={bundle === "unattributed"}>
+              <strong>{count}</strong>
+              {bundle}
+            </span>
+          {/each}
+        </div>
+        <p class="hint">
+          Source units the cataloguer has described, per bundle — <strong>described, not a
+          percentage</strong>. How many units a bundle holds is a question only a loaded
+          project can answer, so the share is shown where that is known:
+          <code>experience(kind=describe, action=next)</code> answers it as
+          <code>inScope</code>. “Unattributed” is units described before anything said whose
+          they were. A bundle nobody has described is not listed.
+          {#if selectedRow?.describedLost}
+            <strong>
+              {selectedRow.describedLost} bookkeeping write(s) were LOST</strong> — those
+            units will be offered again, and this count is why the figures above may be
+            lower than the work actually done.
+          {/if}
         </p>
       {/if}
       <div class="actions">
