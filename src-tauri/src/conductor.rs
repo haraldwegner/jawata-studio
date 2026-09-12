@@ -1011,6 +1011,69 @@ mod tests {
     /// gate then rejects, which is how a whole batch's budget gets spent on refusals. So the
     /// assertion is on the stance reaching the command verbatim, not on the command merely
     /// existing.
+    /// EVERY RECALL A SEAT INSTRUCTS MUST NAME A CUE — the guard whose absence let a
+    /// dead detection call ship.
+    ///
+    /// The architect seat's D-SIX told the agent to run
+    /// `experience(kind="recall", lane="code", population=true)`. Neither of those two
+    /// selects anything: `population` is not a parameter at all, and `lane` is a FILTER
+    /// that narrows what the cues found. So the call named no CUE, and the store's whole
+    /// answer to it was the sentence "No cue — provide symbol / package / operation /
+    /// symptom." Half of D-SIX's detection had never run, and nothing could say so,
+    /// because a seat's text is prose and prose compiles.
+    ///
+    /// This reads the EMBEDDED seat text — the same bytes the deployed skill carries —
+    /// and asks one structural question of every recall in it. It cannot check that the
+    /// engine answers well; it checks that the call can select anything at all, which is
+    /// the half that was false.
+    #[test]
+    fn every_recall_a_seat_instructs_names_a_cue() {
+        // The cues recall dispatches on. `lane` is deliberately absent: it is a filter
+        // over what the cues found, so a call carrying only `lane` still selects nothing.
+        const CUES: [&str; 5] = ["symbol=", "package=", "operation=", "symptom=",
+                                 "external_system="];
+        // BOTH SPELLINGS, because these files use both: architect writes
+        // `kind="recall"` and `kind=nominate` in the same document. A matcher on one of
+        // them is blind exactly where the corpus varies, which is how a guard reads green
+        // over the case it was written for.
+        let calls: Vec<(String, String)> = seats()
+            .into_iter()
+            .flat_map(|seat| {
+                let stance = seat.stance.clone();
+                let name = seat.name.clone();
+                ["kind=\"recall\"", "kind=recall"]
+                    .iter()
+                    .flat_map(|spelling| {
+                        stance
+                            .match_indices(spelling)
+                            .map(|(at, _)| {
+                                let tail = &stance[at..];
+                                let end =
+                                    tail.find(')').map(|e| e + 1).unwrap_or(tail.len().min(240));
+                                (name.clone(), tail[..end].to_string())
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        for (seat_name, call) in &calls {
+            assert!(
+                CUES.iter().any(|c| call.contains(c)),
+                "seat `{seat_name}` instructs a recall naming no cue, so the store answers \
+                 \"No cue — provide symbol / package / operation / symptom.\" and the step \
+                 is one round-trip to a refusal that reads like detection:\n{call}"
+            );
+        }
+        assert!(
+            !calls.is_empty(),
+            "PROOF OF LIFE: no seat instructs a recall at all, so the loop above asserted \
+             nothing. If a seat's call was reworded out of this shape the guard went blind \
+             rather than green."
+        );
+    }
+
     #[test]
     fn the_catalogue_command_renders_from_the_cataloguer_seat() {
         let seat = seats()
