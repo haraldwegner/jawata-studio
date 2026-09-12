@@ -154,7 +154,14 @@
   // Sprint 28f Stage 5: copies of the EXPERIENCE STORE the resident keeps. Empty means
   // "the resident's default" and is sent as 0 — studio deliberately holds no copy of that
   // default, so the number has one home and cannot drift out of step with the engine.
-  let experienceBackupDepth = "";
+  // NUMBER, not string, and the type is load-bearing. Svelte coerces a `bind:value` on an
+  // `<input type="number">` through its own `to_number` — `''` becomes null, anything else
+  // becomes `+value` — so this variable is never a string once the box is touched. Declared
+  // as a string it type-checked perfectly and threw `.trim is not a function` on the first
+  // keystroke, and because `buildSaveInput()` runs on EVERY bound edit in this component,
+  // that one throw left Save disabled for the whole settings screen. `svelte-check` cannot
+  // see it: it infers the type from the initialiser and agrees with itself.
+  let experienceBackupDepth: number | null = null;
   let deployTargets: DeployTargetFlags = {
     cursor: true,
     claude: true,
@@ -295,8 +302,10 @@
       // Empty box = "the resident's default", sent as 0. The backend stores that as an
       // absent value rather than a depth of zero, which the resident would floor to 1 —
       // silently turning "use your default" into "keep exactly one copy".
-      experienceBackupDepth:
-        experienceBackupDepth.trim().length > 0 ? Number(experienceBackupDepth.trim()) : 0,
+      // An empty box is null (Svelte's own `to_number`), and null is sent as 0 — which the
+      // backend stores as an ABSENT value rather than a depth of zero, since the resident
+      // would floor 0 to 1 and silently turn "use your default" into "keep one copy".
+      experienceBackupDepth: experienceBackupDepth ?? 0,
       deployTargets,
       releaseRepo: releaseRepo.trim().length > 0 ? releaseRepo.trim() : null
     };
@@ -354,8 +363,7 @@
     runtimeKind = nextSettings.globalRuntimeSource.kind;
     mcpMergeMode = nextSettings.mcpMergeMode;
     mcpBackupBeforeWrite = nextSettings.mcpBackupBeforeWrite;
-    experienceBackupDepth =
-      nextSettings.experienceBackupDepth == null ? "" : String(nextSettings.experienceBackupDepth);
+    experienceBackupDepth = nextSettings.experienceBackupDepth;
     mcpClientPaths = nextSettings.mcpClientPaths;
     deployTargets = nextSettings.deployTargets;
     releaseRepo = nextSettings.releaseRepo ?? "";
