@@ -3339,6 +3339,60 @@ mod interruption_scans {
     /// this test's enumeration shrank with the page rather than asserting a
     /// binding for a surface that no longer exists. What survived — the
     /// go-silent switch — is asserted below, on the view itself.
+    /// Sprint 28f D4 — every recall figure says whether it was OBSERVED, where the
+    /// reader meets it.
+    ///
+    /// The heading already switched on `recall.present` and said "Nothing observed
+    /// yet". That was not enough, and the gap is the finding: the list beneath it went
+    /// on rendering `recall?.applied ?? 0` and five siblings, so a machine where no
+    /// observer has ever written displayed SIX ZEROS — and "0 applied" reads as a
+    /// measurement, a damning one, about an agent nobody watched. D4 asks for the
+    /// figure to be shown as observed or labelled as un-observed AT THE POINT OF
+    /// DISPLAY, not in a caveat a paragraph away and a sentence in a Rust const.
+    ///
+    /// The counter set is DERIVED from the serialized struct rather than listed here,
+    /// following this module's own rule: a hand-maintained list is how a Rust-only
+    /// datum stayed green through C1. Only the numeric fields are checked — `present`
+    /// is the state and `coverage` is the sentence, neither is a figure.
+    #[test]
+    fn every_recall_counter_is_labelled_observed_or_not_at_the_point_of_display() {
+        let web = manifest().join("..").join("src").join("lib").join("components");
+        let view = std::fs::read_to_string(web.join("FieldView.svelte")).unwrap();
+
+        assert!(
+            view.contains("not observed"),
+            "the view carries no un-observed label at all, so every figure reads as a \
+             measurement whether or not anything was measured"
+        );
+
+        let shape = serde_json::to_value(RecallSignals::absent()).unwrap();
+        let mut checked = 0;
+        for (key, value) in shape.as_object().unwrap() {
+            if !value.is_number() {
+                continue;
+            }
+            checked += 1;
+            let bare = format!("recall?.{key} ?? 0");
+            assert!(
+                !view.contains(&bare),
+                "`{bare}` prints a zero where nothing was observed — an absence of \
+                 measurement rendered as a result. Read it against `present` and say so \
+                 at the figure."
+            );
+        }
+        assert!(
+            checked >= 6,
+            "only {checked} numeric counters were examined — if RecallSignals stopped \
+             carrying them this test would be passing over an empty loop"
+        );
+
+        assert!(
+            !view.contains("class:recall-bad={(recall?.skipped ?? 0) > 0}"),
+            "the skipped counter still goes red off a defaulted zero, which is a false \
+             alarm about a machine nobody watched"
+        );
+    }
+
     #[test]
     fn the_view_binds_every_datum_the_fold_produces() {
         let web = manifest().join("..").join("src").join("lib").join("components");

@@ -45,6 +45,11 @@
 
   $: utilization = status?.utilization ?? null;
   $: recall = status?.recall ?? null;
+  // D4 — WAS ANYTHING OBSERVED AT ALL. Every counter below is read against this
+  // rather than defaulted to 0: on a machine where no observer has ever written,
+  // a zero is an absence of measurement and printing it as a number states a
+  // result nobody measured.
+  $: recallObserved = !!(recall && recall.present);
   $: store = status?.store ?? null;
   // Stage 9: the classpath half. Loaded once on mount rather than polled — an
   // import's outcome changes when a workspace is (re)loaded, not second to
@@ -257,15 +262,40 @@
           {/if}
         </p>
       </div>
+      <!--
+        Each figure carries its own state. The heading above already says "Nothing
+        observed yet", and that was not enough: the list went on printing six zeros,
+        each of which reads as a measurement — "0 applied" says the agent was handed
+        knowledge and used none of it, which is a damning claim about an agent nobody
+        watched. D4 asks for the figure to be shown as observed or labelled as
+        un-observed AT THE POINT OF DISPLAY, not in a caveat one paragraph away.
+      -->
       <ul class="recall-counts">
-        <li><span>{recall?.applied ?? 0}</span> applied</li>
-        <li><span>{recall?.rejected ?? 0}</span> judged and rejected</li>
-        <li class:recall-bad={(recall?.skipped ?? 0) > 0}>
-          <span>{recall?.skipped ?? 0}</span> taken and never answered
+        <li>
+          {#if recallObserved}<span>{recall.applied}</span>{:else}<span
+              class="recall-unobserved">not observed</span>{/if} applied
         </li>
-        <li><span>{recall?.wouldBlock ?? 0}</span> would block</li>
-        <li><span>{recall?.blocked ?? 0}</span> blocked</li>
-        <li><span>{recall?.unavailable ?? 0}</span> store unavailable</li>
+        <li>
+          {#if recallObserved}<span>{recall.rejected}</span>{:else}<span
+              class="recall-unobserved">not observed</span>{/if} judged and rejected
+        </li>
+        <!-- and the warning colour is gated too: a red zero is a false alarm. -->
+        <li class:recall-bad={recallObserved && recall.skipped > 0}>
+          {#if recallObserved}<span>{recall.skipped}</span>{:else}<span
+              class="recall-unobserved">not observed</span>{/if} taken and never answered
+        </li>
+        <li>
+          {#if recallObserved}<span>{recall.wouldBlock}</span>{:else}<span
+              class="recall-unobserved">not observed</span>{/if} would block
+        </li>
+        <li>
+          {#if recallObserved}<span>{recall.blocked}</span>{:else}<span
+              class="recall-unobserved">not observed</span>{/if} blocked
+        </li>
+        <li>
+          {#if recallObserved}<span>{recall.unavailable}</span>{:else}<span
+              class="recall-unobserved">not observed</span>{/if} store unavailable
+        </li>
       </ul>
       <p class="field-caveat">{recall?.coverage ?? ""}</p>
       {#if store && (store.health === "slow" || store.health === "unavailable")}
@@ -413,6 +443,13 @@
   /* The one number that means something went wrong. */
   .recall-counts .recall-bad span {
     color: var(--color-warning, #d08700);
+  }
+  /* Not a number: it must not inherit the figure's weight, or an absence of
+     measurement reads at a glance as a measured result. */
+  .recall-counts span.recall-unobserved {
+    font-weight: 400;
+    font-style: italic;
+    opacity: 0.7;
   }
 
   .field-caveat {
