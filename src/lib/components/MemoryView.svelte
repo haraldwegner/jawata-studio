@@ -90,6 +90,20 @@
     described?: Record<string, number>;
     /** Bookkeeping writes the describing ledger LOST — absent when there are none. */
     describedLost?: number;
+    /**
+     * Sprint 28f Stage 7: the packages that HAVE an area summary written, as the resident
+     * reports them.
+     *
+     * The complement is deliberately absent and the hint beside it says so: an area with
+     * no row here has not been described yet, and ENUMERATING those needs the population
+     * of packages, which only a loaded project knows. That is the same boundary
+     * `described` above draws by carrying the numerator only.
+     */
+    describedAreas?: string[];
+    /** A sample of the rows the admission gate accepted — what was written, not how much. */
+    acceptedSample?: { symbol?: string; summary: string }[];
+    /** How many rows the sample was drawn FROM — absent when the resident could not say. */
+    acceptedRows?: number;
   };
   $: storeRows = buildStoreRows(statuses, storeMode);
   // Self-healing selection: switching store mode regroups the rows and can orphan the key.
@@ -127,7 +141,10 @@
           error: reachable.length === 0 ? "No resident reachable — retrying…" : null,
           lanes: laneSplit(first?.stats),
           described: describedSplit(first?.stats),
-          describedLost: lostDescribeWrites(first?.stats)
+          describedLost: lostDescribeWrites(first?.stats),
+          describedAreas: describedAreas(first?.stats),
+          acceptedSample: acceptedSample(first?.stats),
+          acceptedRows: acceptedRows(first?.stats)
         }
       ];
     }
@@ -142,7 +159,10 @@
       error: status.error,
       lanes: laneSplit(status.stats),
       described: describedSplit(status.stats),
-      describedLost: lostDescribeWrites(status.stats)
+      describedLost: lostDescribeWrites(status.stats),
+      describedAreas: describedAreas(status.stats),
+      acceptedSample: acceptedSample(status.stats),
+      acceptedRows: acceptedRows(status.stats)
     }));
   }
 
@@ -216,6 +236,64 @@
     const raw = describingBlock(stats)?.lostBookkeepingWrites;
     const n = Number(raw);
     return Number.isFinite(n) && n > 0 ? n : undefined;
+  }
+
+  /**
+   * Sprint 28f Stage 7 — the packages that HAVE an area summary, as the resident reports
+   * them. Undefined on an older engine; EMPTY when the store holds no area row at all,
+   * and the two are deliberately different: an empty list is the honest "nothing has been
+   * summarised yet", which the block below says in words rather than rendering as a blank.
+   *
+   * Studio derives no complement from this. Which packages exist is a question only a
+   * loaded project can answer, and a view that subtracted this list from a set it guessed
+   * at would be inventing the half it cannot see — the same boundary `describedSplit`
+   * keeps by carrying the numerator only.
+   */
+  function describedAreas(
+    stats: KnowledgeWorkspaceStatus["stats"]
+  ): string[] | undefined {
+    const raw = describingBlock(stats)?.describedAreas;
+    if (!Array.isArray(raw)) return undefined;
+    return raw.filter((p): p is string => typeof p === "string" && p.length > 0);
+  }
+
+  /**
+   * A sample of the rows the admission gate accepted — WHAT was written, beside the counts
+   * that say how much. Undefined on an older engine or when nothing has been accepted.
+   *
+   * Listed by SYMBOL because that is what a row carries: a job entry has no bundle and no
+   * package, so the resident cannot group the sample and neither can this.
+   */
+  function acceptedSample(
+    stats: KnowledgeWorkspaceStatus["stats"]
+  ): { symbol?: string; summary: string }[] | undefined {
+    const raw = describingBlock(stats)?.acceptedSample;
+    if (!Array.isArray(raw) || raw.length === 0) return undefined;
+    const out: { symbol?: string; summary: string }[] = [];
+    for (const row of raw) {
+      if (!row || typeof row !== "object") continue;
+      const r = row as Record<string, unknown>;
+      const summary = typeof r.summary === "string" ? r.summary : "";
+      if (!summary) continue;
+      out.push({
+        symbol: typeof r.symbol === "string" ? r.symbol : undefined,
+        summary
+      });
+    }
+    return out.length > 0 ? out : undefined;
+  }
+
+  /**
+   * How many rows the sample was drawn FROM.
+   *
+   * The resident omits this when its own read was capped, rather than publishing a capped
+   * figure as a total — so an absence here means "could not say", and the view shows no
+   * number instead of showing a wrong one.
+   */
+  function acceptedRows(stats: KnowledgeWorkspaceStatus["stats"]): number | undefined {
+    const raw = describingBlock(stats)?.acceptedRows;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : undefined;
   }
 
   // Auto-reload while residents are unreachable: a freshly (re)started resident needs
@@ -1023,6 +1101,64 @@
           {/if}
         </p>
       {/if}
+
+      <!-- Sprint 28f Stage 7: WHICH AREAS HAVE A SUMMARY WRITTEN. Its own block, because a
+           unit count and an area summary are different jobs: describing every unit in a
+           package leaves the package itself unsummarised, and that is the state this
+           names. The list is what the store holds; the complement is stated in WORDS
+           rather than enumerated, because enumerating it needs the set of packages, which
+           only a loaded project knows. A blank here would read as "there is nothing to
+           say", which is the one confusion this panel refuses everywhere else. -->
+      {#if selectedRow?.describedAreas}
+        {#if selectedRow.describedAreas.length > 0}
+          <div class="lane-split">
+            {#each selectedRow.describedAreas as area (area)}
+              <span class="lane">{area}</span>
+            {/each}
+          </div>
+          <p class="hint">
+            Areas with a summary written — <strong
+              >{selectedRow.describedAreas.length} described</strong
+            >. Any area not listed here is <strong>not described yet</strong>. Which areas
+            those ARE cannot be answered from the store: it needs the set of packages a
+            project holds, so <code>experience(kind=describe, action=next)</code> answers
+            it against a loaded project, one row per package in scope — the same place the
+            share above gets its denominator.
+          </p>
+        {:else}
+          <p class="hint">
+            <strong>No area has been described yet.</strong> Units can be described without
+            the package that holds them being summarised, so this stays empty until the
+            cataloguer records an area — it is not a sign that there is nothing to say.
+            <code>experience(kind=describe, action=next)</code> names the packages waiting,
+            which needs a loaded project and is why this view cannot list them.
+          </p>
+        {/if}
+      {/if}
+
+      <!-- Sprint 28f Stage 7: A SAMPLE OF WHAT WAS ACTUALLY WRITTEN. The counts above say
+           how much; this is the only thing on the panel that lets a reader judge whether
+           the work is any good. Listed by symbol because that is what a job row carries —
+           it has neither a bundle nor a package, so neither the resident nor this view can
+           group it, and grouping it anyway would be an attribution invented at the point
+           of display. -->
+      {#if selectedRow?.acceptedSample}
+        <ul class="sample">
+          {#each selectedRow.acceptedSample as row, i (row.symbol ?? i)}
+            <li>
+              {#if row.symbol}<code>{row.symbol}</code>{/if}
+              <span>{row.summary}</span>
+            </li>
+          {/each}
+        </ul>
+        <p class="hint">
+          A sample of what the cataloguer wrote and the admission gate accepted{#if selectedRow?.acceptedRows}
+            — {selectedRow.acceptedSample.length} of
+            {selectedRow.acceptedRows} rows{/if}. At most two rows share a class, so one
+          busy class cannot crowd out the rest. Read these to judge the work; the counts
+          above only say how much of it there is.
+        </p>
+      {/if}
       <div class="actions">
         <button
           type="button"
@@ -1338,6 +1474,30 @@
   .lane-unclassified {
     opacity: 0.7;
     border-style: dashed;
+  }
+  /* Sprint 28f Stage 7: the sample is PROSE to be read, not a row of counts — so it is a
+     list with the sentence given the room to be read, where the lane strip above is a
+     glance. Rendering it as pills would make the one thing on this panel a person must
+     actually read look like another tally. */
+  .sample {
+    list-style: none;
+    margin: 0.5rem 0 0.35rem;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .sample li {
+    font-size: 0.8rem;
+    line-height: 1.35;
+    padding-left: 0.6rem;
+    border-left: 2px solid rgba(148, 163, 184, 0.28);
+  }
+  .sample code {
+    display: block;
+    opacity: 0.75;
+    font-size: 0.75rem;
+    overflow-wrap: anywhere;
   }
   .retired {
     opacity: 0.7;
