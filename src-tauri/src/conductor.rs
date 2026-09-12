@@ -449,23 +449,21 @@ The reader CANNOT check a fact. An entry can be fluent, correctly scoped and fal
 
 Two agents agreeing is the common case and costs him nothing. A disagreement is exactly where a human should look, which is why this gate is conditional and therefore affordable.
 
-## STEP 6 — write the FILE. Recording is not saving
+## STEP 6 — RECORD IT. The store is the store, and it writes the file itself
 
-**The store is derived from a file substrate, so a direct `experience(kind=record)` does not save anything durable.** It writes a row with no file behind it. Nothing can ever REBUILD such a row: engines before v3.17.0 removed it at the very next reseed, and even on a current engine — where the reseed keeps it — a bare wipe or a lost store file takes it permanently, with nothing to put it back.
+**Record to the store. Do not write a markdown file by hand.** This instruction is the REVERSE of what stood here until Sprint 28f, and the reversal is the point: the store used to be rebuilt from a file substrate, so a direct record wrote a row nothing could ever put back, and every agent was told to author a file instead. The store now takes a backup before every destructive verb and writes durably, so the database is the truth and the folder is its export.
 
-The test for anything you want to keep is one question: **after the next wipe, what puts this back?**
+1. `experience(kind=record, type=…, summary=…, situation=…, verdict=…, details=…, symptoms=[…])`. It lands as a **candidate** — stored, findable, and vouching for nothing yet.
+2. When the cold reader in STEP 4 PASSED it, accept it: `experience(kind=promote, id=<the id>, status=accepted)`. That transition is what moves the row into the lane that vouches for answers.
+3. **The store writes the story file at that moment**, if a stories folder is configured, and stamps the row with the date the review happened. You never write that stamp, and that is deliberate — it is the one field the reseed gate trusts, and a field the gate trusts must not be written by the thing it gates. Nothing you can do at step 6 can forge it.
 
-1. Ask the store where the substrate is: `experience(kind=stats)` → `substrate.root`. **Never invent this path.** If it comes back null, the store has no file substrate — say so and stop rather than choosing a directory.
-2. Write the story as one `.md` file under that root, named for its claim, with the frontmatter the template requires: `name`, `description` (the claim), `type`, `situation`, `verdict` for an experience, and **`reviewed:` with today's date — but only if the cold reader in STEP 4 actually passed it.** The stamp says a review HAPPENED. Writing it after a reader you did not run, or after a verdict you overrode, is forging the one thing the reseed gate trusts.
-3. `experience(kind=load, path=<substrate.root>, recursive=true)` — then read the report. Your file must appear in `loaded`. If it is in `skipped`, the reason says why and nothing was stored.
+**`load` is for bringing files IN, never for saving.** It merges — it rewrites rows in place and removes nothing — so it is the right verb for a folder of notes somebody wrote by hand, or for a stories folder restored from git. It is not how you save what you just learned.
 
-   **NOT `wipe_and_import`.** That verb rebuilds the whole store from a root and retires every file-derived source the root no longer holds; reaching for it to add ONE file is how a routine save becomes a mass deletion, which is the accident this verb was renamed to make visible. `load` merges: since Sprint 28f it rewrites in place and removes nothing.
+**NEVER `wipe_and_import` to add one entry.** That verb rebuilds the whole store from a root and retires every file-derived source the root no longer holds; reaching for it to add ONE file is how a routine save becomes a mass deletion, which is the accident the verb was renamed to make visible.
 
 `lesson` and `failure_mode` are experiences: they owe a `situation` and a `verdict` (`worked` / `failed_avoid` / `unproven`), or the gate refuses them. A `domain_fact` owes NEITHER, and nor does an `api_contract`, a `naming_convention` or a `reference` — they never turned out any way at all, and inventing a verdict for one makes retrieval rank on fiction.
 
-**Project state does not go here at all.** A sprint phase, a release announcement, "X is executing" — those are true on the day and false a month later, and nothing retires them. They go to the client's own file memory and never to the substrate.
-
-`experience(kind=record)` keeps one honest use: something genuinely disposable that the flow's own review-and-delete will judge later. If you would mind losing it, it needs a file.
+**Project state does not go in the store at all.** A sprint phase, a release announcement, "X is executing" — those are true on the day and false a month later, and nothing retires them. They go to the client's own file memory.
 
 ## What the run reports
 

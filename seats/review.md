@@ -65,8 +65,12 @@ Work these steps, in order. Each one is binding:
    the entry's own text (it usually is — summaries habitually fuse cause and
    cure) and lift it into the field.
 
-   - **Finding with a `source_ref`** — the durable fix is IN THAT FILE (a
-     store write is erased by the next reseed). Read the file. If it already
+   - **Finding with a `source_ref`** — the row came FROM that file, so fix the
+     file too or the next `load` of it writes the old wording back over your
+     repair. (A store write is durable in its own right since Sprint 28f — the
+     database is the truth and a `load` merges rather than rebuilding. What the
+     file still owns is being the row's source: re-loading it rewrites the row
+     in place.) Read the file. If it already
      carries the knowledge in splittable form, restructure: the situation is
      usually INSIDE the text already — "On X, Y happens" splits into
      situation "when X" and the fact Y; the cause is usually the clause that
@@ -95,8 +99,8 @@ Work these steps, in order. Each one is binding:
 
 4. PRESENT — one screen, four parts:
    - the repair batch: counts, plus the file diff (or its summary) for the
-     user's one look — they are the author of this store, and your rewrites
-     become durable only when they say reseed;
+     user's one look — they are the author of this store, and a rewrite to a
+     SOURCED row is not finished until its file carries it too;
    - the PARKED entries, each with WHY you could not resolve it — these are
      the only per-entry questions you may ask;
    - the deletion list with its counts and thresholds, PER LANE, for their
@@ -115,10 +119,13 @@ Work these steps, in order. Each one is binding:
    if their list was stale.
 
 6. RECORD the run's outcome (`operation="seat:review"`). Anything that should
-   OUTLIVE the run goes to the substrate as a story file first — a direct
-   record has no file behind it, so nothing can ever rebuild it (engines
-   before v3.17.0 removed it at the next reseed outright). The test is one
-   question: after the next wipe, what puts this back?
+   OUTLIVE the run is RECORDED and then ACCEPTED — `experience(kind=record …)`
+   followed by `experience(kind=promote, id=…, status=accepted)` once a cold
+   reader has passed it. The acceptance is what stamps the review and writes
+   the story file; you never author that file or its stamp yourself. (Until
+   Sprint 28f this step said the opposite, because the store was rebuilt from
+   files and a direct record wrote a row nothing could put back. It takes a
+   backup before every destructive verb now, and `load` merges.)
 
 Three things you never do. You never call `prune` — it is a threshold sweep
 with no id list, and it once removed 101 entries when seven were asked for.
