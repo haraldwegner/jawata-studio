@@ -116,19 +116,32 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
             let deadline = mode
                 .as_ref()
                 .map(|_| std::time::Instant::now() + std::time::Duration::from_millis(800));
-            match (mode, recall(role, client, payload, store, deadline)) {
-                (None, out) => out,
-                // The mode line rides ON TOP of whatever the recall said…
-                (Some(line), Outcome::Emitted(rendered)) => {
-                    Outcome::Emitted(prepend_context(client, &rendered, &line))
+            // Sprint 28f Stage 8 D1 — THE MAP. A second query, on the code
+            // lane, with the prompt's own words: what this codebase IS, before
+            // anything about what to do. It rides the same way the mode line
+            // does and for the same reason — the store being empty or down is
+            // a fact about the store, and the other blocks do not depend on it.
+            let map = map_for_prompt(payload, store, deadline);
+            // Order is the reading order: the grant's state, then the ground,
+            // then the nominees. The map is deliberately ABOVE the nominees —
+            // a description of this code is not a candidate to weigh, and a
+            // reader meets the two in that order.
+            let extras: Vec<String> = [mode, map].into_iter().flatten().collect();
+            match (extras, recall(role, client, payload, store, deadline)) {
+                (e, out) if e.is_empty() => out,
+                // The extra blocks ride ON TOP of whatever the recall said…
+                (e, Outcome::Emitted(rendered)) => {
+                    Outcome::Emitted(prepend_context(client, &rendered, &e.join("\n\n")))
                 }
-                // …and it does NOT depend on the recall saying anything. The
+                // …and they do NOT depend on the recall saying anything. The
                 // store being silent, unreachable or empty is a fact about the
                 // store; the grant's state is a fact about this session, and
                 // tying the second to the first would make the synchronisation
                 // vanish exactly when the resident is down — a dependency
                 // nothing about the grant justifies.
-                (Some(line), Outcome::Silent(_)) => emit_body(client, Role::UserPrompt, line),
+                (e, Outcome::Silent(_)) => {
+                    emit_body(client, Role::UserPrompt, e.join("\n\n"))
+                }
             }
         }
         // Sprint 28c: the autonomy signal, finally supplied. This line read
@@ -701,6 +714,66 @@ fn finish(
 /// The one place a body becomes an emission, so "was it actually delivered?"
 /// has a single answer for every caller — the question D9's ledger has to ask
 /// before it burns a week's slot.
+/// Sprint 28f Stage 8 D1 — THE MAP A TASK OPENS WITH.
+///
+/// A second store query at UserPrompt, on the CODE lane, carrying the prompt's own words.
+/// The engine answers with the areas and jobs its cataloguer wrote about this code, already
+/// rendered as a `JAWATA MAP —` block; this emits it verbatim, which is the standing
+/// division of labour — rendering lives in the engine where it is tested, and the hooks stay
+/// dumb enough that a wording change needs no release of this crate.
+///
+/// **It asks the code lane and only the code lane.** The recall beside it fires on symbol and
+/// symptom cues and answers with nominees to judge; this answers with a description of the
+/// codebase, which is a different kind of thing and must not be weighed the same way.
+///
+/// **`Nothing` is an ordinary outcome and is silent HERE rather than empty.** The engine
+/// distinguishes "the store carries no description" (which it says in words, inside the
+/// block) from "the lookup did not run" (a typed error). What this function must never do is
+/// turn the second into the first: a failed query returns `None`, so the prompt carries no
+/// map at all rather than a map asserting an absence nobody measured.
+///
+/// The deadline is the UserPrompt arm's own budget, shared with the recall for the reason
+/// that arm records: a mode line is waiting, and its delivery must not be hostage to store
+/// latency. Out of budget, the map is skipped — it is the least load-bearing of the three
+/// blocks, and skipping it costs a reader context rather than correctness.
+fn map_for_prompt(
+    payload: &str,
+    store: &dyn Store,
+    deadline: Option<std::time::Instant>,
+) -> Option<String> {
+    if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+        return None;
+    }
+    // THE SAME GATE THE RECALL TAKES, asked of the same module, and the first version of
+    // this function did not and was wrong for it: two tests went red because a map was
+    // emitted for a SLASH COMMAND, which the cue module skips on purpose — a command
+    // invocation is not a description of work, and its text must not be mined as one.
+    //
+    // Asking `cues_for` rather than re-deciding here is the point. "Is this typed text
+    // worth putting to the store" is one question with one owner, and a second answer to
+    // it would agree today and drift the first time either moves. The cost is stated: a
+    // prompt too short to yield cues gets no map either, and if that ever needs to differ
+    // it differs in the cue module, where both readers see it.
+    cues_for(Role::UserPrompt, payload).ok()?;
+    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let question = string_at(&value, &["prompt"])?;
+    if question.trim().is_empty() {
+        return None;
+    }
+    match store.ask(serde_json::json!({
+        "kind": "nominate",
+        "question": question,
+        "lane": "code",
+        "format": "text",
+    })) {
+        Ok(Answer::Text(text)) if !text.trim().is_empty() => Some(text),
+        // Nothing, an empty body, or a store that could not answer: no block. The
+        // engine says an absence IN the block when it ran; anything else here is us
+        // not knowing, and printing a claim would be inventing one.
+        _ => None,
+    }
+}
+
 fn emit_body(client: Client, role: Role, body: String) -> Outcome {
     match emit::context_for(role, client, body) {
         Emission::Silent => Outcome::Silent(by_design_or_failed(role, client)),
@@ -1709,6 +1782,110 @@ mod tests {
             timeout_ms: Some(50),
             field_dir: None,
             recall_gate: None,
+        }
+    }
+
+    /// Answers the two UserPrompt questions DIFFERENTLY, which is what makes the map
+    /// assertions mean anything: a stub returning one canned string for every `kind` would
+    /// put the same text in both blocks and could not tell them apart.
+    struct ByKind {
+        map: Result<Answer, QueryError>,
+        recall: Result<Answer, QueryError>,
+    }
+    impl Store for ByKind {
+        fn ask(&self, q: serde_json::Value) -> Result<Answer, QueryError> {
+            match q.get("kind").and_then(|k| k.as_str()) {
+                Some("nominate") => {
+                    // The lane is the whole point of the second query, so the stub
+                    // REFUSES to answer a nomination that did not name it — a hook that
+                    // dropped the lane would silently get the every-lane answer.
+                    assert_eq!(
+                        q.get("lane").and_then(|l| l.as_str()),
+                        Some("code"),
+                        "the map asks the code lane by name"
+                    );
+                    self.map.clone()
+                }
+                _ => self.recall.clone(),
+            }
+        }
+        fn ask_value(&self, _: serde_json::Value) -> Result<serde_json::Value, QueryError> {
+            Err(QueryError::ShapeChanged("this stub answers only the text path".into()))
+        }
+    }
+
+    #[test]
+    fn the_map_rides_above_the_nominees_and_is_a_different_block() {
+        let store = ByKind {
+            map: Ok(Answer::Text("JAWATA MAP — what this code is\n  area: the store".into())),
+            recall: Ok(Answer::Text("[lesson] a line".into())),
+        };
+        let out = run(
+            Role::UserPrompt,
+            &config("claude-code"),
+            r#"{"prompt":"the importer classifier regression"}"#,
+            &store,
+        );
+        match out {
+            Outcome::Emitted(s) => {
+                let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+                let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+                assert!(ctx.contains("JAWATA MAP —"), "the map block is there: {ctx}");
+                assert!(ctx.contains("NOMINEES"), "and so is the shortlist: {ctx}");
+                assert!(
+                    ctx.find("JAWATA MAP —").unwrap() < ctx.find("NOMINEES").unwrap(),
+                    "the ground before the candidates — a description of this code is not \
+                     a candidate to weigh, and the reader meets them in that order: {ctx}"
+                );
+            }
+            other => panic!("expected an emission: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_map_still_rides_when_the_recall_has_nothing() {
+        // The two queries are independent. A map suppressed because the OTHER question
+        // found nothing would make the orientation vanish exactly on an unfamiliar topic,
+        // which is when it is worth most.
+        let store = ByKind {
+            map: Ok(Answer::Text("JAWATA MAP — what this code is\n  area: the store".into())),
+            recall: Ok(Answer::Nothing),
+        };
+        let out = run(
+            Role::UserPrompt,
+            &config("claude-code"),
+            r#"{"prompt":"the importer classifier regression"}"#,
+            &store,
+        );
+        match out {
+            Outcome::Emitted(s) => {
+                assert!(s.contains("JAWATA MAP —"), "the map survives a silent recall: {s}");
+            }
+            other => panic!("expected an emission: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_store_that_could_not_answer_the_map_emits_no_map_block() {
+        // An unreachable store must not produce a block at all. The engine says an absence
+        // IN the block when it ran; anything printed here would be a claim about a codebase
+        // nobody looked at.
+        let store = ByKind {
+            map: Err(QueryError::Unreachable("connection refused".into())),
+            recall: Ok(Answer::Text("[lesson] a line".into())),
+        };
+        let out = run(
+            Role::UserPrompt,
+            &config("claude-code"),
+            r#"{"prompt":"the importer classifier regression"}"#,
+            &store,
+        );
+        match out {
+            Outcome::Emitted(s) => {
+                assert!(!s.contains("JAWATA MAP"), "no map, and no invented absence: {s}");
+                assert!(s.contains("NOMINEES"), "the recall is unaffected: {s}");
+            }
+            other => panic!("expected an emission: {other:?}"),
         }
     }
 
