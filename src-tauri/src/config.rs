@@ -269,6 +269,21 @@ pub struct ManagerSettings {
     /// Sprint 21b: a config key only — no UI (backups are plumbing).
     #[serde(default = "default_backup_retention")]
     pub backup_retention: u32,
+    /// Sprint 28f Stage 5: how many copies of the EXPERIENCE STORE the resident keeps,
+    /// passed as `-Djawata.backups.depth`.
+    ///
+    /// NOT `backup_retention`, which is the number of versions studio keeps of each
+    /// CONFIG FILE it writes. They are different artifacts with costs three orders of
+    /// magnitude apart — a config file is kilobytes, the store was measured at 37 MB —
+    /// so one number governing both would be wrong for whichever it was not chosen for.
+    ///
+    /// `None` means "whatever the resident's own default is", and that is deliberate:
+    /// `StoreBackups.DEFAULT_DEPTH` is the one place the number lives, so studio holds no
+    /// second copy of it to drift. The property is emitted ONLY when the user has set a
+    /// value — an unset setting sends nothing rather than re-asserting a default studio
+    /// would have to keep in step.
+    #[serde(default)]
+    pub experience_backup_depth: Option<u32>,
 }
 
 pub fn default_experience_store_mode() -> String {
@@ -277,6 +292,24 @@ pub fn default_experience_store_mode() -> String {
 
 pub fn default_backup_retention() -> u32 {
     10
+}
+
+/// Sprint 28f Stage 5 — what a requested experience-store backup depth is STORED as.
+///
+/// ZERO is how the UI says "back to the resident's default": the resident floors a real
+/// depth at 1 and treats 0 as a misunderstanding, so 0 can never be a depth anyone meant.
+/// It is stored as ABSENT rather than as 0, which keeps the convention out of the config
+/// file — a later reader would otherwise have to know it to interpret the number.
+///
+/// A function rather than three lines inside `update_settings`, because that method takes
+/// an input with a dozen required fields and nothing in this crate constructs one: the rule
+/// would have been real and unreachable by any test. Put where it can be asked.
+pub fn store_backup_depth(requested: u32) -> Option<u32> {
+    if requested == 0 {
+        None
+    } else {
+        Some(requested.clamp(1, 500))
+    }
 }
 
 /// Sprint 21a (item D): auto-seed is ON by default — a store that starts empty keeps
@@ -376,6 +409,9 @@ impl ManagerSettings {
             experience_store_mode: default_experience_store_mode(),
             memory_roots: Vec::new(),
             backup_retention: default_backup_retention(),
+            // None = the resident's own StoreBackups.DEFAULT_DEPTH. Studio keeps no
+            // second copy of that number, so the two cannot drift.
+            experience_backup_depth: None,
         }
     }
 
@@ -482,6 +518,11 @@ pub struct UpdateSettingsInput {
     pub memory_roots: Option<Vec<String>>,
     #[serde(default)]
     pub backup_retention: Option<u32>,
+    /// Sprint 28f Stage 5: the resident's experience-store backup depth. A frontend that
+    /// does not send it leaves the stored value alone; sending `Some(0)` is how the UI
+    /// says "back to the resident's default", since the resident floors a real depth at 1.
+    #[serde(default)]
+    pub experience_backup_depth: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1190,6 +1231,9 @@ impl ConfigStore {
                 .map(|root| root.trim().to_string())
                 .filter(|root| !root.is_empty())
                 .collect();
+        }
+        if let Some(depth) = input.experience_backup_depth {
+            settings.experience_backup_depth = store_backup_depth(depth);
         }
         if let Some(retention) = input.backup_retention {
             settings.backup_retention = retention.clamp(1, 500);

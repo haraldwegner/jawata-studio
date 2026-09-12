@@ -6782,6 +6782,15 @@ fn knowledge_jvm_properties(settings: &ManagerSettings) -> Vec<String> {
     }
     // Sprint 21b: no -Djawata.memory.max* — the resident's defaults are runaway backstops
     // ("the crawl finds everything"); the properties remain honored for manual launches.
+    //
+    // Sprint 28f Stage 5: the experience-store backup depth, and ONLY when the user set
+    // one. An unset setting sends nothing, so the number has exactly one home —
+    // StoreBackups.DEFAULT_DEPTH in the resident — and studio holds no copy of it to
+    // drift. Emitting a default here would be a second definition that agrees today and
+    // is wrong the first time either side moves, with nothing to say so.
+    if let Some(depth) = settings.experience_backup_depth {
+        props.push(format!("-Djawata.backups.depth={depth}"));
+    }
     props
 }
 
@@ -12284,6 +12293,57 @@ judge was never told to give"
         assert!(
             props.iter().all(|p| !p.contains("jawata.memory.max")),
             "no -Djawata.memory.max* from studio"
+        );
+        // Sprint 28f Stage 5: and NO backup-depth property, because none was set. This
+        // half is the control for the test below — without it, "the property appears when
+        // the setting is set" is equally true of a studio that always sends it.
+        assert!(
+            props.iter().all(|p| !p.contains("jawata.backups.depth")),
+            "an UNSET depth sends nothing: the default lives in the resident, and a \
+             property emitted here would be a second copy of it"
+        );
+    }
+
+    /// Sprint 28f Stage 5 — the store's backup depth reaches the resident, and only when
+    /// the user asked for one.
+    ///
+    /// The default is deliberately NOT asserted to any number here. It lives in
+    /// `StoreBackups.DEFAULT_DEPTH` on the Java side, and a Rust test pinning a number
+    /// would be exactly the second definition this design avoids: it would agree today
+    /// and go quietly wrong the first time either side moved.
+    #[test]
+    fn a_set_backup_depth_reaches_the_resident_and_an_unset_one_sends_nothing() {
+        let paths = crate::config::AppPaths {
+            config_dir: std::path::PathBuf::from("/tmp/config"),
+            state_dir: std::path::PathBuf::from("/tmp/state"),
+            cache_dir: std::path::PathBuf::from("/tmp/cache"),
+            projects_file: std::path::PathBuf::from("/tmp/config/projects.json"),
+            settings_file: std::path::PathBuf::from("/tmp/config/settings.json"),
+            runtime_state_file: std::path::PathBuf::from("/tmp/state/runtime-state.json"),
+            default_data_root: std::path::PathBuf::from("/tmp/cache/jawata-studio"),
+            log_dir: std::path::PathBuf::from("/tmp/state/logs"),
+        };
+        let mut settings = ManagerSettings::default_for_paths(&paths);
+        settings.experience_backup_depth = Some(3);
+        let props = knowledge_jvm_properties(&settings);
+        assert!(
+            props.contains(&"-Djawata.backups.depth=3".to_string()),
+            "the depth the user set must reach the resident verbatim; got {props:?}"
+        );
+
+        // AND THE ZERO CONVENTION, which is where this could most easily go wrong: the UI
+        // says "back to the resident's default" by sending 0, and it is stored as None
+        // rather than as a depth of zero — a value the resident would floor to 1, silently
+        // turning "use your default" into "keep exactly one copy".
+        assert_eq!(
+            crate::config::store_backup_depth(0),
+            None,
+            "zero means 'use the resident's default', which is stored as an absent value"
+        );
+        assert_eq!(
+            crate::config::store_backup_depth(3),
+            Some(3),
+            "and a real depth is kept as itself"
         );
     }
 

@@ -26,9 +26,18 @@ Work these steps, in order. Each one is binding:
 1. DETECT. Call `experience(kind="review_sweep")`. Four questions, four lanes —
    never merged into one ranking:
 
-   - **the deletion list** — shown often, chosen never. Consider REMOVING.
-   - **the writing backlog** — asked repeatedly, never answered. Consider
-     WRITING.
+   - **the deletion list**, in `deletionListByLane` — shown often, chosen never.
+     Consider REMOVING. It arrives GROUPED BY LANE and there is no combined
+     list any more: read one lane at a time, because dropping a stale
+     experience and dropping a domain fact nobody consulted are different acts
+     and a mixed list is one nobody can rule on.
+   - **the writing backlog**, in `writingBacklogByTrigger` — asked repeatedly,
+     never answered. Consider WRITING. Grouped by the SURFACE that asked, so a
+     gap in what agents type and a gap in what a hook fires on are told apart.
+     **Read `backlogRecordedBy` before concluding anything from a missing
+     group**: it names every surface that OPENS a demand row, and a surface
+     absent from it records nothing at all. A group that is not there means
+     that surface never asks in a way the ledger sees — NOT that nobody asked.
    - **the quality lane** — entries whose form nothing mechanical can derive.
      Consider REWRITING — and that is YOUR work now, not a question.
    - **the candidates awaiting review** — `stats.catalogue.awaitingReview` and
@@ -90,8 +99,10 @@ Work these steps, in order. Each one is binding:
      become durable only when they say reseed;
    - the PARKED entries, each with WHY you could not resolve it — these are
      the only per-entry questions you may ask;
-   - the deletion list with its counts and thresholds, for their NAMING —
-     deleting none is a normal outcome, accepted without argument;
+   - the deletion list with its counts and thresholds, PER LANE, for their
+     NAMING — deleting none is a normal outcome, accepted without argument.
+     Keep the lanes apart in what you present, too: merging them back into one
+     ranking for tidiness undoes the distinction the sweep exists to draw;
    - the backlog and the awaiting-review count, each with your one-line
      recommendation.
 

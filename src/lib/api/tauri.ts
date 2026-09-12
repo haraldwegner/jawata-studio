@@ -59,6 +59,10 @@ export interface ManagerSettings {
   memoryRoots: string[];
   /** Backup plumbing — config key only, no UI. */
   backupRetention: number;
+  /** Sprint 28f Stage 5: copies of the EXPERIENCE STORE the resident keeps. `null` means
+   *  the resident's own default — studio holds no second copy of that number. NOT
+   *  `backupRetention`, which is versions of each CONFIG FILE studio writes. */
+  experienceBackupDepth: number | null;
 }
 
 /** Represents path configuration for a specific MCP client. */
@@ -143,6 +147,8 @@ export interface UpdateSettingsInput {
   experienceStoreMode?: string | null;
   memoryRoots?: string[] | null;
   backupRetention?: number | null;
+  /** Send 0 to go back to the resident's default; omit to leave the stored value alone. */
+  experienceBackupDepth?: number | null;
 }
 
 // ===== Sprint 21a (item F): Knowledge view =====

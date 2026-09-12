@@ -151,6 +151,10 @@
   }
   let mcpMergeMode: McpMergeMode = "safeMerge";
   let mcpBackupBeforeWrite = true;
+  // Sprint 28f Stage 5: copies of the EXPERIENCE STORE the resident keeps. Empty means
+  // "the resident's default" and is sent as 0 — studio deliberately holds no copy of that
+  // default, so the number has one home and cannot drift out of step with the engine.
+  let experienceBackupDepth = "";
   let deployTargets: DeployTargetFlags = {
     cursor: true,
     claude: true,
@@ -206,6 +210,7 @@
       mcpClientPaths: nextSettings.mcpClientPaths,
       mcpMergeMode: nextSettings.mcpMergeMode,
       mcpBackupBeforeWrite: nextSettings.mcpBackupBeforeWrite,
+      experienceBackupDepth: nextSettings.experienceBackupDepth,
       deployTargets: nextSettings.deployTargets,
       releaseRepo: nextSettings.releaseRepo
     };
@@ -251,6 +256,7 @@
       mcpClientPaths: normalizeMcpClientPaths(input.mcpClientPaths),
       mcpMergeMode: input.mcpMergeMode,
       mcpBackupBeforeWrite: input.mcpBackupBeforeWrite,
+      experienceBackupDepth: input.experienceBackupDepth,
       deployTargets: {
         cursor: input.deployTargets.cursor,
         claude: input.deployTargets.claude,
@@ -286,6 +292,11 @@
       mcpClientPaths,
       mcpMergeMode,
       mcpBackupBeforeWrite,
+      // Empty box = "the resident's default", sent as 0. The backend stores that as an
+      // absent value rather than a depth of zero, which the resident would floor to 1 —
+      // silently turning "use your default" into "keep exactly one copy".
+      experienceBackupDepth:
+        experienceBackupDepth.trim().length > 0 ? Number(experienceBackupDepth.trim()) : 0,
       deployTargets,
       releaseRepo: releaseRepo.trim().length > 0 ? releaseRepo.trim() : null
     };
@@ -343,6 +354,8 @@
     runtimeKind = nextSettings.globalRuntimeSource.kind;
     mcpMergeMode = nextSettings.mcpMergeMode;
     mcpBackupBeforeWrite = nextSettings.mcpBackupBeforeWrite;
+    experienceBackupDepth =
+      nextSettings.experienceBackupDepth == null ? "" : String(nextSettings.experienceBackupDepth);
     mcpClientPaths = nextSettings.mcpClientPaths;
     deployTargets = nextSettings.deployTargets;
     releaseRepo = nextSettings.releaseRepo ?? "";
@@ -1033,6 +1046,26 @@
       <label class="checkbox-row" title="Write a .bak copy of each MCP config file before deploying changes">
         <input bind:checked={mcpBackupBeforeWrite} disabled={interactionDisabled} on:change={handleBoundEdit} type="checkbox" />
         <span>Create backup before MCP config write</span>
+      </label>
+
+      <label class="field">
+        <span>Memory-store backup copies</span>
+        <input
+          bind:value={experienceBackupDepth}
+          disabled={interactionDisabled}
+          min="1"
+          max="500"
+          on:change={handleBoundEdit}
+          placeholder="engine default"
+          type="number"
+        />
+        <span class="hint">
+          How many copies of the MEMORY STORE each resident keeps before evicting the
+          oldest — a different thing from the MCP config backups above, and far larger:
+          the store was measured at 37 MB, so ten copies is about 370 MB before
+          compression. Leave it empty to use the engine's own default; the engine is
+          where that number lives, so studio does not keep a second copy of it.
+        </span>
       </label>
     </section>
   </div>

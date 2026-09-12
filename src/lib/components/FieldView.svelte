@@ -49,7 +49,10 @@
   // rather than defaulted to 0: on a machine where no observer has ever written,
   // a zero is an absence of measurement and printing it as a number states a
   // result nobody measured.
-  $: recallObserved = !!(recall && recall.present);
+  // Sprint 28f: the observed/un-observed guard was a derived boolean here and is now the
+  // expression itself at each site. TypeScript cannot narrow `recall` through a derived
+  // name, so the guard the READER sees and the guard the COMPILER sees have to be the
+  // same one — and `npm run check` was red for seven errors until they were.
   $: store = status?.store ?? null;
   // Stage 9: the classpath half. Loaded once on mount rather than polled — an
   // import's outcome changes when a workspace is (re)loaded, not second to
@@ -272,28 +275,28 @@
       -->
       <ul class="recall-counts">
         <li>
-          {#if recallObserved}<span>{recall.applied}</span>{:else}<span
+          {#if recall && recall.present}<span>{recall.applied}</span>{:else}<span
               class="recall-unobserved">not observed</span>{/if} applied
         </li>
         <li>
-          {#if recallObserved}<span>{recall.rejected}</span>{:else}<span
+          {#if recall && recall.present}<span>{recall.rejected}</span>{:else}<span
               class="recall-unobserved">not observed</span>{/if} judged and rejected
         </li>
         <!-- and the warning colour is gated too: a red zero is a false alarm. -->
-        <li class:recall-bad={recallObserved && recall.skipped > 0}>
-          {#if recallObserved}<span>{recall.skipped}</span>{:else}<span
+        <li class:recall-bad={!!recall && recall.present && recall.skipped > 0}>
+          {#if recall && recall.present}<span>{recall.skipped}</span>{:else}<span
               class="recall-unobserved">not observed</span>{/if} taken and never answered
         </li>
         <li>
-          {#if recallObserved}<span>{recall.wouldBlock}</span>{:else}<span
+          {#if recall && recall.present}<span>{recall.wouldBlock}</span>{:else}<span
               class="recall-unobserved">not observed</span>{/if} would block
         </li>
         <li>
-          {#if recallObserved}<span>{recall.blocked}</span>{:else}<span
+          {#if recall && recall.present}<span>{recall.blocked}</span>{:else}<span
               class="recall-unobserved">not observed</span>{/if} blocked
         </li>
         <li>
-          {#if recallObserved}<span>{recall.unavailable}</span>{:else}<span
+          {#if recall && recall.present}<span>{recall.unavailable}</span>{:else}<span
               class="recall-unobserved">not observed</span>{/if} store unavailable
         </li>
       </ul>
