@@ -36,9 +36,37 @@
 //!
 //! **What would let it block**: a second, structural signal that a nominee is the
 //! same JOB rather than merely the nearest text — the four conditions
-//! `re_derived_job` applies to code that exists. They cannot be applied to a
-//! draft, which has no resolved bindings, so the confirming half is missing and
-//! is named here rather than approximated.
+//! `re_derived_job` applies to code that exists. Those conditions need resolved
+//! bindings, and the draft reaching this gate has none, so the confirming half is
+//! missing and is named here rather than approximated.
+//!
+//! # THE SECOND DECLARED DEVIATION, and why the first does not rest on it
+//!
+//! An earlier version of the paragraph above said bindings "cannot be applied to
+//! a draft", as though that were a fact about drafts. A C8 audit called it
+//! circular and was right. `DraftSource` parses the text STANDALONE and asks for
+//! no bindings — so "the draft has no bindings" is a consequence of how this is
+//! built, not a property of the input. The plan asked for a JDT WORKING COPY,
+//! which resolves against a real project and classpath and WOULD supply them.
+//! That is deviation two, declared here.
+//!
+//! What it would actually buy is narrower than it sounds, which is why it is a
+//! deviation rather than a defect. A working copy needs a loaded project and an
+//! existing compilation unit to be a copy OF. This gate fires on a hook, where a
+//! resident may have nothing loaded and where a `Write` is frequently creating a
+//! file that does not exist yet — `DuplicateCheckTest` pins exactly that, the
+//! verb reporting `existingKnown: false` rather than treating unreadable as
+//! empty. So a working copy would confirm on the `Edit`-into-a-loaded-project
+//! subset and go on being absent everywhere else, and a gate that blocks on one
+//! subset and not another is harder to reason about than one that never blocks.
+//!
+//! **The deviation does not depend on any of this.** The reason this ships in
+//! `Observe` is the FIRST leg above, which is a measurement about the store's
+//! ranking and says nothing about bindings: rank one always comes back, so
+//! denying on it denies every Java write. That leg stands whether or not the
+//! confirming half is ever built. The binding argument was only ever the answer
+//! to "what would let it block LATER", and it is restated here as what it is —
+//! work not done, not a wall.
 //!
 //! # Fail OPEN, and say which
 //!
@@ -460,9 +488,14 @@ mod tests {
 
     /// THE DEVIATION, PINNED. The plan ruled that this gate ships in `Block`; it
     /// ships in `Observe`, because the engine's own test measures that rank one
-    /// comes back for a draft with nothing to do with the stored job. Asserting
-    /// the default here is what makes the deviation visible to anyone who
-    /// changes it back without supplying the confirming signal.
+    /// comes back for a draft with nothing to do with EITHER stored job — two are
+    /// recorded there precisely so the ranking has to choose. Asserting the
+    /// default here is what makes the deviation visible to anyone who changes it
+    /// back without supplying the confirming signal.
+    ///
+    /// The module note carries both deviations: this one, and the working copy
+    /// the plan asked `DraftSource` for and did not get. Only THIS one decides
+    /// the mode.
     #[test]
     fn it_ships_in_observe_and_block_must_be_asked_for() {
         assert_eq!(Mode::Observe, Mode::parse(None));

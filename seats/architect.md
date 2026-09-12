@@ -138,10 +138,28 @@ fires when you are already suspicious:
     duplicate whose TOKENS match, this one finds the duplicate whose tokens
     cannot, which is what a re-derived job is. Run BOTH — a group either finds is
     a group the other may be blind to.
-  - `experience(kind="recall", lane="code", population=true)` — the described
-    half. What the store already says this part of the codebase does. A job
-    recorded here and re-derived in the diff you are reviewing is the same
-    finding arriving from the other direction.
+  - `experience(kind="recall", package="<the package you are reviewing>",
+    lane="code")` — the described half. What the store already says this part
+    of the codebase does. A job recorded here and re-derived in the diff you
+    are reviewing is the same finding arriving from the other direction.
+
+    THE CUE IS REQUIRED AND IT IS YOURS TO SUPPLY. Recall answers a CUE —
+    `package`, `symbol`, `operation`, `symptom` — and a call carrying none
+    answers, verbatim, *"No cue — provide symbol / package / operation /
+    symptom."* An earlier version of this line asked for
+    `lane="code", population=true` and named no cue at all, so every run of
+    this half got that sentence back: it read like a detection call and was
+    one round-trip to a refusal. You are reviewing a scope, so you already
+    hold the cue — name the package. Several packages means several calls.
+
+    AND THE TWO IT NAMED ARE NOT THE SAME KIND OF WRONG, which is worth
+    keeping because the fix for each differs. `population` is not a parameter
+    at all. `lane` IS one, and is kept above — but it is a FILTER and not a
+    cue, in the engine's own words: it NARROWS what the cues found, so it
+    cannot stand in for one. `code` is the lane you want here, being the one
+    regenerated from the code it came from. An engine older than this seat
+    drops it and answers the package unfiltered, which is degraded rather
+    than broken — the cue is what the call cannot do without.
 
 Neither is evidence on its own and the report must not present them as such.
 The detector's four conditions are structural — same shape, shared
