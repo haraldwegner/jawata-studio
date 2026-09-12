@@ -381,7 +381,12 @@ pub fn render_phrase_table(seats: &[SeatDefinition]) -> String {
 ///   process depends on was simply absent everywhere else. Its body is now
 ///   single-sourced from `skills/sprint.md` and rides the same deploy as the rest.
 pub const UTILITY_MAP: [(&str, &str); 2] = [
-    ("memorize", "Extract what this session actually learned, review it cold, and write it into the knowledge substrate the store is rebuilt from"),
+    // Sprint 28f Stage 6: this line is the ONE every client displays — it is interpolated
+    // into each generated artifact's frontmatter — and it said "the knowledge substrate the
+    // store is rebuilt from" while the body 68 lines below said the opposite, in the same
+    // commit whose subject was that the texts stop telling agents to write the store's
+    // files. A description is a shipped claim, not a label.
+    ("memorize", "Extract what this session actually learned, review it cold, and record it to the store — which stamps the review and writes the story file when a reader accepts it"),
     ("sprint", "Run the two-seat EDITOR+AUDITOR pipeline for a sprint doc and/or its actionable plan — the RAW working doc stays the audit baseline, the CLEAN spec is written for the user, a fresh-context auditor can REFUSE and loops until sign-off, and the user signs off LAST"),
 ];
 
@@ -455,9 +460,9 @@ Two agents agreeing is the common case and costs him nothing. A disagreement is 
 
 1. `experience(kind=record, type=…, summary=…, situation=…, verdict=…, details=…, symptoms=[…])`. It lands as a **candidate** — stored, findable, and vouching for nothing yet.
 2. When the cold reader in STEP 4 PASSED it, accept it: `experience(kind=promote, id=<the id>, status=accepted)`. That transition is what moves the row into the lane that vouches for answers.
-3. **The store writes the story file at that moment**, if a stories folder is configured, and stamps the row with the date the review happened. You never write that stamp, and that is deliberate — it is the one field the reseed gate trusts, and a field the gate trusts must not be written by the thing it gates. Nothing you can do at step 6 can forge it.
+3. **The store writes the story file at that moment**, if a stories folder is configured, and stamps the row with the date the review happened. You never write that stamp, and that is deliberate — it is the one field `wipe_and_import`'s gate trusts, and a field a gate trusts must not be written by the thing it gates. Nothing you can do at step 6 can forge it.
 
-**`load` is for bringing files IN, never for saving.** It merges — it rewrites rows in place and removes nothing — so it is the right verb for a folder of notes somebody wrote by hand, or for a stories folder restored from git. It is not how you save what you just learned.
+**`experience(kind=load, path=…, recursive=true)` is for bringing files IN, never for saving.** It merges — it rewrites rows in place and removes nothing — so it is the right verb for a folder of notes somebody wrote by hand, or for a stories folder restored from git. It is not how you save what you just learned.
 
 **NEVER `wipe_and_import` to add one entry.** That verb rebuilds the whole store from a root and retires every file-derived source the root no longer holds; reaching for it to add ONE file is how a routine save becomes a mass deletion, which is the accident the verb was renamed to make visible.
 
@@ -703,6 +708,70 @@ mod tests {
     ///  - every COMMAND_MAP row names an embedded seat and renders into the
     ///    deployed command list;
     ///  - the generated prose's counts are the arrays', not typed beside them.
+    /// NO SHIPPED TEXT TELLS AN AGENT TO REBUILD THE STORE FROM FILES.
+    ///
+    /// Sprint 28f Stage 6 reversed the model: the database is the truth and the story
+    /// folder is its export. `load` merges — it rewrites rows in place and removes
+    /// nothing — while `wipe_and_import` (once `reseed`) rebuilds a whole store from a
+    /// root and retires every file-derived source the root no longer holds. A text that
+    /// sends an agent to the second one to save a single entry turns a routine save into
+    /// a mass deletion.
+    ///
+    /// THE SWEEP EXISTS BECAUSE THE SEAT TEXTS WERE OTHERWISE UNGATED. The sibling test
+    /// below asserts every `seats/*.md` is EMBEDDED; it never reads a word of their
+    /// content. So `seats/review.md` could say — and did say, for three paragraphs —
+    /// that a store write "becomes durable only when they say reseed", with nothing able
+    /// to notice. The C6 audit found the gap by looking for this test and not finding it.
+    ///
+    /// It reads the SHIPPED bytes: the embedded seats and the rendered utility bodies,
+    /// which is what a client actually receives.
+    #[test]
+    fn shipped_texts_name_no_reseed() {
+        let mut offenders: Vec<String> = Vec::new();
+        for (name, body) in EMBEDDED_SEATS {
+            if body.contains("reseed") {
+                offenders.push(format!("seats/{name}"));
+            }
+        }
+        for (command, _) in UTILITY_MAP {
+            let body = utility_body(command);
+            if body.contains("reseed") {
+                offenders.push(format!("/{command}"));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these shipped texts still name `reseed`, which rebuilds a whole store from a \
+             root and retires every source that root no longer holds — a text that names \
+             it as the way to SAVE turns a routine save into a mass deletion: {offenders:?}"
+        );
+    }
+
+    /// AND THE INSTRUCTION THAT REPLACED IT IS NAMED, not merely absent.
+    ///
+    /// The sweep above is a negative, and a negative alone is satisfied by a text that
+    /// says nothing at all about how knowledge is brought in. This asserts the positive
+    /// half the plan asks for: the substrate rule instructs `load`.
+    #[test]
+    fn the_substrate_rule_instructs_load() {
+        let memorize = utility_body("memorize");
+        assert!(
+            memorize.contains("kind=load"),
+            "/memorize must name `load` as the way files are brought IN — without it the \
+             no-reseed sweep is satisfied by a text that explains nothing"
+        );
+        let review = EMBEDDED_SEATS
+            .iter()
+            .find(|(n, _)| *n == "review.md")
+            .map(|(_, b)| *b)
+            .expect("review.md is embedded");
+        assert!(
+            review.contains("merge") || review.contains("merges"),
+            "the review seat must say that bringing files in MERGES — its repair advice \
+             is what a reader follows when a stored row and its source file disagree"
+        );
+    }
+
     #[test]
     fn every_seat_file_is_embedded_and_the_prose_counts_match() {
         let seats_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../seats");
