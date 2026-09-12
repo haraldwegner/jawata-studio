@@ -6937,15 +6937,19 @@ pub(crate) fn canary_probe_at(
 /// drifting from it: the engine publishes verbs an agent calls (`nominate`,
 /// `decide`, `review_sweep`, `fallback`) which no human clicks. What governs
 /// membership is the sentence above — a name here is a name you would say.
-/// Sprint 28f Stage 5 adds `retire_rule` and nothing else from the rule lifecycle, which
-/// is the governing sentence above applied rather than relaxed. Retiring IS a click: you
-/// are looking at a rule and you say it stopped applying. `promote_rule` is not — it
-/// distils a rule FROM source entries, so it needs a set nobody can select here, and
-/// `amend_rule` needs the amended sentence itself. Both stay prompt verbs, and adding
-/// them with no button would be a capability nobody employs.
+/// Sprint 28f Stage 5 adds `promote_rule` and `retire_rule` — the two the stage's own
+/// clause puts here, in its words: *"`promote_rule(ids…)` (creates version 1 linked to its
+/// sources, **from studio**)"* and *"`MemoryView`: lanes, **promote/retire**"*.
+///
+/// `amend_rule` is NOT here, and that is the governing sentence above applied rather than
+/// a shortcut: amending needs the amended SENTENCE — what the rule says now — which is
+/// authoring, not a click, and the clause attributes it to no surface. Promoting needs a
+/// set of source entries and a sentence too, but the view LISTS the entries, so selecting
+/// them is exactly the thing a screen is better at than a prompt.
 const EXPERIENCE_KINDS: &[&str] = &[
     "record", "recall", "primer", "list", "load", "wipe_and_import", "refresh", "wipe", "promote",
     "export", "import", "prune", "dedup", "compact", "stats", "backup", "restore", "retire_rule",
+    "promote_rule",
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -9617,43 +9621,40 @@ mod tests {
     /// not fails on the vocabulary — two different errors, and telling them apart is the
     /// whole measurement.
     ///
-    /// The narrowing is the claim, not an omission. `retire_rule` is a click: you are
-    /// looking at a rule and you say it stopped applying. `promote_rule` distils a rule
-    /// FROM source entries and `amend_rule` needs the amended sentence itself — neither is
-    /// a thing this view can hand over, so admitting them would publish a capability with
-    /// no employer. If a button for either is ever built, this test fails and says so.
+    /// The narrowing is the claim, not an omission. The stage's clause puts TWO of the
+    /// three verbs here — *"`promote_rule(ids…)` … from studio"* and *"`MemoryView`:
+    /// lanes, promote/retire"* — and says nothing of `amend_rule`, which needs the amended
+    /// SENTENCE and is authoring rather than a click. If a button for it is ever built,
+    /// this test fails and says so.
     #[test]
     fn the_rule_lifecycle_reaches_the_resident_only_where_studio_has_a_button() {
         let server = url_server("ws", 1, "tok", false);
 
-        let forwarded = ManagerService::experience_verb_on(
-            &server,
-            "retire_rule",
-            serde_json::json!({"id": "some-rule"}),
-        )
-        .expect_err("port 1 has no listener, so this must fail — the question is HOW");
-        assert!(
-            !forwarded.contains("unknown experience verb"),
-            "retire_rule must get PAST the allowlist: a Retire button wired to a verb the \
-             bridge refuses fails against an engine that implements it perfectly, and fails \
-             in studio where the engine's own tests cannot see it: {forwarded}"
-        );
-
-        for kind in ["promote_rule", "amend_rule"] {
-            let refusal =
+        for kind in ["retire_rule", "promote_rule"] {
+            let forwarded =
                 ManagerService::experience_verb_on(&server, kind, serde_json::json!({}))
-                    .expect_err("a verb with no button must be refused, not forwarded");
+                    .expect_err("port 1 has no listener, so this must fail — the question is HOW");
             assert!(
-                refusal.contains("unknown experience verb"),
-                "{kind} has no button, so it must be refused by the VOCABULARY and not \
-                 reach the network: {refusal}"
-            );
-            assert!(
-                refusal.contains("retire_rule"),
-                "and the vocabulary it prints must be the real one, which now includes the \
-                 verb that DOES have a button: {refusal}"
+                !forwarded.contains("unknown experience verb"),
+                "{kind} must get PAST the allowlist: a button wired to a verb the bridge \
+                 refuses fails against an engine that implements it perfectly, and fails in \
+                 studio where the engine's own tests cannot see it: {forwarded}"
             );
         }
+
+        let refusal =
+            ManagerService::experience_verb_on(&server, "amend_rule", serde_json::json!({}))
+                .expect_err("a verb with no button must be refused, not forwarded");
+        assert!(
+            refusal.contains("unknown experience verb"),
+            "amend_rule has no button, so it must be refused by the VOCABULARY and not \
+             reach the network: {refusal}"
+        );
+        assert!(
+            refusal.contains("retire_rule") && refusal.contains("promote_rule"),
+            "and the vocabulary it prints must be the real one, which now includes both \
+             verbs that DO have a button: {refusal}"
+        );
     }
 
     /// Sprint 28f D2 — the bridge half of *"Restore is a click in studio, by version."*

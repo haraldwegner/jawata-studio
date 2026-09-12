@@ -295,12 +295,24 @@
         break;
       case "list": {
         const ruleCount = asCount(p.rules);
-        const awaiting = asCount(p.awaitingReview);
         if (ruleCount !== undefined) {
-          lines.push(`${ruleCount} rule(s), ${awaiting ?? 0} entr(ies) awaiting review`);
+          lines.push(
+            `${ruleCount} rule(s), ${asCount(p.entries) ?? 0} entr(ies), ` +
+              `${asCount(p.awaitingReview) ?? 0} awaiting review`
+          );
         }
         break;
       }
+      case "promote_rule":
+        if (typeof p.id === "string") {
+          const sources = Array.isArray(p.derived_from) ? p.derived_from.length : undefined;
+          lines.push(
+            `Promoted as v${p.rule_version ?? 1}` +
+              (sources !== undefined ? `, drawn from ${sources} entr(ies)` : "") +
+              ". The sources are NOT superseded — they go on answering as themselves."
+          );
+        }
+        break;
       case "backup":
         if (typeof p.backup === "string") {
           lines.push(
@@ -583,15 +595,54 @@
   // pay for two more queries on every status refresh.
   let curationShown = false;
   let rules: Array<Record<string, unknown>> = [];
-  let candidates: Array<Record<string, unknown>> = [];
+  let entries: Array<Record<string, unknown>> = [];
+
+  // Sprint 28f Stage 5 — promoting entries INTO a rule, which the stage's clause puts
+  // here in as many words: "promote_rule(ids…) (creates version 1 linked to its sources,
+  // FROM STUDIO)". Choosing which entries a rule is drawn from IS the act, and a screen
+  // that already lists them is where a prompt is worst and this is best.
+  let selectedSources = new Set<string>();
+  let ruleSentence = "";
+
+  $: awaitingReview = entries.filter((e) => e.status === "candidate").length;
+  $: canPromoteRule = selectedSources.size > 0 && ruleSentence.trim().length > 0;
 
   // A curation list belongs to ONE store, for the same reason the version list does:
   // leaving the previous store's rows on screen beside buttons that would now act on a
-  // different database is worse than showing nothing.
+  // different database is worse than showing nothing. The half-written rule goes with
+  // them — a sentence drafted about one store's entries is not about another's.
   $: if (selected) {
     rules = [];
-    candidates = [];
+    entries = [];
+    selectedSources = new Set();
+    ruleSentence = "";
     curationShown = false;
+  }
+
+  /**
+   * Svelte 4 reacts to ASSIGNMENT, not to mutation, so a Set that is added to in place
+   * leaves the button disabled while the box is visibly ticked. A new Set each time.
+   */
+  function toggleSource(id: string, on: boolean) {
+    const next = new Set(selectedSources);
+    if (on) {
+      next.add(id);
+    } else {
+      next.delete(id);
+    }
+    selectedSources = next;
+  }
+
+  async function promoteToRule() {
+    if (!canPromoteRule) return;
+    await runVerb("promote_rule", {
+      ids: [...selectedSources],
+      summary: ruleSentence.trim()
+    });
+    // Cleared only after the call, so a failure leaves the draft and the selection where
+    // the person can see what was attempted and try again.
+    ruleSentence = "";
+    selectedSources = new Set();
   }
 
   function entriesOf(payload: unknown): Array<Record<string, unknown>> {
@@ -626,17 +677,24 @@
     if (!quiet) busyAction = "list";
     try {
       const target = selectedRow.targets[0];
-      const [ruleReply, candidateReply] = await Promise.all([
+      const [ruleReply, entryReply] = await Promise.all([
         experienceVerb(target, "list", { type: "rule", limit: 200 }),
-        experienceVerb(target, "list", { status: "candidate", limit: 200 })
+        experienceVerb(target, "list", { limit: 200 })
       ]);
       rules = entriesOf(ruleReply.success ? ruleReply.data : null);
-      candidates = entriesOf(candidateReply.success ? candidateReply.data : null);
+      // Rules are excluded from the entry list because they have their own list above
+      // with their own action — a row appearing twice with two different buttons is the
+      // mixed list this block exists to avoid. They remain selectable as SOURCES nowhere,
+      // which is deliberate: a rule drawn from a rule is an amendment, a different verb.
+      entries = entriesOf(entryReply.success ? entryReply.data : null).filter(
+        (e) => e.type !== "rule"
+      );
       curationShown = true;
       if (!quiet) {
         showResult("list", {
           rules: rules.length,
-          awaitingReview: candidates.length
+          entries: entries.length,
+          awaitingReview: awaitingReview
         });
       }
     } catch (error) {
@@ -1004,9 +1062,8 @@
           <h4>Rules — {rules.length}</h4>
           {#if rules.length === 0}
             <p class="hint">
-              No rules yet. A rule is distilled FROM entries at the prompt — “promote these
-              into a rule” — because choosing which entries it is drawn from is the act, and
-              there is nothing here to select them with.
+              No rules yet. Tick the entries a rule is drawn from in the list below, write
+              the sentence, and promote them.
             </p>
           {:else}
             <ul class="root-list">
@@ -1015,6 +1072,12 @@
                   <span>
                     <strong>v{rule.rule_version ?? 1}</strong>
                     {textOf(rule, "summary")}
+                    <!-- No sources here, and that is measured rather than forgotten: links
+                         live in their own table, which is why the EXPORT has to join them
+                         in, so a `list` row cannot carry them. A rule's sources are shown
+                         where the plan measures them — in the promote response, below —
+                         and making them visible on a rule afterwards is an engine change
+                         nobody has asked for. Recorded at C5 rather than half-built. -->
                     {#if rule.retired_at}
                       <em class="retired">— stopped applying {onDay(rule.retired_at)}</em>
                     {/if}
@@ -1040,34 +1103,76 @@
             </p>
           {/if}
 
-          <h4>Awaiting review — {candidates.length}</h4>
-          {#if candidates.length === 0}
-            <p class="hint">Nothing is waiting: every entry has been vouched for.</p>
+          <h4>Entries — {entries.length}, {awaitingReview} awaiting review</h4>
+          {#if entries.length === 0}
+            <p class="hint">No entries in this store yet — “Load” seeds it from your files.</p>
           {:else}
             <ul class="root-list">
-              {#each candidates as entry (entry.id)}
+              {#each entries as entry (entry.id)}
                 <li>
-                  <span>
-                    <strong>{textOf(entry, "type")}</strong>
-                    {textOf(entry, "summary")}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={!!busyAction || interactionDisabled}
-                    on:click={() => promoteOneEntry(String(entry.id))}
-                    title="Accept this entry — it is then offered as vouched-for knowledge rather than as a candidate."
-                  >
-                    Promote
-                  </button>
+                  <label class="source-pick" title="Select as a source for a new rule">
+                    <input
+                      type="checkbox"
+                      checked={selectedSources.has(String(entry.id))}
+                      disabled={!!busyAction || interactionDisabled}
+                      on:change={(event) =>
+                        toggleSource(String(entry.id), event.currentTarget.checked)}
+                    />
+                    <span>
+                      <strong>{textOf(entry, "type")}</strong>
+                      {textOf(entry, "summary")}
+                    </span>
+                  </label>
+                  {#if entry.status === "candidate"}
+                    <button
+                      type="button"
+                      disabled={!!busyAction || interactionDisabled}
+                      on:click={() => promoteOneEntry(String(entry.id))}
+                      title="Accept this entry — it is then offered as vouched-for knowledge rather than as a candidate."
+                    >
+                      Promote
+                    </button>
+                  {/if}
                 </li>
               {/each}
             </ul>
             <p class="hint">
-              Capped at 200 each. Promoting accepts one entry; there is no accept-all,
-              deliberately — vouching for something nobody read is what the review exists to
-              prevent.
+              Up to 200 (the order is the store's own, not a recency ranking). Promoting
+              accepts ONE entry; there is deliberately no accept-all — vouching for
+              something nobody read is what the review exists to prevent.
             </p>
           {/if}
+
+          <!-- Sprint 28f Stage 5: "promote_rule(ids…) creates version 1 linked to its
+               sources, FROM STUDIO". The sentence is required and is not generated: a
+               rule is what the tick-boxes MEAN taken together, and distilling them is the
+               whole promotion — a generated line would do the mechanics and deliver none
+               of it. -->
+          <div class="promote-rule">
+            <label class="field">
+              <span>Promote {selectedSources.size} selected into a rule</span>
+              <input
+                bind:value={ruleSentence}
+                disabled={!!busyAction || interactionDisabled}
+                placeholder="the rule itself — one sentence a reader can follow and act on"
+                type="text"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={!canPromoteRule || !!busyAction || interactionDisabled}
+              on:click={promoteToRule}
+              title="Write a standing rule drawn from the ticked entries. They are NOT superseded — they go on answering as themselves, and the rule records which ones it came from."
+            >
+              Promote to rule
+            </button>
+          </div>
+          <p class="hint">
+            The sources keep answering as themselves; the rule records which they were. Tick
+            at least one entry and write the sentence — neither is optional, because a rule
+            with no sources is an assertion nobody can check and a generated sentence is not
+            a rule. Amending one later is a prompt verb: the amended sentence IS the work.
+          </p>
         </div>
       {/if}
 
@@ -1145,6 +1250,28 @@
   .retired {
     opacity: 0.7;
     font-style: italic;
+  }
+  /* The checkbox and the entry it selects are ONE label, so the whole row is the hit
+     target — a tick-box a person has to aim at is how the wrong entry gets sourced. */
+  .source-pick {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    cursor: pointer;
+    min-width: 0;
+  }
+  .source-pick input {
+    flex: none;
+  }
+  .promote-rule {
+    display: flex;
+    align-items: flex-end;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+  }
+  .promote-rule .field {
+    flex: 1;
+    min-width: 0;
   }
   .result-block {
     margin-top: 0.4rem;
