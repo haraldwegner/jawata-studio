@@ -459,6 +459,71 @@ pub fn purity_check(touched_files: &[String], scope_prefixes: &[String]) -> Gate
     )
 }
 
+/// The marker an architect report uses to ORDER a second implementation of a job
+/// the codebase already does.
+pub const DELIBERATE_DUPLICATE: &str = "DELIBERATE DUPLICATE:";
+
+/// Sprint 28f Stage 8 D5 — A SECOND IMPLEMENTATION MAY BE ORDERED, NEVER SILENTLY.
+///
+/// The architect seat's D-SIX rule refuses a second implementation of a job the
+/// system already does. It is a REFUSAL and not a prohibition: sometimes the
+/// right answer genuinely is two, and the seat may say so. What it may not do is
+/// say so without saying WHY.
+///
+/// This is the same reason the duplicate gate's disposition token takes a reason
+/// rather than being a bare word. A one-word bypass is how a rule decays into a
+/// ritual — and here the cost lands on somebody else entirely: the next person to
+/// meet the two implementations has to work out from scratch whether the
+/// duplication was a decision or an accident, which is exactly the question the
+/// whole sprint exists to have answered in advance.
+///
+/// It is deliberately NOT a judgement about whether the reason is a good one.
+/// That is the human's at the review screen. This checks only that a reason was
+/// given, which is the half a machine can check and the half that is otherwise
+/// skipped.
+pub fn deliberate_duplicate_check(report: &str) -> GateOutcome {
+    let mut ordered = 0usize;
+    let mut bare = Vec::new();
+    for line in report.lines() {
+        let Some(at) = line.find(DELIBERATE_DUPLICATE) else {
+            continue;
+        };
+        ordered += 1;
+        let reason = line[at + DELIBERATE_DUPLICATE.len()..].trim();
+        // A reason has to say something. An empty tail, or a word, is the bare
+        // token this exists to refuse — the seat's own text calls "not relevant"
+        // with nothing behind it the reflex it must not produce.
+        if reason.len() < 12 {
+            bare.push(line.trim().to_string());
+        }
+    }
+    if ordered == 0 {
+        return GateOutcome::pass(
+            GateClass::Always,
+            "deliberate-duplicate",
+            "the report orders no second implementation",
+        );
+    }
+    if bare.is_empty() {
+        return GateOutcome::pass(
+            GateClass::Always,
+            "deliberate-duplicate",
+            &format!("{ordered} ordered, each with its reason"),
+        );
+    }
+    GateOutcome::fail(
+        GateClass::Always,
+        "deliberate-duplicate",
+        &format!(
+            "{} of {ordered} order a second implementation with no reason: {:?}. \
+             D-SIX permits ordering one; it does not permit ordering one silently, \
+             because the next reader cannot tell a decision from an accident.",
+            bare.len(),
+            bare
+        ),
+    )
+}
+
 /// The gate seam: 8a's tests script it; the resident-backed implementation
 /// (`ResidentGateExecutor`) drives the real mcp calls. Class semantics per
 /// spec D2: Always = compile-verify (purity is run by the LOOP, not the
@@ -1155,7 +1220,21 @@ pub fn run_seat(
         // --- VERIFY: purity first (local), then the gate classes ---
         gate_outcomes.clear();
         gate_outcomes.push(purity_check(&proposal.touched_files, &request.scope));
-        if gate_outcomes.last().is_some_and(|g| g.passed) {
+        // Sprint 28f Stage 8 D5: an ordered second implementation must carry its
+        // reason. It runs on the PROPOSAL TEXT rather than on the touched files,
+        // because the order is a sentence in the report and not an edit — and it
+        // runs for every seat rather than only the architect, since a marker in
+        // anyone's report makes the same claim and deserves the same question.
+        // BOTH the emitted files and the prose evidence, because the architect's
+        // report IS a proposal file (`ARCHITECT-REPORT.md`) while another seat
+        // could put the same order in the evidence above the markers. Checking
+        // one of the two would leave a place to say it where nothing looks.
+        let ordered_in = std::iter::once(proposal.evidence.as_str())
+            .chain(proposal.files.iter().map(|f| f.content.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        gate_outcomes.push(deliberate_duplicate_check(&ordered_in));
+        if gate_outcomes.iter().all(|g| g.passed) {
             gate_outcomes.extend(gates.run_class(GateClass::Always, &proposal));
             for class in &request.seat.gate_classes {
                 gate_outcomes.extend(gates.run_class(*class, &proposal));
@@ -2412,6 +2491,76 @@ pub fn due_seats<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sprint 28f Stage 8 D5 — THE DELIBERATE-DUPLICATE ORDER.
+    ///
+    /// D-SIX lets the architect order a second implementation of a job the
+    /// system already does. What it does not let anyone do is order one
+    /// silently, and this is the half a machine can check.
+    mod deliberate_duplicate_order {
+        use super::*;
+
+        const CLEAN: &str = "# Findings\n\n1. incomplete delegation at Foo#bar\n\n\
+                             # Deliberate duplicates\n\nnone this run.\n";
+
+        #[test]
+        fn a_report_that_orders_none_passes() {
+            let out = deliberate_duplicate_check(CLEAN);
+            assert!(out.passed, "{out:?}");
+            assert!(out.detail.contains("orders no second implementation"), "{out:?}");
+        }
+
+        #[test]
+        fn an_order_with_its_reason_passes() {
+            let report = format!(
+                "{CLEAN}\n{} the vendor feed is not ours to re-author, so the second \
+                 reader stays and the shared helper is the only cure available.\n",
+                DELIBERATE_DUPLICATE
+            );
+            let out = deliberate_duplicate_check(&report);
+            assert!(out.passed, "an ordered duplicate WITH a reason is permitted: {out:?}");
+            assert!(out.detail.contains("1 ordered"), "{out:?}");
+        }
+
+        #[test]
+        fn the_same_order_without_a_reason_is_refused() {
+            let report = format!("{CLEAN}\n{}\n", DELIBERATE_DUPLICATE);
+            let out = deliberate_duplicate_check(&report);
+            assert!(!out.passed, "a bare marker is the one-word bypass: {out:?}");
+            assert!(
+                out.detail.contains("D-SIX permits ordering one"),
+                "and the refusal must say what is permitted, or it reads as a ban on \
+                 something the rule allows: {out:?}"
+            );
+        }
+
+        #[test]
+        fn a_one_word_reason_is_not_a_reason() {
+            // The failure shape the rule names: "not relevant" with nothing
+            // behind it. A marker followed by a token satisfies a naive
+            // non-empty check and says nothing to the next reader.
+            let report = format!("{CLEAN}\n{} needed\n", DELIBERATE_DUPLICATE);
+            assert!(!deliberate_duplicate_check(&report).passed);
+        }
+
+        #[test]
+        fn one_bad_order_among_several_is_named_rather_than_lost() {
+            let report = format!(
+                "{CLEAN}\n{d} the two lanes genuinely behave differently — untrusted \
+                 input is quarantined and curated input is not.\n{d}\n",
+                d = DELIBERATE_DUPLICATE
+            );
+            let out = deliberate_duplicate_check(&report);
+            assert!(!out.passed, "{out:?}");
+            assert!(
+                out.detail.contains("1 of 2"),
+                "a report is refused on the ONE that is bare, and the count says which — \
+                 'the report has a problem' sends the author back to read all of it: \
+                 {out:?}"
+            );
+        }
+    }
+
     // Unix-only: the seat fixtures below are `#!/bin/sh` scripts, which Windows
     // cannot execute at all, so the tests that use them are gated rather than
     // ported. See the note on `write_echo_script`.
@@ -2776,6 +2925,57 @@ You are the echo seat. You document what you are told to document.
                 assert!(reason.contains("build/pom.xml"), "{reason}");
             }
             other => panic!("expected purity refusal, got {other:?}"),
+        }
+    }
+
+    /// THE WIRING for the deliberate-duplicate gate.
+    ///
+    /// `deliberate_duplicate_check` is unit-tested on its own, and a pure
+    /// function nothing calls is this repository's recorded failure shape — the
+    /// duplicate gate in the hook crate shipped exactly that way earlier in this
+    /// same stage and only an end-to-end test found it. So this drives the whole
+    /// loop and asserts the RUN is refused, which nothing but the gate being in
+    /// the verify step can produce.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreasoned_duplicate_order_refuses_the_whole_run() {
+        let dir = unique_tempdir("e2e-dup-order");
+        fixture_with_target(&dir);
+        let canned = dir.join("canned.diff");
+        // IN SCOPE, so purity passes and the refusal below can only be this gate.
+        let script = write_echo_script(&dir, &canned, false);
+        // Re-write the script so its EVIDENCE carries a bare order.
+        let body = format!(
+            "#!/bin/sh\ncase \"$1\" in\n  *'PHASE: DETECT'*) echo 'WORK: document Foo';;\n  \
+             *) echo 'I read Foo.java. {DELIBERATE_DUPLICATE}'; echo '{PROPOSAL_BEGIN}'; \
+             cat '{}'; echo '{PROPOSAL_END}';;\nesac\n",
+            canned.display()
+        );
+        fs::write(&script, body).unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let seat = echo_seat();
+        let request = request_in(&seat, &dir);
+        let adapter = ScriptAdapter {
+            command: "sh".into(),
+            args: vec![script.to_string_lossy().into_owned()],
+        };
+        let gates = ScriptedGates { fail_class: None };
+        let store = CapturingStore::default();
+
+        let report = run_seat(&request, &adapter, &gates, &&store).expect("run");
+        match &report.verdict {
+            Verdict::Refused(reason) => {
+                assert!(reason.contains("deliberate-duplicate"), "{reason}");
+                assert!(
+                    reason.contains("D-SIX permits ordering one"),
+                    "the refusal must say what IS permitted, or it reads as a ban on \
+                     something the rule allows: {reason}"
+                );
+            }
+            other => panic!("expected the duplicate-order refusal, got {other:?}"),
         }
     }
 

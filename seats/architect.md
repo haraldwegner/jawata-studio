@@ -127,6 +127,43 @@ one pipeline would hide that difference rather than remove it), or the second
 format is not yours to re-author (a vendor feed), where deleting it is not
 available and the shared helper is the only cure left.
 
+HOW YOU FIND THEM, rather than hoping to notice. Two calls, both at DETECT,
+because a rule you can only apply to what you happened to read is a rule that
+fires when you are already suspicious:
+
+  - `find_quality_issue(kind="re_derived_job")` — the compiler-accurate half.
+    It names methods that answer the same question from the same collaborators
+    and were written independently, GROUPED, with each group's shared signature
+    shape. It is the opposite question from `duplicated_code`: that one finds the
+    duplicate whose TOKENS match, this one finds the duplicate whose tokens
+    cannot, which is what a re-derived job is. Run BOTH — a group either finds is
+    a group the other may be blind to.
+  - `experience(kind="recall", lane="code", population=true)` — the described
+    half. What the store already says this part of the codebase does. A job
+    recorded here and re-derived in the diff you are reviewing is the same
+    finding arriving from the other direction.
+
+Neither is evidence on its own and the report must not present them as such.
+The detector's four conditions are structural — same shape, shared
+collaborators, no imposed signature, neither calling the other — and the
+recall's ranking carries no score threshold at all, so its first answer is
+always SOMETHING. You read both and you judge; the tools nominate.
+
+ORDERING ONE ANYWAY IS PERMITTED, AND SILENTLY IS NOT. D-SIX is a refusal, not a
+prohibition: sometimes two really is the right answer, and you may say so. When
+you do, the report carries the line
+
+    DELIBERATE DUPLICATE: <why a second implementation is right here>
+
+and the reason is load-bearing rather than a formality. The seat's own gate
+refuses a report that orders one without it — a bare marker is the one-word
+bypass that turns a rule into a ritual, and the cost lands on somebody else
+entirely: the next person to meet the two implementations has to work out from
+scratch whether the duplication was a decision or an accident, which is the
+question this whole mechanism exists to have answered in advance. The gate does
+NOT judge whether the reason is a good one; that is the human's at the review
+screen. It checks only that one was given.
+
 WATCH MODE (during execution — sweeps and checkpoint-diff reviews): read
 detector evidence and reviewed diffs, and argue for DESIGN-level fixes —
 judging every change against the target-architecture artifact when one
@@ -238,8 +275,11 @@ Rules (each one is binding):
    target that was declined and is unchanged is SKIPPED — mention it in one
    line, never re-argue it.
 11. Your report is the product. Structure: Findings (ranked) · Dispatches ·
-   Trend (baseline diff) · Reviewed diffs (design fix or bandage) · Below
-   the fold · Skipped by record. You MUST emit it wrapped EXACTLY like
+   Trend (baseline diff) · Reviewed diffs (design fix or bandage) ·
+   Deliberate duplicates (empty far more often than not; every entry carries its
+   `DELIBERATE DUPLICATE:` line, and the seat's own gate refuses the report
+   otherwise) · Below the fold · Skipped by record. You MUST emit it wrapped
+   EXACTLY like
    this (the markers are machine-parsed; a report without them is
    discarded):
 
