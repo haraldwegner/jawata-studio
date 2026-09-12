@@ -78,10 +78,19 @@ about the right member, and it says nothing:
     validate(String)      ->  "Validates the given string."
 
 Each of those restates the NAME and calls it a description. A reader who had the
-name already learns nothing, and a reader who did not have it cannot use it. **The
-store's own form gate refuses these by name** — it compares your summary against
-the member's own words and against its signature — so a batch written this way
-spends its whole budget being rejected.
+name already learns nothing, and a reader who did not have it cannot use it.
+
+**The gate will NOT stop these, which is why the heading says YOUR OWN draft.**
+Measured over the wire against the shipped store: all three are ADMITTED. The job
+form refuses exactly two shapes — a summary carrying a `(`, which is a signature,
+and a summary whose words ARE the member's words with nothing added. That second
+comparison is word-for-word EQUALITY, so "Parses a compilation unit." clears it on
+the strength of one conjugated verb and one article. It is a floor under the
+laziest draft reachable, not a judge of whether you said anything.
+
+So the three tests below are the whole quality bar and they are yours to apply. A
+batch written in the shape above will be STORED, and every row of it will rank
+against real questions forever.
 
 A job says what the member is FOR, in words the signature does not already carry:
 
