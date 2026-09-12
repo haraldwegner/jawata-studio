@@ -6937,9 +6937,15 @@ pub(crate) fn canary_probe_at(
 /// drifting from it: the engine publishes verbs an agent calls (`nominate`,
 /// `decide`, `review_sweep`, `fallback`) which no human clicks. What governs
 /// membership is the sentence above — a name here is a name you would say.
+/// Sprint 28f Stage 5 adds `retire_rule` and nothing else from the rule lifecycle, which
+/// is the governing sentence above applied rather than relaxed. Retiring IS a click: you
+/// are looking at a rule and you say it stopped applying. `promote_rule` is not — it
+/// distils a rule FROM source entries, so it needs a set nobody can select here, and
+/// `amend_rule` needs the amended sentence itself. Both stay prompt verbs, and adding
+/// them with no button would be a capability nobody employs.
 const EXPERIENCE_KINDS: &[&str] = &[
     "record", "recall", "primer", "list", "load", "wipe_and_import", "refresh", "wipe", "promote",
-    "export", "import", "prune", "dedup", "compact", "stats", "backup", "restore",
+    "export", "import", "prune", "dedup", "compact", "stats", "backup", "restore", "retire_rule",
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -9599,6 +9605,55 @@ mod tests {
             "this must be the ALLOWLIST refusing, not the network — a guard that let \
              the call through would fail here for a completely different reason: {refusal}"
         );
+    }
+
+    /// Sprint 28f Stage 5 — the rule lifecycle reaches the resident exactly where studio
+    /// has a button for it, and is refused where it does not.
+    ///
+    /// **This drives the BRIDGE in both directions rather than reading the literal**, which
+    /// is the lesson the test above paid for: a membership assertion can only ever prove
+    /// what the literal says, and stays green with the guard deleted. Nothing listens on
+    /// port 1, so a verb that PASSES the guard fails on the network and a verb that does
+    /// not fails on the vocabulary — two different errors, and telling them apart is the
+    /// whole measurement.
+    ///
+    /// The narrowing is the claim, not an omission. `retire_rule` is a click: you are
+    /// looking at a rule and you say it stopped applying. `promote_rule` distils a rule
+    /// FROM source entries and `amend_rule` needs the amended sentence itself — neither is
+    /// a thing this view can hand over, so admitting them would publish a capability with
+    /// no employer. If a button for either is ever built, this test fails and says so.
+    #[test]
+    fn the_rule_lifecycle_reaches_the_resident_only_where_studio_has_a_button() {
+        let server = url_server("ws", 1, "tok", false);
+
+        let forwarded = ManagerService::experience_verb_on(
+            &server,
+            "retire_rule",
+            serde_json::json!({"id": "some-rule"}),
+        )
+        .expect_err("port 1 has no listener, so this must fail — the question is HOW");
+        assert!(
+            !forwarded.contains("unknown experience verb"),
+            "retire_rule must get PAST the allowlist: a Retire button wired to a verb the \
+             bridge refuses fails against an engine that implements it perfectly, and fails \
+             in studio where the engine's own tests cannot see it: {forwarded}"
+        );
+
+        for kind in ["promote_rule", "amend_rule"] {
+            let refusal =
+                ManagerService::experience_verb_on(&server, kind, serde_json::json!({}))
+                    .expect_err("a verb with no button must be refused, not forwarded");
+            assert!(
+                refusal.contains("unknown experience verb"),
+                "{kind} has no button, so it must be refused by the VOCABULARY and not \
+                 reach the network: {refusal}"
+            );
+            assert!(
+                refusal.contains("retire_rule"),
+                "and the vocabulary it prints must be the real one, which now includes the \
+                 verb that DOES have a button: {refusal}"
+            );
+        }
     }
 
     /// Sprint 28f D2 — the bridge half of *"Restore is a click in studio, by version."*

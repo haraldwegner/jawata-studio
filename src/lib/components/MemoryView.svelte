@@ -69,6 +69,15 @@
     targets: string[];
     reachable: boolean;
     error?: string | null;
+    /**
+     * Sprint 28f Stage 5: the lane split, EXACTLY as the resident groups it.
+     *
+     * Studio keeps no list of what the lanes are. A hardcoded four here would be a second
+     * copy of a vocabulary the engine owns, and the drift is the silent kind: a renamed
+     * lane would go on showing under its old name with a count of zero forever. The cost
+     * is stated in the hint beside it — a lane with no entries does not appear at all.
+     */
+    lanes?: Record<string, number>;
   };
   $: storeRows = buildStoreRows(statuses, storeMode);
   // Self-healing selection: switching store mode regroups the rows and can orphan the key.
@@ -103,7 +112,8 @@
             .join(", "),
           targets: reachable.map((s) => s.workspace),
           reachable: reachable.length > 0,
-          error: reachable.length === 0 ? "No resident reachable — retrying…" : null
+          error: reachable.length === 0 ? "No resident reachable — retrying…" : null,
+          lanes: laneSplit(first?.stats)
         }
       ];
     }
@@ -115,8 +125,33 @@
       workspaceLabels: status.workspace + (status.reachable ? "" : " (unreachable)"),
       targets: status.reachable ? [status.workspace] : [],
       reachable: status.reachable,
-      error: status.error
+      error: status.error,
+      lanes: laneSplit(status.stats)
     }));
+  }
+
+  /**
+   * Sprint 28f Stage 5 — the lane split the resident reports, or undefined when it has
+   * none (an older engine, or a store with no entries).
+   *
+   * Studio holds no list of lane NAMES — see `StoreRow.lanes`. The ONE ordering applied is
+   * a rule about the KEY's shape, not about the vocabulary: a bracketed group like
+   * "(none)" collects entries the engine could not classify, and it reads last. A lane
+   * added or renamed upstream needs no change here.
+   */
+  function laneSplit(stats: KnowledgeWorkspaceStatus["stats"]): Record<string, number> | undefined {
+    const raw = (stats as Record<string, unknown> | null | undefined)?.by_lane;
+    if (!raw || typeof raw !== "object") return undefined;
+    const source = raw as Record<string, unknown>;
+    const out: Record<string, number> = {};
+    // Stable sort, so the engine's own order survives inside each group.
+    for (const key of Object.keys(source).sort(
+      (a, b) => Number(a.startsWith("(")) - Number(b.startsWith("("))
+    )) {
+      const count = Number(source[key]);
+      if (Number.isFinite(count)) out[key] = count;
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
   }
 
   // Auto-reload while residents are unreachable: a freshly (re)started resident needs
@@ -236,6 +271,36 @@
         if (asCount(p.skipped) !== undefined) lines.push(`${p.skipped} duplicate(s) skipped`);
         break;
       }
+      // Sprint 28f Stage 5 — the two curation verbs. Both answer "nothing changed" the
+      // same way, with a flag rather than an error, and both are rendered so that a
+      // no-op cannot read as a success: a rule that was already retired and one that has
+      // just been retired are different facts about the store.
+      case "retire_rule":
+        if (p.retired === true) {
+          lines.push("Retired — it stops being offered as guidance, and stays readable.");
+        } else if (p.retired === false) {
+          lines.push(
+            "Nothing changed" + (typeof p.note === "string" ? ` — ${p.note}` : "") + "."
+          );
+        }
+        break;
+      case "promote":
+        if (p.changed === true) {
+          lines.push(`Promoted to ${p.status ?? "accepted"}.`);
+        } else if (p.changed === false) {
+          lines.push(
+            `Nothing changed — it is already ${p.status ?? "accepted"}, or the entry is gone.`
+          );
+        }
+        break;
+      case "list": {
+        const ruleCount = asCount(p.rules);
+        const awaiting = asCount(p.awaitingReview);
+        if (ruleCount !== undefined) {
+          lines.push(`${ruleCount} rule(s), ${awaiting ?? 0} entr(ies) awaiting review`);
+        }
+        break;
+      }
       case "backup":
         if (typeof p.backup === "string") {
           lines.push(
@@ -304,6 +369,11 @@
       // stale — and a stale list is worse than none here, because the entry it is
       // missing is the newest one, which is the one worth going back to.
       if (backupsShown) await readBackups(true);
+      // And the curation lists, for the same reason and a wider one: retire and promote
+      // change a row that is on screen, while wipe, import, load and restore can change
+      // every row. One re-read after any verb is cheaper than reasoning per verb about
+      // which of them could have invalidated the list.
+      if (curationShown) await readCuration(true);
     } catch (error) {
       showResult(kind, { error: String(error) });
     } finally {
@@ -374,6 +444,7 @@
       }
       await refreshStatus();
       if (backupsShown) await readBackups(true);   // prune left a copy
+      if (curationShown) await readCuration(true); // and dedup/prune moved rows
     } catch (error) {
       report["error"] = String(error);
       outputRaw = JSON.stringify(report, null, 2);
@@ -495,6 +566,100 @@
     } finally {
       busyAction = "";
     }
+  }
+
+  // --- curation: two lanes, two lifecycles, as clicks ----------------------------------
+  //
+  // Sprint 28f Stage 5. The lane counts above say what the store HOLDS; this is where a
+  // person acts on it. The two acts are deliberately not one button:
+  //
+  //   PROMOTE takes an entry nobody has vouched for and accepts it. It is curation.
+  //   RETIRE says a standing RULE stopped applying. It is neither rejecting (the rule was
+  //     not wrong) nor superseding (nothing replaced it), which is exactly why the engine
+  //     gives it its own verb and a DATE rather than a status — and why it gets its own
+  //     button here instead of being folded into a status dropdown.
+  //
+  // Read on demand, like the versions list: a store with thousands of entries should not
+  // pay for two more queries on every status refresh.
+  let curationShown = false;
+  let rules: Array<Record<string, unknown>> = [];
+  let candidates: Array<Record<string, unknown>> = [];
+
+  // A curation list belongs to ONE store, for the same reason the version list does:
+  // leaving the previous store's rows on screen beside buttons that would now act on a
+  // different database is worse than showing nothing.
+  $: if (selected) {
+    rules = [];
+    candidates = [];
+    curationShown = false;
+  }
+
+  function entriesOf(payload: unknown): Array<Record<string, unknown>> {
+    if (payload && typeof payload === "object") {
+      const list = (payload as Record<string, unknown>).entries;
+      if (Array.isArray(list)) return list as Array<Record<string, unknown>>;
+    }
+    return [];
+  }
+
+  function textOf(row: Record<string, unknown>, key: string): string {
+    const value = row[key];
+    return typeof value === "string" ? value : "";
+  }
+
+  /** The day half of an ISO timestamp — a rule stopped applying on a DAY, not at a ms. */
+  function onDay(iso: unknown): string {
+    return typeof iso === "string" && iso.length >= 10 ? iso.slice(0, 10) : "";
+  }
+
+  /**
+   * The rules lane and the entries awaiting review.
+   *
+   * The rules are asked for by TYPE rather than by lane, and that is exact rather than a
+   * workaround: the rules lane IS the `rule` type, one to one. Lane is the right filter
+   * where a lane spans several types, and `list` does not take one — recorded rather than
+   * worked around, since asking by type answers this view's question precisely.
+   */
+  async function readCuration(quiet = false) {
+    if (!selectedRow || selectedRow.targets.length === 0) return;
+    if (!quiet && busyAction) return;
+    if (!quiet) busyAction = "list";
+    try {
+      const target = selectedRow.targets[0];
+      const [ruleReply, candidateReply] = await Promise.all([
+        experienceVerb(target, "list", { type: "rule", limit: 200 }),
+        experienceVerb(target, "list", { status: "candidate", limit: 200 })
+      ]);
+      rules = entriesOf(ruleReply.success ? ruleReply.data : null);
+      candidates = entriesOf(candidateReply.success ? candidateReply.data : null);
+      curationShown = true;
+      if (!quiet) {
+        showResult("list", {
+          rules: rules.length,
+          awaitingReview: candidates.length
+        });
+      }
+    } catch (error) {
+      if (!quiet) showResult("list", { error: String(error) });
+    } finally {
+      if (!quiet) busyAction = "";
+    }
+  }
+
+  async function retireOneRule(id: string, summary: string) {
+    const confirmed = await confirmDestructive(
+      "Retire this rule?\n\n" +
+        summary +
+        "\n\nIt stops being offered as guidance from now on. It is NOT deleted and NOT " +
+        "marked wrong — it stays readable, with the date it stopped applying.\n\nContinue?"
+    );
+    if (!confirmed) return;
+    // The list refresh is runVerb's, for every verb at once — see its comment.
+    await runVerb("retire_rule", { id });
+  }
+
+  async function promoteOneEntry(id: string) {
+    await runVerb("promote", { id });
   }
 
   // --- memory roots: pickers + removable list ------------------------------------------
@@ -688,6 +853,26 @@
           </table>
         </div>
       {/if}
+
+      <!-- Sprint 28f Stage 5: the lane split — what the store HOLDS, before what to do
+           about it. Rendered from the resident's own grouping; studio keeps no list of
+           lane names, which is why a lane with no entries is absent rather than zero. -->
+      {#if selectedRow?.lanes}
+        <div class="lane-split">
+          {#each Object.entries(selectedRow.lanes) as [lane, count] (lane)}
+            <span class="lane" class:lane-unclassified={lane.startsWith("(")}>
+              <strong>{count}</strong>
+              {lane === "(none)" ? "unclassified" : lane}
+            </span>
+          {/each}
+        </div>
+        <p class="hint">
+          Each lane is a lifecycle the store keeps apart: an experience was lived and can be
+          superseded, a domain fact simply holds, a rule is versioned and retired. A lane
+          with no entries is not listed. “Unclassified” is entries whose type no lane rule
+          covers — counted here rather than filed under a default, so the gap is visible.
+        </p>
+      {/if}
       <div class="actions">
         <button
           type="button"
@@ -750,6 +935,14 @@
         </button>
         <button
           type="button"
+          disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
+          on:click={() => readCuration()}
+          title={'The standing RULES, and the entries nobody has vouched for yet — each with the one action its lane\'s lifecycle allows. Say: "list the rules" / "promote that entry"'}
+        >
+          {curationShown ? "Refresh curation" : "Curation…"}
+        </button>
+        <button
+          type="button"
           class="danger"
           disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
           on:click={() =>
@@ -802,6 +995,82 @@
         </div>
       {/if}
 
+      <!-- Sprint 28f Stage 5: two lanes, two lifecycles, one action each. Kept as two
+           lists rather than one ranked pile for the reason the sweep's own lanes are:
+           accepting an unvouched entry and retiring a standing rule are different acts,
+           and a mixed list is one nobody can rule on. -->
+      {#if curationShown}
+        <div class="result-block">
+          <h4>Rules — {rules.length}</h4>
+          {#if rules.length === 0}
+            <p class="hint">
+              No rules yet. A rule is distilled FROM entries at the prompt — “promote these
+              into a rule” — because choosing which entries it is drawn from is the act, and
+              there is nothing here to select them with.
+            </p>
+          {:else}
+            <ul class="root-list">
+              {#each rules as rule (rule.id)}
+                <li>
+                  <span>
+                    <strong>v{rule.rule_version ?? 1}</strong>
+                    {textOf(rule, "summary")}
+                    {#if rule.retired_at}
+                      <em class="retired">— stopped applying {onDay(rule.retired_at)}</em>
+                    {/if}
+                  </span>
+                  {#if !rule.retired_at}
+                    <button
+                      type="button"
+                      disabled={!!busyAction || interactionDisabled}
+                      on:click={() =>
+                        retireOneRule(String(rule.id), textOf(rule, "summary"))}
+                      title="It stops being offered as guidance from now on. Not deleted and not marked wrong — it stays readable, with the date it stopped applying."
+                    >
+                      Retire
+                    </button>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+            <p class="hint">
+              A retired rule keeps its row and its date, which is what answers “what did this
+              say, and until when”. Amending one — a new version, the old kept — is a prompt
+              verb: the amended sentence is the work, and nothing here can write it.
+            </p>
+          {/if}
+
+          <h4>Awaiting review — {candidates.length}</h4>
+          {#if candidates.length === 0}
+            <p class="hint">Nothing is waiting: every entry has been vouched for.</p>
+          {:else}
+            <ul class="root-list">
+              {#each candidates as entry (entry.id)}
+                <li>
+                  <span>
+                    <strong>{textOf(entry, "type")}</strong>
+                    {textOf(entry, "summary")}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={!!busyAction || interactionDisabled}
+                    on:click={() => promoteOneEntry(String(entry.id))}
+                    title="Accept this entry — it is then offered as vouched-for knowledge rather than as a candidate."
+                  >
+                    Promote
+                  </button>
+                </li>
+              {/each}
+            </ul>
+            <p class="hint">
+              Capped at 200 each. Promoting accepts one entry; there is no accept-all,
+              deliberately — vouching for something nobody read is what the review exists to
+              prevent.
+            </p>
+          {/if}
+        </div>
+      {/if}
+
       <!-- Results live right below the actions (Harald, 2026-07-06) — the right
            column grows, the sources column breathes. -->
       <div class="result-block">
@@ -848,6 +1117,35 @@
 
 <style>
   /* Only what app.css does not already provide: tables, the roots list, the pre. */
+
+  /* Sprint 28f Stage 5: the lane split reads as a row of counts, not a second table —
+     it is one number per lane and a table would out-weigh the store table above it. */
+  .lane-split {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin: 0.5rem 0 0.35rem;
+  }
+  .lane {
+    padding: 0.15rem 0.5rem;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 999px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+  }
+  .lane strong {
+    margin-right: 0.25rem;
+  }
+  /* Unclassified is a GAP, not a lane — it is dimmed so it does not read as a fifth
+     lifecycle, and it is never hidden, because hiding it restores the catch-all. */
+  .lane-unclassified {
+    opacity: 0.7;
+    border-style: dashed;
+  }
+  .retired {
+    opacity: 0.7;
+    font-style: italic;
+  }
   .result-block {
     margin-top: 0.4rem;
     padding-top: 0.6rem;
