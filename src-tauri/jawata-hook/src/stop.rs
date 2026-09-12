@@ -110,14 +110,28 @@ pub const MAX_EMPTY_TURNS: u32 = crate::autonomy::MAX_EMPTY_TURNS;
 
 pub const MAX_UNJUDGED_BOUNCES: u32 = 3;
 
-/// How many times a turn may be held for a story it wrote and never reseeded.
+/// How many times a turn may be held for a story it wrote and never loaded in.
 ///
-/// BOUNDED, and the bound is load-bearing rather than decoration. A reseed
-/// admits stamped stories only, so a draft under the substrate root that has
-/// not earned its `reviewed:` stamp reports drift no reseed will clear — and an
-/// unbounded hold would wedge the session on a file nobody meant to store yet.
-/// Two, because the cure is one tool call: write, get held once, reseed. The
-/// second is for the case where the reseed refuses and the file needs fixing.
+/// BOUNDED, and the bound is load-bearing rather than decoration: a file the
+/// cure cannot ingest reports drift that no number of holds will clear, and an
+/// unbounded hold would wedge the session on it. Two, because the cure is one
+/// tool call — write, get held once, load — and the second is for the case
+/// where the load REFUSES the file and it needs fixing first.
+///
+/// **Sprint 28f Stage 6 corrected the reason, and the old one is worth keeping
+/// visible because it was true and is not.** This said "a reseed admits stamped
+/// stories only, so a draft that has not earned its `reviewed:` stamp reports
+/// drift no reseed will clear". That WAS the cure and is not any more: the hold
+/// now instructs `experience(kind=load …)`, which merges and takes an unstamped
+/// file as a CANDIDATE rather than refusing it — so a missing stamp is no
+/// longer what strands a file. What still is: the form gate, which refuses a
+/// file whose declared type owes fields it does not carry, and names it in the
+/// report's `skipped` list so the author can fix it.
+///
+/// **The name stays `RESEED` deliberately.** The pipeline charges this counter
+/// through a file named `<session>.reseed` on disk, so renaming it would orphan
+/// every live session's counter and silently hand each one a fresh budget. The
+/// identifier is historical; the sentence above is what is current.
 pub const MAX_RESEED_BOUNCES: u32 = 2;
 
 /// How a hold for an unstored story identifies itself.
@@ -2313,8 +2327,21 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
         );
         assert!(
             reason.contains("skipped"),
-            "and must name the refusal case \u{2014} a reseed admits stamped stories \
-             only, and a silent skip is how the first cure failed: {reason}"
+            "and must name the refusal case \u{2014} a load can still REFUSE a file whose \
+             declared type owes fields it does not carry, and a silent skip is how the \
+             first cure failed: {reason}"
+        );
+        // Sprint 28f Stage 6: the deliverable is "names `load`, NEVER `reseed`", and
+        // only the first half was asserted. A message reading "run load, or reseed if
+        // that fails" passed every assertion above it.
+        //
+        // The negative is not pedantry here: the verb once called `reseed` is now
+        // `wipe_and_import`, and it WIPES FIRST — it rebuilds the store from a root and
+        // retires every file-derived row that root no longer holds. Offering it as a
+        // fallback for one unstored file turns a routine save into a mass deletion.
+        assert!(
+            !reason.contains("reseed") && !reason.contains("wipe_and_import"),
+            "the hold must NOT name the destructive verb, even as a fallback: {reason}"
         );
     }
 
