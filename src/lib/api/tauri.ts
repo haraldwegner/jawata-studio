@@ -63,6 +63,10 @@ export interface ManagerSettings {
    *  the resident's own default — studio holds no second copy of that number. NOT
    *  `backupRetention`, which is versions of each CONFIG FILE studio writes. */
   experienceBackupDepth: number | null;
+  /** Sprint 28f Stage 6: the folder the engine EXPORTS an accepted story to. `null` means
+   *  the export is off — that is the engine's own rule for an absent folder, so studio
+   *  invents no default and writes files nowhere nobody chose. */
+  experienceStoriesDir: string | null;
 }
 
 /** Represents path configuration for a specific MCP client. */
@@ -149,6 +153,8 @@ export interface UpdateSettingsInput {
   backupRetention?: number | null;
   /** Send 0 to go back to the resident's default; omit to leave the stored value alone. */
   experienceBackupDepth?: number | null;
+  /** Send "" to turn the story export off; omit to leave the stored value alone. */
+  experienceStoriesDir?: string | null;
 }
 
 // ===== Sprint 21a (item F): Knowledge view =====

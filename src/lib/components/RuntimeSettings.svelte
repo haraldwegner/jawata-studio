@@ -162,6 +162,10 @@
   // that one throw left Save disabled for the whole settings screen. `svelte-check` cannot
   // see it: it infers the type from the initialiser and agrees with itself.
   let experienceBackupDepth: number | null = null;
+  // Sprint 28f Stage 6: the story-export folder. A STRING, and empty means off — unlike
+  // the depth above there is no numeric coercion in play, so the box's own value is what
+  // `.trim()` is called on and the sibling's `to_number` hazard does not arise here.
+  let experienceStoriesDir = "";
   let deployTargets: DeployTargetFlags = {
     cursor: true,
     claude: true,
@@ -218,6 +222,7 @@
       mcpMergeMode: nextSettings.mcpMergeMode,
       mcpBackupBeforeWrite: nextSettings.mcpBackupBeforeWrite,
       experienceBackupDepth: nextSettings.experienceBackupDepth,
+      experienceStoriesDir: nextSettings.experienceStoriesDir,
       deployTargets: nextSettings.deployTargets,
       releaseRepo: nextSettings.releaseRepo
     };
@@ -264,6 +269,7 @@
       mcpMergeMode: input.mcpMergeMode,
       mcpBackupBeforeWrite: input.mcpBackupBeforeWrite,
       experienceBackupDepth: input.experienceBackupDepth,
+      experienceStoriesDir: input.experienceStoriesDir,
       deployTargets: {
         cursor: input.deployTargets.cursor,
         claude: input.deployTargets.claude,
@@ -306,6 +312,10 @@
       // backend stores as an ABSENT value rather than a depth of zero, since the resident
       // would floor 0 to 1 and silently turn "use your default" into "keep one copy".
       experienceBackupDepth: experienceBackupDepth ?? 0,
+      // An empty box means "turn the export off", sent as "". The backend stores that as
+      // an ABSENT value rather than an empty string, because the engine treats a blank
+      // folder exactly as it treats a missing one — two spellings of one state.
+      experienceStoriesDir: experienceStoriesDir.trim(),
       deployTargets,
       releaseRepo: releaseRepo.trim().length > 0 ? releaseRepo.trim() : null
     };
@@ -364,6 +374,7 @@
     mcpMergeMode = nextSettings.mcpMergeMode;
     mcpBackupBeforeWrite = nextSettings.mcpBackupBeforeWrite;
     experienceBackupDepth = nextSettings.experienceBackupDepth;
+    experienceStoriesDir = nextSettings.experienceStoriesDir ?? "";
     mcpClientPaths = nextSettings.mcpClientPaths;
     deployTargets = nextSettings.deployTargets;
     releaseRepo = nextSettings.releaseRepo ?? "";
@@ -1073,6 +1084,24 @@
           the store was measured at 37 MB, so ten copies is about 370 MB before
           compression. Leave it empty to use the engine's own default; the engine is
           where that number lives, so studio does not keep a second copy of it.
+        </span>
+      </label>
+
+      <label class="field">
+        <span>Story export folder</span>
+        <input
+          bind:value={experienceStoriesDir}
+          disabled={interactionDisabled}
+          on:change={handleBoundEdit}
+          placeholder="off — no stories are written"
+          type="text"
+        />
+        <span class="hint">
+          When you ACCEPT a piece of knowledge, the engine also writes it here as a
+          readable markdown file — one file per entry, rewritten in place when the entry
+          changes. The memory store itself stays the source of truth: this folder is a
+          mirror, so you can read it, search it or keep it in git, and deleting it loses
+          nothing. Leave it empty and nothing is written.
         </span>
       </label>
     </section>

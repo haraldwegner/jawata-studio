@@ -284,6 +284,25 @@ pub struct ManagerSettings {
     /// would have to keep in step.
     #[serde(default)]
     pub experience_backup_depth: Option<u32>,
+    /// Sprint 28f Stage 6: where the resident EXPORTS an accepted story, passed as
+    /// `-Djawata.stories.dir`.
+    ///
+    /// `None` means the export is OFF, and that is the RESIDENT's rule rather than a
+    /// studio convention — `StoryWriter.DIRECTORY_PROPERTY`'s own contract is that an
+    /// absent property means no export, "which is what every installation is until
+    /// somebody points it somewhere". So studio invents no default: a default would turn
+    /// on an export nobody asked for and write files into a folder nobody chose.
+    ///
+    /// The property is emitted ONLY when the user has set a value, the same discipline
+    /// `experience_backup_depth` follows — an unset setting sends nothing rather than
+    /// asserting a path studio would then have to keep in step.
+    ///
+    /// Studio does NOT check that the folder exists. The resident creates it on the way
+    /// past, and refusing a not-yet-created folder here would reject a perfectly good
+    /// answer; an I/O failure there is logged and swallowed by design, because the row is
+    /// the truth and the file is its mirror.
+    #[serde(default)]
+    pub experience_stories_dir: Option<String>,
 }
 
 pub fn default_experience_store_mode() -> String {
@@ -309,6 +328,26 @@ pub fn store_backup_depth(requested: u32) -> Option<u32> {
         None
     } else {
         Some(requested.clamp(1, 500))
+    }
+}
+
+/// Sprint 28f Stage 6 — what a requested story-export folder is STORED as.
+///
+/// An EMPTY box is how the UI says "turn the export off", and it is stored as ABSENT
+/// rather than as an empty string: the resident treats a blank property exactly as it
+/// treats a missing one, so an empty string in the config file would be a second spelling
+/// of a state that already has one, and a later reader would have to know both.
+///
+/// A function rather than three lines inside `update_settings`, for the reason
+/// `store_backup_depth` gives: that method takes an input with a dozen required fields
+/// and nothing in this crate constructs one, so the rule would have been real and
+/// unreachable by any test. Put where it can be asked.
+pub fn story_folder(requested: String) -> Option<String> {
+    let trimmed = requested.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
@@ -412,6 +451,9 @@ impl ManagerSettings {
             // None = the resident's own StoreBackups.DEFAULT_DEPTH. Studio keeps no
             // second copy of that number, so the two cannot drift.
             experience_backup_depth: None,
+            // None = the export is off, which is the resident's own rule for an absent
+            // -Djawata.stories.dir. Studio must not invent a folder nobody chose.
+            experience_stories_dir: None,
         }
     }
 
@@ -523,6 +565,11 @@ pub struct UpdateSettingsInput {
     /// says "back to the resident's default", since the resident floors a real depth at 1.
     #[serde(default)]
     pub experience_backup_depth: Option<u32>,
+    /// Sprint 28f Stage 6: the folder the resident exports accepted stories to. A frontend
+    /// that does not send it leaves the stored value alone; sending an empty string is how
+    /// the UI says "turn the export off", which is stored as an absent value.
+    #[serde(default)]
+    pub experience_stories_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1234,6 +1281,9 @@ impl ConfigStore {
         }
         if let Some(depth) = input.experience_backup_depth {
             settings.experience_backup_depth = store_backup_depth(depth);
+        }
+        if let Some(dir) = input.experience_stories_dir {
+            settings.experience_stories_dir = story_folder(dir);
         }
         if let Some(retention) = input.backup_retention {
             settings.backup_retention = retention.clamp(1, 500);

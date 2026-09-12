@@ -6791,6 +6791,13 @@ fn knowledge_jvm_properties(settings: &ManagerSettings) -> Vec<String> {
     if let Some(depth) = settings.experience_backup_depth {
         props.push(format!("-Djawata.backups.depth={depth}"));
     }
+    // Sprint 28f Stage 6: where the resident exports an accepted story, and ONLY when the
+    // user pointed it somewhere. An absent property is how the export stays OFF — that is
+    // StoryWriter's own contract, not a studio convention — so sending nothing is the
+    // correct way to say "not configured", and there is no default for studio to invent.
+    if let Some(dir) = &settings.experience_stories_dir {
+        props.push(format!("-Djawata.stories.dir={dir}"));
+    }
     props
 }
 
@@ -12370,6 +12377,15 @@ judge was never told to give"
             "an UNSET depth sends nothing: the default lives in the resident, and a \
              property emitted here would be a second copy of it"
         );
+        // Sprint 28f Stage 6: same control for the story export. Without this half, "the
+        // property appears when the folder is set" is equally true of a studio that always
+        // sends one — and a studio that always sends one would turn an opt-in export on
+        // for every installation.
+        assert!(
+            props.iter().all(|p| !p.contains("jawata.stories.dir")),
+            "an UNSET stories folder sends nothing: an absent property is how the \
+             resident's export stays off"
+        );
     }
 
     /// Sprint 28f Stage 5 — the store's backup depth reaches the resident, and only when
@@ -12412,6 +12428,48 @@ judge was never told to give"
             crate::config::store_backup_depth(3),
             Some(3),
             "and a real depth is kept as itself"
+        );
+    }
+
+    /// Sprint 28f Stage 6 — the story-export folder reaches the resident, and only when
+    /// the user pointed it somewhere.
+    ///
+    /// This is the half that makes the export switchable from the product at all. The
+    /// writer and the round trip were each green on their own and jointly inert, because
+    /// nothing set the property: an export nobody can turn on is an export that is off.
+    #[test]
+    fn a_set_stories_folder_reaches_the_resident_and_an_unset_one_sends_nothing() {
+        let paths = crate::config::AppPaths {
+            config_dir: std::path::PathBuf::from("/tmp/config"),
+            state_dir: std::path::PathBuf::from("/tmp/state"),
+            cache_dir: std::path::PathBuf::from("/tmp/cache"),
+            projects_file: std::path::PathBuf::from("/tmp/config/projects.json"),
+            settings_file: std::path::PathBuf::from("/tmp/config/settings.json"),
+            runtime_state_file: std::path::PathBuf::from("/tmp/state/runtime-state.json"),
+            default_data_root: std::path::PathBuf::from("/tmp/cache/jawata-studio"),
+            log_dir: std::path::PathBuf::from("/tmp/state/logs"),
+        };
+        let mut settings = ManagerSettings::default_for_paths(&paths);
+        settings.experience_stories_dir = Some("/home/x/stories".into());
+        let props = knowledge_jvm_properties(&settings);
+        assert!(
+            props.contains(&"-Djawata.stories.dir=/home/x/stories".to_string()),
+            "the folder the user chose must reach the resident verbatim; got {props:?}"
+        );
+
+        // AND THE EMPTY-BOX CONVENTION. The UI turns the export off by sending an empty
+        // string, and it is stored as ABSENT rather than as "" — the resident treats a
+        // blank property exactly as it treats a missing one, so storing "" would be a
+        // second spelling of a state that already has one.
+        assert_eq!(
+            crate::config::story_folder(String::from("   ")),
+            None,
+            "a blank folder means 'export off', which is stored as an absent value"
+        );
+        assert_eq!(
+            crate::config::story_folder(String::from("  /home/x/stories  ")),
+            Some("/home/x/stories".to_string()),
+            "and a real folder is kept, trimmed — the path is the user's, not ours to edit"
         );
     }
 
