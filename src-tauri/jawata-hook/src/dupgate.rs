@@ -68,6 +68,19 @@
 //! to "what would let it block LATER", and it is restated here as what it is —
 //! work not done, not a wall.
 //!
+//! **WHICH EXIT CLAUSE THIS MOVES, named so a reader checking E10 against the
+//! code finds the answer instead of inferring it.** E10 asks that "a draft
+//! re-deriving a known job is REFUSED naming it and proceeds with
+//! `jawata-duplicate:`". The naming half and the disposition half are met. The
+//! REFUSAL half is what the deviation replaces with an advisory, for the reason
+//! above.
+//!
+//! Its neighbour clause — "a file edit alone triggers no lane" — is NOT touched
+//! by any of this, and the two are easy to read as being in tension. They are
+//! not: a bare `Edit` carries a path and no draft text, so this gate answers
+//! [`Verdict::NoDraftMethods`] and stays out of the way. What fires the gate is
+//! a draft, not a file event.
+//!
 //! # Fail OPEN, and say which
 //!
 //! When the engine cannot answer — `KNOWLEDGE_UNAVAILABLE`, a dead resident, a
