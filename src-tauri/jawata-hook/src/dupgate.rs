@@ -11,16 +11,34 @@
 //! can explain itself in one log line, a disposition token that takes a REASON,
 //! and fail-open on an unavailable knowledge layer.
 //!
-//! # The one place it differs from its sibling, and the reason
+//! # IT SHOWS NOMINEES. IT DOES NOT ASSERT A DUPLICATE.
 //!
-//! `recallgate` ships in [`Mode::Observe`] — it records what it WOULD have
-//! blocked, so promotion is argued from a measured count. This one ships in
-//! [`Mode::Block`], on the ruling recorded in the plan. The difference is not
-//! boldness, it is what the two gates are about: an undispositioned recall costs
-//! the agent a fact it did not read, and a re-derived job costs the codebase a
-//! second implementation that will drift from the first and be fixed only on one
-//! side. The second is the defect this product has shipped repeatedly and had to
-//! close as a class each time.
+//! The plan's ruling was that this ships in [`Mode::Block`], and it does not.
+//! That is a DECLARED DEVIATION with a measurement behind it rather than a
+//! preference, and the measurement is the engine's own:
+//!
+//! `experience(kind=duplicate_check)` asks the code lane BY MEANING, and the
+//! lane applies **no score threshold** — Stage 0 measured that this corpus
+//! admits none, because three of ten genuine task-to-job pairs score at or below
+//! the noise floor, so any cutoff that admits the real answers admits noise with
+//! them. Rank one therefore always comes back. `DuplicateCheckTest` pins it on a
+//! case nobody could argue with: a draft that ROUNDS MONEY nominates a job that
+//! PARSES SOURCE, because it is the only job in the store and an ordering must
+//! order something.
+//!
+//! A gate that denied on that would deny every Java write in the repository, and
+//! would be worked around or switched off inside a day — which is worse than not
+//! shipping it, because the switch would take the honest half with it. So the
+//! verdict is [`Verdict::Nominated`]: work that MAY already do this, with
+//! addresses, for the agent to read and judge. That is the store's own documented
+//! contract for anchorless retrieval — distance nominates, the agent decides, and
+//! selecting none is a real answer.
+//!
+//! **What would let it block**: a second, structural signal that a nominee is the
+//! same JOB rather than merely the nearest text — the four conditions
+//! `re_derived_job` applies to code that exists. They cannot be applied to a
+//! draft, which has no resolved bindings, so the confirming half is missing and
+//! is named here rather than approximated.
 //!
 //! # Fail OPEN, and say which
 //!
@@ -38,32 +56,27 @@ use serde_json::Value;
 pub enum Mode {
     /// Off entirely — the documented kill switch.
     Off,
-    /// Record what would have been denied; deny nothing.
+    /// Show the nominees and record; never deny. THE SHIPPING DEFAULT — see the
+    /// module note, which records why the plan's `Block` ruling is deviated from
+    /// and what would earn it back.
     Observe,
-    /// Deny an undispositioned write that duplicates a known job. THE SHIPPING
-    /// DEFAULT, per the plan's ruling.
+    /// Deny an undispositioned write. Available, configured explicitly, and NOT
+    /// the default: on today's signal it would deny every Java write.
     Block,
 }
 
 impl Mode {
     /// Read the mode from the config value.
     ///
-    /// TWO DIFFERENT ABSENCES, and they must not answer the same — which is this
-    /// sprint's own subject applied to its own configuration:
-    ///
-    /// * **Nothing configured** is not a preference, it is the shipping default,
-    ///   and the ruling is that this gate ships in [`Mode::Block`].
-    /// * **A word we do not understand** IS a preference, badly spelled. Reading
-    ///   it as `Block` would hand someone who typed `observ` more authority than
-    ///   they asked for, which is the trap [`crate::recallgate::Mode::parse`]
-    ///   documents. It falls to [`Mode::Observe`]: still recorded, never denied.
+    /// Nothing configured, and a word nobody recognises, both give
+    /// [`Mode::Observe`] — the first because it is the shipping default, the
+    /// second because reading a typo as `Block` would hand someone more
+    /// authority than they asked for, which is the trap
+    /// [`crate::recallgate::Mode::parse`] documents.
     pub fn parse(configured: Option<&str>) -> Mode {
         match configured.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
-            None => Mode::Block,
-            Some("") => Mode::Block,
             Some("off") | Some("false") | Some("disabled") => Mode::Off,
             Some("block") => Mode::Block,
-            Some("observe") => Mode::Observe,
             _ => Mode::Observe,
         }
     }
@@ -76,20 +89,23 @@ pub enum Verdict {
     NotAJavaEdit,
     /// The kill switch is off.
     Disabled,
-    /// The agent already said why the duplicate is deliberate; the write
-    /// proceeds and the reason is logged for the architect's watch.
+    /// The agent already said why a second implementation is right here; the
+    /// write proceeds and the reason is logged for the architect's watch.
     Dispositioned { reason: String },
-    /// The draft declares no method the current file does not already have, so
-    /// there is nothing to ask about.
+    /// The draft declares no method, so there is nothing to ask about.
     NoDraftMethods,
-    /// The lane was asked and knows no job like this one.
-    NoMatch,
+    /// The lane was asked and nominated nothing with an address.
+    NoNominee,
     /// The engine could not answer. The write proceeds and the reason is
     /// recorded — NOT as "nothing like this exists".
     Unavailable { why: String },
-    /// The draft re-derives a job the codebase already does. In [`Mode::Block`]
-    /// this is the denial; in [`Mode::Observe`] it is recorded and proceeds.
-    Duplicate { method: String, job: String, location: String },
+    /// The lane nominated work that MAY already do this job.
+    ///
+    /// **A nomination and not a finding.** See the module note: the ranking
+    /// carries no threshold, so this names the nearest job and never asserts it
+    /// is the same one. In [`Mode::Observe`] — the default — it is shown and
+    /// recorded, and the write proceeds.
+    Nominated { method: String, job: String, location: String },
 }
 
 /// The declaration that says the second implementation is DELIBERATE.
@@ -142,20 +158,19 @@ pub fn draft_text(payload: &str) -> Option<String> {
     None
 }
 
-/// THE PURE CORE: does the engine's structured answer name a job this draft
-/// re-derives?
+/// THE PURE CORE: the first nominee the engine returned that can be OPENED.
 ///
 /// Structured, because a rendered line carries prose and no addresses. Reading a
-/// match off prose would be the regex mistake this crate exists to end.
-pub fn first_match(data: &Value) -> Option<(String, String, String)> {
-    let matches = data.get("matches")?.as_array()?;
-    for m in matches {
-        let method = m.get("method").and_then(Value::as_str).unwrap_or_default();
-        let job = m.get("job").and_then(Value::as_str).unwrap_or_default();
-        let location = m.get("location").and_then(Value::as_str).unwrap_or_default();
-        // A match with no LOCATION is not actionable: the whole point is to send
-        // the reader at the code that already does this, and "something like
-        // this exists somewhere" is the unhelpful half of the answer.
+/// nominee off prose would be the regex mistake this crate exists to end.
+pub fn first_nominee(data: &Value) -> Option<(String, String, String)> {
+    let nominees = data.get("nominees")?.as_array()?;
+    for n in nominees {
+        let method = n.get("method").and_then(Value::as_str).unwrap_or_default();
+        let job = n.get("job").and_then(Value::as_str).unwrap_or_default();
+        let location = n.get("location").and_then(Value::as_str).unwrap_or_default();
+        // A nominee with no LOCATION is not actionable: the whole point is to
+        // send the reader at code they can open, and "something like this exists
+        // somewhere" is the unhelpful half of the answer.
         if !location.is_empty() && !job.is_empty() {
             return Some((method.to_string(), job.to_string(), location.to_string()));
         }
@@ -192,23 +207,28 @@ where
         return Verdict::NoDraftMethods;
     };
     match ask(path, &draft) {
-        Ok(answer) => match first_match(&answer) {
-            Some((method, job, location)) => Verdict::Duplicate { method, job, location },
-            None => Verdict::NoMatch,
+        Ok(answer) => match first_nominee(&answer) {
+            Some((method, job, location)) => Verdict::Nominated { method, job, location },
+            None => Verdict::NoNominee,
         },
         Err(e) => Verdict::Unavailable { why: format!("{e:?}") },
     }
 }
 
-/// The line the agent is shown when the gate holds a write.
+/// The line the agent is shown when the gate has a nominee.
+///
+/// It says MAY, and the hedge is the honest part rather than a softening: the
+/// ranking carries no threshold, so a sentence claiming this IS the same job
+/// would be false about the majority of the writes it fires on.
 pub fn steering(method: &str, job: &str, location: &str) -> String {
     format!(
-        "JAWATA — this job is already done. `{method}` looks like a second implementation \
-         of work the codebase already has:\n  {location} — {job}\n\nRead that first. If it \
-         does what you need, call it instead of writing this. If it does NOT, say so and \
-         proceed: put `{DUPLICATE} <why a second implementation is right here>` in the \
-         call. A reason is required, and it is not a formality — the architect's report \
-         carries it, so a second implementation nobody justified is refused there too."
+        "JAWATA — this may already be done. The closest thing the codebase records to \
+         `{method}` is:\n  {location} — {job}\n\nOpen it before writing. If it does what \
+         you need, call it instead. If it does NOT — or if it is simply unrelated, which \
+         is a normal answer here — say so and proceed: put `{DUPLICATE} <why a second \
+         implementation is right here>` in the call. A reason is required, and it is not a \
+         formality: the architect's report carries it, so a second implementation nobody \
+         justified is refused there too."
     )
 }
 
@@ -217,9 +237,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn engine_answer(matches: &[(&str, &str, &str)]) -> Value {
+    fn engine_answer(nominees: &[(&str, &str, &str)]) -> Value {
         json!({
-            "matches": matches.iter()
+            "nominees": nominees.iter()
                 .map(|(m, j, l)| json!({"method": m, "job": j, "location": l}))
                 .collect::<Vec<_>>()
         })
@@ -230,9 +250,9 @@ mod tests {
     }
 
     #[test]
-    fn a_draft_re_deriving_a_known_job_is_denied_and_the_job_is_named() {
+    fn a_draft_with_a_nominee_is_told_where_to_look() {
         let v = judge(
-            Mode::Block,
+            Mode::Observe,
             "Write",
             "/p/src/Reader.java",
             &write_of("private static Tree parse(Source s) { return null; }"),
@@ -245,17 +265,19 @@ mod tests {
             },
         );
         match v {
-            Verdict::Duplicate { method, job, location } => {
+            Verdict::Nominated { method, job, location } => {
                 assert_eq!("parse", method);
                 assert!(job.contains("binding resolution"), "{job}");
                 assert_eq!("org.jawata.mcp.tools.shared.SourceScan#parse", location);
-                // The steering must NAME the thing that already does it — a gate
-                // that says "this is a duplicate" without saying of what leaves
-                // the reader exactly where they started.
                 let s = steering(&method, &job, &location);
+                // The steering must NAME what to open — a gate that says "this may be a
+                // duplicate" without saying of what leaves the reader where they started.
                 assert!(s.contains("SourceScan#parse"), "{s}");
+                // And it must say MAY. The ranking carries no threshold, so a sentence
+                // asserting sameness would be false on most of the writes it fires on.
+                assert!(s.contains("may already be done"), "{s}");
             }
-            other => panic!("expected a duplicate, got {other:?}"),
+            other => panic!("expected a nomination, got {other:?}"),
         }
     }
 
@@ -303,22 +325,22 @@ mod tests {
     }
 
     #[test]
-    fn silence_from_the_lane_is_not_a_duplicate() {
+    fn silence_from_the_lane_is_not_a_nomination() {
         assert_eq!(
-            Verdict::NoMatch,
-            judge(Mode::Block, "Write", "/p/A.java", &write_of("void x() {}"), |_, _| {
-                Ok(json!({"matches": []}))
+            Verdict::NoNominee,
+            judge(Mode::Observe, "Write", "/p/A.java", &write_of("void x() {}"), |_, _| {
+                Ok(json!({"nominees": []}))
             })
         );
     }
 
     #[test]
-    fn a_match_with_no_location_is_not_actionable_and_does_not_deny() {
+    fn a_nominee_with_no_location_is_not_actionable() {
         // "Something like this exists somewhere" is the unhelpful half of the
-        // answer, and denying on it would spend the agent's time for nothing.
+        // answer, and showing it would spend the agent's time for nothing.
         assert_eq!(
-            Verdict::NoMatch,
-            judge(Mode::Block, "Write", "/p/A.java", &write_of("void x() {}"), |_, _| {
+            Verdict::NoNominee,
+            judge(Mode::Observe, "Write", "/p/A.java", &write_of("void x() {}"), |_, _| {
                 Ok(engine_answer(&[("parse", "parses something", "")]))
             })
         );
@@ -329,11 +351,11 @@ mod tests {
         let p = write_of("void x() {}");
         assert_eq!(
             Verdict::NotAJavaEdit,
-            judge(Mode::Block, "Read", "/p/A.java", &p, |_, _| Ok(json!({})))
+            judge(Mode::Observe, "Read", "/p/A.java", &p, |_, _| Ok(json!({})))
         );
         assert_eq!(
             Verdict::NotAJavaEdit,
-            judge(Mode::Block, "Write", "/p/notes.txt", &p, |_, _| Ok(json!({})))
+            judge(Mode::Observe, "Write", "/p/notes.txt", &p, |_, _| Ok(json!({})))
         );
     }
 
@@ -347,17 +369,18 @@ mod tests {
         );
     }
 
+    /// THE DEVIATION, PINNED. The plan ruled that this gate ships in `Block`; it
+    /// ships in `Observe`, because the engine's own test measures that rank one
+    /// comes back for a draft with nothing to do with the stored job. Asserting
+    /// the default here is what makes the deviation visible to anyone who
+    /// changes it back without supplying the confirming signal.
     #[test]
-    fn it_ships_in_block_but_a_misspelling_never_escalates() {
-        // Nothing configured is the RULING's default.
-        assert_eq!(Mode::Block, Mode::parse(None));
-        assert_eq!(Mode::Block, Mode::parse(Some("")));
+    fn it_ships_in_observe_and_block_must_be_asked_for() {
+        assert_eq!(Mode::Observe, Mode::parse(None));
+        assert_eq!(Mode::Observe, Mode::parse(Some("")));
         assert_eq!(Mode::Block, Mode::parse(Some("block")));
         assert_eq!(Mode::Off, Mode::parse(Some("off")));
-        assert_eq!(Mode::Observe, Mode::parse(Some("observe")));
-        // A word nobody recognises is a preference badly spelled, and reading it
-        // as Block would grant more authority than was asked for.
-        assert_eq!(Mode::Observe, Mode::parse(Some("observ")));
+        // A word nobody recognises never escalates.
         assert_eq!(Mode::Observe, Mode::parse(Some("blok")));
     }
 
@@ -369,22 +392,22 @@ mod tests {
         let payload = json!({"new_string": "  private Tree parse(Source s) { return null; }"})
             .to_string();
         let seen = std::cell::RefCell::new(String::new());
-        let v = judge(Mode::Block, "Edit", "/p/A.java", &payload, |_, draft| {
+        let v = judge(Mode::Observe, "Edit", "/p/A.java", &payload, |_, draft| {
             *seen.borrow_mut() = draft.to_string();
-            Ok(json!({"matches": []}))
+            Ok(json!({"nominees": []}))
         });
-        assert_eq!(Verdict::NoMatch, v);
+        assert_eq!(Verdict::NoNominee, v);
         assert!(seen.borrow().contains("parse"), "the fragment must reach the engine");
     }
 
     #[test]
-    fn observe_records_the_same_verdict_it_would_have_denied_on() {
-        // The mode decides what the PIPELINE does with a verdict; the verdict
-        // itself is the same fact either way, which is what makes a would-block
-        // count comparable with a block count.
-        let v = judge(Mode::Observe, "Write", "/p/A.java", &write_of("void x() {}"), |_, _| {
-            Ok(engine_answer(&[("x", "does x", "com.example.X#x")]))
-        });
-        assert!(matches!(v, Verdict::Duplicate { .. }), "{v:?}");
+    fn the_mode_decides_what_is_done_with_a_verdict_not_what_the_verdict_is() {
+        // The same fact either way, which is what makes an Observe count
+        // comparable with a Block count if the mode is ever promoted.
+        let ask = |_: &str, _: &str| Ok(engine_answer(&[("x", "does x", "com.example.X#x")]));
+        let observed = judge(Mode::Observe, "Write", "/p/A.java", &write_of("void x() {}"), ask);
+        let blocked = judge(Mode::Block, "Write", "/p/A.java", &write_of("void x() {}"), ask);
+        assert_eq!(observed, blocked);
+        assert!(matches!(observed, Verdict::Nominated { .. }), "{observed:?}");
     }
 }
