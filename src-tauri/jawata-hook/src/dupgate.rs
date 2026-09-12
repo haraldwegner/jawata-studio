@@ -117,7 +117,51 @@ pub enum Verdict {
 pub const DUPLICATE: &str = "jawata-duplicate:";
 
 /// Did this write already say why the duplicate is deliberate?
+///
+/// # The DRAFT is excluded, and that closes a bypass rather than being a nicety
+///
+/// The token is the agent's declaration ABOUT the write; it is not content OF
+/// the write. Scanning the whole payload conflated the two, so a `.java` file
+/// whose own source contains the token — a comment, a doc block, or this gate's
+/// own rules quoted into Java — dispositioned the very write that created it.
+/// Found by the C8 audit. The draft is removed before the search, so a
+/// declaration has to be made where declarations are made.
 pub fn disposition_in(payload: &str) -> Option<String> {
+    let Ok(mut value) = serde_json::from_str::<Value>(payload) else {
+        return disposition_outside_the_draft(payload);
+    };
+    if let Some(nested) = value.get_mut("tool_input") {
+        strip_draft_fields(nested);
+    }
+    strip_draft_fields(&mut value);
+    disposition_outside_the_draft(&value.to_string())
+}
+
+/// Remove every field [`draft_text`] reads, so what is left is only what the
+/// agent said ABOUT the write.
+///
+/// IT STRIPS THE PARSED VALUE, NOT THE TEXT, and the first version did the
+/// opposite: `payload.replace(draft, "")`, which removed NOTHING. `draft_text`
+/// hands back the DECODED content while the payload holds it JSON-ESCAPED, so a
+/// draft carrying a newline never matched its own escaped form and the token
+/// went on dispositioning its own write. The line reads exactly like the thing
+/// it was meant to do, which is why only running it said otherwise.
+fn strip_draft_fields(scope: &mut Value) {
+    let Some(map) = scope.as_object_mut() else {
+        return;
+    };
+    map.remove("content");
+    map.remove("new_string");
+    if let Some(edits) = map.get_mut("edits").and_then(Value::as_array_mut) {
+        for edit in edits {
+            if let Some(one) = edit.as_object_mut() {
+                one.remove("new_string");
+            }
+        }
+    }
+}
+
+fn disposition_outside_the_draft(payload: &str) -> Option<String> {
     let lower = payload.to_lowercase();
     let at = lower.find(DUPLICATE)?;
     let reason: String = payload[at + DUPLICATE.len()..]
@@ -318,6 +362,40 @@ mod tests {
             Some("the two differ on the error path".to_string()),
             disposition_in("jawata-duplicate: the two differ on the error path")
         );
+    }
+
+    /// THE DRAFT CANNOT DISPOSITION ITSELF — a bypass the C8 audit found.
+    ///
+    /// The token declares something ABOUT the write. A file whose own source
+    /// contains it (a comment, a doc block, this gate's rules quoted into Java)
+    /// would otherwise wave through the very write that created it, and the
+    /// bypass is trivially reachable by anyone writing about the mechanism.
+    #[test]
+    fn the_token_inside_the_drafted_file_is_content_not_a_declaration() {
+        let payload = json!({
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/p/Notes.java",
+                "content": "/** Write `jawata-duplicate: because X` to declare one. */\n\
+                            class Notes { void go() {} }"
+            }
+        })
+        .to_string();
+        assert_eq!(
+            None,
+            disposition_in(&payload),
+            "the token is inside the DRAFT, so it is the file's content and not the \
+             agent's declaration about writing it"
+        );
+        // The control: the same token OUTSIDE the draft still dispositions, or
+        // the fix above would have closed the mechanism rather than the bypass.
+        let declared = json!({
+            "tool_name": "Write",
+            "why": "jawata-duplicate: the shared reader cannot see this format",
+            "tool_input": {"file_path": "/p/Notes.java", "content": "class N { void go() {} }"}
+        })
+        .to_string();
+        assert!(disposition_in(&declared).is_some(), "a real declaration must still count");
     }
 
     #[test]

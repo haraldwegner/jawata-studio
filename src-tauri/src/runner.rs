@@ -488,12 +488,24 @@ pub fn deliberate_duplicate_check(report: &str) -> GateOutcome {
         let Some(at) = line.find(DELIBERATE_DUPLICATE) else {
             continue;
         };
+        // THE MARKER'S OWN DECLARATION IS NOT AN ORDER. The `const` line in this
+        // very file contains the literal, and the gate runs over every proposal
+        // file — so without this, any seat proposing an edit to `runner.rs`
+        // scored the source of the gate as a bare order and was refused. Found
+        // by the C8 audit; a gate that refuses edits to itself is the shape that
+        // gets switched off rather than fixed.
+        if at > 0 && line.as_bytes()[at - 1] == b'"' {
+            continue;
+        }
         ordered += 1;
         let reason = line[at + DELIBERATE_DUPLICATE.len()..].trim();
-        // A reason has to say something. An empty tail, or a word, is the bare
-        // token this exists to refuse — the seat's own text calls "not relevant"
-        // with nothing behind it the reflex it must not produce.
-        if reason.len() < 12 {
+        // A REASON IS A SENTENCE, NOT A LABEL — counted in words rather than
+        // characters. The first version asked for twelve characters and claimed
+        // in three places to refuse "not relevant with nothing behind it"; that
+        // phrase is exactly twelve characters and PASSED, as does any single
+        // long word. Three words is still a proxy and is stated as one, but it
+        // is a proxy for the property actually wanted, which the length was not.
+        if reason.split_whitespace().count() < 3 {
             bare.push(line.trim().to_string());
         }
     }
@@ -2532,6 +2544,35 @@ mod tests {
                 "and the refusal must say what is permitted, or it reads as a ban on \
                  something the rule allows: {out:?}"
             );
+        }
+
+        /// THE PHRASE THE RULE NAMES, which the first version let through.
+        ///
+        /// Three places claimed this gate refuses "not relevant with nothing
+        /// behind it". That phrase is exactly twelve characters and the check
+        /// asked for twelve, so it PASSED — the claim was false about the code
+        /// beside it. Found by the C8 audit.
+        #[test]
+        fn the_very_phrase_the_rule_names_is_refused() {
+            let report = format!("{CLEAN}\n{} not relevant\n", DELIBERATE_DUPLICATE);
+            assert!(!deliberate_duplicate_check(&report).passed);
+            // And a single long word, which a character count also waved past.
+            let long = format!("{CLEAN}\n{} irreconcilable\n", DELIBERATE_DUPLICATE);
+            assert!(!deliberate_duplicate_check(&long).passed);
+        }
+
+        /// THE GATE MUST NOT REFUSE EDITS TO ITSELF.
+        ///
+        /// The `const` declaring the marker contains the marker, and the gate
+        /// runs over every proposal file — so any seat proposing a change to
+        /// this file scored the gate's own source as a bare order. A gate that
+        /// refuses to be edited is one that gets switched off rather than fixed.
+        #[test]
+        fn the_markers_own_declaration_is_not_an_order() {
+            let source = "pub const DELIBERATE_DUPLICATE: &str = \"DELIBERATE DUPLICATE:\";";
+            let out = deliberate_duplicate_check(source);
+            assert!(out.passed, "the gate refused its own source: {out:?}");
+            assert!(out.detail.contains("orders no second implementation"), "{out:?}");
         }
 
         #[test]
