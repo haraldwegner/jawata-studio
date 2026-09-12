@@ -134,6 +134,24 @@ pub const MAX_UNJUDGED_BOUNCES: u32 = 3;
 /// identifier is historical; the sentence above is what is current.
 pub const MAX_RESEED_BOUNCES: u32 = 2;
 
+/// Sprint 28f Stage 8 D4 — how many times a turn may be held for members it did not
+/// describe before the gate gives up and lets it through.
+///
+/// Two, matching the reseed rule, and for the same reasoning rather than by imitation: the
+/// cure is one call per member and the agent exits sooner by making it, so a hold that
+/// cannot be discharged in two attempts is a hold that is wrong about something. Giving up
+/// is bounded rather than silent — the count is in the message, so a reader sees which
+/// attempt they are on.
+pub const MAX_JOB_BOUNCES: u32 = 2;
+
+/// How a hold for undescribed members identifies itself.
+///
+/// A CONSTANT rather than a literal in two places, for the reason the unstored-story marker
+/// beside it is one: the pipeline charges its counter only when THIS rule bounced, and it
+/// recognises that by the reason's opening — so a reworded message with a hand-typed
+/// prefix somewhere else would silently stop the counter and make the ceiling unreachable.
+pub const UNDESCRIBED_MEMBERS: &str = "UNDESCRIBED MEMBERS";
+
 /// How a hold for an unstored story identifies itself.
 ///
 /// Shared with the pipeline because the counter must be charged to THIS rule
@@ -589,6 +607,16 @@ pub struct Turn {
     /// deliberately: this hook cannot know where the substrate lives, and the
     /// store cannot know whether THIS turn was the one that wrote there.
     pub wrote_markdown: bool,
+    /// Sprint 28f Stage 8 D4 — the JAVA FILES this window wrote.
+    ///
+    /// **Files and not symbols, and the difference is a design decision rather than a
+    /// convenience.** The rule wants to know which MEMBERS a turn added without describing
+    /// them; working that out from an edit means parsing Java, which this crate must not do
+    /// — it is precisely the job the engine exists for. So the hook reports what it can see
+    /// without a parser (which files were written) and the engine derives the members
+    /// through JDT. Gathered here for the same reason `wrote_markdown` is: the tool NAME
+    /// cannot carry it, only the call's own `file_path` can.
+    pub changed_java_files: Vec<String>,
     /// studio#4: tool RESULTS in this window that carried a degradation stamp.
     ///
     /// Counted from tool results only — never from the raw window and never
@@ -744,6 +772,20 @@ pub struct StopFacts {
     /// its budget arguing about a message must still be held for a story it
     /// dropped on the floor.
     pub reseed_bounces: u32,
+    /// Sprint 28f Stage 8 D4 — the members this turn wrote that have no job written.
+    ///
+    /// Gathered by the pipeline (it is a store call), like `substrate`, so `judge` stays
+    /// pure. **`None` is NOT "nothing is missing".** It means the question was not asked —
+    /// the turn wrote no Java — or could not be answered: no project loaded, a resident
+    /// down, an engine older than the verb. A gate that read those as clean would let every
+    /// turn through while looking present, which is the failure this whole sprint is about.
+    pub jobs_missing: Option<Vec<String>>,
+    /// How many times THIS session has been held for undescribed members.
+    ///
+    /// Its own counter beside `reseed_bounces`, for the same reason that one is separate: a
+    /// turn that spent its budget on another rule must still be held for members it left
+    /// unexplained.
+    pub job_bounces: u32,
 }
 
 impl StopFacts {
@@ -904,6 +946,40 @@ a `reviewed:` stamp it has actually earned from a cold reader.",
                 drift.root,
                 drift.named.join(", "),
                 drift.root
+            ),
+        };
+    }
+
+    // Sprint 28f Stage 8 D4 — MEMBERS ADDED AND LEFT UNEXPLAINED.
+    //
+    // A turn that wrote Java members and described none of them leaves the next reader to
+    // work out what they are for by reading them, which is the cost this sprint exists to
+    // remove. The store is asked which of this turn's members have a job written; the ones
+    // that do not are named here, with the exact call to make.
+    //
+    // `None` never reaches this branch, and that is the whole of the rule's honesty: it
+    // means the question was not asked or could not be answered, and an unanswerable
+    // question is not a clean turn. The pipeline says so on its own channel instead.
+    //
+    // Bounded like the reseed rule and for the identical measured reason: Cursor re-invokes
+    // with the retry flag unset, so a ceiling placed inside an `already_bounced` branch is
+    // never reached and the rule holds forever. The agent exits sooner by doing the thing.
+    if let Some(missing) = facts.jobs_missing.as_ref().filter(|m| !m.is_empty()) {
+        if facts.job_bounces >= MAX_JOB_BOUNCES {
+            return StopVerdict::Allow;
+        }
+        return StopVerdict::Block {
+            reason: format!(
+                "{} ({} of {}): this turn wrote {} member(s) that nothing \
+in the store explains — {}. A member nobody described costs every later reader the time to \
+work it out from its body, which is exactly what the code lane exists to prevent. For each \
+one, run experience(kind=record, type=job, symbol=<the member>, summary=<what it is FOR, \
+in a sentence that is not its own name restated>), then stop.",
+                UNDESCRIBED_MEMBERS,
+                facts.job_bounces + 1,
+                MAX_JOB_BOUNCES,
+                missing.len(),
+                missing.join(", ")
             ),
         };
     }
@@ -1698,6 +1774,23 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                             {
                                 turn.wrote_markdown = true;
                             }
+                            // Sprint 28f Stage 8 D4 — the same read, one extension over.
+                            // Beside `wrote_markdown` rather than in a second pass,
+                            // because both answer "what did this call touch" and a
+                            // second walk of the same blocks is a second thing to keep
+                            // in step.
+                            if matches!(name.as_str(), "Write" | "Edit") {
+                                if let Some(p) = input
+                                    .and_then(|i| i.get("file_path"))
+                                    .and_then(|p| p.as_str())
+                                    .filter(|p| p.ends_with(".java"))
+                                {
+                                    let p = p.to_string();
+                                    if !turn.changed_java_files.contains(&p) {
+                                        turn.changed_java_files.push(p);
+                                    }
+                                }
+                            }
                             let flagged = input
                                 .and_then(|i| i.get("run_in_background"))
                                 .and_then(serde_json::Value::as_bool)
@@ -2283,11 +2376,78 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
             // Mirrors reality rather than defaulting: a turn carrying tool calls
             // HAS worked. A helper that always said `false` would let a test pass
             // against a fixture that could not occur.
-            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, carried: vec![], instruction_open: false, refusals_emitted: 0, judge_verdict: None, judge_call_ids: vec![], human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, answered_substantially: false },
+            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, carried: vec![], instruction_open: false, refusals_emitted: 0, judge_verdict: None, judge_call_ids: vec![], human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, changed_java_files: vec![], answered_substantially: false },
             autonomy,
             substrate: None,
-            reseed_bounces: 0,
+            reseed_bounces: 0, jobs_missing: None, job_bounces: 0,
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Sprint 28f Stage 8 D4 — MEMBERS ADDED AND LEFT UNEXPLAINED
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn undescribed_members_hold_the_turn_and_name_the_call() {
+        let mut f = facts(Autonomy::Granted, vec![]);
+        f.jobs_missing = Some(vec!["com.example.Ledger#reset".into()]);
+
+        match judge(&f) {
+            StopVerdict::Block { reason } => {
+                assert!(reason.starts_with(UNDESCRIBED_MEMBERS),
+                    "the pipeline charges its counter by this prefix, so it is part of the \
+                     contract and not decoration: {reason}");
+                assert!(reason.contains("com.example.Ledger#reset"),
+                    "the member is NAMED — a hold that does not say which is a hold nobody \
+                     can discharge: {reason}");
+                assert!(reason.contains("kind=record, type=job"),
+                    "and the exact call is given, because a gate that blocks without one \
+                     gets worked around: {reason}");
+            }
+            other => panic!("expected a hold: {other:?}"),
+        }
+    }
+
+    /// THE HONESTY CASE, and it is the one the whole rule rests on.
+    ///
+    /// `None` means the question could not be answered — no project loaded, a resident
+    /// down, an engine older than the verb. A gate reading that as a clean turn would let
+    /// everything through while looking present, which is the failure this sprint is about.
+    /// The two states are asserted side by side, because either alone is satisfied by a
+    /// rule that never fires or always does.
+    #[test]
+    fn an_unanswerable_question_is_not_a_clean_turn_and_an_empty_answer_is() {
+        let mut unknown = facts(Autonomy::Granted, vec![]);
+        unknown.jobs_missing = None;
+        assert!(!matches!(judge(&unknown), StopVerdict::Block { ref reason }
+            if reason.starts_with(UNDESCRIBED_MEMBERS)),
+            "not asked, or could not answer — this rule says nothing either way");
+
+        let mut answered = facts(Autonomy::Granted, vec![]);
+        answered.jobs_missing = Some(vec![]);
+        assert!(!matches!(judge(&answered), StopVerdict::Block { ref reason }
+            if reason.starts_with(UNDESCRIBED_MEMBERS)),
+            "asked and nothing missing — a clean turn passes");
+    }
+
+    /// BOUNDED, and the ceiling sits on the RULE rather than inside a retry branch.
+    ///
+    /// Measured on the review rule and recorded there: Cursor re-invokes with the retry
+    /// flag unset, so a valve on that path is never entered and the rule holds forever.
+    #[test]
+    fn the_hold_gives_up_after_two_attempts_rather_than_wedging() {
+        let mut f = facts(Autonomy::Granted, vec![]);
+        f.jobs_missing = Some(vec!["com.example.Ledger#reset".into()]);
+
+        f.job_bounces = MAX_JOB_BOUNCES - 1;
+        assert!(matches!(judge(&f), StopVerdict::Block { .. }),
+            "still inside the budget — without this the release below proves nothing");
+
+        f.job_bounces = MAX_JOB_BOUNCES;
+        assert!(!matches!(judge(&f), StopVerdict::Block { ref reason }
+            if reason.starts_with(UNDESCRIBED_MEMBERS)),
+            "and at the ceiling the turn is let through: a rule that cannot be discharged \
+             in two attempts is wrong about something, and a wedge is worse");
     }
 
     // -----------------------------------------------------------------
@@ -2957,7 +3117,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
             turn,
             autonomy: Autonomy::Granted,
             substrate: None,
-            reseed_bounces: 0,
+            reseed_bounces: 0, jobs_missing: None, job_bounces: 0,
         };
         match judge(&f) {
             StopVerdict::Block { reason } => assert!(
@@ -2994,7 +3154,7 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
             turn,
             autonomy: Autonomy::Granted,
             substrate: None,
-            reseed_bounces: 0,
+            reseed_bounces: 0, jobs_missing: None, job_bounces: 0,
         };
         match judge(&f) {
             StopVerdict::Block { reason } => {
@@ -3867,7 +4027,7 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
             turn,
             autonomy: Autonomy::Unknown,
             substrate: None,
-            reseed_bounces: 0,
+            reseed_bounces: 0, jobs_missing: None, job_bounces: 0,
         });
         assert_eq!(
             StopVerdict::Allow,
@@ -3896,7 +4056,7 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
             StopVerdict::Allow,
             judge(&StopFacts { empty_turns: 0, review_rounds: 0, already_bounced: false,
                 bounces: 0, turn: turn.clone(), autonomy: Autonomy::Unknown, substrate: None,
-                reseed_bounces: 0 }),
+                reseed_bounces: 0, jobs_missing: None, job_bounces: 0 }),
             "with no grant in force, an ask is just a message"
         );
         // ...and WITH the grant it is held, by Rule B, until the judge speaks.
@@ -3905,7 +4065,7 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
             matches!(
                 judge(&StopFacts { empty_turns: 0, review_rounds: 0, already_bounced: false,
                     bounces: 0, turn, autonomy: Autonomy::Granted, substrate: None,
-                    reseed_bounces: 0 }),
+                    reseed_bounces: 0, jobs_missing: None, job_bounces: 0 }),
                 StopVerdict::Block { .. }
             ),
             "under a grant, a self-initiated ask must reach the judge"

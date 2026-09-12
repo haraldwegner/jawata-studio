@@ -1530,6 +1530,22 @@ fn stop_gate(
             .unwrap_or(0),
     };
 
+    // Sprint 28f Stage 8 D4. Its own counter beside the reseed one, and the same
+    // no-session rule: a payload without an id cannot be bounded, so the hold is treated as
+    // spent rather than applied — a missed nudge beats a stuck session.
+    let job_file = bounce_dir
+        .as_ref()
+        .map(|d| d.join(format!("{}.jobs", sanitize_session(&session))));
+    let job_bounces: u32 = match job_file.as_ref() {
+        None => stop::MAX_JOB_BOUNCES,
+        Some(f) => std::fs::read_to_string(f)
+            .ok()
+            .and_then(|t| t.trim().parse().ok())
+            .unwrap_or(0),
+    };
+    // Asked only when the turn actually wrote Java, so an ordinary turn pays no round trip.
+    let jobs_missing = jobs_missing(store, &turn.changed_java_files);
+
     // THE CONVERSATION-LOOP COUNTER (2026-08-29, Harald: "the conversation
     // loop counter needs to be reset correctly. Double check!"). The audit-fix
     // alarm counts REFUSE verdicts, but each verdict arrives via a background
@@ -1584,8 +1600,11 @@ fn stop_gate(
         review_rounds,
         substrate,
         reseed_bounces,
+        jobs_missing,
+        job_bounces,
     };
     let owed_a_reseed = facts.owes_a_reseed();
+    let owed_a_job = facts.jobs_missing.as_ref().is_some_and(|m| !m.is_empty());
     let verdict = stop::judge(&facts);
 
     // EVERY VERDICT IS RECORDED, and this is the auditor's non-optional finding of
@@ -1646,6 +1665,26 @@ fn stop_gate(
             }
             // Cleared the moment nothing is owed — including the release past
             // the ceiling, so the next story starts with a full budget.
+            (_, false) => {
+                let _ = std::fs::remove_file(file);
+            }
+            _ => {}
+        }
+    }
+
+    // Sprint 28f Stage 8 D4, the same discipline one rule over: counted against THIS rule
+    // only, so a turn held for something else has not spent a describe chance — otherwise
+    // the job rule could be walked past by tripping a different one twice.
+    if let (Some(dir), Some(file)) = (bounce_dir.as_ref(), job_file.as_ref()) {
+        match (&verdict, owed_a_job) {
+            (StopVerdict::Block { reason }, true)
+                if reason.starts_with(stop::UNDESCRIBED_MEMBERS) =>
+            {
+                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::write(file, (job_bounces + 1).to_string());
+            }
+            // Cleared the moment nothing is owed — including the release past the ceiling,
+            // so the next undescribed member starts with a full budget.
             (_, false) => {
                 let _ = std::fs::remove_file(file);
             }
@@ -1715,6 +1754,28 @@ fn stop_gate(
 /// because the caller distinguishes `None` from a zero count. A hook that
 /// wedged a session because a resident was down would be a worse defect than
 /// the one it is fixing.
+/// Sprint 28f Stage 8 D4 — which members this turn wrote have no job written.
+///
+/// **`None` is never "nothing is missing".** It means the question could not be answered:
+/// the store was unreachable, the engine predates the verb, or — the commonest by far — no
+/// project is loaded, which the engine REFUSES rather than answering with an empty list for
+/// exactly this reason. The gate treats `None` as no ruling, so a resident that cannot see
+/// never turns into a turn that is clean.
+fn jobs_missing(store: &dyn Store, files: &[String]) -> Option<Vec<String>> {
+    if files.is_empty() {
+        return None;
+    }
+    let data = store
+        .ask_value(serde_json::json!({
+            "kind": "describe",
+            "action": "jobs_for",
+            "filePaths": files,
+        }))
+        .ok()?;
+    let missing = data.get("missing")?.as_array()?;
+    Some(missing.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+}
+
 fn substrate_drift(store: &dyn Store) -> Option<crate::stop::SubstrateDrift> {
     let data = store.ask_value(serde_json::json!({ "kind": "stats" })).ok()?;
     let substrate = data.get("substrate")?;
@@ -2504,10 +2565,10 @@ mod tests {
             review_rounds: 0,
             already_bounced: false,
             bounces: 0,
-            turn: Turn { final_text: "summary".into(), launches: vec![], carried: vec![], instruction_open: false, refusals_emitted: 0, judge_verdict: None, judge_call_ids: vec![], human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, worked_since_push: false, answered_substantially: false },
+            turn: Turn { final_text: "summary".into(), launches: vec![], carried: vec![], instruction_open: false, refusals_emitted: 0, judge_verdict: None, judge_call_ids: vec![], human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, changed_java_files: vec![], worked_since_push: false, answered_substantially: false },
             autonomy: Autonomy::Granted,
             substrate: None,
-            reseed_bounces: 0,
+            reseed_bounces: 0, jobs_missing: None, job_bounces: 0,
         };
         let StopVerdict::Block { reason } = crate::stop::judge(&facts) else {
             panic!("must block");
