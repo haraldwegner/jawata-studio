@@ -676,13 +676,14 @@ fn dup_gate(
             None
         }
 
-        crate::dupgate::Verdict::Nominated { method, job, location } => match mode {
+        crate::dupgate::Verdict::Nominated { method, job, location, existing_known } => {
+            match mode {
             crate::dupgate::Mode::Observe => {
                 emit_gate_signal("duplicate-nominated", &location);
                 Some(emit_body(
                     client,
                     Role::ToolRecall,
-                    crate::dupgate::steering(&method, &job, &location),
+                    crate::dupgate::steering(&method, &job, &location, existing_known),
                 ))
             }
             crate::dupgate::Mode::Block => {
@@ -690,11 +691,12 @@ fn dup_gate(
                 Some(emit_permission(
                     client,
                     false,
-                    crate::dupgate::steering(&method, &job, &location),
+                    crate::dupgate::steering(&method, &job, &location, existing_known),
                 ))
             }
             crate::dupgate::Mode::Off => None,
-        },
+            }
+        }
     }
 }
 
@@ -3234,6 +3236,75 @@ mod payload_parsing_tests {
                 text.contains("SourceScan#parse") && text.contains("may already be done"),
                 "Observe SHOWS the nominee — a silent Observe would ship a gate that does \
                  nothing until somebody flips a switch nobody has a reason to flip: {text}"
+            ),
+            other => panic!("expected the advisory, got {other:?}"),
+        }
+    }
+
+    /// BLOCK ACTUALLY DENIES — the arm nothing drove.
+    ///
+    /// `Block` is a published mode: an operator can set `dup_gate=block` and the
+    /// pipeline answers with a PERMISSION DENIAL rather than an advisory. It had no
+    /// test. That is this repository's recorded "published refusal, zero coverage"
+    /// shape, and it is worse here than usual, because the gate ships in Observe by
+    /// declared deviation — so the one arm nobody exercises is the one an operator
+    /// reaches for when they decide the deviation was wrong.
+    ///
+    /// Driving `run()` rather than `judge()` is the point: `judge` never reads the
+    /// mode past the kill switch, so Block and Observe are the SAME verdict there.
+    /// The whole difference lives in the pipeline, which is what this enters.
+    #[test]
+    fn block_denies_the_write_and_says_what_to_open() {
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let store = DupStore {
+            asked: asked.clone(),
+            draft_seen: std::sync::Arc::new(std::sync::Mutex::new(String::new())),
+        };
+        let mut config = gate_config("claude-code");
+        config.dup_gate = Some("block".into());
+
+        let out = run(Role::ToolRecall, &config, java_write(), &store);
+
+        assert_eq!(
+            1,
+            asked.load(std::sync::atomic::Ordering::SeqCst),
+            "Block must still ASK — a mode that denies without consulting the store \
+             would deny every Java write outright"
+        );
+        match out {
+            Outcome::Emitted(text) => {
+                // The denial is a permission decision, not an advisory body. Asserting
+                // only on the prose would pass over an Observe-shaped emission carrying
+                // the same sentence, which is exactly the two arms being confused.
+                assert!(
+                    text.contains("\"permissionDecision\"") || text.contains("deny"),
+                    "Block must render a DENIAL, not the advisory Observe renders: {text}"
+                );
+                assert!(
+                    text.contains("SourceScan#parse"),
+                    "and a denial that does not say what to open instead is a wall: {text}"
+                );
+            }
+            other => panic!("Block must emit a decision, got {other:?}"),
+        }
+    }
+
+    /// THE CONTROL, and without it the case above passes over a pipeline that denies
+    /// in BOTH modes — which is the defect an untested Block arm invites.
+    #[test]
+    fn observe_on_the_same_payload_does_not_deny() {
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let store = DupStore {
+            asked: asked.clone(),
+            draft_seen: std::sync::Arc::new(std::sync::Mutex::new(String::new())),
+        };
+        // The SAME payload and the SAME store; only the mode differs.
+        let out = run(Role::ToolRecall, &gate_config("claude-code"), java_write(), &store);
+
+        match out {
+            Outcome::Emitted(text) => assert!(
+                !text.contains("\"permissionDecision\""),
+                "the shipping default advises; it must not deny: {text}"
             ),
             other => panic!("expected the advisory, got {other:?}"),
         }

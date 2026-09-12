@@ -133,7 +133,14 @@ pub enum Verdict {
     /// carries no threshold, so this names the nearest job and never asserts it
     /// is the same one. In [`Mode::Observe`] — the default — it is shown and
     /// recorded, and the write proceeds.
-    Nominated { method: String, job: String, location: String },
+    ///
+    /// `existing_known` is the ENGINE's own answer to a different question: could
+    /// it subtract what the drafted file already declares. When it is false the
+    /// gate cannot tell "this job exists elsewhere" from "this method is already
+    /// in the very file you are editing", and the steering says so. Dropping that
+    /// flag would print a confident sentence over an unchecked one, which is the
+    /// distinction this whole sprint exists to keep.
+    Nominated { method: String, job: String, location: String, existing_known: bool },
 }
 
 /// The declaration that says the second implementation is DELIBERATE.
@@ -291,7 +298,18 @@ where
     };
     match ask(path, &draft) {
         Ok(answer) => match first_nominee(&answer) {
-            Some((method, job, location)) => Verdict::Nominated { method, job, location },
+            Some((method, job, location)) => Verdict::Nominated {
+                method,
+                job,
+                location,
+                // Absent is treated as NOT known, deliberately: an engine that
+                // stopped sending the flag would otherwise silently upgrade every
+                // answer to "checked".
+                existing_known: answer
+                    .get("existingKnown")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            },
             None => Verdict::NoNominee,
         },
         Err(e) => Verdict::Unavailable { why: format!("{e:?}") },
@@ -303,7 +321,15 @@ where
 /// It says MAY, and the hedge is the honest part rather than a softening: the
 /// ranking carries no threshold, so a sentence claiming this IS the same job
 /// would be false about the majority of the writes it fires on.
-pub fn steering(method: &str, job: &str, location: &str) -> String {
+pub fn steering(method: &str, job: &str, location: &str, existing_known: bool) -> String {
+    let unchecked = if existing_known {
+        ""
+    } else {
+        "\n\nAND THIS WAS NOT SUBTRACTED FROM THE FILE YOU ARE EDITING — no project was \
+         loaded, or the file does not exist yet, so the gate could not tell whether the \
+         method you are about to write is ALREADY THERE. That is a different question from \
+         the one above and it went unanswered rather than answered no."
+    };
     format!(
         "JAWATA — this may already be done. The closest thing the codebase records to \
          `{method}` is:\n  {location} — {job}\n\nOpen it before writing. If it does what \
@@ -311,7 +337,7 @@ pub fn steering(method: &str, job: &str, location: &str) -> String {
          is a normal answer here — say so and proceed: put `{DUPLICATE} <why a second \
          implementation is right here>` in the call. A reason is required, and it is not a \
          formality: the architect's report carries it, so a second implementation nobody \
-         justified is refused there too."
+         justified is refused there too.{unchecked}"
     )
 }
 
@@ -348,17 +374,31 @@ mod tests {
             },
         );
         match v {
-            Verdict::Nominated { method, job, location } => {
+            Verdict::Nominated { method, job, location, existing_known } => {
                 assert_eq!("parse", method);
                 assert!(job.contains("binding resolution"), "{job}");
                 assert_eq!("org.jawata.mcp.tools.shared.SourceScan#parse", location);
-                let s = steering(&method, &job, &location);
+                // This answer carries no `existingKnown`, and absent reads as NOT known —
+                // an engine that stopped sending the flag must not silently upgrade every
+                // answer to "checked".
+                assert!(!existing_known, "an absent flag is not a yes");
+                let s = steering(&method, &job, &location, existing_known);
                 // The steering must NAME what to open — a gate that says "this may be a
                 // duplicate" without saying of what leaves the reader where they started.
                 assert!(s.contains("SourceScan#parse"), "{s}");
                 // And it must say MAY. The ranking carries no threshold, so a sentence
                 // asserting sameness would be false on most of the writes it fires on.
                 assert!(s.contains("may already be done"), "{s}");
+                // And it must say that the OTHER question went unanswered. Without this
+                // the reader cannot tell "this job exists elsewhere" from "this method is
+                // already in the file you are editing".
+                assert!(s.contains("NOT SUBTRACTED FROM THE FILE"), "{s}");
+
+                // THE CONTROL: when the engine DID subtract, the caveat is absent. Without
+                // it the assertion above is satisfied by a gate that prints the sentence
+                // unconditionally, which would be a caveat that means nothing.
+                let checked = steering(&method, &job, &location, true);
+                assert!(!checked.contains("NOT SUBTRACTED FROM THE FILE"), "{checked}");
             }
             other => panic!("expected a nomination, got {other:?}"),
         }
