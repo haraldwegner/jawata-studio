@@ -5,6 +5,7 @@ src/runner.rs|associated function `java_files_under` is never used
 src/runner.rs|associated functions `pass` and `fail` are never used
 src/runner.rs|associated items `new`, `call_tool`, `compile_verify`, and `doclint` are never used
 src/runner.rs|associated items `parse` and `matches` are never used
+src/runner.rs|constant `DELIBERATE_DUPLICATE` is never used
 src/runner.rs|constant `FILE_BLOCK_END` is never used
 src/runner.rs|constant `FILE_BLOCK_PREFIX` is never used
 src/runner.rs|constant `FILE_BLOCK_SUFFIX` is never used
@@ -22,6 +23,7 @@ src/runner.rs|function `clip` is never used
 src/runner.rs|function `collect_profile_evidence` is never used
 src/runner.rs|function `compute_files_diff` is never used
 src/runner.rs|function `copy_tree` is never used
+src/runner.rs|function `deliberate_duplicate_check` is never used
 src/runner.rs|function `due_seats` is never used
 src/runner.rs|function `execute_observation` is never used
 src/runner.rs|function `extract_tool_text` is never used
