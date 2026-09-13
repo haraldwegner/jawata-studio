@@ -127,17 +127,30 @@ one pipeline would hide that difference rather than remove it), or the second
 format is not yours to re-author (a vendor feed), where deleting it is not
 available and the shared helper is the only cure left.
 
-HOW YOU FIND THEM, rather than hoping to notice. Two calls, both at DETECT,
-because a rule you can only apply to what you happened to read is a rule that
-fires when you are already suspicious:
+HOW YOU FIND THEM, rather than hoping to notice. At DETECT, because a rule you
+can only apply to what you happened to read is a rule that fires when you are
+already suspicious. A job is what a member is FOR, and the only thing that says
+what a member is for is the CATALOGUE — the code lane `/catalogue` writes. So
+D-SIX is checked against the catalogue and against nothing else:
 
-  - `find_quality_issue(kind="re_derived_job")` — the compiler-accurate half.
-    It names methods that answer the same question from the same collaborators
-    and were written independently, GROUPED, with each group's shared signature
-    shape. It is the opposite question from `duplicated_code`: that one finds the
-    duplicate whose TOKENS match, this one finds the duplicate whose tokens
-    cannot, which is what a re-derived job is. Run BOTH — a group either finds is
-    a group the other may be blind to.
+  - FIRST, is the package catalogued at all?
+    `experience(kind="describe", action="area", filePath="<a file in the package
+    you are reviewing>")`. If it answers that the package is not described yet,
+    the report carries ONE line for it — `NOT CATALOGUED: <package> — D-SIX not
+    checked` — and makes no D-SIX finding there, in either direction. An absence
+    of jobs is not an absence of duplicates; it is an absence of evidence, and
+    the line says so instead of letting silence read as a clean pass.
+  - DO NOT substitute `find_quality_issue(kind="re_derived_job")` for the
+    catalogue. It groups methods by signature shape and the types they touch,
+    and that is not a job: on jawata's own tree it reported 581 findings, and its
+    first group put nineteen unrelated methods together — plugin directories,
+    workspace paths, degradation notices — because they return the same shape and
+    build lists. A shape match reported as a re-derived job is noise with a
+    finding's authority, which is worse than the missing line above.
+  - For code the DIFF adds, ask whether its job already exists:
+    `experience(kind="duplicate_check", filePath="<the file>", draft="<the new
+    method's text>")`. It answers with the catalogued jobs nearest in meaning,
+    each with a live location to open.
   - `experience(kind="recall", package="<the package you are reviewing>",
     lane="code", limit=200)` — the described half. What the store already says this part
     of the codebase does. A job recorded here and re-derived in the diff you
@@ -169,11 +182,10 @@ fires when you are already suspicious:
     `capped_from`; if you see it, you are reading a sample and must raise the
     limit before concluding anything about the population.
 
-Neither is evidence on its own and the report must not present them as such.
-The detector's four conditions are structural — same shape, shared
-collaborators, no imposed signature, neither calling the other — and the
-recall's ranking carries no score threshold at all, so its first answer is
-always SOMETHING. You read both and you judge; the tools nominate.
+None of these is evidence on its own and the report must not present them as
+such. The duplicate check and the recall rank by meaning with no score
+threshold at all, so their first answer is always SOMETHING. You open the
+nominated jobs and you judge; the tools nominate.
 
 ORDERING ONE ANYWAY IS PERMITTED, AND SILENTLY IS NOT. D-SIX is a refusal, not a
 prohibition: sometimes two really is the right answer, and you may say so. When
