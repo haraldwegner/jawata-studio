@@ -1139,6 +1139,36 @@ impl RuntimeManager {
         // properties — like -javaagent these MUST precede -jar.
         args.extend(reference.jvm_properties.iter().cloned());
 
+        // studio 4.3.1: consent to upgrade the SHARED experience store, given only when this
+        // resident starts with no other workspace running in this studio.
+        //
+        // jawata-mcp 4.2.0 (mcp#48) stopped a resident from upgrading the user-shared store as
+        // a side effect of starting, because a resident still running an older engine refuses
+        // the store afterwards. It asks the operator for two things: stop the other residents,
+        // then launch with this property. Studio never sent it, so the first release to change
+        // the store format (4.3.0, v15 -> v22) put every existing user's fleet on an empty
+        // in-memory store — the data untouched on disk, and unreachable.
+        //
+        // Studio is the one party that can see the first condition, so it gives the consent
+        // exactly when that holds: no OTHER workspace has a resident in the table. Giving it to
+        // ONE resident rather than all of them has two consequences. The staggered start cannot
+        // run two migrations of the same file at once. And the residents started after it need
+        // no consent: the store is already current when their own background retry reopens it,
+        // so they recover without a restart.
+        //
+        // An adopted orphan counts as running, deliberately — studio did not start it and
+        // cannot vouch for its engine. What studio cannot see at all is a jawata process it does
+        // not manage, such as a hand-launched dev build; the engine's own message names the same
+        // residual.
+        //
+        // The name is the ENGINE's (`SchemaMigrations.ALLOW_UPGRADE` in jawata-mcp). No compiler
+        // connects the two repositories, so a rename there would fail silently here; the tests
+        // spell it out literally for that reason. It is harmless to an isolated store, which
+        // migrates regardless, and to an older engine, which ignores a property it does not read.
+        if self.no_other_workspace_running(&reference.workspace_name) {
+            args.push(format!("-D{}=true", Self::ALLOW_SCHEMA_UPGRADE_PROPERTY));
+        }
+
         args.extend([
             "-jar".into(),
             reference.resolved_jar_path.clone(),
@@ -1180,6 +1210,25 @@ impl RuntimeManager {
             env: vec![],
             log_path,
         }
+    }
+
+    /// studio 4.3.1: the engine's name for the operator's consent to upgrade the shared
+    /// experience store (jawata-mcp `SchemaMigrations.ALLOW_UPGRADE`). The launch line in
+    /// [`Self::command_spec_for`] says when it is given and why.
+    pub(crate) const ALLOW_SCHEMA_UPGRADE_PROPERTY: &str = "jawata.experience.allowSchemaUpgrade";
+
+    /// Does any workspace OTHER than `workspace_name` have a resident in this studio's table?
+    ///
+    /// Answered from the table alone, so an adopted orphan and a crashed-but-unreaped resident
+    /// both count as running. That is the conservative direction: either may be an older engine,
+    /// and the cost of a wrong "no" is only a resident that waits for the store to be upgraded
+    /// by someone else, where a wrong "yes" strands a running one.
+    fn no_other_workspace_running(&self, workspace_name: &str) -> bool {
+        self.handles
+            .lock()
+            .expect("runtime mutex poisoned")
+            .keys()
+            .all(|name| name == workspace_name)
     }
 
     /// If the workspace's process is already running, register the
@@ -1796,11 +1845,14 @@ mod tests {
         // studio#28: the heap bound, also before -jar. This fixture names 3072
         // explicitly, so a regression that dropped the workspace's setting and
         // substituted the 2048 default would fail here rather than pass.
+        // studio 4.3.1: the store-upgrade consent, also before -jar — this manager runs no
+        // other resident, so it is given.
         assert_eq!(
             args,
             vec![
                 "-Xmx3072m",
                 "-Djawata.experience.store=shared",
+                "-Djawata.experience.allowSchemaUpgrade=true",
                 "-jar",
                 "/tools/jawata/jawata.jar",
                 "-data",
@@ -1856,6 +1908,91 @@ mod tests {
         assert!(
             !spec.args.iter().any(|a| a == "-Xmx2048m"),
             "the default must not be passed alongside the explicit bound"
+        );
+    }
+
+    // ---- studio 4.3.1: consent to upgrade the shared store, only with no other resident ----
+    //
+    // jawata-mcp 4.3.0 was the first release to change the store format since the engine began
+    // refusing to upgrade the shared store on its own (4.2.0, mcp#48). Studio never sent the
+    // consent, so every existing user's residents started on an empty in-memory store.
+    //
+    // The property name belongs to the ENGINE and is spelled out literally in these tests, not
+    // read from the constant: no compiler connects the two repositories, so a misspelling in the
+    // constant must fail here rather than pass by agreeing with itself.
+
+    const CONSENT: &str = "-Djawata.experience.allowSchemaUpgrade=true";
+
+    fn position_of(args: &[String], needle: &str) -> Option<usize> {
+        args.iter().position(|a| a == needle)
+    }
+
+    #[test]
+    fn a_launch_with_no_other_resident_consents_to_the_store_upgrade() {
+        let manager = RuntimeManager::new(fake_paths());
+
+        let spec = manager.command_spec_for(&fake_launch_request());
+
+        let consent = position_of(&spec.args, CONSENT).unwrap_or_else(|| {
+            panic!(
+                "nothing else is running, so this resident is the one that may upgrade the shared \
+                 store — without the consent it starts on an empty in-memory store; got {:?}",
+                spec.args
+            )
+        });
+        let jar = position_of(&spec.args, "-jar").expect("the launch line names a jar");
+        assert!(
+            consent < jar,
+            "a system property after -jar is an argument to the program, not to the JVM, and the \
+             engine would never see it; got {:?}",
+            spec.args
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_launch_beside_another_running_resident_does_not_consent() {
+        let dir = unique_tempdir("consent-beside-peer");
+        let manager = RuntimeManager::new(paths_in(&dir));
+        let peer_dir = dir.join("ws").join("peer").to_string_lossy().to_string();
+        let peer = make_reference("p-peer", "peer", &peer_dir);
+        let log = dir.join("logs").join("peer.log").to_string_lossy().to_string();
+        manager.start_runtime_with_spec(&peer, sleep_spec(&peer_dir, log)).unwrap();
+
+        let spec = manager.command_spec_for(&fake_launch_request());
+
+        manager.stop_workspace_runtime("peer").unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            position_of(&spec.args, CONSENT).is_none(),
+            "another workspace's resident is running and may be an older engine — upgrading the \
+             store under it strands it at its next start; got {:?}",
+            spec.args
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn its_own_workspace_does_not_withhold_the_consent() {
+        // A crashed-but-unreaped resident of the SAME workspace is still in the table while its
+        // restart builds the launch line. It is being replaced, not run beside, so it must not
+        // count as a peer — or a crashed sole resident comes back without the consent.
+        let dir = unique_tempdir("consent-own-workspace");
+        let manager = RuntimeManager::new(paths_in(&dir));
+        let request = fake_launch_request();
+        let own_dir = dir.join("ws").join("own").to_string_lossy().to_string();
+        let own = make_reference("p-own", &request.reference.workspace_name, &own_dir);
+        let log = dir.join("logs").join("own.log").to_string_lossy().to_string();
+        manager.start_runtime_with_spec(&own, sleep_spec(&own_dir, log)).unwrap();
+
+        let spec = manager.command_spec_for(&request);
+
+        manager.stop_workspace_runtime(&request.reference.workspace_name).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            position_of(&spec.args, CONSENT).is_some(),
+            "only OTHER workspaces are peers; got {:?}",
+            spec.args
         );
     }
 
