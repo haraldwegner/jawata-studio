@@ -1,6 +1,6 @@
 [package]
 name = "jawata-studio"
-version = "4.3.2"
+version = "4.3.3"
 description = "Desktop manager for running JAWATA MCP across multiple Java projects."
 license = "AGPL-3.0-only"
 edition = "2021"
@@ -37,6 +37,14 @@ tauri-plugin-single-instance = "2"
 walkdir = "2.5.0"
 zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
 toml_edit = "0.25.13"
+
+# studio_log: studio points its own standard error at studio.log at start-up, because the
+# desktop launcher hands it /dev/null and every background report went nowhere.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console"] }
 
 # Sprint 28 (D-SHIM) — the workspace exists so `jawata-hook` can be a SIBLING
 # crate rather than a module of this one. That is the enforcement, not a

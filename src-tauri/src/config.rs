@@ -357,6 +357,16 @@ pub fn default_auto_seed_on_deploy() -> bool {
     true
 }
 
+/// Whether studio reloads a store from its story folder on its own — read from the settings
+/// FILE, because the moment it is asked is a resident's stdout thread, which holds paths and no
+/// config store. The field keeps its historical name; it now governs every automatic reload
+/// (an engine coming up as well as a deploy). An unreadable file answers with the default.
+pub(crate) fn auto_seed_enabled(paths: &AppPaths) -> bool {
+    read_settings(&paths.settings_file, paths)
+        .map(|settings| settings.auto_seed_on_deploy)
+        .unwrap_or_else(|_| default_auto_seed_on_deploy())
+}
+
 /// Sprint 15 Stage 11: governs the MCP-config writer's behaviour when
 /// `autostart_on_boot` is OFF.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

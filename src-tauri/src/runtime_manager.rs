@@ -526,6 +526,30 @@ pub struct RuntimeManager {
     /// Per-project snapshot cache. Multiple snapshots may point at the
     /// same `workspace_name` and reflect the same workspace process.
     snapshots: Mutex<HashMap<String, RuntimeStatusRecord>>,
+    /// Told once each time a resident becomes reachable — spawned and READY, or adopted.
+    ready_listener: Mutex<Option<ReadyListener>>,
+}
+
+/// A resident that has just become reachable.
+#[derive(Debug, Clone)]
+pub struct ResidentUp {
+    pub url: String,
+    pub token: String,
+    /// The engine jar it runs, so a listener can tell a new engine build from a restart.
+    pub engine: String,
+}
+
+/// Called on studio's own threads; must not block for long.
+pub type ReadyListener = Arc<dyn Fn(ResidentUp) + Send + Sync>;
+
+impl ResidentUp {
+    fn of(reference: &RuntimeReference) -> Self {
+        Self {
+            url: format!("http://127.0.0.1:{}/mcp", reference.resident_port),
+            token: reference.resident_token.clone(),
+            engine: reference.resolved_jar_path.clone(),
+        }
+    }
 }
 
 impl RuntimeManager {
@@ -535,7 +559,21 @@ impl RuntimeManager {
             paths,
             handles: Mutex::new(HashMap::new()),
             snapshots: Mutex::new(snapshots),
+            ready_listener: Mutex::new(None),
         }
+    }
+
+    /// Be told whenever a resident becomes reachable, on EVERY path that brings one up:
+    /// studio's start, start-all, reload-all, a single start, the restart after an engine
+    /// update, and adopting a resident that outlived a studio restart. Hooked here, at the
+    /// two places a resident is known to answer, rather than at each caller — a hook per
+    /// start path is how a restart came to reload nothing.
+    pub fn on_resident_ready(&self, listener: ReadyListener) {
+        *self.ready_listener.lock().expect("ready listener mutex poisoned") = Some(listener);
+    }
+
+    fn ready_listener(&self) -> Option<ReadyListener> {
+        self.ready_listener.lock().expect("ready listener mutex poisoned").clone()
     }
 
     /// Start (or join) the workspace's runtime for `launch_request.reference`.
@@ -626,6 +664,9 @@ impl RuntimeManager {
         if let Some(stdout) = child.stdout.take() {
             let log_path_for_thread = log_path.clone();
             let ready_flag = Arc::clone(&ready);
+            let announce = self
+                .ready_listener()
+                .map(|listener| (listener, ResidentUp::of(reference)));
             std::thread::Builder::new()
                 .name(format!("runtime-stdout:{}", reference.workspace_name))
                 .spawn(move || {
@@ -649,8 +690,12 @@ impl RuntimeManager {
                         // `READY url=http://<bind>:<port> <token field>`
                         // when its HTTP listener is bound. First occurrence
                         // wins; subsequent matches are no-ops.
-                        if line.starts_with("READY url=") {
-                            ready_flag.store(true, Ordering::Release);
+                        if line.starts_with("READY url=")
+                            && !ready_flag.swap(true, Ordering::AcqRel)
+                        {
+                            if let Some((listener, up)) = &announce {
+                                listener(up.clone());
+                            }
                         }
                     }
                 })
@@ -1338,6 +1383,11 @@ impl RuntimeManager {
             "Running (adopted — recovered after a Studio restart).",
         );
         self.persist_snapshot(status.clone())?;
+        // It answered with the workspace's token, so it is reachable: announce it exactly as
+        // a spawned resident's READY line is announced.
+        if let Some(listener) = self.ready_listener() {
+            listener(ResidentUp::of(reference));
+        }
         Ok(Some(status))
     }
 
@@ -3211,6 +3261,43 @@ mod tests {
         );
 
         let _ = manager.stop_workspace_runtime("tee-ws");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 2026-09-13: the store reload hangs off this announcement, so it must fire for a
+    /// spawned resident — once, however many READY lines it prints — carrying the address,
+    /// token and engine the reload needs.
+    #[cfg(unix)]
+    #[test]
+    fn a_resident_that_prints_ready_is_announced_once_with_its_address() {
+        let dir = unique_test_dir("ready-announced");
+        let ws_dir = dir.to_string_lossy().to_string();
+        let log = dir.join("announce.log").to_string_lossy().to_string();
+        let manager = RuntimeManager::new(fake_paths_in(&dir));
+        let reference = make_reference("announce-1", "announce-ws", &ws_dir);
+        let heard: Arc<Mutex<Vec<ResidentUp>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&heard);
+        manager.on_resident_ready(Arc::new(move |up| sink.lock().unwrap().push(up)));
+        let twice = CommandSpec {
+            command: "sh".into(),
+            args: vec![
+                "-c".into(),
+                "printf 'READY url=http://127.0.0.1:8800 token=a\\nREADY url=http://127.0.0.1:8800 token=a\\n'; sleep 20".into(),
+            ],
+            env: vec![],
+            log_path: log,
+        };
+
+        manager.start_runtime_with_spec(&reference, twice).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+
+        let heard = heard.lock().unwrap().clone();
+        assert_eq!(heard.len(), 1, "announced exactly once, however many READY lines: {heard:?}");
+        assert_eq!(heard[0].url, "http://127.0.0.1:8800/mcp");
+        assert_eq!(heard[0].token, "test-token");
+        assert_eq!(heard[0].engine, "/dev/null", "the engine jar, so a new build reloads");
+
+        let _ = manager.stop_workspace_runtime("announce-ws");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -33,6 +33,8 @@ mod resident;
 #[allow(dead_code)]
 mod runner;
 mod runtime_manager;
+mod store_seed;
+mod studio_log;
 
 use config::ConfigStore;
 use manager_service::ManagerService;
@@ -506,6 +508,13 @@ fn draw_coffee_glyph_in(rgba: &mut [u8], white: [u8; 4]) {
 }
 
 pub fn run() {
+    // Studio's own log, first — before anything that reports. The desktop launcher hands
+    // studio a standard error that is /dev/null, so every background report (the release
+    // check, the store reload) used to vanish. See studio_log.
+    if let Ok(paths) = config::AppPaths::detect() {
+        studio_log::install(&paths.log_dir);
+    }
+
     // Sprint 16.2 (bugs.md #20): disable WebKitGTK accelerated compositing on
     // Linux. On hybrid Intel+NVIDIA (and other partial-GPU) stacks the AC path
     // is half-initialised in the WRY webview — present enough to be used, broken

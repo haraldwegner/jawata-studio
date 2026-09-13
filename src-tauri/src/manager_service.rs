@@ -413,6 +413,23 @@ impl ManagerService {
             }
         }
 
+        // 2026-09-13: every resident that comes up reloads its store from its story folder.
+        // Only a deploy used to, so an engine update restarted every resident onto a new
+        // loader and left the store as the old loader wrote it.
+        let paths = config_store.paths();
+        runtime_manager.on_resident_ready(Arc::new(move |up: crate::runtime_manager::ResidentUp| {
+            if crate::config::auto_seed_enabled(&paths) {
+                crate::store_seed::seed_in_background(
+                    crate::store_seed::SeedTarget {
+                        url: up.url,
+                        token: up.token,
+                        engine: up.engine,
+                    },
+                    crate::store_seed::Trigger::EngineReady,
+                );
+            }
+        }));
+
         Self {
             config_store,
             release_manager,
@@ -1011,55 +1028,17 @@ impl ManagerService {
         //
         // Fire-and-forget in a background thread: results are LOGGED, and a dead
         // or booting resident never fails or delays the deploy.
+        //
+        // 2026-09-13: the reload itself lives in `store_seed`, shared with the reload every
+        // resident asks for when it comes up. The inline version here parsed the raw HTTP
+        // body instead of the MCP envelope, so it never found the root and skipped every
+        // time, and it gave up on the load after ten seconds.
         if ok {
-            let seed_targets = auto_seed_targets(settings.auto_seed_on_deploy, &servers);
-            if !seed_targets.is_empty() {
-                std::thread::spawn(move || {
-                    for (url, token) in seed_targets {
-                        let root = match call_resident_tool(
-                            &url,
-                            &token,
-                            "experience",
-                            serde_json::json!({"kind": "stats"}),
-                            10,
-                        ) {
-                            // The tool answers with a JSON STRING; an
-                            // unparseable body is "no root", which skips rather
-                            // than falling back to the pathless call.
-                            Ok(body) => serde_json::from_str::<serde_json::Value>(&body)
-                                .ok()
-                                .as_ref()
-                                .and_then(substrate_root_in),
-                            Err(error) => {
-                                eprintln!(
-                                    "[jawata-studio] auto-seed skipped ({url}): could not read \
-                                     the substrate root: {error}"
-                                );
-                                continue;
-                            }
-                        };
-                        let Some(root) = root else {
-                            eprintln!(
-                                "[jawata-studio] auto-seed skipped ({url}): the store reports no \
-                                 file substrate, and a pathless load would seed the \
-                                 legacy corpus (studio#34)"
-                            );
-                            continue;
-                        };
-                        match call_resident_tool(
-                            &url,
-                            &token,
-                            "experience",
-                            serde_json::json!({"kind": "load", "path": root, "recursive": true}),
-                            10,
-                        ) {
-                            Ok(_) => eprintln!("[jawata-studio] auto-seed ok: {url} <- {root}"),
-                            Err(error) => {
-                                eprintln!("[jawata-studio] auto-seed skipped ({url}): {error}")
-                            }
-                        }
-                    }
-                });
+            for (url, token) in auto_seed_targets(settings.auto_seed_on_deploy, &servers) {
+                crate::store_seed::seed_in_background(
+                    crate::store_seed::SeedTarget { url, token, engine: String::new() },
+                    crate::store_seed::Trigger::Deploy,
+                );
             }
         }
 
@@ -6804,7 +6783,7 @@ fn knowledge_jvm_properties(settings: &ManagerSettings) -> Vec<String> {
 /// Sprint 21a (item F): call `experience(...)` on a resident and peel jawata's fixed MCP
 /// envelope — the body carries the JSON-RPC result whose `content[0].text` is the
 /// DOUBLE-ENCODED ToolResponse (`{success, data, ...}`), returned decoded.
-fn call_experience(
+pub(crate) fn call_experience(
     url: &str,
     token: &str,
     arguments: serde_json::Value,
@@ -7318,22 +7297,6 @@ mod resolution_tests {
         assert_eq!(0, r.project_count);
         assert!(r.projects.is_empty());
     }
-}
-
-/// The store's own file substrate root, out of an `experience(kind=stats)`
-/// response — or `None` when it reports none.
-///
-/// studio#34: PURE, and separate from the call, for the same reason
-/// `auto_seed_targets` is: the decision this encodes — seed the substrate, or
-/// do not seed — is the whole content of the fix, and a decision reachable only
-/// through a live resident is a decision nothing can test.
-fn substrate_root_in(value: &serde_json::Value) -> Option<String> {
-    let root = value
-        .pointer("/data/substrate/root")
-        .or_else(|| value.pointer("/substrate/root"))?
-        .as_str()?
-        .trim();
-    (!root.is_empty()).then(|| root.to_string())
 }
 
 /// Sprint 21a (item D): which residents to auto-seed. Pure so the toggle logic is
@@ -12280,41 +12243,6 @@ judge was never told to give"
             1,
             "observer steering payload defined once, shared by selftest + emit_slip"
         );
-    }
-
-    /// studio#34: the seed must NAME the substrate, and must not fall back to a
-    /// pathless load — that call crawls the engine's legacy default roots and is
-    /// the defect itself.
-    #[test]
-    fn the_substrate_root_is_read_or_the_seed_is_skipped() {
-        // The shape `experience(kind=stats)` actually returns.
-        let real = serde_json::json!({
-            "success": true,
-            "data": {
-                "total": 384,
-                "substrate": {
-                    "root": "/home/harald/CursorProjects/jawata-enterprise/docs/knowledge/stories",
-                    "derivedFrom": "190 entries carrying a memory: source path"
-                }
-            }
-        });
-        assert_eq!(
-            Some("/home/harald/CursorProjects/jawata-enterprise/docs/knowledge/stories".to_string()),
-            substrate_root_in(&real)
-        );
-
-        // NO SUBSTRATE IS AN ANSWER, and it means do not seed. Every one of
-        // these used to reach the pathless call, which is what refilled the
-        // store with the pre-28c corpus at every deploy.
-        for none in [
-            serde_json::json!({"success": true, "data": {"total": 0}}),
-            serde_json::json!({"success": true, "data": {"substrate": {}}}),
-            serde_json::json!({"success": true, "data": {"substrate": {"root": null}}}),
-            serde_json::json!({"success": true, "data": {"substrate": {"root": "   "}}}),
-            serde_json::json!({"error": "resident is booting"}),
-        ] {
-            assert_eq!(None, substrate_root_in(&none), "no root means no seed: {none}");
-        }
     }
 
     // ===== Sprint 21a (item D): auto-seed on deploy =====
