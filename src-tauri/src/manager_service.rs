@@ -6771,9 +6771,9 @@ fn knowledge_jvm_properties(settings: &ManagerSettings) -> Vec<String> {
         props.push(format!("-Djawata.backups.depth={depth}"));
     }
     // Sprint 28f Stage 6: where the resident exports an accepted story, and ONLY when the
-    // user pointed it somewhere. An absent property is how the export stays OFF — that is
-    // StoryWriter's own contract, not a studio convention — so sending nothing is the
-    // correct way to say "not configured", and there is no default for studio to invent.
+    // user set a value. An absent property means the resident's default — the store's own
+    // story folder (2026-09-14; it used to mean off, and nobody ever turned it on) — and
+    // "off" writes no files. Studio sends nothing unless told, so the rule lives in one place.
     if let Some(dir) = &settings.experience_stories_dir {
         props.push(format!("-Djawata.stories.dir={dir}"));
     }

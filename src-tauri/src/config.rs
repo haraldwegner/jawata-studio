@@ -287,11 +287,10 @@ pub struct ManagerSettings {
     /// Sprint 28f Stage 6: where the resident EXPORTS an accepted story, passed as
     /// `-Djawata.stories.dir`.
     ///
-    /// `None` means the export is OFF, and that is the RESIDENT's rule rather than a
-    /// studio convention — `StoryWriter.DIRECTORY_PROPERTY`'s own contract is that an
-    /// absent property means no export, "which is what every installation is until
-    /// somebody points it somewhere". So studio invents no default: a default would turn
-    /// on an export nobody asked for and write files into a folder nobody chose.
+    /// `None` means the RESIDENT's default, and studio holds no copy of it. Corrected
+    /// 2026-09-14: that default used to be "no export", which nobody ever changed, so no
+    /// installation wrote the story file `/memorize` promises. The resident now writes into
+    /// the store's own story folder when nothing is configured; `"off"` writes no files.
     ///
     /// The property is emitted ONLY when the user has set a value, the same discipline
     /// `experience_backup_depth` follows — an unset setting sends nothing rather than
@@ -461,8 +460,8 @@ impl ManagerSettings {
             // None = the resident's own StoreBackups.DEFAULT_DEPTH. Studio keeps no
             // second copy of that number, so the two cannot drift.
             experience_backup_depth: None,
-            // None = the export is off, which is the resident's own rule for an absent
-            // -Djawata.stories.dir. Studio must not invent a folder nobody chose.
+            // None = the resident's own default for an absent -Djawata.stories.dir: the
+            // store's own story folder. Studio keeps no second copy of that rule.
             experience_stories_dir: None,
         }
     }

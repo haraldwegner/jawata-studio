@@ -1093,15 +1093,16 @@
           bind:value={experienceStoriesDir}
           disabled={interactionDisabled}
           on:change={handleBoundEdit}
-          placeholder="off — no stories are written"
+          placeholder="the store's own story folder"
           type="text"
         />
         <span class="hint">
-          When you ACCEPT a piece of knowledge, the engine also writes it here as a
-          readable markdown file — one file per entry, rewritten in place when the entry
-          changes. The memory store itself stays the source of truth: this folder is a
-          mirror, so you can read it, search it or keep it in git, and deleting it loses
-          nothing. Leave it empty and nothing is written.
+          When you ACCEPT a piece of knowledge, the engine also writes it as a readable
+          markdown file — one file per entry, rewritten in place when the entry changes.
+          The memory store itself stays the source of truth: the folder is a mirror, so you
+          can read it, search it or keep it in git, and deleting it loses nothing. Leave
+          this empty to write into the store's own story folder — the one its stories were
+          loaded from. Type <code>off</code> to write no files.
         </span>
       </label>
     </section>

@@ -64,8 +64,8 @@ export interface ManagerSettings {
    *  `backupRetention`, which is versions of each CONFIG FILE studio writes. */
   experienceBackupDepth: number | null;
   /** Sprint 28f Stage 6: the folder the engine EXPORTS an accepted story to. `null` means
-   *  the export is off — that is the engine's own rule for an absent folder, so studio
-   *  invents no default and writes files nowhere nobody chose. */
+   *  the engine's own default — the store's own story folder (corrected 2026-09-14: it
+   *  used to mean off, so no installation ever wrote a story). `"off"` writes no files. */
   experienceStoriesDir: string | null;
 }
 
@@ -153,7 +153,7 @@ export interface UpdateSettingsInput {
   backupRetention?: number | null;
   /** Send 0 to go back to the resident's default; omit to leave the stored value alone. */
   experienceBackupDepth?: number | null;
-  /** Send "" to turn the story export off; omit to leave the stored value alone. */
+  /** Send "" for the engine's default folder, "off" to write no files; omit to leave the stored value alone. */
   experienceStoriesDir?: string | null;
 }
 
