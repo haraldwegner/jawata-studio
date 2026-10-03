@@ -73,7 +73,9 @@ while dropping the doc's goal).
   same-context re-read is NOT an audit): the **GATE**. Receives the **RAW + the CLEAN +
   the relevant chat** — never the editor's reasoning. Adversarial: assume the clean has
   shrunk the raw until proven otherwise. **Verdict = SIGN-OFF or REFUSE (blocking).**
-- **The loop:** REFUSE → editor revises the clean → re-audit → repeat until SIGN-OFF.
+- **ONE ROUND, then fold and go to the gate** (2026-10-04). REFUSE → the editor folds every
+  blocking finding → GATE 1. There is no "repeat until SIGN-OFF": a sign-off is not what the
+  user needs from this, a spec good enough to judge the implementation against is.
   Editor-auditor disagreement that cannot converge is **ESCALATED TO THE USER as a named
   decision** — never resolved silently between the seats.
 - **ROUND ONE IS THE FULL AUDIT. EVERY LATER ROUND IS SCOPED TO THE REPAIRS** (Harald,
@@ -87,6 +89,9 @@ while dropping the doc's goal).
   finding — *does this repair close it?* and *do the lines it touched introduce a new
   instance of the four blocking classes?* — and it does not re-read the rest. The full
   audit runs again only when the artifact changed OUTSIDE the repairs, or at the cap.
+  **Under the 2026-10-04 cap there is usually no later round at all** — a spec gets one and
+  a plan gets none. This paragraph governs the rare second round a dropped requirement
+  forces, and nothing else.
   This composes with the rule below about repetition: a scoped re-audit is exactly the
   memoryless reviewer that cannot see a fourth repair, which is why it is handed the
   history rather than the artifact.
@@ -102,7 +107,17 @@ while dropping the doc's goal).
 - **The audit trail records verdicts AFTER they are given — never pre-written** (writing
   "signed off" before the verdict exists is pre-claiming; caught live 2026-07-10).
 
-## The auditor's checks
+## The checks — THE EDITOR'S PRE-FLIGHT, not the auditor's agenda
+
+**Read this before the list (2026-10-04).** The auditor is given the FOUR BLOCKING CLASSES
+and nothing else. These fifteen are what the EDITOR runs over its own draft before spending
+an audit at all: three of the four classes are decidable from the artifact alone — is every
+claim about the code READ rather than asserted, can every measure fail on a no-op, does every
+deferral name a stage — and an audit that returns one of them has caught the editor skipping
+a one-minute check. Only class 2, scope narrowed against the raw, genuinely needs the second
+pair of eyes. **Handing this list to an auditor is what made a spec cost an hour.**
+
+## The checks in full
 
 **CHECK 0 RUNS FIRST AND OVERRIDES THE REST. 1 to 12 and 14, 15 are BLOCKING — they end
 in SIGN-OFF or REFUSE and the auditor decides them. 13 is the exception: it ESCALATES.** Whether a simpler solution is good enough is the
@@ -334,7 +349,46 @@ user's judgement, so check 13's product is a named decision for them, never a ve
    number was on the page, three paragraphs above the deliverable that shrank it.
 
 
-## THE ROUND CAP — three, four at the outside (Harald, 2026-08-11, BINDING)
+## THE ROUND CAP — ONE ROUND FOR A SPEC, NONE FOR A PLAN (Harald, 2026-10-04, BINDING)
+
+*"The fucking specs machinery even took almost an hour, so this workflow has become a
+nightmare and waste of time. This took a fraction in earlier times."* · *"That burns my
+time and my tokens."*
+
+**MEASURED, Sprint 28g, which is why this section was rewritten rather than tuned.** The
+spec took three rounds at 20 + 8 + 5 minutes; the plan took two at 17 + 9. **59 minutes.**
+The two FIRST rounds produced 44 findings between them. The three later rounds produced 6
+blockers and a handful of numerals — and three of those 6 were defects the previous
+round's own repair had introduced, so a share of the later cost was the machinery
+generating its own work.
+
+**THE RULE, and it replaces the 3–4 cap below:**
+- **A SPEC gets ONE round.** Fold what it finds, write the trail, go to GATE 1. A second
+  round happens only if the first found a requirement DROPPED and the fold had to rewrite
+  the artifact whole — not because findings remain.
+- **A PLAN gets NO round.** Its baseline is a signed spec, so it cannot lose the user's
+  requirements; it is the editor's own execution order, and a wrong edge in it surfaces in
+  the first minutes of executing that stage, for free. Paying 26 minutes up front to find
+  what execution reveals for nothing is the trade this sprint got wrong.
+- **NO TRACEABILITY MATRIX.** It was the single biggest cost item — 145 rows on one 2,000
+  line raw — and checks 2 and 4 of the blocking list already catch what it catches. An
+  auditor may cite rows as evidence; it may not render the table.
+- **THE CHECK LIST IS THE FOUR BLOCKING CLASSES, nothing more.** The fifteen numbered
+  checks below are the EDITOR's pre-flight, not the auditor's agenda: three of the four
+  classes are decidable by the editor alone from the artifact, and an audit that returns
+  one of those has caught the editor skipping a one-minute check.
+
+**The failure shape to refuse in yourself:** launching a round because the artifact is not
+yet perfect. The spec is a basis for comparison; the plan is a worklist. Neither is a
+finished product, and neither is what the sprint ships.
+
+### The superseded cap, kept as the record of how it grew
+
+Each check and each round was added after a specific failure and none was ever removed, so
+the SUM was never priced — the same shape as eight releases patching one design flaw. The
+old text:
+
+## ~~THE ROUND CAP — three, four at the outside~~ (Harald, 2026-08-11 — SUPERSEDED above)
 
 *"We need to cut this behaviour by the count of audits. We should not have more than 3 or
 4 rounds typically. Every small detail now which is a bit wording here and then — and we
@@ -378,9 +432,17 @@ auditor returns these as blocking, the editor fixes what is cheap and IGNORES th
 - **Never state the same fact in two places.** Every duplicate is a future finding, because
   a fix lands in one copy. One home per fact; everywhere else points at it.
 
-**The cap applies to the plan's audit too.**
+**The plan has no audit round** — see the cap. If one is run on request, it is one round.
 
-## The traceability matrix — anchored to the RAW
+## The raw-to-clean mapping — NOT RENDERED (2026-10-04)
+
+**Do not produce this table.** It cost 145 rows on one 2,000-line raw, every round, and
+blocking classes 2 and 4 already catch what it catches. The shape below stays only as what
+an auditor should have IN MIND when it cites a dropped requirement: quote the raw sentence,
+name where the clean lost it. One line per finding, not a table of everything that went
+right.
+
+## ~~The traceability matrix~~ — the shape, for citing a finding
 
 | RAW requirement (verbatim) | **Its quantity, if it states one** | Where the CLEAN satisfies it + its measure | **That deliverable's output size** | kept / deferred-with-home / **DROPPED → refuse** |
 
@@ -565,8 +627,15 @@ collide.
 **The shape the plan must make possible:** an audit of stage N running while
 stage N+1 is being built, and a remote job in flight while local work continues.
 If the plan's stage order forbids that, the order is wrong.
-Auditor refuse-loop as in Phase A (baseline = the signed-off spec). **GATE 2 — plan-mode
-approval, after auditor sign-off.** STOP.
+**NO AUDIT ROUND (2026-10-04).** The plan's baseline is a SIGNED spec, so it cannot lose the
+user's requirements — which is the only thing an audit buys that execution does not. Its
+defects are sequencing and arithmetic, and they surface in the first minutes of executing the
+stage that carries them. The editor runs its own pre-flight over the four blocking classes —
+every deliverable placed in a stage, every DEPENDS ON naming what it consumes, every exit
+clause naming its evidence, every number taken from the spec or the census rather than
+invented — and goes straight to the gate. **GATE 2 — plan-mode approval.** STOP.
+
+If a plan audit is run anyway, it is one round and the user has asked for it.
 
 ## The communication audit (ENFORCED — not the agent's choice)
 
@@ -924,3 +993,4 @@ own reach) after Sprint 27 released its central deliverable inert past 1591 gree
 and a RISING coverage ratchet. Matrix rules from `strategies_orb/docs/SOLID_Refactoring_Method.md` §4;
 memory: `feedback_editor_auditor_protocol` / `feedback_red_team_pass_before_presenting` /
 `feedback_spec_loop_closure_audit`.
+
