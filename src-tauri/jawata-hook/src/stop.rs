@@ -1566,6 +1566,9 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
     if transcript_text.trim().is_empty() {
         return Err(SilenceReason::NoTranscript);
     }
+    // ASKED ONCE PER TRANSCRIPT, not per record: whether this client states turn origins is a
+    // property of the client, and a per-record answer would read "absent" as "unanswerable".
+    let origin_stated = client_states_turn_origin(transcript_text);
     let mut turn = Turn::default();
     for line in transcript_text.lines() {
         let line = line.trim();
@@ -1740,7 +1743,7 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
             // Reaching here already means not a bounce, not a tool result, not harness text
             // and not an interruption — which is exactly `is_his_keyboard`. Calling it keeps
             // the stop side and the grant side from ever disagreeing about who typed.
-            Some("user") if is_his_keyboard(&v) => {
+            Some("user") if is_his_keyboard(&v, origin_stated) => {
                 // A job he did not wait for is still running when he types; it
                 // will still wake the session, so it is still pending.
                 let carry = pending_carry(&turn);
@@ -2322,6 +2325,7 @@ pub fn prompt_came_from_machine(transcript_text: &str, prompt: &str) -> Option<b
     if needle.is_empty() {
         return None;
     }
+    let origin_stated = client_states_turn_origin(transcript_text);
     let mut verdict = None;
     for line in transcript_text.lines() {
         let line = line.trim();
@@ -2347,7 +2351,7 @@ pub fn prompt_came_from_machine(transcript_text: &str, prompt: &str) -> Option<b
             // which is the eleventh enumeration of machine channels and missed this gate's
             // own bounce the same afternoon it shipped. `is_his_keyboard` is the question
             // `read_turn` has been answering correctly since August.
-            verdict = Some(!is_his_keyboard(&v));
+            verdict = Some(!is_his_keyboard(&v, origin_stated));
         }
     }
     verdict
@@ -2372,9 +2376,59 @@ pub fn prompt_came_from_machine(transcript_text: &str, prompt: &str) -> Option<b
 ///
 /// So the list was never the fix. The four exclusions already compose into the answer, and the
 /// grant path's whole defect was not calling them.
-pub fn is_his_keyboard(v: &serde_json::Value) -> bool {
+/// Does this client's transcript STATE where a turn came from?
+///
+/// `turnOrigin` is the harness's own answer to the question this gate has been guessing at
+/// since August. Measured over one session's transcript: `human` 122, `peer` 6,
+/// `task_notification` 3, and ABSENT on the 65 713 tool results, the 9 075 editor events and
+/// the 180 compaction summaries. A client that emits it has answered; a client that does not
+/// leaves the composed word check as the only instrument.
+///
+/// The substring test is a filter, not the answer: a record whose CONTENT merely contains the
+/// word — this very commit's message, for one — fails the parse that follows it.
+pub fn client_states_turn_origin(transcript_text: &str) -> bool {
+    transcript_text.lines().any(|line| {
+        line.contains("\"turnOrigin\"")
+            && serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .and_then(|v| {
+                    v.get("turnOrigin")
+                        .and_then(|o| o.as_str())
+                        .map(|_| ())
+                })
+                .is_some()
+    })
+}
+
+/// Did HE type this, or did the machine produce it?
+///
+/// ASK THE EVENT, AND ASK IT POSITIVELY. Ten previous attempts enumerated machine channels
+/// NEGATIVELY — not a tool result, not a bounce, not harness text, not an interruption — and
+/// every one of them shipped blind to the next channel, because a list of what something is
+/// NOT cannot be closed. Two were live when this was written: a compaction summary, which
+/// cleared the grant at 15:57Z on 2026-10-04 hours after the negative check was wired that
+/// same morning, and the editor's own file-open events, which open a tag no harness list names.
+///
+/// `turnOrigin == "human"` is the same question asked the other way round, and it IS closed:
+/// a channel nobody has thought of yet arrives carrying a new origin or none, and neither of
+/// those is `human`. So when `origin_stated` says this client answers the question, ABSENCE
+/// of the field is an answer too — not him.
+///
+/// A COMPACTION SUMMARY IS NEVER HIS KEYBOARD, even on the one record per session that
+/// replays a turn whose own origin was `human`. The harness marks it; this reads the mark.
+///
+/// When the client does NOT state origins, the composed negative check is the fallback rather
+/// than a verdict of "machine" — treating every unmarked turn as machine would leave the grant
+/// unrevokable on that client, which breaks the only withdrawal he has.
+pub fn is_his_keyboard(v: &serde_json::Value, origin_stated: bool) -> bool {
     if v.get("type").and_then(|t| t.as_str()) != Some("user") {
         return false;
+    }
+    if v.get("isCompactSummary").and_then(|c| c.as_bool()) == Some(true) {
+        return false;
+    }
+    if origin_stated {
+        return v.get("turnOrigin").and_then(|o| o.as_str()) == Some("human");
     }
     // The SAME four, in the same order, for the same reasons their own arms give.
     //
@@ -2465,7 +2519,7 @@ mod channel_tests {
         let v: serde_json::Value = serde_json::from_str(&our_own_bounce()).unwrap();
         assert!(is_our_own_bounce(&v), "the fixture must be the shape the arm recognises");
         assert!(
-            !is_his_keyboard(&v),
+            !is_his_keyboard(&v, false),
             "our own bounce is the machine; calling it the keyboard is what cleared a grant              he had just given"
         );
         // And the belt that shipped on 2026-10-04 could NOT see it — asserted so the fix
@@ -2485,12 +2539,90 @@ mod channel_tests {
     }
 
     #[test]
+    /// THE TWO CHANNELS THAT WERE LIVE WHEN THE NEGATIVE CHECK SHIPPED, 2026-10-04.
+    ///
+    /// Both are `type: "user"`, both carry a TEXT block, neither carries an envelope mark, and
+    /// neither opens a tag the wrapper list names — so all six negative exclusions pass them
+    /// and the tenth attempt read both as him. The compaction summary is the one that actually
+    /// cleared the grant that afternoon; the editor event is the commoner of the two, at 9 075
+    /// records against 180 in the same transcript.
+    #[test]
+    fn a_compaction_summary_and_an_editor_event_are_not_his_keyboard() {
+        let compaction: serde_json::Value = serde_json::json!({
+            "type": "user",
+            "isCompactSummary": true,
+            "message": {"content": [{"type": "text", "text":
+                "This session is being continued from a previous conversation."}]}
+        });
+        // Refused on the MARK, so it holds whether or not the client states origins — the one
+        // record per session whose replayed origin IS `human` would otherwise read as him.
+        assert!(!is_his_keyboard(&compaction, true), "a compaction summary is the harness");
+        assert!(!is_his_keyboard(&compaction, false), "and it is the harness either way");
+
+        let editor: serde_json::Value = serde_json::json!({
+            "type": "user",
+            "message": {"content": [{"type": "text", "text":
+                "<ide_opened_file>The user opened /tmp/opened-file.txt in the IDE.</ide_opened_file>"}]}
+        });
+        assert!(
+            !is_his_keyboard(&editor, true),
+            "an editor event states no origin, and on a client that states them that IS the             answer"
+        );
+        // AND THE NEGATIVE CHECK CANNOT SEE IT — asserted so the fix cannot read as redundant
+        // with the thing it replaces. This is the clause still open on a client that does not
+        // state origins, and it is named here rather than hidden.
+        assert!(
+            is_his_keyboard(&editor, false),
+            "the negative check admits it, which is exactly the hole turnOrigin closes"
+        );
+    }
+
+    /// ASK THE EVENT, POSITIVELY. The three origins his own transcript carries.
+    #[test]
+    fn the_stated_origin_is_the_answer() {
+        let of = |origin: &str| {
+            serde_json::json!({
+                "type": "user",
+                "turnOrigin": origin,
+                "message": {"content": [{"type": "text", "text": "resume the plan"}]}
+            })
+        };
+        assert!(is_his_keyboard(&of("human"), true), "human is him");
+        assert!(!is_his_keyboard(&of("peer"), true), "a peer session is not");
+        let job_done = concat!("task_", "notifi", "cation");
+        assert!(!is_his_keyboard(&of(job_done), true), "a finished job is not");
+        // A CHANNEL NOBODY HAS THOUGHT OF YET — the property the negative form never had.
+        assert!(
+            !is_his_keyboard(&of("channel_invented_next_month"), true),
+            "an origin this gate has never heard of is not him, which is why the question is             asked positively"
+        );
+    }
+
+    #[test]
+    fn the_capability_is_read_off_the_transcript_not_off_the_words() {
+        let stating =
+            String::from("{\"type\":\"user\",\"turnOrigin\":\"human\",\"message\":{\"content\":\"hi\"}}");
+        assert!(client_states_turn_origin(&stating), "a real field is the capability");
+
+        // A record whose CONTENT merely contains the word — this commit's own message, for one.
+        let quoting = serde_json::json!({
+            "type": "user",
+            "message": {"content": [{"type": "text", "text":
+                "the fix is to ask turnOrigin instead of enumerating channels"}]}
+        })
+        .to_string();
+        assert!(
+            !client_states_turn_origin(&quoting),
+            "quoting the field name is not emitting it; reading it as the capability would make             every keyboard turn read as machine and leave the grant unrevokable"
+        );
+    }
+
     fn his_keyboard_is_him_and_the_four_exclusions_are_not() {
         let his: serde_json::Value = serde_json::from_str(&typed("resume the plan")).unwrap();
-        assert!(is_his_keyboard(&his), "a plain text turn of his is the keyboard");
+        assert!(is_his_keyboard(&his, false), "a plain text turn of his is the keyboard");
 
         let handback: serde_json::Value = serde_json::from_str(&judge_handback()).unwrap();
-        assert!(!is_his_keyboard(&handback), "a tool result is not");
+        assert!(!is_his_keyboard(&handback, false), "a tool result is not");
 
         // ASSEMBLED, never written whole: the popping-surface scan in `field` bans the bare
         // wrapper word in code. And built WITHOUT a brace-bearing format string, because the
@@ -2501,7 +2633,7 @@ mod channel_tests {
         let wrapper = String::from("<task-") + noti + "><task-id>x</task-id></task-" + noti + ">";
         let machine_line: serde_json::Value =
             serde_json::from_str(&typed(&wrapper)).unwrap();
-        assert!(!is_his_keyboard(&machine_line), "harness text is not");
+        assert!(!is_his_keyboard(&machine_line, false), "harness text is not");
     }
 
     /// THE HANDBACK THAT REVOKED A GRANT HE HAD JUST GIVEN, 2026-10-04.
