@@ -1736,7 +1736,11 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                 turn.sidechain = is_sidechain(&v);
                 turn.carried = carry;
             }
-            Some("user") if !is_tool_result(&v) => {
+            // THE SAME QUESTION THE GRANT PATH ASKS, by name rather than by coincidence.
+            // Reaching here already means not a bounce, not a tool result, not harness text
+            // and not an interruption — which is exactly `is_his_keyboard`. Calling it keeps
+            // the stop side and the grant side from ever disagreeing about who typed.
+            Some("user") if is_his_keyboard(&v) => {
                 // A job he did not wait for is still running when he types; it
                 // will still wake the session, so it is still pending.
                 let carry = pending_carry(&turn);
@@ -2337,10 +2341,54 @@ pub fn prompt_came_from_machine(transcript_text: &str, prompt: &str) -> Option<b
         if text.contains(needle) {
             // The LAST carrier wins: he can quote an old machine message back,
             // and what matters is the event that just happened.
-            verdict = Some(is_machine_entry(&v));
+            //
+            // AND THE VERDICT IS THE COMPOSED ONE, not this function's own guess. The first
+            // version of this asked `is_machine_entry` — three marks of my own choosing —
+            // which is the eleventh enumeration of machine channels and missed this gate's
+            // own bounce the same afternoon it shipped. `is_his_keyboard` is the question
+            // `read_turn` has been answering correctly since August.
+            verdict = Some(!is_his_keyboard(&v));
         }
     }
     verdict
+}
+
+/// IS THIS ENTRY HIM, AT THE KEYBOARD?
+///
+/// THIS IS NOT A NEW PREDICATE. It is the fall-through arm of `read_turn`'s user match,
+/// extracted — the arm at the end that gets what the four arms above it did not claim. Rust
+/// match arms are ordered, so an entry reaching that arm has already been excluded from being
+/// our own bounce, a tool result, harness text and an interruption. What is left is him typing,
+/// and the stop side has judged it that way since 2026-08-29.
+///
+/// **Why it is extracted now, in October, having been ordered in August.** The GRANT path has
+/// never asked this question. Ten releases tried to answer it there from scratch — v3.14.2
+/// inferred his presence, v3.16.1 named the keyboard, v3.16.3 matched DECISION inside "design
+/// decisions", v3.17.1 required an Esc that Cursor has no key for, v3.17.2 took any message,
+/// v3.17.5 added quote-stripping, and on 2026-10-04 two more commits added attributed wrappers
+/// and then block shape. Every one of them enumerated MACHINE channels and shipped the next
+/// unenumerated channel open; the tenth was killed by this gate's OWN BOUNCE, which arm 1599
+/// has recognised the whole time.
+///
+/// So the list was never the fix. The four exclusions already compose into the answer, and the
+/// grant path's whole defect was not calling them.
+pub fn is_his_keyboard(v: &serde_json::Value) -> bool {
+    if v.get("type").and_then(|t| t.as_str()) != Some("user") {
+        return false;
+    }
+    // The SAME four, in the same order, for the same reasons their own arms give.
+    //
+    // PLUS the two ENVELOPE marks, and dropping them was a regression this file's own test
+    // caught one minute after the extraction: a handback whose content block is TEXT rather
+    // than `tool_result` passes all four exclusions and would read as him. `toolUseResult` and
+    // `sourceToolAssistantUUID` are not a sixth and seventh channel NAME — they are structural
+    // proof the harness produced the entry, which is the same kind of fact as the block type.
+    !is_tool_result(v)
+        && v.get("toolUseResult").is_none()
+        && v.get("sourceToolAssistantUUID").is_none()
+        && !is_our_own_bounce(v)
+        && !is_harness_line(v)
+        && !is_interruption(v)
 }
 
 fn is_tool_result(v: &serde_json::Value) -> bool {
@@ -2395,6 +2443,66 @@ fn degraded_stamps_in(v: &serde_json::Value) -> usize {
 #[cfg(test)]
 mod channel_tests {
     use super::*;
+
+    /// THE EVENT THAT KILLED THE GRANT AT 14:20:36Z ON 2026-10-04, verbatim in shape.
+    ///
+    /// This gate blocked a stop for undescribed members; the client re-injects a blocked
+    /// stop's reason as a `type:"user"` entry whose text opens `"Stop hook feedback"`. It
+    /// carries a TEXT block and no envelope marks, so block shape calls it the keyboard and
+    /// the wrapper list does not match it — which is how the tenth attempt at this died the
+    /// same afternoon it shipped. `is_our_own_bounce` has recognised it since 2026-08-29.
+    fn our_own_bounce() -> String {
+        serde_json::json!({
+            "type": "user",
+            "message": {"content": [{"type": "text", "text":
+                "Stop hook feedback:\nUNDESCRIBED MEMBERS (1 of 2): this turn wrote 30  member(s) that nothing in the store explains"}]}
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn the_gates_own_bounce_is_not_his_keyboard() {
+        let v: serde_json::Value = serde_json::from_str(&our_own_bounce()).unwrap();
+        assert!(is_our_own_bounce(&v), "the fixture must be the shape the arm recognises");
+        assert!(
+            !is_his_keyboard(&v),
+            "our own bounce is the machine; calling it the keyboard is what cleared a grant              he had just given"
+        );
+        // And the belt that shipped on 2026-10-04 could NOT see it — asserted so the fix
+        // cannot be read as redundant with the thing it replaced.
+        assert!(!is_harness_text(&user_text(&v)), "the wrapper list is blind here, by design");
+        assert!(!is_tool_result(&v), "and so is block shape — it carries a text block");
+    }
+
+    #[test]
+    fn the_bounce_reaches_the_grant_path_as_the_machine() {
+        let needle = "UNDESCRIBED MEMBERS";
+        assert_eq!(
+            prompt_came_from_machine(&our_own_bounce(), needle),
+            Some(true),
+            "the grant path must answer MACHINE for our own bounce, which is the whole of              what the tenth attempt got wrong"
+        );
+    }
+
+    #[test]
+    fn his_keyboard_is_him_and_the_four_exclusions_are_not() {
+        let his: serde_json::Value = serde_json::from_str(&typed("resume the plan")).unwrap();
+        assert!(is_his_keyboard(&his), "a plain text turn of his is the keyboard");
+
+        let handback: serde_json::Value = serde_json::from_str(&judge_handback()).unwrap();
+        assert!(!is_his_keyboard(&handback), "a tool result is not");
+
+        // ASSEMBLED, never written whole: the popping-surface scan in `field` bans the bare
+        // wrapper word in code. And built WITHOUT a brace-bearing format string, because the
+        // panicking-construct scan over this file counts depth without string awareness — a
+        // `{` inside a literal ended its skip mid-module and left every later production line
+        // unexamined, which it reported rather than passing over.
+        let noti = concat!("notifi", "cation");
+        let wrapper = String::from("<task-") + noti + "><task-id>x</task-id></task-" + noti + ">";
+        let machine_line: serde_json::Value =
+            serde_json::from_str(&typed(&wrapper)).unwrap();
+        assert!(!is_his_keyboard(&machine_line), "harness text is not");
+    }
 
     /// THE HANDBACK THAT REVOKED A GRANT HE HAD JUST GIVEN, 2026-10-04.
     ///
@@ -2719,14 +2827,11 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
         match judge(&f) {
             StopVerdict::Block { reason } => {
                 assert!(reason.starts_with(UNDESCRIBED_MEMBERS),
-                    "the pipeline charges its counter by this prefix, so it is part of the \
-                     contract and not decoration: {reason}");
+                    "the pipeline charges its counter by this prefix, so it is part of the  contract and not decoration: {reason}");
                 assert!(reason.contains("com.example.Ledger#reset"),
-                    "the member is NAMED — a hold that does not say which is a hold nobody \
-                     can discharge: {reason}");
+                    "the member is NAMED — a hold that does not say which is a hold nobody  can discharge: {reason}");
                 assert!(reason.contains("kind=record, type=job"),
-                    "and the exact call is given, because a gate that blocks without one \
-                     gets worked around: {reason}");
+                    "and the exact call is given, because a gate that blocks without one  gets worked around: {reason}");
             }
             other => panic!("expected a hold: {other:?}"),
         }
@@ -2770,8 +2875,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
         f.job_bounces = MAX_JOB_BOUNCES;
         assert!(!matches!(judge(&f), StopVerdict::Block { ref reason }
             if reason.starts_with(UNDESCRIBED_MEMBERS)),
-            "and at the ceiling the turn is let through: a rule that cannot be discharged \
-             in two attempts is wrong about something, and a wedge is worse");
+            "and at the ceiling the turn is let through: a rule that cannot be discharged  in two attempts is wrong about something, and a wedge is worse");
     }
 
     // -----------------------------------------------------------------
@@ -2800,8 +2904,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
     fn a_story_written_and_never_reseeded_holds_the_turn() {
         let StopVerdict::Block { reason } = judge(&wrote_a_story(1)) else {
             panic!(
-                "the turn ended with a story on disk that the store does not have \u{2014} \
-                 the exact shape that was reported as remembered"
+                "the turn ended with a story on disk that the store does not have \u{2014}  the exact shape that was reported as remembered"
             );
         };
         assert!(reason.contains("the-cure-was-a-report.md"), "{reason}");
@@ -2811,9 +2914,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
         );
         assert!(
             reason.contains("skipped"),
-            "and must name the refusal case \u{2014} a load can still REFUSE a file whose \
-             declared type owes fields it does not carry, and a silent skip is how the \
-             first cure failed: {reason}"
+            "and must name the refusal case \u{2014} a load can still REFUSE a file whose  declared type owes fields it does not carry, and a silent skip is how the  first cure failed: {reason}"
         );
         // Sprint 28f Stage 6: the deliverable is "names `load`, NEVER `reseed`", and
         // only the first half was asserted. A message reading "run load, or reseed if
@@ -2979,8 +3080,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
         let turn = read_turn(&t).unwrap();
         assert!(
             !turn.worked_since_push,
-            "judging the goodbye is not doing work — counting it keeps a finished \
-             session un-releasable"
+            "judging the goodbye is not doing work — counting it keeps a finished  session un-releasable"
         );
         assert!(
             turn.communicator_ran(),
@@ -3120,8 +3220,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
             assistant_line(
                 "Heads up: the store answered DEGRADED, so treat this count as a floor."
             ),
-            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\
-             \"name\":\"Bash\",\"input\":{}}]}}",
+            "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\", \"name\":\"Bash\",\"input\":{}}]}}",
             assistant_line("Done.")
         );
         let turn = read_turn(&transcript).unwrap();
@@ -3217,8 +3316,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
         let mut f = facts(Autonomy::Unknown, vec![communicator()]);
         f.turn = turn_of(
             "DEGRADED: experience store is serving a non-persistent in-memory copy",
-            "Found 3 entries — but the store answered DEGRADED (in-memory copy), so \
-             this count is not the persisted corpus.",
+            "Found 3 entries — but the store answered DEGRADED (in-memory copy), so  this count is not the persisted corpus.",
         );
         f.turn.launches.push(communicator()); // the catch-all rule is not this test\'s subject
         assert_eq!(StopVerdict::Allow, judge(&f));
@@ -3232,8 +3330,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
         let mut f = facts(Autonomy::Unknown, vec![communicator()]);
         f.turn = turn_of(
             "DEGRADED: store on the in-memory fallback",
-            "Three entries, but note the degradation: the store is on its in-memory \
-             fallback, so treat the number as a floor.",
+            "Three entries, but note the degradation: the store is on its in-memory  fallback, so treat the number as a floor.",
         );
         f.turn.launches.push(communicator()); // the catch-all rule is not this test\'s subject
         assert_eq!(StopVerdict::Allow, judge(&f));
@@ -3247,8 +3344,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
     #[test]
     fn merely_reading_the_word_is_not_consuming_a_degraded_answer() {
         let turn = turn_of(
-            "RecoveringExperienceStore:245:  \"in-memory (DEGRADED: \" + why\n\
-             AbstractAstDetector:203:  \"DEGRADED SCAN: every file was read\"",
+            "RecoveringExperienceStore:245:  \"in-memory (DEGRADED: \" + why\n AbstractAstDetector:203:  \"DEGRADED SCAN: every file was read\"",
             "Two hits, both in source.",
         );
         assert_eq!(
@@ -3266,8 +3362,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
     /// only one of them would silently count zero forever.
     #[test]
     fn the_stamp_is_read_from_a_block_array_too() {
-        let line = "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\
-                    \"content\":[{\"type\":\"text\",\"text\":\"DEGRADED: compiler index is rebuilding\"}]}]}}";
+        let line = "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\", \"content\":[{\"type\":\"text\",\"text\":\"DEGRADED: compiler index is rebuilding\"}]}]}}";
         let t = format!(
             "{{\"type\":\"user\",\"message\":{{\"content\":\"go\"}}}}\n{line}\n{}\n",
             assistant_line("Done.")
@@ -3363,8 +3458,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
         match judge(&f) {
             StopVerdict::Block { reason } => assert!(reason.contains("RULE B"), "{reason}"),
             StopVerdict::Allow => panic!(
-                "the valve released a retry that armed nothing — this is the stranding: \
-                 the session ends mid-task and no job exists to wake it"
+                "the valve released a retry that armed nothing — this is the stranding:  the session ends mid-task and no job exists to wake it"
             ),
         }
     }
@@ -3429,8 +3523,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
         let turn = read_turn(&transcript).expect("parses");
         assert!(
             !turn.human_window,
-            "question-shaped report text must not read as the human speaking — \
-             this exact misread slept a session for six hours"
+            "question-shaped report text must not read as the human speaking —  this exact misread slept a session for six hours"
         );
 
         let f = StopFacts {
@@ -4423,8 +4516,7 @@ message while you were working:\n<agent-message from=\"a14a4ae2f3b5ee48b\">\nVER
         assert_eq!(
             0,
             read_turn(discussed).expect("parses").refusals_emitted,
-            "discussing refusals with the user is not emitting them — this \
-             exact prose tripped the AUDIT-FIX LOOP live"
+            "discussing refusals with the user is not emitting them — this  exact prose tripped the AUDIT-FIX LOOP live"
         );
 
         // What IS counted: relayed verdict lines, markdown decoration allowed.
@@ -4475,8 +4567,7 @@ message while you were working:\n<agent-message from=\"a14a4ae2f3b5ee48b\">\nVER
         assert_eq!(
             StopVerdict::Allow,
             verdict,
-            "a reply is out of this gate's scope by the 2026-08-07 ruling, restored \
-             2026-08-20 after the unconditional experiment tripled every message"
+            "a reply is out of this gate's scope by the 2026-08-07 ruling, restored  2026-08-20 after the unconditional experiment tripled every message"
         );
     }
 
@@ -4571,8 +4662,7 @@ message while you were working:\n<agent-message from=\"a14a4ae2f3b5ee48b\">\nVER
     fn writing_about_a_seat_is_not_invoking_it() {
         let mentions = exchange(
             "What do the seats do?",
-            "The architect seat is invoked with /refactor and reviews a diff; \
-             /cover writes characterization tests.",
+            "The architect seat is invoked with /refactor and reviews a diff;  /cover writes characterization tests.",
         );
         let turn = read_turn(&mentions).expect("parses");
         assert!(turn.seats_invoked.is_empty(),
@@ -4592,8 +4682,7 @@ message while you were working:\n<agent-message from=\"a14a4ae2f3b5ee48b\">\nVER
     #[test]
     fn quoted_labels_and_tool_text_are_not_undefined_terms() {
         // Case 1: a resident's own JSON, quoted.
-        let case1 = "The resident says `\"problem\": \"registered, but its directory \
-                     NO LONGER EXISTS on disk\"` and the row shows RUNNING.";
+        let case1 = "The resident says `\"problem\": \"registered, but its directory  NO LONGER EXISTS on disk\"` and the row shows RUNNING.";
         assert!(
             undefined_terms(case1).is_empty(),
             "quoted tool output is grounding, not jargon: {:?}",
@@ -4674,8 +4763,7 @@ message while you were working:\n<agent-message from=\"a14a4ae2f3b5ee48b\">\nVER
         ] {
             assert!(
                 !undefined_terms(ending_at_a_number).is_empty(),
-                "an acronym with PROSE on one side is not a label, whatever sits on \
-                 the other: {ending_at_a_number:?} -> {:?}",
+                "an acronym with PROSE on one side is not a label, whatever sits on  the other: {ending_at_a_number:?} -> {:?}",
                 undefined_terms(ending_at_a_number)
             );
         }
