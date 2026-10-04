@@ -303,6 +303,24 @@ pub enum Autonomy {
     Unknown,
 }
 
+/// The sentence the harness appends to a background launch's output file when
+/// the job is over, whatever its exit status. Matched rather than parsed: a
+/// job killed or failed is every bit as finished as one that exited zero.
+const EXIT_MARKER: &str = "[exited with code";
+
+/// What the machine says about a launch — distinct from what the transcript
+/// says, which is the distinction this whole type exists to restore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineState {
+    /// A job of this name is going, right now.
+    Running,
+    /// It is over, or there is no such job on this machine at all.
+    Finished,
+    /// There is nothing to ask — no path named, or the read failed. The
+    /// transcript decides, and silence is NEVER read as "stopped".
+    Unknown,
+}
+
 /// One tool invocation recorded in the transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolUse {
@@ -335,6 +353,20 @@ pub struct ToolUse {
     /// agent says about the job, and a `SendMessage` to the same agent clears
     /// it again, because continuing an agent is a new launch in all but name.
     pub completed: bool,
+    /// The file the harness said it would write this launch's output to, taken
+    /// verbatim out of the launch reply (`Output is being written to: <path>`).
+    ///
+    /// THE POINT OF KEEPING IT IS THAT IT IS A FACT ON THE MACHINE, not a
+    /// sentence about one. Everything else in this struct is read out of the
+    /// transcript, which is correct for every other question the gate asks —
+    /// did the agent work, did the user speak, has the judge answered — and
+    /// WRONG for this one. "Is a job still running" is answered by the system,
+    /// in microseconds, exactly; inferring it from prose is how the 2026-10-04
+    /// sleep happened. The path is never constructed from a template: the
+    /// harness names it, so the check works on whatever machine and whatever
+    /// temp-directory layout it names, with no per-platform spelling here and
+    /// no shell.
+    pub output: Option<String>,
 }
 
 impl ToolUse {
@@ -357,7 +389,41 @@ impl ToolUse {
     /// the two are still not is WORK — see the `worked_since_push` handling in
     /// `read_turn`, which keeps them off the emptiness ceiling.
     pub fn arms_work(&self) -> bool {
-        self.backgrounded && !self.completed
+        self.backgrounded && !self.completed && !matches!(self.on_machine(), MachineState::Finished)
+    }
+
+    /// What the MACHINE says about this launch, as opposed to the transcript.
+    ///
+    /// The harness writes each background launch's output to the file it named
+    /// in its own launch reply, and ends that file with `[exited with code N]`
+    /// when the job is over. So three states are distinguishable without a
+    /// shell, a pid, or a platform check — just one file read:
+    ///
+    /// - the file carries the exit marker → the job is OVER, whatever the
+    ///   transcript has or has not been told about it;
+    /// - the file exists without the marker → genuinely still going.
+    ///
+    /// Everything else is `Unknown`, and `arms_work` then falls back to the
+    /// transcript. THE ABSENT FILE IS THE CASE WORTH BEING CAREFUL ABOUT, and
+    /// the first version of this got it wrong: absence was read as finished,
+    /// on the reasoning that the harness creates the file at launch so a
+    /// missing one means nothing ever started. But a task file is also REAPED
+    /// — one was observed vanishing mid-session on 2026-10-04 — so absence
+    /// covers both "never ran" and "still running, file already cleaned up",
+    /// and calling it finished would stand the gate down on a live job. That
+    /// is the same mistake as the sleep, pointed the other way: a missing
+    /// signal taken for a definite answer.
+    ///
+    /// Which leaves the refused launch to be settled where it is actually
+    /// knowable — by the harness's own reply to it, in `note_launch_results`.
+    pub fn on_machine(&self) -> MachineState {
+        let Some(path) = self.output.as_deref() else { return MachineState::Unknown };
+        match std::fs::read_to_string(path) {
+            Ok(body) if body.contains(EXIT_MARKER) => MachineState::Finished,
+            Ok(_) => MachineState::Running,
+            // Absent, unreadable, a directory — nothing is established.
+            Err(_) => MachineState::Unknown,
+        }
     }
 
     /// A run of the `autocontinue` judge — the seat that decides whether a stop
@@ -1841,6 +1907,10 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                                 id: b.get("id").and_then(|i| i.as_str()).map(str::to_string),
                                 task: None,
                                 completed: false,
+                                // Filled from the launch REPLY, not from the
+                                // request: only the harness knows where it will
+                                // write, and at this point it has not answered.
+                                output: None,
                             };
                             // ANY tool call is work — an edit, a build, a commit.
                             // The old measure was "started a background job",
@@ -2048,17 +2118,59 @@ fn note_launch_results(turn: &mut Turn, v: &serde_json::Value) {
         };
         let (backgrounded, task) = launch_marks(&text);
         if !backgrounded {
+            // THE RESULT ARRIVED AND IT IS NOT A LAUNCH. Every genuine
+            // background launch is answered with one of the two sentences
+            // `launch_marks` reads (1800 of 1800 in this session's own
+            // transcript), so a call the REQUEST flagged as background whose
+            // RESULT carries neither was never started — refused by a
+            // PreToolUse hook, rejected, or failed outright. It is finished in
+            // the only sense that matters here: nothing will ever wake the
+            // session on its behalf.
+            //
+            // This is the 2026-10-04 sleep. A `run_in_background` Bash call was
+            // blocked by the full-suite guard; the request had already made it
+            // `backgrounded`, no notification could ever arrive for a job that
+            // never ran, and so one phantom entry sat in `pending` for eight
+            // hours. Pending is the ONE condition under which a stop is allowed
+            // while a grant is live, so every stop that night was waved
+            // through. The refusal was in the transcript the whole time, keyed
+            // by this very id — the loop simply walked past it.
+            for l in turn.launches.iter_mut().chain(turn.carried.iter_mut()) {
+                if l.id.as_deref() == Some(id) && l.backgrounded {
+                    l.completed = true;
+                }
+            }
             continue;
         }
+        let output = output_path_in(&text);
         for l in turn.launches.iter_mut().chain(turn.carried.iter_mut()) {
             if l.id.as_deref() == Some(id) {
                 l.backgrounded = true;
                 if task.is_some() {
                     l.task = task.clone();
                 }
+                if output.is_some() {
+                    l.output = output.clone();
+                }
             }
         }
     }
+}
+
+/// The output file the harness named for a launch, out of its own reply.
+///
+/// Taken verbatim and never built from a template, so the machine check works
+/// wherever the harness puts its temp files and on whatever platform. The
+/// sentence is `Output is being written to: <path>. You will be notified…`, so
+/// the path ends at the first `. ` that follows it — not at the first `.`,
+/// which occurs inside the filename itself.
+fn output_path_in(text: &str) -> Option<String> {
+    const LEAD: &str = "Output is being written to:";
+    let start = text.find(LEAD)? + LEAD.len();
+    let rest = text[start..].trim_start();
+    let end = rest.find(". ").or_else(|| rest.find('\n')).unwrap_or(rest.len());
+    let path = rest[..end].trim().trim_end_matches('.');
+    (!path.is_empty()).then(|| path.to_string())
 }
 
 /// The launch a task notification reports on, by both keys the harness writes.
@@ -2168,7 +2280,7 @@ mod tests {
     use super::*;
 
     fn tool(name: &str) -> ToolUse {
-        ToolUse { name: name.into(), subagent: None, backgrounded: false, id: None, task: None, completed: false }
+        ToolUse { name: name.into(), subagent: None, backgrounded: false, id: None, task: None, completed: false, output: None }
     }
     /// A launch the harness will report on later — the only kind that arms.
     fn bg(name: &str) -> ToolUse {
@@ -3622,6 +3734,93 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
             )
         )
     }
+    /// A background shell launch that a PreToolUse hook REFUSED — the request
+    /// carried the flag, the harness answered with a refusal, and no task id
+    /// or output path was ever minted. This is the 2026-10-04 shape.
+    fn bash_bg_refused(id: &str) -> String {
+        format!(
+            "{}\n{}\n",
+            launch_line(id, "Bash", serde_json::json!({"command":"./build/run-suite.sh 4","run_in_background":true})),
+            result_for(
+                id,
+                "PreToolUse:Bash hook error: Full suite run (`run-suite.sh`) is blocked outside a checkpoint or a release."
+            )
+        )
+    }
+
+    #[test]
+    fn a_refused_background_launch_is_not_pending() {
+        // The defect: the request flags the call background, the guard refuses
+        // it, no notification can ever arrive, and the phantom disarms Rule B
+        // for the rest of the session.
+        let turn = read_turn(&format!("{}\n{}", human_line("go"), bash_bg_refused("toolu_R"))).unwrap();
+        assert_eq!(
+            turn.pending().count(),
+            0,
+            "a launch the harness refused never started, so nothing is waiting on it: {:?}",
+            turn.pending().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_real_background_launch_is_still_pending() {
+        // The control. Without it the test above passes against a gate that
+        // thinks NOTHING is ever pending, which would disarm the rule the
+        // other way round and sleep just as hard.
+        let turn = read_turn(&format!("{}\n{}", human_line("go"), bash_bg("toolu_G", "bgood1"))).unwrap();
+        assert_eq!(turn.pending().count(), 1, "a launch the harness accepted is genuinely pending");
+    }
+
+    #[test]
+    fn the_output_path_is_taken_from_the_harness_not_built() {
+        // The path is the harness's own sentence, so the machine check needs no
+        // per-platform spelling. The filename contains a dot, which is why the
+        // reader stops at ". " and not at the first '.'.
+        assert_eq!(
+            output_path_in("Command running in background with ID: b1. Output is being written to: /tmp/claude-1000/x/y/tasks/b1.output. You will be notified when it completes."),
+            Some("/tmp/claude-1000/x/y/tasks/b1.output".to_string())
+        );
+        assert_eq!(output_path_in("no such sentence here"), None);
+    }
+
+    #[test]
+    fn the_machine_settles_a_launch_the_transcript_never_heard_about() {
+        // The real fix: a job whose output file carries the harness's exit
+        // marker is over, even though no notification was ever seen — and one
+        // whose promised file is absent is not running under that name either.
+        let dir = std::env::temp_dir().join(format!("jawata-hook-machine-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let done = dir.join("finished.output");
+        std::fs::write(&done, "some output\n\n[exited with code 0]\n").unwrap();
+        let finished = ToolUse { output: Some(done.display().to_string()), ..bg("Bash") };
+        assert_eq!(finished.on_machine(), MachineState::Finished);
+        assert!(!finished.arms_work(), "a job the machine says is over arms nothing");
+
+        let live = dir.join("running.output");
+        std::fs::write(&live, "shard 1: 2355s planned\n").unwrap();
+        let running = ToolUse { output: Some(live.display().to_string()), ..bg("Bash") };
+        assert_eq!(running.on_machine(), MachineState::Running);
+        assert!(running.arms_work(), "a job that is actually going still arms work");
+
+        // ABSENT IS NOT FINISHED. A task file is also reaped while its job
+        // runs, so absence covers "never started" AND "still going, cleaned
+        // up". Reading it as finished would stand the gate down on a live job
+        // — the sleep's own mistake pointed the other way. The refused launch
+        // is settled by the harness's reply instead, not by this.
+        let gone = ToolUse { output: Some(dir.join("never-existed.output").display().to_string()), ..bg("Bash") };
+        assert_eq!(gone.on_machine(), MachineState::Unknown, "absence establishes nothing");
+        assert!(gone.arms_work(), "with the machine silent, the transcript still says pending");
+
+        // No path to ask about: the machine is silent and the TRANSCRIPT
+        // decides. Silence must never read as "stopped" — that is the same
+        // class of defect pointed the other way.
+        assert_eq!(bg("Bash").on_machine(), MachineState::Unknown);
+        assert!(bg("Bash").arms_work(), "with nothing to ask, the transcript still says pending");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     fn queue_op(text: &str) -> String {
         serde_json::json!({"type":"queue-operation","operation":"enqueue","content":text}).to_string()
     }

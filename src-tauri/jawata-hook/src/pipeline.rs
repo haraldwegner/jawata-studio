@@ -2701,6 +2701,7 @@ mod tests {
             id: None,
             task: None,
             completed: false,
+            output: None,
         };
         assert!(!c.arms_work(), "a foreground consultation has answered; nothing is pending");
     }
