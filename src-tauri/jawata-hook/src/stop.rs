@@ -1395,12 +1395,36 @@ pub fn is_harness_text(t: &str) -> bool {
     // that scan's own idiom for naming what it bans.
     let noti = concat!("notifi", "cation");
     let t = t.trim_start();
-    t.starts_with(&format!("<task-{noti}>"))
+    opens_tag(t, &format!("task-{noti}"))
         || t.starts_with(&format!("[SYSTEM {}", noti.to_uppercase()))
-        || t.starts_with("<system-reminder>")
-        || t.starts_with("<local-command-caveat>")
-        || t.starts_with("<command-name>")
-        || t.starts_with("<local-command-stdout>")
+        || opens_tag(t, "system-reminder")
+        || opens_tag(t, "local-command-caveat")
+        || opens_tag(t, "command-name")
+        || opens_tag(t, "local-command-stdout")
+}
+
+/// Does this text open the named tag — with or without attributes on it?
+///
+/// THE ATTRIBUTE WAS THE 2026-10-04 REVOCATION, and it was one character wide.
+/// Every wrapper above was matched as a whole literal including its closing
+/// `>`, so `<system-reminder>` matched and `<system-reminder id="73804fa4…">`
+/// did not. A subagent handback arrives inside exactly that attributed form, so
+/// the harness's own text was taken for the keyboard: no grant keyword in it,
+/// and the grant was cleared. Measured in this session's own record — granted
+/// and pushing at 11:33:16Z, the judge's report lands, `autonomy-changed
+/// NotGranted` at 11:35:23Z. The loop that makes it fatal is closed: a stop
+/// under a live grant MUST consult the judge, the judge answers through a
+/// handback, and the handback turns the grant off, so every armed session dies
+/// at its first stop however the work is going.
+///
+/// The boundary is checked rather than ignored: the character after the name
+/// must be `>` or whitespace, so a future `<system-reminder-v2>` is a different
+/// tag and says so instead of silently inheriting this exemption.
+fn opens_tag(t: &str, name: &str) -> bool {
+    let Some(rest) = t.strip_prefix('<').and_then(|r| r.strip_prefix(name)) else {
+        return false;
+    };
+    matches!(rest.chars().next(), Some(c) if c == '>' || c.is_whitespace())
 }
 
 fn is_harness_line(v: &serde_json::Value) -> bool {
@@ -3746,6 +3770,38 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
                 "PreToolUse:Bash hook error: Full suite run (`run-suite.sh`) is blocked outside a checkpoint or a release."
             )
         )
+    }
+
+    #[test]
+    fn an_attributed_wrapper_is_still_the_harness_speaking() {
+        // The 2026-10-04 revocation, as its own test. A subagent handback arrives
+        // inside an ATTRIBUTED system-reminder; the old whole-literal match missed
+        // it, the harness's text was taken for the keyboard, and the grant died at
+        // the first stop — which is every stop, since the gate must consult the
+        // judge and the judge answers through a handback.
+        let handback = "<system-reminder id=\"73804fa4bd0190fb\">\nAnother Claude session sent a \
+message while you were working:\n<agent-message from=\"a14a4ae2f3b5ee48b\">\nVERDICT: RESOLVABLE\n\
+</agent-message>\n</system-reminder>";
+        assert!(is_harness_text(handback), "an attributed system-reminder is the harness, not him");
+
+        // The bare forms still match — this widens the predicate, it does not move it.
+        assert!(is_harness_text("<system-reminder>\nrecalled knowledge\n</system-reminder>"));
+        assert!(is_harness_text("<command-name>/sprint</command-name>"));
+        assert!(is_harness_text("  <local-command-stdout>ok</local-command-stdout>"));
+        let noti = concat!("notifi", "cation");
+        assert!(is_harness_text(&format!("<task-{noti}>\n<task-id>b1</task-id>")));
+        assert!(is_harness_text(&format!("<task-{noti} seq=\"2\">")));
+
+        // AND THE BOUNDARY IS CHECKED, so the widening cannot swallow his words.
+        // A tag that merely STARTS with the name is a different tag; and anything
+        // he types — including quoting a reminder back at us mid-sentence — is him.
+        assert!(!is_harness_text("<system-reminder-v2>"), "a different tag must not inherit the exemption");
+        assert!(!is_harness_text("<system-reminderish>"));
+        assert!(!is_harness_text("resume the plan. Continue and autocontinue"));
+        assert!(
+            !is_harness_text("why did the <system-reminder> clear my grant?"),
+            "him quoting a wrapper is still him"
+        );
     }
 
     #[test]
