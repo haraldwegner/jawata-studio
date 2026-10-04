@@ -1261,6 +1261,27 @@ pub(crate) fn session_autonomy(payload: &str) -> crate::stop::Autonomy {
 /// `None` — inject nothing — when there is no session to have state about, or
 /// no readable prompt. A line asserting the mode of a session we cannot
 /// identify would be an invented fact in the model's context.
+/// Whether the event that carried this prompt came from the machine — needle, fallback and
+/// default as ONE decision.
+///
+/// It is a named function rather than a chain inside the caller for a reason the caller cannot
+/// give: `studio_dir()` is hard-wired to the real `~/.claude/jawata-studio`, so a test driving
+/// `note_autonomy_from_prompt` would write grant files for invented sessions into his live
+/// directory. Extracting the decision makes the whole of it — including the default, which is
+/// the part that was wrong — reachable from a test, and leaves the caller a single expression
+/// with no logic in it.
+///
+/// THE DEFAULT IS THE DEFECT THIS CLOSES, and it is stated here rather than buried: a miss used
+/// to be scored as his keyboard, so every subagent handback — a report far longer than the
+/// window the needle is sought in — cleared a grant he had just given. The needle stays
+/// authoritative where it hits; `false` survives only where the client states no origins and
+/// there has never been anything else to ask.
+fn prompt_channel_is_machine(transcript_text: &str, prompt: &str) -> bool {
+    crate::stop::prompt_came_from_machine(transcript_text, prompt)
+        .or_else(|| crate::stop::last_user_turn_is_machine(transcript_text))
+        .unwrap_or(false)
+}
+
 fn note_autonomy_from_prompt(payload: &str) -> Option<String> {
     let Ok(v) = parse_payload(payload) else { return None };
     let session = session_id_in(payload).unwrap_or_default();
@@ -1268,11 +1289,21 @@ fn note_autonomy_from_prompt(payload: &str) -> Option<String> {
     let dir = studio_dir()?;
     // HIS CHANNEL, ASKED OF THE EVENT. The payload names the transcript, the
     // transcript carries the entry, and the entry says whether this was a
-    // keyboard or a tool result. `false` on a miss keeps the old text belt as
-    // the only judge for that one event rather than guessing the other way.
+    // keyboard or a tool result.
+    //
+    // THE `.unwrap_or(false)` WAS A FAIL-OPEN AND IT IS WHY THE GRANT KEPT DYING. The text belt
+    // searches the transcript TAIL for the prompt's own text; a subagent handback is thousands
+    // of characters of report, larger than that window, so the needle MISSED and the miss was
+    // scored as his keyboard. The predicate that decides the channel had just been made general
+    // and this caller went on deciding by text search, defaulting the wrong way.
+    //
+    // So a miss now ASKS rather than guesses: the last user record the transcript holds either
+    // states `human` or it does not. The needle stays authoritative wherever it hits — `or_else`
+    // never overrides a found answer — and `false` survives only for a client that states no
+    // origins at all, where there has never been anything else to ask.
     let machine = string_at(&v, &["transcript_path"])
         .and_then(|path| read_tail(&path, TRANSCRIPT_TAIL_BYTES).ok())
-        .and_then(|text| crate::stop::prompt_came_from_machine(&text, &prompt))
+        .map(|text| prompt_channel_is_machine(&text, &prompt))
         .unwrap_or(false);
     // studio#35: `note_prompt` marks the CHANNEL alive itself, so a later stop
     // can tell "he did not grant" from "nothing ever asked him".
@@ -1955,6 +1986,50 @@ fn read_tail(path: &str, max: u64) -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// THE DECISION THE GRANT PATH ACTUALLY MAKES — needle, fallback and default together.
+    ///
+    /// The three cases below are the whole of it. The second is the one that was broken and the
+    /// third is the one that must never break: losing it would make the grant unrevokable, and
+    /// revoking is the only withdrawal he has.
+    #[test]
+    fn the_channel_decision_covers_the_needle_the_fallback_and_the_default() {
+        let human_last = String::new()
+            + r#"{"type":"user","turnOrigin":"peer","message":{"content":"VERDICT: REFUSE"}}"# + "\n"
+            + r#"{"type":"user","turnOrigin":"human","message":{"content":"resume the plan"}}"# + "\n";
+        let peer_last = String::new()
+            + r#"{"type":"user","turnOrigin":"human","message":{"content":"resume the plan"}}"# + "\n"
+            + r#"{"type":"user","turnOrigin":"peer","message":{"content":"VERDICT: REFUSE"}}"# + "\n";
+
+        // (1) THE NEEDLE HITS and stays authoritative — his own text, found, scored as his.
+        assert!(
+            !prompt_channel_is_machine(&human_last, "resume the plan"),
+            "a prompt whose text is in the transcript on a human turn is his"
+        );
+
+        // (2) THE NEEDLE MISSES — the handback case, and the whole defect. The prompt is a
+        // report far longer than the window, so it is not found; the last turn says `peer`.
+        assert!(
+            prompt_channel_is_machine(&peer_last, "a subagent report far too long to be found"),
+            "a miss must ASK the last turn's channel, not score itself as his keyboard — this \
+             is what cleared a granted autocontinue on the first handback after the predicate \
+             shipped"
+        );
+
+        // (3) THE NEEDLE MISSES AND HE TYPED LAST — the direction that matters more.
+        assert!(
+            !prompt_channel_is_machine(&human_last, "text that is nowhere in this transcript"),
+            "his own last turn must still read as his, or the grant stops being revocable"
+        );
+
+        // (4) NO ORIGINS STATED: the default survives, deliberately, because on such a client
+        // there has never been a second thing to ask.
+        let no_origins = String::from(r#"{"type":"user","message":{"content":"hi"}}"#) + "\n";
+        assert!(
+            !prompt_channel_is_machine(&no_origins, "nowhere in this transcript"),
+            "with nothing to ask, the old default stands rather than being guessed the other way"
+        );
+    }
 
     /// studio#6 / studio#7: when the event shape moves, the degrade line must say
     /// WHAT ARRIVED — otherwise diagnosing it needs a human sitting on the

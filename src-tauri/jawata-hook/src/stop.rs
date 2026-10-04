@@ -2400,6 +2400,41 @@ pub fn client_states_turn_origin(transcript_text: &str) -> bool {
     })
 }
 
+/// The channel of the LAST user turn the transcript holds, asked of the event.
+///
+/// THE FAIL-OPEN THIS CLOSES. The grant path finds a turn's channel by searching the
+/// transcript TAIL for the prompt's own text and ends `.unwrap_or(false)` — so a MISS was scored
+/// as his keyboard and cleared the grant. A subagent handback is thousands of characters of
+/// report, far larger than the window the needle is looked for in, so it missed every time: the
+/// predicate was fixed and the CALLER went on deciding by text search with a fail-open default.
+/// That is the same defect one level up, and it is why the grant died again on the first
+/// handback after the predicate landed.
+///
+/// This is not a second guess to put beside the first. It is the question asked WITHOUT a
+/// needle: the last user record either states `human` or it does not. The needle stays
+/// authoritative wherever it hits — a found answer is never overridden — and this answers only
+/// where today there is no answer at all.
+///
+/// `None` when the client states no origins, because then there is nothing to ask and the text
+/// belt is the only judge there has ever been on that client.
+pub fn last_user_turn_is_machine(transcript_text: &str) -> Option<bool> {
+    if !client_states_turn_origin(transcript_text) {
+        return None;
+    }
+    // A TAIL READ CAN START MID-LINE, so the first line may be a fragment; it fails to parse and
+    // is skipped like any other unparseable line.
+    let mut last = None;
+    for line in transcript_text.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) == Some("user") {
+            last = Some(v);
+        }
+    }
+    last.map(|v| !is_his_keyboard(&v, true))
+}
+
 /// Did HE type this, or did the machine produce it?
 ///
 /// ASK THE EVENT, AND ASK IT POSITIVELY. Ten previous attempts enumerated machine channels
@@ -2539,6 +2574,76 @@ mod channel_tests {
     }
 
     #[test]
+    /// THE HANDBACK THAT CLEARED THE GRANT ON THE VERY RUN THE PREDICATE SHIPPED, 2026-10-04.
+    ///
+    /// The grant path finds a turn's channel by searching the transcript TAIL for the prompt's
+    /// own text. A subagent handback is a report thousands of characters long, so the needle is
+    /// not in the window, `prompt_came_from_machine` answers None, and the caller's
+    /// `.unwrap_or(false)` scored the miss as HIS KEYBOARD. The predicate was general and the
+    /// caller was still guessing.
+    #[test]
+    fn a_needle_that_misses_is_asked_rather_than_guessed() {
+        // A transcript whose last user record is a PEER handback, and whose prompt text is
+        // nowhere in it — exactly the shape the needle cannot answer.
+        let transcript = String::new()
+            + r#"{"type":"user","turnOrigin":"human","message":{"content":"resume the plan"}}"# + "\n"
+            + r#"{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}"# + "\n"
+            + r#"{"type":"user","turnOrigin":"peer","message":{"content":"VERDICT: REFUSE"}}"# + "\n";
+
+        // THE OLD BELT CANNOT ANSWER, which is the premise and is asserted rather than assumed.
+        assert_eq!(
+            prompt_came_from_machine(&transcript, "a report far too long to be in the window"),
+            None,
+            "the needle must MISS here, or this test is about nothing"
+        );
+        // AND THE NEEDLE-FREE READ DOES ANSWER, with the channel the harness stated.
+        assert_eq!(
+            last_user_turn_is_machine(&transcript),
+            Some(true),
+            "the last user turn came from a peer session, so the grant must survive it"
+        );
+    }
+
+    /// AND IT MUST NOT COST HIM HIS WITHDRAWAL, which is the only direction that matters more.
+    #[test]
+    fn his_own_turn_is_still_his_so_the_grant_stays_revocable() {
+        let transcript = String::new()
+            + r#"{"type":"user","turnOrigin":"peer","message":{"content":"VERDICT: REFUSE"}}"# + "\n"
+            + r#"{"type":"user","turnOrigin":"human","message":{"content":"what is the status"}}"# + "\n";
+        assert_eq!(
+            last_user_turn_is_machine(&transcript),
+            Some(false),
+            "he typed last; reading this as machine would make the grant unrevokable, and \
+             revoking is the only withdrawal he has"
+        );
+    }
+
+    /// A CLIENT THAT STATES NO ORIGINS GETS NO NEW ANSWER, deliberately: there is nothing to
+    /// ask, and inventing one would be the same guess pointed the other way.
+    #[test]
+    fn a_client_that_states_no_origins_is_left_to_the_text_belt() {
+        let transcript =
+            String::from(r#"{"type":"user","message":{"content":"resume the plan"}}"#) + "\n";
+        assert_eq!(
+            last_user_turn_is_machine(&transcript),
+            None,
+            "no origins stated: this must abstain rather than answer"
+        );
+    }
+
+    /// A TAIL READ STARTS MID-LINE, so the first record is routinely a fragment.
+    #[test]
+    fn a_truncated_first_line_does_not_decide_anything() {
+        let transcript = String::new()
+            + r#"ontent":"a fragment the tail read cut in half"}}"# + "\n"
+            + r#"{"type":"user","turnOrigin":"peer","message":{"content":"handback"}}"# + "\n";
+        assert_eq!(
+            last_user_turn_is_machine(&transcript),
+            Some(true),
+            "the fragment must be skipped and the real last record answer"
+        );
+    }
+
     /// THE TWO CHANNELS THAT WERE LIVE WHEN THE NEGATIVE CHECK SHIPPED, 2026-10-04.
     ///
     /// Both are `type: "user"`, both carry a TEXT block, neither carries an envelope mark, and
