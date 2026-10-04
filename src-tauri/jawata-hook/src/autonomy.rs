@@ -204,7 +204,7 @@ fn without_mentions(prompt: &str) -> String {
 /// Returns `true` when the prompt changed the state, so the caller can log a
 /// state change rather than a no-op — a grant nobody can see happening is the
 /// same invisible wiring this module exists to end.
-pub fn note_prompt(base: &Path, session: &str, prompt: &str) -> bool {
+pub fn note_prompt(base: &Path, session: &str, prompt: &str, machine: bool) -> bool {
     if session.is_empty() {
         return false;
     }
@@ -231,7 +231,15 @@ pub fn note_prompt(base: &Path, session: &str, prompt: &str) -> bool {
     // The stop side has had this check since an earlier overnight sleep; two
     // lists nothing forces to agree is how the same fix lands in one of them,
     // which happened twice in this crate this week.
-    if crate::stop::is_harness_text(prompt) {
+    // THE BLOCK SHAPE DECIDES IT, and the text is only the belt.
+    //
+    // `machine` is the caller's verdict from the EVENT — a `tool_result` block,
+    // a `toolUseResult` field, a `sourceToolAssistantUUID` — which is what his
+    // channel ruling actually asks and what `is_harness_text` can only guess.
+    // The text test stays BESIDE it rather than under it: the transcript entry
+    // is occasionally not findable (not yet flushed, tail too short), and then
+    // `machine` is false by default and the wrapper list is all there is.
+    if machine || crate::stop::is_harness_text(prompt) {
         // AND IT SAYS SO. The auditor's strongest finding on this change: a silent
         // early return makes the NEXT failure exactly as invisible as this one was.
         // Today was diagnosable to the second only because `autonomy-changed`
@@ -240,7 +248,15 @@ pub fn note_prompt(base: &Path, session: &str, prompt: &str) -> bool {
         // produce an identical log. The first characters are carried so a mismatch
         // names itself instead of having to be reconstructed from a transcript.
         let head: String = prompt.chars().take(40).collect();
-        crate::observer::emit_signal(base, "autonomy-harness-ignored", head.trim());
+        // WHICH MARK ANSWERED, because the two have different failure modes: a
+        // `block-shape` verdict cannot go stale, a `wrapper-text` one is a
+        // guess that the handback of 2026-10-04 got wrong.
+        let mark = if machine { "block-shape" } else { "wrapper-text" };
+        crate::observer::emit_signal(
+            base,
+            "autonomy-harness-ignored",
+            &format!("[{mark}] {}", head.trim()),
+        );
         return false;
     }
     // Mentions are stripped BEFORE the spelling collapse: quotes are what he
@@ -521,7 +537,7 @@ mod tests {
         assert!(!seen(&d, "s"), "and the channel is not marked alive");
 
         // A prompt arrives that does NOT arm. Now the absence is a real answer.
-        note_prompt(&d, "s", "have a look at the failing test");
+        note_prompt(&d, "s", "have a look at the failing test", false);
         assert!(seen(&d, "s"), "the channel is alive once a prompt is processed");
         assert_eq!(
             Autonomy::NotGranted,
@@ -530,7 +546,7 @@ mod tests {
         );
 
         // And the grant still works on top of it.
-        note_prompt(&d, "s", "autocontinue");
+        note_prompt(&d, "s", "autocontinue", false);
         assert_eq!(Autonomy::Granted, state(&d, "s"), "his word still arms it");
 
         // A DIFFERENT session in the same install is still unknown: the marker
@@ -546,14 +562,14 @@ mod tests {
     fn his_word_grants_it_and_nothing_else_does() {
         let d = tmp();
         for phrase in ["continue", "keep going", "carry on", "go on until done"] {
-            assert!(!note_prompt(&d, "s", phrase), "{phrase:?} must NOT grant");
+            assert!(!note_prompt(&d, "s", phrase, false), "{phrase:?} must NOT grant");
             assert_eq!(
                 state(&d, "s"),
                 Autonomy::NotGranted,
                 "a grant he did not knowingly give is worse than none: {phrase:?}"
             );
         }
-        assert!(note_prompt(&d, "s", "work the plan and autocontinue"));
+        assert!(note_prompt(&d, "s", "work the plan and autocontinue", false));
         assert_eq!(state(&d, "s"), Autonomy::Granted);
     }
 
@@ -577,7 +593,7 @@ mod tests {
             "the autocontinue seat judges the stop",
         ] {
             let d = tmp();
-            assert!(!note_prompt(&d, "s", mention), "{mention:?} must NOT grant");
+            assert!(!note_prompt(&d, "s", mention, false), "{mention:?} must NOT grant");
             assert_eq!(
                 state(&d, "s"),
                 Autonomy::NotGranted,
@@ -600,7 +616,7 @@ mod tests {
             "1. Don't release but resume.\n2. We release at the end of this sprint\nautocontinue",
         ] {
             let d = tmp();
-            assert!(note_prompt(&d, "s", order), "{order:?} must grant");
+            assert!(note_prompt(&d, "s", order, false), "{order:?} must grant");
             assert_eq!(state(&d, "s"), Autonomy::Granted, "{order:?}");
         }
     }
@@ -620,7 +636,7 @@ mod tests {
     #[test]
     fn the_slash_spelling_arms_it_too() {
         let d = tmp();
-        assert!(note_prompt(&d, "s", "/autocontinue"));
+        assert!(note_prompt(&d, "s", "/autocontinue", false));
         assert_eq!(state(&d, "s"), Autonomy::Granted);
     }
 
@@ -629,7 +645,7 @@ mod tests {
     #[test]
     fn a_word_that_merely_ends_in_it_does_not_arm() {
         let d = tmp();
-        assert!(!note_prompt(&d, "s", "noautocontinue"));
+        assert!(!note_prompt(&d, "s", "noautocontinue", false));
         assert_eq!(state(&d, "s"), Autonomy::NotGranted);
     }
 
@@ -637,7 +653,7 @@ mod tests {
     fn the_three_spellings_are_one_word() {
         for spelling in ["autocontinue", "auto-continue", "AUTO CONTINUE"] {
             let d = tmp();
-            assert!(note_prompt(&d, "s", spelling), "{spelling:?}");
+            assert!(note_prompt(&d, "s", spelling, false), "{spelling:?}");
             assert_eq!(state(&d, "s"), Autonomy::Granted, "{spelling:?}");
         }
     }
@@ -657,10 +673,10 @@ mod tests {
             "We had a discussion before and I did not tell you to move on",
         ] {
             let d = tmp();
-            note_prompt(&d, "s", "autocontinue");
+            note_prompt(&d, "s", "autocontinue", false);
             assert_eq!(state(&d, "s"), Autonomy::Granted, "armed before {his_line:?}");
             assert!(
-                note_prompt(&d, "s", his_line),
+                note_prompt(&d, "s", his_line, false),
                 "his arrival is a state change: {his_line:?}"
             );
             assert_eq!(
@@ -668,7 +684,7 @@ mod tests {
                 Autonomy::NotGranted,
                 "he typed, so he is here: {his_line:?}"
             );
-            assert!(note_prompt(&d, "s", "carry on and autocontinue"));
+            assert!(note_prompt(&d, "s", "carry on and autocontinue", false));
             assert_eq!(state(&d, "s"), Autonomy::Granted, "his word re-arms it");
         }
     }
@@ -693,7 +709,7 @@ mod tests {
             "er sagte \u{201E}autocontinue\u{201C} und ging", // the German quotes he types
         ] {
             assert!(
-                !note_prompt(&d, "s", mention),
+                !note_prompt(&d, "s", mention, false),
                 "a QUOTED word is a mention, and this one armed a whole morning: {mention:?}"
             );
             assert_eq!(Autonomy::NotGranted, state(&d, "s"), "{mention:?}");
@@ -705,7 +721,7 @@ mod tests {
             "continue implementing the plan and autocontinue",
             "carry on and auto-continue",
         ] {
-            assert!(note_prompt(&d, "s", order), "a bare order must arm: {order:?}");
+            assert!(note_prompt(&d, "s", order, false), "a bare order must arm: {order:?}");
             assert_eq!(Autonomy::Granted, state(&d, "s"), "{order:?}");
             clear(&d, "s");
         }
@@ -719,7 +735,7 @@ mod tests {
     fn an_unbalanced_quote_does_not_eat_the_order() {
         let d = tmp();
         assert!(
-            note_prompt(&d, "s", r#"fix the "flag and then autocontinue"#),
+            note_prompt(&d, "s", r#"fix the "flag and then autocontinue"#, false),
             "one lone quote, the word outside any completed pair — it must arm"
         );
         assert_eq!(Autonomy::Granted, state(&d, "s"));
@@ -727,7 +743,7 @@ mod tests {
         // And both in one message: a quoted mention does not shield a bare use.
         clear(&d, "s");
         assert!(
-            note_prompt(&d, "s", r#"the "autocontinue" fix is in — autocontinue"#),
+            note_prompt(&d, "s", r#"the "autocontinue" fix is in — autocontinue"#, false),
             "a bare use beside a quoted mention is still an order"
         );
         assert_eq!(Autonomy::Granted, state(&d, "s"));
@@ -755,7 +771,7 @@ mod tests {
     #[test]
     fn the_harness_neither_arms_nor_clears_the_grant() {
         let d = tmp();
-        note_prompt(&d, "s", "work the plan and autocontinue");
+        note_prompt(&d, "s", "work the plan and autocontinue", false);
         assert_eq!(state(&d, "s"), Autonomy::Granted, "armed");
 
         // A background job finishing. THIS is the line that slept the session.
@@ -766,7 +782,7 @@ mod tests {
             "<local-command-stdout>output</local-command-stdout>".to_string(),
         ] {
             assert!(
-                !note_prompt(&d, "s", &machine),
+                !note_prompt(&d, "s", &machine, false),
                 "a machine line is not a state change: {machine:?}"
             );
             assert_eq!(
@@ -779,9 +795,9 @@ mod tests {
         // ...and the same text cannot ARM it either. The word can appear inside a
         // tool result the harness relays; that is the machine quoting, not him
         // granting.
-        note_prompt(&d, "s", "stop");
+        note_prompt(&d, "s", "stop", false);
         assert_eq!(state(&d, "s"), Autonomy::NotGranted, "his word ended it");
-        note_prompt(&d, "s", "<system-reminder>\nplease autocontinue\n</system-reminder>");
+        note_prompt(&d, "s", "<system-reminder>\nplease autocontinue\n</system-reminder>", false);
         assert_eq!(
             state(&d, "s"),
             Autonomy::NotGranted,
@@ -790,9 +806,9 @@ mod tests {
 
         // THE CONTROL. If the guard over-reached to every message, the grant would
         // be unclearable and this fix would be worse than the defect.
-        note_prompt(&d, "s", "carry on and autocontinue");
+        note_prompt(&d, "s", "carry on and autocontinue", false);
         assert_eq!(state(&d, "s"), Autonomy::Granted);
-        note_prompt(&d, "s", "stop what you are doing");
+        note_prompt(&d, "s", "stop what you are doing", false);
         assert_eq!(
             state(&d, "s"),
             Autonomy::NotGranted,
@@ -805,6 +821,45 @@ mod tests {
     /// discussion, gives an instruction, and ends with the word. Under the old
     /// rule the substring DISCUSS made this "a question" and silenced the push
     /// for the following eleven minutes. The word is the only thing read now.
+    /// THE GRANT SURVIVES THE MACHINE, and that is the whole fix.
+    ///
+    /// The caller answers the channel question from the EVENT; this asserts
+    /// what `note_prompt` then does with the answer. Without the `machine`
+    /// parameter the only judge was the wrapper text, and the handback of
+    /// 2026-10-04 carried no wrapper — so the grant he had just given was
+    /// cleared by his own agent reporting back.
+    #[test]
+    fn a_machine_event_leaves_the_grant_exactly_where_it_was() {
+        let d = tmp();
+        note_prompt(&d, "s", "work the plan and autocontinue", false);
+        assert_eq!(state(&d, "s"), Autonomy::Granted);
+
+        // Wrapperless prose — invisible to the text belt, which is the point.
+        let handback = "  This agent's report was delivered to you as a message \
+                        from \"autocontinue\". VERDICT: RESOLVABLE";
+        assert!(!crate::stop::is_harness_text(handback));
+        assert!(
+            !note_prompt(&d, "s", handback, true),
+            "a machine event changes no state, so it reports no change"
+        );
+        assert_eq!(
+            state(&d, "s"),
+            Autonomy::Granted,
+            "the machine must not be able to revoke what he granted"
+        );
+    }
+
+    /// AND HIS WITHDRAWAL STILL WORKS — the other direction, which is the one
+    /// that would be dangerous to break: the clear is his only off switch.
+    #[test]
+    fn his_own_question_still_ends_it() {
+        let d = tmp();
+        note_prompt(&d, "s", "work the plan and autocontinue", false);
+        assert_eq!(state(&d, "s"), Autonomy::Granted);
+        assert!(note_prompt(&d, "s", "What are you doing now?", false));
+        assert_eq!(state(&d, "s"), Autonomy::NotGranted);
+    }
+
     #[test]
     fn the_word_arms_it_however_the_rest_of_the_message_reads() {
         let d = tmp();
@@ -813,6 +868,7 @@ mod tests {
             "s",
             "We had a discussion before and I did not tell you to move on. \
              Move on with the plan and autocontinue",
+            false,
         );
         assert_eq!(
             state(&d, "s"),
@@ -828,11 +884,11 @@ mod tests {
     #[test]
     fn saying_the_word_again_resets_the_empty_turn_count() {
         let d = tmp();
-        note_prompt(&d, "s", "autocontinue");
+        note_prompt(&d, "s", "autocontinue", false);
         note_turn(&d, "s", false);
         note_turn(&d, "s", false);
         assert_eq!(empty_turns(&d, "s"), MAX_EMPTY_TURNS, "at the ceiling");
-        note_prompt(&d, "s", "autocontinue");
+        note_prompt(&d, "s", "autocontinue", false);
         assert_eq!(
             empty_turns(&d, "s"),
             0,
@@ -856,11 +912,11 @@ mod tests {
     #[test]
     fn a_turn_of_his_takes_the_count_with_the_grant() {
         let d = tmp();
-        note_prompt(&d, "s", "autocontinue");
+        note_prompt(&d, "s", "autocontinue", false);
         note_turn(&d, "s", false);
         note_turn(&d, "s", false);
         assert_eq!(empty_turns(&d, "s"), MAX_EMPTY_TURNS, "at the ceiling");
-        note_prompt(&d, "s", "carry on");
+        note_prompt(&d, "s", "carry on", false);
         assert_eq!(
             state(&d, "s"),
             Autonomy::NotGranted,
@@ -880,14 +936,14 @@ mod tests {
     #[test]
     fn a_real_ask_ends_the_grant_with_nothing_typed() {
         let d = tmp();
-        note_prompt(&d, "s", "autocontinue");
+        note_prompt(&d, "s", "autocontinue", false);
         assert_eq!(state(&d, "s"), Autonomy::Granted);
         assert!(clear(&d, "s"), "the ask clears it");
         assert_eq!(state(&d, "s"), Autonomy::NotGranted);
         // and it stays off until he grants it again
-        note_prompt(&d, "s", "Status?");
+        note_prompt(&d, "s", "Status?", false);
         assert_eq!(state(&d, "s"), Autonomy::NotGranted);
-        note_prompt(&d, "s", "autocontinue");
+        note_prompt(&d, "s", "autocontinue", false);
         assert_eq!(state(&d, "s"), Autonomy::Granted);
     }
 
@@ -896,7 +952,7 @@ mod tests {
     #[test]
     fn working_turns_never_exhaust_the_ceiling() {
         let d = tmp();
-        note_prompt(&d, "s", "autocontinue");
+        note_prompt(&d, "s", "autocontinue", false);
         for _ in 0..50 {
             note_turn(&d, "s", true);
             assert_eq!(empty_turns(&d, "s"), 0, "a working turn resets the count");
@@ -906,7 +962,7 @@ mod tests {
     #[test]
     fn consecutive_empty_turns_reach_the_ceiling_and_one_work_turn_clears_it() {
         let d = tmp();
-        note_prompt(&d, "s", "autocontinue");
+        note_prompt(&d, "s", "autocontinue", false);
         note_turn(&d, "s", false);
         assert_eq!(empty_turns(&d, "s"), 1);
         note_turn(&d, "s", false);
@@ -924,7 +980,7 @@ mod tests {
     #[test]
     fn an_unwritable_bound_reports_failure_rather_than_freezing_the_count() {
         let d = tmp();
-        note_prompt(&d, "s", "autocontinue");
+        note_prompt(&d, "s", "autocontinue", false);
         assert!(note_turn(&d, "s", false), "an ordinary write succeeds");
 
         // Make the file unwritable and confirm the caller is TOLD.
@@ -945,6 +1001,6 @@ mod tests {
     fn no_session_id_is_unknown_not_a_denial() {
         let d = tmp();
         assert_eq!(state(&d, ""), Autonomy::Unknown);
-        assert!(!note_prompt(&d, "", "autocontinue"));
+        assert!(!note_prompt(&d, "", "autocontinue", false));
     }
 }

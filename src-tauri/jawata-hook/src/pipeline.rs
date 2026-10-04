@@ -1266,9 +1266,17 @@ fn note_autonomy_from_prompt(payload: &str) -> Option<String> {
     let session = session_id_in(payload).unwrap_or_default();
     let prompt = string_at(&v, &["prompt"])?;
     let dir = studio_dir()?;
+    // HIS CHANNEL, ASKED OF THE EVENT. The payload names the transcript, the
+    // transcript carries the entry, and the entry says whether this was a
+    // keyboard or a tool result. `false` on a miss keeps the old text belt as
+    // the only judge for that one event rather than guessing the other way.
+    let machine = string_at(&v, &["transcript_path"])
+        .and_then(|path| read_tail(&path, TRANSCRIPT_TAIL_BYTES).ok())
+        .and_then(|text| crate::stop::prompt_came_from_machine(&text, &prompt))
+        .unwrap_or(false);
     // studio#35: `note_prompt` marks the CHANNEL alive itself, so a later stop
     // can tell "he did not grant" from "nothing ever asked him".
-    if crate::autonomy::note_prompt(&dir, &session, &prompt) {
+    if crate::autonomy::note_prompt(&dir, &session, &prompt, machine) {
         crate::observer::emit_signal(
             &dir,
             "autonomy-changed",

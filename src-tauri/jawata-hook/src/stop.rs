@@ -2250,6 +2250,99 @@ fn pending_carry(turn: &Turn) -> Vec<ToolUse> {
 /// A `user` entry carrying a tool RESULT is the harness echoing our own tool
 /// call back, not the human speaking. Treating it as a human message would
 /// reset the window on every single tool call and make the gate blind.
+/// Is this user-role entry the MACHINE rather than his keyboard?
+///
+/// THE CHANNEL IS A FACT OF THE EVENT AND NEVER OF ITS WORDS. His ruling named
+/// a channel — *"I am sitting in front = I am typing = keyboard action into the
+/// chat window"* — and [`is_harness_text`] has been answering it by matching
+/// wrapper names at the start of the text, which is a guess about words. The
+/// measured cost, 2026-10-04: the autocontinue judge's handback opens with
+/// `"  This agent's report was delivered to you..."`, carries NO wrapper at all,
+/// and so revoked a grant he had just given — and the widening that shipped at
+/// 13:38 that day (`opens_tag`) could not have caught it either, because there
+/// is no tag to open.
+///
+/// Three independent marks, each sufficient and none of them text: a
+/// `tool_result` content block, a `toolUseResult` envelope field, or a
+/// `sourceToolAssistantUUID` naming the assistant turn that spawned the call.
+/// His typing carries a `text` block and none of the three.
+pub fn is_machine_entry(v: &serde_json::Value) -> bool {
+    is_tool_result(v)
+        || v.get("toolUseResult").is_some()
+        || v.get("sourceToolAssistantUUID").is_some()
+}
+
+/// Every string a user entry carries, INCLUDING the ones nested inside a
+/// `tool_result`'s own content — which [`user_text`] deliberately cannot see,
+/// because for its purposes a tool result has no text the human wrote.
+fn every_text_in(v: &serde_json::Value, out: &mut String) {
+    match v {
+        serde_json::Value::String(s) => {
+            out.push_str(s);
+            out.push('\n');
+        }
+        serde_json::Value::Array(a) => {
+            for x in a {
+                every_text_in(x, out);
+            }
+        }
+        serde_json::Value::Object(o) => {
+            if let Some(serde_json::Value::String(s)) = o.get("text") {
+                out.push_str(s);
+                out.push('\n');
+            }
+            if let Some(c) = o.get("content") {
+                every_text_in(c, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Did the event carrying this prompt text arrive from the machine?
+///
+/// `None` means the transcript does not carry this text at all — the entry has
+/// not been flushed yet, or the tail read was too short. That is NOT an answer
+/// and must not be read as "keyboard": the caller keeps its text belt for that
+/// case, so a miss degrades to the behaviour of before this function rather
+/// than to a wrong verdict in either direction.
+///
+/// MATCHED BY CONTENT RATHER THAN BY POSITION, deliberately. Taking the last
+/// user entry would be one line of code and would depend on whether the client
+/// flushes the entry before firing the hook — unmeasured, and wrong in the
+/// dangerous direction if it does not: his withdrawal would be read as the
+/// machine's and stop clearing the grant. Searching for the text he actually
+/// sent needs no assumption about ordering.
+pub fn prompt_came_from_machine(transcript_text: &str, prompt: &str) -> Option<bool> {
+    let needle = prompt.trim();
+    if needle.is_empty() {
+        return None;
+    }
+    let mut verdict = None;
+    for line in transcript_text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("user") {
+            continue;
+        }
+        let mut text = String::new();
+        if let Some(c) = v.get("message").and_then(|m| m.get("content")) {
+            every_text_in(c, &mut text);
+        }
+        if text.contains(needle) {
+            // The LAST carrier wins: he can quote an old machine message back,
+            // and what matters is the event that just happened.
+            verdict = Some(is_machine_entry(&v));
+        }
+    }
+    verdict
+}
+
 fn is_tool_result(v: &serde_json::Value) -> bool {
     v.get("message")
         .and_then(|m| m.get("content"))
@@ -2297,6 +2390,101 @@ fn degraded_stamps_in(v: &serde_json::Value) -> usize {
     text.lines()
         .filter(|l| l.trim_start().starts_with(DEGRADED_STAMP))
         .count()
+}
+
+#[cfg(test)]
+mod channel_tests {
+    use super::*;
+
+    /// THE HANDBACK THAT REVOKED A GRANT HE HAD JUST GIVEN, 2026-10-04.
+    ///
+    /// Verbatim shape from his own transcript at `11:35:23.566Z`: a `tool_result`
+    /// block whose inner text opens with two spaces and prose. It carries NO
+    /// wrapper — no `<task-notification>`, no `<system-reminder>` — so
+    /// `is_harness_text` cannot see it and neither could the `opens_tag`
+    /// widening that shipped at 13:38 that day, because there is no tag to
+    /// open. The envelope's `toolUseResult` and `sourceToolAssistantUUID` are
+    /// the real marks and they are not text at all.
+    fn judge_handback() -> String {
+        serde_json::json!({
+            "type": "user",
+            "toolUseResult": {"ignored": true},
+            "sourceToolAssistantUUID": "fb4b7c1e-0000-4000-8000-000000000001",
+            "message": {"content": [{
+                "type": "tool_result",
+                "content": [{"type": "text", "text":
+                    "  This agent's report was delivered to you as a message from \"autocontinue\".\n  VERDICT: RESOLVABLE"}]
+            }]}
+        })
+        .to_string()
+    }
+
+    fn typed(text: &str) -> String {
+        serde_json::json!({
+            "type": "user",
+            "message": {"content": [{"type": "text", "text": text}]}
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn the_judges_handback_is_the_machine_and_no_text_test_can_see_it() {
+        let report = "This agent's report was delivered to you as a message from";
+        // The belt this replaces: it answers NO on the very event that cost him
+        // the afternoon. Asserted so the fix cannot be read as redundant.
+        assert!(
+            !is_harness_text(report),
+            "the text test must be blind here — that blindness IS the defect"
+        );
+        assert_eq!(
+            prompt_came_from_machine(&judge_handback(), report),
+            Some(true),
+            "a tool_result carrying toolUseResult is the machine, whatever its words"
+        );
+    }
+
+    #[test]
+    fn his_keyboard_is_him_even_when_he_quotes_the_machine() {
+        let quoted = "This agent's report was delivered to you as a message from — what?";
+        let transcript = format!("{}\n{}", judge_handback(), typed(quoted));
+        assert_eq!(
+            prompt_came_from_machine(&transcript, quoted),
+            Some(false),
+            "he quoted the handback back at us; the LAST carrier is his text block"
+        );
+    }
+
+    #[test]
+    fn text_the_transcript_does_not_carry_is_not_an_answer() {
+        assert_eq!(
+            prompt_came_from_machine(&typed("hello"), "something else entirely"),
+            None,
+            "a miss must be None so the caller keeps its text belt, not false"
+        );
+        assert_eq!(prompt_came_from_machine("", "anything"), None);
+        assert_eq!(prompt_came_from_machine(&typed("hello"), "   "), None);
+    }
+
+    #[test]
+    fn each_of_the_three_marks_answers_on_its_own() {
+        let needle = "ordinary words";
+        for mark in ["toolUseResult", "sourceToolAssistantUUID"] {
+            let mut v: serde_json::Value = serde_json::from_str(&typed(needle)).unwrap();
+            v[mark] = serde_json::json!("x");
+            assert_eq!(
+                prompt_came_from_machine(&v.to_string(), needle),
+                Some(true),
+                "{mark} alone must be sufficient"
+            );
+        }
+        // and the block shape alone, with neither envelope field
+        let only_block = serde_json::json!({
+            "type": "user",
+            "message": {"content": [{"type": "tool_result",
+                "content": [{"type": "text", "text": needle}]}]}
+        });
+        assert_eq!(prompt_came_from_machine(&only_block.to_string(), needle), Some(true));
+    }
 }
 
 #[cfg(test)]
