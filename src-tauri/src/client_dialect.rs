@@ -254,8 +254,15 @@ impl ClientDialect {
 /// An unknown client falls through to the majority shape rather than failing:
 /// the deploy path REFUSES unknown ids up front (see
 /// `KNOWN_DEPLOY_CLIENT_IDS`), so by the time a name reaches here it is known,
-/// and a default that matches five of the eight clients is the least surprising
-/// answer for a caller that reaches it in a test.
+/// and the default's shape — `mcpServers`, `url`, `type` — is the least
+/// surprising answer for a caller that reaches it in a test.
+///
+/// This sentence read "a default that matches five of the eight clients" until
+/// 2026-10-05, and it was wrong in both numbers AND backwards: `CLIENTS` holds
+/// SIX rows, and of those exactly ONE (cursor) reaches this default while the
+/// other five have an arm of their own. Found by a C9a audit round looking for
+/// stale counts in a sibling population — the conductor's own enumerating query
+/// could never have seen it, because `client` was not in its keyword filter.
 pub fn dialect_for(client: &str) -> ClientDialect {
     match client {
         // Codex: `[mcp_servers.<id>]` with `url` and `http_headers`. Confirmed

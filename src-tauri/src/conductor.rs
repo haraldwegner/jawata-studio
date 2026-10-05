@@ -258,9 +258,11 @@ fn lane1_contract(seat: &SeatDefinition, command: &str) -> String {
 /// The seat's instrument discipline, DERIVED from its `kind` and its own `tools`.
 ///
 /// D12: *"instrument discipline is a rule in each seat's text rather than something an agent is
-/// expected to remember."* Derived rather than written eleven times, because eleven paragraphs are
-/// ten chances to disagree with the frontmatter beside them — the defect this sprint spent five
-/// audit rounds on. One renderer cannot drift from the fields it reads.
+/// expected to remember."* Derived rather than hand-written per seat, because a paragraph written
+/// beside its own frontmatter is a chance to disagree with it — the defect this sprint spent five
+/// audit rounds on. THE ARITHMETIC IS GONE FROM THIS SENTENCE deliberately: every count it carried
+/// went stale the moment an eleventh seat registered, twice, and the second time the repair itself
+/// wrote the false one. One renderer cannot drift from the fields it reads.
 fn instrument_discipline(seat: &SeatDefinition) -> String {
     match seat.kind {
         crate::runner::SeatKind::Code => format!(
@@ -868,10 +870,12 @@ mod tests {
     /// D12: *"instrument discipline is a rule in each seat's text rather than something an
     /// agent is expected to remember."*
     ///
-    /// DERIVED FROM `kind` AND `tools`, not written eleven times. Eleven hand-written paragraphs
-    /// would be ten chances to disagree with the frontmatter beside them, which is the defect
-    /// this sprint has been paying for all week — a claim in prose that the code next to it
-    /// falsifies. One renderer cannot drift from the fields it reads.
+    /// DERIVED FROM `kind` AND `tools`, not hand-written per seat. A paragraph written beside its
+    /// own frontmatter is a chance to disagree with it, which is the defect this sprint has been
+    /// paying for all week — a claim in prose that the code next to it falsifies. **This sentence
+    /// WAS one until round 4**: it read "eleven paragraphs would be ten chances", repaired on the
+    /// line above by the fold that was closing exactly this class and left false on the line below.
+    /// That is why no count survives here. One renderer cannot drift from the fields it reads.
     #[test]
     fn every_seat_is_told_its_instrument_discipline_and_it_matches_its_kind() {
         for seat in seats() {
@@ -925,10 +929,13 @@ mod tests {
                             .filter_map(|(_, b)| crate::runner::parse_seat_definition(b).ok())
                             .filter(|s| command_for(&s.name).is_none())
                             .count(),
-                        2,
-                        "exactly two seats live inside /sprint and render no command of \
-                         their own; a third means a seat was added without a command and \
-                         its discipline reaches nobody"
+                        EMBEDDED_SEATS.len() - COMMAND_MAP.len(),
+                        "the seats that live inside /sprint and render no command of their \
+                         own. DERIVED, and NOT a tautology: the left side parses every seat \
+                         body and asks command_for, the right side reads two array lengths, \
+                         so a seat added without a command still fails here. It was the \
+                         literal 2 until round 4 — invisible to the audit query, and one of \
+                         the sites a twelfth seat would have staled"
                     );
                     continue;
                 }
@@ -1228,9 +1235,12 @@ mod tests {
                 .collect();
             assert_eq!(
                 rendered.len(),
-                9,
-                "{channel}: the nine seats that render their own command \
-                 (spec-editor and spec-auditor live inside /sprint)"
+                COMMAND_MAP.len(),
+                "{channel}: every seat that declares a command must render one \
+                 (spec-editor and spec-auditor live inside /sprint and declare none). \
+                 DERIVED, and NOT a tautology: the left side is what the RENDERER \
+                 actually produced, so a renderer that silently skipped a seat fails \
+                 here. It was the literal 9 until round 4"
             );
             for skill in &rendered {
                 assert!(
