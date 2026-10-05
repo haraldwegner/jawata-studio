@@ -140,9 +140,39 @@ LC_ALL=C sort "$BASELINE" > "$WORK/baseline.sorted"
 NEW=$(LC_ALL=C comm -13 "$WORK/baseline.sorted" "$WORK/current.txt")
 FIXED=$(LC_ALL=C comm -23 "$WORK/baseline.sorted" "$WORK/current.txt")
 
+# A ROW THAT LEFT THE HOLLOW SET IS NOT NECESSARILY FIXED, and the difference
+# decides whether the advice below is safe to follow. "Fixed" means the item
+# gained a production caller — so it is no longer dead in the PLAIN build, and
+# $WORK/plain.txt is exactly that set, already on disk. A row that left the
+# difference while STILL being dead in the plain build did not gain a caller:
+# it stopped being *distinguishable*, because the key is the file plus the
+# warning text (see the sed at the top of deadcode) and two same-named dead
+# members in one file collapse into one row. Adding one then makes the other
+# read as FIXED.
+#
+# Measured 2026-10-05: adding a second dead `as_str` to src/runner.rs moved
+# hollow 77 -> 76 and printed this very line about a row nothing had wired.
+# Following its advice would have deleted a still-live entry from the ratchet
+# permanently. The gate's own header argues at length against arms that measure
+# nothing; a control whose ADVICE, if followed, silently weakens it is that
+# argument one level down, at the row.
 if [ -n "$FIXED" ]; then
-    echo "gate: $(printf '%s\n' "$FIXED" | wc -l) baseline item(s) FIXED — re-baseline to keep the ratchet tight:"
-    printf '%s\n' "$FIXED" | sed 's/^/  - /'
+    printf '%s\n' "$FIXED" | LC_ALL=C sort > "$WORK/fixed.sorted"
+    STILL_DEAD=$(LC_ALL=C comm -12 "$WORK/fixed.sorted" "$WORK/plain.txt")
+    GENUINE=$(LC_ALL=C comm -23 "$WORK/fixed.sorted" "$WORK/plain.txt")
+    if [ -n "$GENUINE" ]; then
+        echo "gate: $(printf '%s\n' "$GENUINE" | wc -l) baseline item(s) FIXED — re-baseline to keep the ratchet tight:"
+        printf '%s\n' "$GENUINE" | sed 's/^/  - /'
+    fi
+    if [ -n "$STILL_DEAD" ]; then
+        echo "gate: REFUSED — $(printf '%s\n' "$STILL_DEAD" | wc -l) baseline item(s) left the hollow set"
+        echo "gate: while STILL being dead in the plain build, so nothing wired them:"
+        printf '%s\n' "$STILL_DEAD" | sed 's/^/  ? /'
+        echo "gate: DO NOT re-baseline on this. A row keyed on file+message collapses with"
+        echo "gate: any same-named dead member in the same file, and adding one makes the"
+        echo "gate: other read as fixed. Find the second member and delete or wire it."
+        exit 1
+    fi
 fi
 
 if [ -n "$NEW" ]; then
