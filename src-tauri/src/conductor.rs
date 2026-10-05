@@ -439,13 +439,22 @@ pub fn render_phrase_table(seats: &[SeatDefinition]) -> String {
 ///   in a single machine's `~/.claude/skills/`, so the pipeline the whole sprint
 ///   process depends on was simply absent everywhere else. Its body is now
 ///   single-sourced from `skills/sprint.md` and rides the same deploy as the rest.
-pub const UTILITY_MAP: [(&str, &str); 3] = [
+pub const UTILITY_MAP: [(&str, &str); 5] = [
     // Sprint 28f Stage 6: this line is the ONE every client displays — it is interpolated
     // into each generated artifact's frontmatter — and it said "the knowledge substrate the
     // store is rebuilt from" while the body 68 lines below said the opposite, in the same
     // commit whose subject was that the texts stop telling agents to write the store's
     // files. A description is a shipped claim, not a label.
     ("memorize", "Extract what this session actually learned, review it cold, and record it to the store — which stamps the review and writes the story file when a reader accepts it"),
+    // Sprint 28g D16: TWO commands, not one, because they point in opposite
+    // directions — /btw takes a thought IN mid-flight and its value is costing
+    // nothing, /brainstorm produces options OUT and IS the activity. Merging
+    // them would price a capture at the cost of a brainstorm, which is the one
+    // thing a capture cannot afford. Neither is a seat: a seat has gates that
+    // are real jawata calls, and writing down what you were told has nothing
+    // to gate.
+    ("brainstorm", "Produce options with their trade-offs for the person who asked — grounded in the store and the code first, read immediately, and never recorded as experience because a generated option is not an observation"),
+    ("btw", "Capture a thought mid-task in one or two calls and triage it to where it belongs — a defect to an issue, durable knowledge to /memorize, an idea to the project's append-only capture file that the /sprint editor step must dispose of"),
     // Sprint 28g D14: the project declares what it IS before any seat runs,
     // because every seat's brief opens with these four facts quoted — and a
     // project that has not declared itself makes every brief say so out loud
@@ -551,6 +560,8 @@ An empty run reports `no candidates — nothing in this session was durable and 
         // copy would drift from the one the seats' own process runs.
         // Single-sourced for the same reason /sprint is: long enough that a
         // second copy would drift from the file a human reviews.
+        "brainstorm" => include_str!("../../skills/brainstorm.md"),
+        "btw" => include_str!("../../skills/btw.md"),
         "setup" => include_str!("../../skills/setup.md"),
         "sprint" => include_str!("../../skills/sprint.md"),
         _ => "",
@@ -561,6 +572,8 @@ An empty run reports `no candidates — nothing in this session was durable and 
 /// utility, and its rendered page should not claim otherwise.
 fn utility_title(command: &str) -> &'static str {
     match command {
+        "brainstorm" => "options, with their trade-offs",
+        "btw" => "capture a thought, mid-task",
         "setup" => "the project declares what it is",
         "sprint" => "the two-seat artifact pipeline",
         _ => "jawata utility",
@@ -958,6 +971,73 @@ mod tests {
             "his ruling names the architect as a seat that MUST use the tools; it is {code:?}"
         );
         assert_eq!(text.len() + code.len(), EMBEDDED_SEATS.len(), "every seat classified");
+    }
+
+    /// D16: `/btw` and `/brainstorm` ship as TWO commands, and what `/btw`
+    /// writes has a reader with a moment that fires.
+    ///
+    /// The second half is the one this product has failed three times — a
+    /// capability employed by nothing — so it is asserted in BOTH places the
+    /// rule lives: the `/sprint` skill's editor step (which the front-door
+    /// agent follows) and the spec-auditor seat's own disposition check (which
+    /// runs as the auditor). One without the other is a reader that fires in
+    /// the orchestrator and an auditor that never asks, or the reverse.
+    #[test]
+    fn btw_ships_beside_brainstorm_and_its_capture_file_has_a_reader() {
+        let commands: Vec<&str> = UTILITY_MAP.iter().map(|(c, _)| *c).collect();
+        for needed in ["btw", "brainstorm"] {
+            assert!(
+                commands.contains(&needed),
+                "/{needed} does not ship; UTILITY_MAP holds {commands:?}"
+            );
+            assert!(
+                !utility_body(needed).is_empty(),
+                "/{needed} ships with an empty body"
+            );
+        }
+
+        // TWO, not one: each must say what the other is for, or a later reader
+        // merges them and the capture inherits the brainstorm's cost.
+        let btw = utility_body("btw");
+        let brainstorm = utility_body("brainstorm");
+        assert!(
+            btw.contains("INTERJECTION") && brainstorm.contains("opposite way from `/btw`"),
+            "the two commands do not distinguish themselves from each other"
+        );
+
+        // The capture must NEVER reach the store directly — the one hard rule of
+        // the triage, because the store refuses by gate what a capture carries.
+        assert!(
+            btw.contains("NEVER write to the experience store directly"),
+            "/btw does not forbid the direct store write"
+        );
+        assert!(
+            btw.contains("/memorize"),
+            "/btw names no forwarding path for durable knowledge"
+        );
+
+        // THE READER, AND THE MOMENT IT FIRES — in both copies of the rule.
+        let sprint = utility_body("sprint");
+        assert!(
+            sprint.contains("docs/btw/<project>.md"),
+            "the /sprint editor step does not read the capture file, so nothing consumes \
+             a capture and /btw writes to a file with no reader"
+        );
+        assert!(
+            sprint.contains("consumed:"),
+            "the /sprint step names no consumed marker, so every pass re-offers every \
+             capture and the disposition cannot be checked"
+        );
+        let auditor = EMBEDDED_SEATS
+            .iter()
+            .find(|(f, _)| *f == "spec-auditor.md")
+            .map(|(_, b)| *b)
+            .expect("spec-auditor.md is embedded");
+        assert!(
+            auditor.contains("THE BASELINE INCLUDES THE CAPTURE FILE"),
+            "the auditor's disposition check does not cover captures, so the editor's \
+             reading of them is enforced by nobody"
+        );
     }
 
     /// D17: the review seat's housekeeping runs unattended on a declared

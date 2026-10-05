@@ -69,6 +69,14 @@ while dropping the doc's goal).
 
 - **EDITOR** (main context): maintains the raw faithfully; derives the clean per the
   split; on refusal revises the CLEAN (never the raw); parks mechanics in own notes.
+  **AND READS `docs/btw/<project>.md` IN THE SAME BREATH AS THE RAW** (D16, 28g): every
+  entry there with no `consumed:` marker is an unconsumed capture, and each one must end
+  this pass in one of the same three states a raw item does — in scope, deferred with a
+  named destination, or struck with a reason. A capture taken into scope gains
+  `consumed: <sprint and deliverable>` on its own line in that file, which is the only
+  edit anyone ever makes to an existing entry, and which is what stops the next pass
+  re-offering it. No file, or no unconsumed entry: say so in one line — an absence stated
+  is an absence, and a silence is indistinguishable from not having looked.
 - **AUDITOR** (a FRESH-CONTEXT subagent — author-blindness is a context property; a
   same-context re-read is NOT an audit): the **GATE**. Receives the **RAW + the CLEAN +
   the relevant chat** — never the editor's reasoning. Adversarial: assume the clean has
@@ -160,7 +168,9 @@ user's judgement, so check 13's product is a named decision for them, never a ve
    hittable by shrinking the requirement?**" Hard requirement → honest ugly measure + a
    risk decision, never a redefined goal. The auditor polices the goal-translation
    force, never serves it.
-6. **Every RAW item DISPOSED** — in-scope / deferred-with-home / skipped-by-user-decision.
+6. **Every RAW item DISPOSED — and every unconsumed CAPTURE with it** (D16, 28g:
+   `docs/btw/<project>.md`, the entries carrying no `consumed:` marker) — in-scope /
+   deferred-with-home / skipped-by-user-decision.
    Surfaced-but-undecided findings = REFUSE (they resurface later as negative surprises).
 7. **Reader-fit** — spec in user language, no implementation contracts, no condescension
    (rule 4); plan mechanical with NO risk section. Wrong-level or wrong-tone material =

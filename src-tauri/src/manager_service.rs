@@ -11129,10 +11129,10 @@ mod tests {
             fs::write(&cfg, "{}").unwrap();
             let dir = derive_seat_commands_dir(client, &display_path(&cfg)).unwrap();
             let written = write_managed_utility_commands(client, &dir, false).unwrap();
-            // Sprint 28g D14 adds /setup, so the population is three. Asserted as
-            // a count AND by name: a count alone accepts a swap, and the set is what
-            // this test is for.
-            assert_eq!(written.len(), 3, "{client}: /memorize + /setup + /sprint");
+            // Sprint 28g: D14 adds /setup, D16 adds /brainstorm and /btw, so the
+            // population is five. Asserted as a count AND by name: a count alone
+            // accepts a swap, and the set is what this test is for.
+            assert_eq!(written.len(), 5, "{client}: five utility commands");
             let mut shipped: Vec<String> = utility_artifact_paths(client, &dir)
                 .into_iter()
                 .map(|(cmd, _)| cmd)
@@ -11140,7 +11140,7 @@ mod tests {
             shipped.sort();
             assert_eq!(
                 shipped,
-                vec!["memorize", "setup", "sprint"],
+                vec!["brainstorm", "btw", "memorize", "setup", "sprint"],
                 "{client}: the shipped utility commands"
             );
             for (cmd, path) in utility_artifact_paths(client, &dir) {
