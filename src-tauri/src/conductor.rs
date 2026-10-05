@@ -12,11 +12,12 @@ use std::path::Path;
 /// fails the build on a seat that exists on disk and is registered here).
 /// Materialized into `<config>/seats/` where absent; the materialized copy
 /// wins so a user-edited seat regenerates every channel on redeploy.
-pub const EMBEDDED_SEATS: [(&str, &str); 10] = [
+pub const EMBEDDED_SEATS: [(&str, &str); 11] = [
     ("architect.md", include_str!("../../seats/architect.md")),
     ("cataloguer.md", include_str!("../../seats/cataloguer.md")),
     ("debugger.md", include_str!("../../seats/debugger.md")),
     ("javadoc-writer.md", include_str!("../../seats/javadoc-writer.md")),
+    ("main.md", include_str!("../../seats/main.md")),
     ("profiler.md", include_str!("../../seats/profiler.md")),
     ("report.md", include_str!("../../seats/report.md")),
     ("review.md", include_str!("../../seats/review.md")),
@@ -31,7 +32,12 @@ pub const EMBEDDED_SEATS: [(&str, &str); 10] = [
 /// every row renders into the deployed command list — both pinned, so the
 /// counts in the generated prose and in the deploy inventory are derived
 /// from this array rather than typed beside it.
-pub const COMMAND_MAP: [(&str, &str, &str); 8] = [
+pub const COMMAND_MAP: [(&str, &str, &str); 9] = [
+    (
+        "main",
+        "main",
+        "Own the workflow: declare the steps, drive them one at a time, and refuse a step whose gate did not run (jawata main seat)",
+    ),
     (
         "cataloguer",
         "catalogue",
@@ -403,7 +409,8 @@ pub fn render_antigravity_workflow(seat: &SeatDefinition) -> Option<String> {
 /// language entry everywhere). One row per command-bearing seat — that is the
 /// rule the table is built on, and `phrase_table_covers_every_command` fails
 /// the build on a command that has no way in through plain words.
-pub const PHRASE_MAP: [(&str, &str); 8] = [
+pub const PHRASE_MAP: [(&str, &str); 9] = [
+    ("\"work this end to end\" / \"drive this task\"", "main"),
     ("\"document this class\" / \"add javadocs\"", "javadocs"),
     ("\"what is this package for\" / \"describe this code\"", "catalogue"),
     ("\"write tests for this\" / \"improve coverage\"", "cover"),
@@ -1221,8 +1228,8 @@ mod tests {
                 .collect();
             assert_eq!(
                 rendered.len(),
-                8,
-                "{channel}: the eight seats that render their own command \
+                9,
+                "{channel}: the nine seats that render their own command \
                  (spec-editor and spec-auditor live inside /sprint)"
             );
             for skill in &rendered {

@@ -1,5 +1,23 @@
 # ARCHITECTURE-runner.md — target architecture for the studio runner/seat subsystem (v3.0.0)
 
+> **STATUS, added 2026-10-05: this document describes a TARGET, not a running subsystem, and it
+> describes it in the present tense.** The subsystem it pictures has never had a production
+> caller — `lib.rs:12-20` and `runner.rs:2712` both say so in measured terms (72 items reachable
+> only from this module's own tests). A reader diffing a checkpoint against this picture is
+> diffing against something that does not execute.
+>
+> **And as of the Sprint 28g S9a re-scope the target MOVED, so do not extend this file.** The seat
+> loop, the gates, the journal, the proposal record and the schedule are a Java job in
+> `jawata-mcp`; the per-brain CLI adapter and the ceiling taxonomy port there with them. Measured:
+> of `runner.rs`'s 2,781 production lines (the file is 5,228, 46% of it tests) ~71% is that Java
+> job, ~12% is a JSON-RPC client of our own resident, and the ~13% that looked Rust-only is
+> already done — better, with a contract test — by `HostProcesses` + `ForkedTestRunner`.
+>
+> **The successor is `jawata-mcp/ARCHITECTURE-driver.md`.** This file is kept as the reference for
+> four decisions it records well and nothing else does: the PROPOSE-MODE invariant, the gate
+> classes, the ceiling taxonomy, and the proposal-record format. The code stays — his word,
+> 2026-10-05 — and is not a dependency of anything.
+
 ## Scope
 
 The reusable layer that spawns and drives a narrow agent (a "seat") through a

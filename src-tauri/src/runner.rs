@@ -3,6 +3,58 @@
 //! do it → verify it → stop), hard gates before anything lands, containment
 //! (TTL / iteration / cost ceilings, reap on breach), and a labeled journal.
 //!
+//! ============================================================================
+//! STATUS 2026-10-05 — REFERENCE, NOT A DEPENDENCY. Sprint 28g Stage 9a
+//! re-scope, on Harald's word; the file STAYS (also his word) and nothing is
+//! deleted, but no production code depends on it and none should start.
+//!
+//! The successor is `jawata-mcp/ARCHITECTURE-driver.md`: the seat loop, the
+//! gates, the journal, the proposal record and the schedule are a Java job in
+//! the resident, and the hire path lands beside `ForkedTestRunner`, which
+//! already spawns through the `HostProcesses` port (with a contract test),
+//! drains stdout AND stderr progressively, times out, and reaps a process tree.
+//!
+//! WHICH HALF IS WHICH, measured rather than estimated — 5,228 lines, of which
+//! 2,399 (46%) are the test module below. Of 2,781 production lines:
+//!   PORTS TO JAVA (~71%)  the detect/do/verify loop, seat-definition parsing,
+//!                         proposal + diff, purity and duplicate gates, the
+//!                         journal and human verdict, the writer seats, the
+//!                         observation and profile paths, the declaration block
+//!   DISAPPEARS   (~12%)   `GateExecutor` / `ResidentGateContext` /
+//!                         `ShadowJavaGateExecutor` — JSON-RPC CLIENTS of our
+//!                         own resident, which the Java driver calls in-process
+//!   PORTS AS CONTENT      `CliAdapter` + `Ceilings` + `reap_process_tree`
+//!     (~13%)              (~363 lines). The MECHANICS already exist in Java;
+//!                         what does not is the PER-BRAIN OUTPUT DIALECT
+//!                         (`total_cost_usd` off the terminal event, `tool_use`
+//!                         blocks counted), because Java has only ever hired a
+//!                         JVM emitting our own event format. That dialect is
+//!                         the genuinely new code on the Java side.
+//!   OPEN         (~4%)    `Schedule` / `scheduler_tick` / `due_seats` — moves
+//!                         with the hire, since a schedule TRIGGERS a hire and
+//!                         the resident is the always-on process.
+//!
+//! WHAT IS WORTH READING HERE rather than porting: the PROPOSE-MODE invariant
+//! below, `GateClass`, the ceiling taxonomy, the proposal-record format, and
+//! the test module's seat-definition and proposal-format contracts.
+//!
+//! FOUR KNOWN DEFECTS, left for whoever ports it (they do not survive the port):
+//!   - `run_seat`'s `loop` always breaks on its first pass, so `max_iterations`
+//!     can only fire at 0 — the ceiling is inert at every configured value.
+//!   - `parse_cost` reads `total_cost_usd` only from the terminal `result`
+//!     event, so a TTL-reaped phase books 0.00 — the cost ceiling cannot fire
+//!     on the runs most likely to be expensive.
+//!   - `run_phase` discards stderr (`Stdio::null()`) and never checks a
+//!     non-zero exit, so a crashed adapter returns Ok with empty text and reads
+//!     downstream as "the model said nothing". `ForkedTestRunner` carries a
+//!     regression guard for exactly this and explains why in its own comment.
+//!   - `due_seats` swallows a malformed cron via `.ok()`, contradicting
+//!     `Schedule::parse`'s own doc promise of a loud error.
+//!
+//! The containment here parses CLAUDE's stream-json shape, so it binds on one
+//! brain of the four D36 names. That is the adapter's job to fix, per brain.
+//! ============================================================================
+//!
 //! PROPOSE MODE is the invariant of the whole sprint: the runner NEVER
 //! applies a change. A run's product is a PROPOSAL RECORD on disk
 //! (`proposal.md` + `diff.patch` + `gates.json`) that a human applies — or
