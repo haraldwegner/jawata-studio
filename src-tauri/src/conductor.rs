@@ -960,6 +960,75 @@ mod tests {
         assert_eq!(text.len() + code.len(), EMBEDDED_SEATS.len(), "every seat classified");
     }
 
+    /// D17: the review seat's housekeeping runs unattended on a declared
+    /// cadence, reports what it DID, and asks the user to rule on no list.
+    ///
+    /// The clause carrying the risk is the SPLIT, so that is what this asserts
+    /// from both sides: a scheduled run must not reach the deletion screen, and
+    /// a hand run must still have it. Asserting only the first would pass a
+    /// seat that had quietly lost the user's say over their own store; only the
+    /// second, a seat that still stops a timer run to ask.
+    #[test]
+    fn the_review_seat_runs_unattended_and_rules_on_no_list() {
+        let (_, body) = EMBEDDED_SEATS
+            .iter()
+            .find(|(f, _)| *f == "review.md")
+            .expect("review.md is embedded");
+        let seat = crate::runner::parse_seat_definition(body).expect("review.md parses");
+
+        // A declared cadence, parsed — not merely a line in the file.
+        let schedule = seat
+            .schedule
+            .as_deref()
+            .expect("the review seat declares no schedule, so its housekeeping is hand-run only");
+        crate::runner::Schedule::parse(schedule)
+            .unwrap_or_else(|e| panic!("review.md's schedule '{schedule}' does not parse: {e}"));
+
+        // The scheduled half: no list goes up, and steps 4 and 5 are named as
+        // not running — a scheduled run that reached them would be a timer
+        // blocking on a human who is not there.
+        assert!(
+            body.contains("Nothing you produce asks him to rule on a list of entries"),
+            "the scheduled mode does not forbid the list, which is D17's own clause"
+        );
+        assert!(
+            body.contains("Steps 4 and 5 do not run"),
+            "the scheduled mode does not say which steps it skips"
+        );
+
+        // The hand half: the user keeps the disposal of their own knowledge.
+        assert!(
+            body.contains("**BY HAND.** Every step, unchanged"),
+            "the hand mode no longer keeps step 4's screen — a scheduled seat must not \
+             cost the user their say over their own store"
+        );
+
+        // The bound an unattended run needs, and the number that bounds the
+        // deletion list's meaning.
+        assert!(
+            body.contains("At most 25\n   repairs per run") || body.contains("At most 25 repairs per run"),
+            "the unattended run declares no repair bound"
+        );
+        assert!(
+            body.contains("conformance") && body.contains("2.3%"),
+            "the seat does not carry the measured reason a scheduled run declines to delete"
+        );
+
+        // D17's third clause: kept as data, not rendered.
+        assert!(
+            body.contains("PER-TRIGGER SPLIT IS DATA, AND YOU DO NOT RENDER IT"),
+            "the per-trigger ruling is not in the seat's text"
+        );
+
+        // And the firing is named rather than assumed — nothing in studio runs
+        // a timer, which this seat must not let a reader take on trust.
+        assert!(
+            body.contains("the client's own cron"),
+            "the seat does not say what fires its schedule, so a declared cadence reads \
+             as a running timer"
+        );
+    }
+
     /// D14: every seat is told to read the project's own declaration before it
     /// starts, and to NAME its absence rather than infer the facts.
     ///

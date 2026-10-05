@@ -2710,8 +2710,20 @@ impl GateExecutor for AdvisoryGateExecutor {
 }
 
 /// One scheduler tick: fires `on_due` for every seat whose cron schedule
-/// matches the given wall-clock minute — the manager's loop calls this once
-/// per minute; tests call it with a fixed clock.
+/// matches the given wall-clock minute.
+///
+/// NOTHING CALLS THIS IN PRODUCTION, and the line that used to sit here said
+/// "the manager's loop calls this once per minute" — measured 2026-10-05, this
+/// function and [`Schedule`] are both in the hollow-wiring baseline, as are
+/// `run_seat` and its two seat-specific wrappers. The whole hosted execution
+/// layer is reached only by tests: studio ships seats as TEXT that a client
+/// agent executes by stance handoff, and it neither runs nor schedules one
+/// itself. A seat's `schedule:` field is therefore a DECLARED cadence that a
+/// cron entry in the client acts on — not a timer this product is running.
+///
+/// Wiring it would make studio launch paid agent runs unattended, which is a
+/// new product behaviour rather than a missing call, so it is written down
+/// here instead of being quietly supplied. Tests call it with a fixed clock.
 pub fn scheduler_tick<F: FnMut(&SeatDefinition)>(
     seats: &[SeatDefinition],
     minute: u32,
