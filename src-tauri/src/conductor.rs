@@ -276,12 +276,17 @@ fn instrument_discipline(seat: &SeatDefinition) -> String {
         ),
         crate::runner::SeatKind::Text => "## Instrument discipline (binding)\n\n\
              This seat's input is an ARTIFACT — a document, a diff, a report.\n\
-             There is no compiler fact to fetch and no instrument to reach for. Your judgement IS the\n\
-             product, and the discipline is the other way round: every claim you make is about\n\
+             There is no compiler fact to fetch — that is why `tools` is empty — and your\n\
+             judgement IS the product. The discipline runs the other way round: every claim is\n\
              the text in front of you, quoted rather than paraphrased, and a claim you cannot\n\
              ground in it does not go in the output. Where the artifact asserts something about\n\
              CODE, you may say the claim is unverified; you may not verify it and you may not\n\
-             assume it.\n"
+             assume it.\n\n\
+             An empty `tools` does NOT mean this seat drives nothing. Where the stance below\n\
+             names a verb — a store call, a field read, a command — THAT is this seat's\n\
+             instrument, and the same rule binds it: drive it, read the answer it actually\n\
+             gave, and if it refuses or is unreachable SAY SO and stop. An absence inferred\n\
+             from a failed lookup is not an absence, whichever kind of instrument failed.\n"
             .to_string(),
     }
 }
@@ -912,8 +917,21 @@ mod tests {
                     // detectors (jawata tools)" — false for a seat whose input is an artifact,
                     // and the kind of instruction that sends an auditor looking for a tool.
                     assert!(
-                        rendered.contains("no compiler fact to fetch"),
+                        rendered.contains("no compiler fact to fetch")
+                            && rendered.contains("judgement IS the product"),
                         "{}: a text seat must be told its judgement IS the product",
+                        seat.name
+                    );
+                    // AND AN EMPTY `tools` MUST NOT READ AS "drives nothing", which is
+                    // FALSE for two of the four text seats — review drives six store
+                    // verbs and report drives `field` and `gh`, while spec-auditor and
+                    // spec-editor genuinely drive none. Found by READING a rendered
+                    // skill rather than by any gate: the first version of this
+                    // paragraph told all four there was "no instrument to reach for".
+                    assert!(
+                        rendered.contains("does NOT mean this seat drives nothing"),
+                        "{}: the empty-tools clause does not say what it does NOT mean, so a \
+                         seat whose stance names store verbs is told it has no instruments",
                         seat.name
                     );
                     assert!(
