@@ -258,7 +258,7 @@ fn lane1_contract(seat: &SeatDefinition, command: &str) -> String {
 /// The seat's instrument discipline, DERIVED from its `kind` and its own `tools`.
 ///
 /// D12: *"instrument discipline is a rule in each seat's text rather than something an agent is
-/// expected to remember."* Derived rather than written ten times, because ten paragraphs are
+/// expected to remember."* Derived rather than written eleven times, because eleven paragraphs are
 /// ten chances to disagree with the frontmatter beside them — the defect this sprint spent five
 /// audit rounds on. One renderer cannot drift from the fields it reads.
 fn instrument_discipline(seat: &SeatDefinition) -> String {
@@ -868,7 +868,7 @@ mod tests {
     /// D12: *"instrument discipline is a rule in each seat's text rather than something an
     /// agent is expected to remember."*
     ///
-    /// DERIVED FROM `kind` AND `tools`, not written ten times. Ten hand-written paragraphs
+    /// DERIVED FROM `kind` AND `tools`, not written eleven times. Eleven hand-written paragraphs
     /// would be ten chances to disagree with the frontmatter beside them, which is the defect
     /// this sprint has been paying for all week — a claim in prose that the code next to it
     /// falsifies. One renderer cannot drift from the fields it reads.
@@ -1181,7 +1181,7 @@ mod tests {
         for (file, body) in EMBEDDED_SEATS {
             let seat = crate::runner::parse_seat_definition(body)
                 .unwrap_or_else(|e| panic!("{file} does not parse: {e}"));
-            // All ten, including the two that render no command of their own —
+            // All eleven, including the two that render no command of their own —
             // asserting only the rendered channel would skip them silently, and
             // D14 is about the brief EVERY seat gets.
             let contract = lane1_contract(&seat, &seat.name);

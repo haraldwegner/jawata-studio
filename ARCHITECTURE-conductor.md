@@ -1,5 +1,16 @@
 # ARCHITECTURE-conductor — the seat-command generator + conductor delivery (Sprint 25a)
 
+> **STATUS 2026-10-05 — ITS SEAT POPULATION IS STALE, and this note is the correction rather
+> than a rewrite.** This picture says "8 seats" and its `COMMAND_MAP` box lists SIX commands.
+> Measured against the arrays the code actually ships: `EMBEDDED_SEATS` is **11** and
+> `COMMAND_MAP` is **9**. It went stale two seats before `/main` — `git log` puts its last
+> reconciliation at `b16cc26`, registering the report seat — so the gap is not this
+> checkpoint's, but the C9a audit found it in the document an architect's watch is meant to
+> diff a checkpoint against, which is what makes it worth saying here. **The authority is
+> `conductor.rs`'s three pinned arrays**, which fail the build on a seat that exists on disk
+> and is not registered; the numbers in this file are a v1 target picture and are not.
+
+
 > Design-mode artifact (architect seat convention, Sprint 25 D10). Version 1,
 > 2026-07-18 — produced between spec sign-off and plan promotion (the /sprint
 > design-mode step this sprint itself ships as D3). Watch mode diffs checkpoint
