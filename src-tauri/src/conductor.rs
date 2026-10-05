@@ -939,6 +939,50 @@ mod tests {
         assert_eq!(text.len() + code.len(), EMBEDDED_SEATS.len(), "every seat classified");
     }
 
+    /// D12: the run limits must bound TOOL STEPS, not only model turns.
+    ///
+    /// The bound exists in the runner with a default, so a seat that said
+    /// nothing would still be bounded — which is exactly why this gate reads
+    /// the seat's own FRONTMATTER TEXT rather than the parsed value. Every
+    /// other ceiling is declared on all ten seats; a step ceiling visible
+    /// only as a constant in Rust is the one limit a reader of the seat file
+    /// cannot see, and "it has a default" is how it would stay that way.
+    #[test]
+    fn every_shipped_seat_declares_its_tool_step_ceiling_in_its_own_frontmatter() {
+        for (file, body) in EMBEDDED_SEATS {
+            let frontmatter = body
+                .split("\n---")
+                .next()
+                .unwrap_or_else(|| panic!("{file} has no frontmatter"));
+            assert!(
+                frontmatter.contains("max_tool_steps:"),
+                "{file} does not declare max_tool_steps — it would be bounded by the \
+                 runner's default, which no reader of the seat file can see"
+            );
+            let seat = crate::runner::parse_seat_definition(body)
+                .unwrap_or_else(|e| panic!("{file} does not parse: {e}"));
+            assert!(
+                seat.ceilings.max_tool_steps > 0,
+                "{file} declares a zero step ceiling, which reaps before the seat acts"
+            );
+            // A code seat reaches for compiler facts and a text seat reads one
+            // artifact, so the budgets are not interchangeable. Asserted as an
+            // ORDERING rather than per-seat numbers: the numbers are a
+            // judgement that may move, the ordering is the claim.
+            let bound = seat.ceilings.max_tool_steps;
+            match seat.kind {
+                crate::runner::SeatKind::Code => assert!(
+                    bound >= 40,
+                    "{file} is a code seat with only {bound} tool steps"
+                ),
+                crate::runner::SeatKind::Text => assert!(
+                    bound <= 30,
+                    "{file} is a text seat budgeted {bound} tool steps — its input is an artifact"
+                ),
+            }
+        }
+    }
+
     fn every_seat_file_is_embedded_and_the_prose_counts_match() {
         let seats_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../seats");
         let mut on_disk: Vec<String> = fs::read_dir(&seats_dir)

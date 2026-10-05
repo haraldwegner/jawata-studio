@@ -53,6 +53,15 @@ pub struct Ceilings {
     pub max_iterations: u32,
     /// Cost ceiling in USD, accumulated from the adapter's usage events.
     pub cost_budget_usd: f64,
+    /// Maximum TOOL CALLS for the whole run, accumulated across phases.
+    ///
+    /// This is not the same bound as the adapter's turn limit
+    /// (`--max-turns`), and that is the reason it exists: ONE model turn may
+    /// carry several tool calls, so a turn bound leaves the tool-call count
+    /// unbounded. A RUNAWAY bound rather than a budget — like the wall TTL
+    /// it is not expected to fire on an ordinary run, and a seat that needs
+    /// more says so in its own frontmatter.
+    pub max_tool_steps: u32,
 }
 
 impl Default for Ceilings {
@@ -61,6 +70,7 @@ impl Default for Ceilings {
             wall_ttl_secs: 600,
             max_iterations: 3,
             cost_budget_usd: 1.0,
+            max_tool_steps: 150,
         }
     }
 }
@@ -72,6 +82,7 @@ pub enum CeilingKind {
     WallTtl,
     MaxIterations,
     CostBudget,
+    MaxToolSteps,
 }
 
 impl CeilingKind {
@@ -80,6 +91,7 @@ impl CeilingKind {
             CeilingKind::WallTtl => "wall_ttl",
             CeilingKind::MaxIterations => "max_iterations",
             CeilingKind::CostBudget => "cost_budget",
+            CeilingKind::MaxToolSteps => "max_tool_steps",
         }
     }
 }
@@ -244,6 +256,11 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
                 ceilings.max_iterations = value
                     .parse()
                     .map_err(|e| format!("max_iterations '{value}': {e}"))?
+            }
+            "max_tool_steps" => {
+                ceilings.max_tool_steps = value
+                    .parse()
+                    .map_err(|e| format!("max_tool_steps '{value}': {e}"))?
             }
             "cost_budget_usd" => {
                 ceilings.cost_budget_usd = value
@@ -839,6 +856,11 @@ pub trait CliAdapter: Send {
     /// Extracts the answer text from one output line. Plain-text adapters
     /// return the line verbatim; stream-json adapters unwrap their events.
     fn parse_text(&self, line: &str) -> Option<String>;
+    /// How many TOOL CALLS this output line reports. Required rather than
+    /// defaulted to zero on purpose: an adapter that answered zero by
+    /// omission would leave `max_tool_steps` silently unenforced on its
+    /// seats, and a bound only some callers reach is not a bound.
+    fn parse_tool_steps(&self, line: &str) -> u32;
 }
 
 /// Claude Code headless: `claude -p <prompt> --output-format stream-json
@@ -886,6 +908,24 @@ impl CliAdapter for ClaudeCodeAdapter {
             return None;
         }
         value.get("total_cost_usd")?.as_f64()
+    }
+
+    fn parse_tool_steps(&self, line: &str) -> u32 {
+        // Counts tool_use BLOCKS, not events: Claude Code may emit several
+        // in one assistant turn, which is precisely what `--max-turns`
+        // cannot see.
+        serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("assistant"))
+            .and_then(|v| {
+                v.pointer("/message/content").and_then(|c| c.as_array()).map(|blocks| {
+                    blocks
+                        .iter()
+                        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+                        .count() as u32
+                })
+            })
+            .unwrap_or(0)
     }
 
     fn parse_text(&self, line: &str) -> Option<String> {
@@ -942,6 +982,16 @@ impl CliAdapter for ScriptAdapter {
     fn parse_text(&self, line: &str) -> Option<String> {
         Some(line.to_string())
     }
+
+    fn parse_tool_steps(&self, line: &str) -> u32 {
+        // A plain-text CLI emits no structured events, so it DECLARES its
+        // count the way it declares cost. A script that says nothing is
+        // taken at its word — zero — and the limitation is the adapter's
+        // honest answer rather than a silent pass.
+        line.strip_prefix("TOOL-STEPS:")
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0)
+    }
 }
 
 // ============================================================
@@ -952,6 +1002,8 @@ impl CliAdapter for ScriptAdapter {
 struct PhaseOutput {
     text: String,
     cost_usd: f64,
+    /// Tool calls this phase reported, per the adapter.
+    tool_steps: u32,
     /// The phase was killed at the wall-TTL deadline.
     reaped: bool,
 }
@@ -993,6 +1045,7 @@ fn run_phase(
 
     let mut text = String::new();
     let mut cost = 0.0f64;
+    let mut tool_steps = 0u32;
     let mut reaped = false;
     loop {
         if Instant::now() >= deadline {
@@ -1005,6 +1058,7 @@ fn run_phase(
                 if let Some(c) = adapter.parse_cost(&line) {
                     cost += c;
                 }
+                tool_steps += adapter.parse_tool_steps(&line);
                 if let Some(t) = adapter.parse_text(&line) {
                     text.push_str(&t);
                     text.push('\n');
@@ -1017,6 +1071,7 @@ fn run_phase(
                         if let Some(c) = adapter.parse_cost(&line) {
                             cost += c;
                         }
+                        tool_steps += adapter.parse_tool_steps(&line);
                         if let Some(t) = adapter.parse_text(&line) {
                             text.push_str(&t);
                             text.push('\n');
@@ -1035,6 +1090,7 @@ fn run_phase(
     Ok(PhaseOutput {
         text,
         cost_usd: cost,
+        tool_steps,
         reaped,
     })
 }
@@ -1194,12 +1250,27 @@ pub fn run_seat(
     let deadline = started + Duration::from_secs(request.seat.ceilings.wall_ttl_secs);
     let run_id = new_run_id(&request.seat.name);
     let mut cost_total = 0.0f64;
+    let mut tool_steps_total = 0u32;
     let mut iterations = 0u32;
     let verdict;
     let mut gate_outcomes: Vec<GateOutcome> = Vec::new();
     let mut proposal_record: Option<(Proposal, PathBuf)> = None;
     let mut work_line = String::new();
     let mut evidence = String::new();
+
+    // The accumulating ceilings, in ONE place. Both phase sites ask this
+    // rather than each re-stating the comparison: a copied threshold test
+    // is how two call sites come to disagree about which ceiling applies.
+    let ceilings = request.seat.ceilings;
+    let breached = |cost: f64, steps: u32| -> Option<CeilingKind> {
+        if cost > ceilings.cost_budget_usd {
+            Some(CeilingKind::CostBudget)
+        } else if steps > ceilings.max_tool_steps {
+            Some(CeilingKind::MaxToolSteps)
+        } else {
+            None
+        }
+    };
 
     loop {
         // --- ceiling: iterations ---
@@ -1226,12 +1297,13 @@ pub fn run_seat(
             );
             let detect = run_phase(adapter, &detect_prompt, &request.workdir, deadline)?;
             cost_total += detect.cost_usd;
+            tool_steps_total += detect.tool_steps;
             if detect.reaped {
                 verdict = Verdict::Reaped(CeilingKind::WallTtl.as_str().into());
                 break;
             }
-            if cost_total > request.seat.ceilings.cost_budget_usd {
-                verdict = Verdict::Reaped(CeilingKind::CostBudget.as_str().into());
+            if let Some(kind) = breached(cost_total, tool_steps_total) {
+                verdict = Verdict::Reaped(kind.as_str().into());
                 break;
             }
             if detect.text.contains(NOTHING_TO_DO) {
@@ -1272,12 +1344,13 @@ pub fn run_seat(
         );
         let do_phase = run_phase(adapter, &do_prompt, &request.workdir, deadline)?;
         cost_total += do_phase.cost_usd;
+        tool_steps_total += do_phase.tool_steps;
         if do_phase.reaped {
             verdict = Verdict::Reaped(CeilingKind::WallTtl.as_str().into());
             break;
         }
-        if cost_total > request.seat.ceilings.cost_budget_usd {
-            verdict = Verdict::Reaped(CeilingKind::CostBudget.as_str().into());
+        if let Some(kind) = breached(cost_total, tool_steps_total) {
+            verdict = Verdict::Reaped(kind.as_str().into());
             break;
         }
         let mut proposal = match parse_proposal(&work_line, &do_phase.text) {
@@ -2881,6 +2954,45 @@ You are the echo seat. You document what you are told to document.
         assert_eq!(adapter.parse_cost("not json"), None);
     }
 
+    /// ONE model turn can carry SEVERAL tool calls, which is the whole
+    /// reason a turn bound is not a tool bound: `--max-turns 12` permits an
+    /// unbounded number of tool steps inside those twelve turns. The
+    /// adapter therefore counts `tool_use` BLOCKS, not events.
+    #[test]
+    fn a_turn_can_carry_several_tool_steps_and_the_adapter_counts_them() {
+        let adapter = ClaudeCodeAdapter::default();
+
+        // The case the ceiling exists for: one assistant turn, three calls.
+        let three = r#"{"type":"assistant","message":{"content":[
+            {"type":"text","text":"looking"},
+            {"type":"tool_use","name":"Grep","input":{}},
+            {"type":"tool_use","name":"Read","input":{}},
+            {"type":"tool_use","name":"Bash","input":{}}]}}"#;
+        assert_eq!(
+            adapter.parse_tool_steps(three),
+            3,
+            "three tool_use blocks in ONE turn must count as three steps"
+        );
+
+        // Controls: a turn that only speaks, the result event, and noise.
+        let talking = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#;
+        assert_eq!(adapter.parse_tool_steps(talking), 0);
+        assert_eq!(
+            adapter.parse_tool_steps(r#"{"type":"result","result":"done"}"#),
+            0
+        );
+        assert_eq!(adapter.parse_tool_steps("not json"), 0);
+
+        // The script adapter reads a declared count, the way it reads cost
+        // — a plain-text CLI emits no structured events of its own.
+        let script = ScriptAdapter {
+            command: "sh".into(),
+            args: vec![],
+        };
+        assert_eq!(script.parse_tool_steps("TOOL-STEPS: 4"), 4);
+        assert_eq!(script.parse_tool_steps("ordinary output"), 0);
+    }
+
     #[test]
     fn schedule_cron_subset_parses_and_matches() {
         let every_30 = Schedule::parse("*/30 * * * *").unwrap();
@@ -3301,6 +3413,46 @@ You are the echo seat. You document what you are told to document.
         assert!((report.cost_usd - 2.75).abs() < 1e-9);
         let journal = fs::read_to_string(&request.journal_path).unwrap();
         assert!(journal.contains("reaped: cost_budget"));
+    }
+
+    /// The ceiling that bounds TOOL STEPS rather than model turns. A seat
+    /// run's turn bound lives on the adapter (`--max-turns`); a turn may
+    /// carry several tool calls, so without this a run's tool-call count is
+    /// unbounded. It is a RUNAWAY bound, not a budget — like the wall TTL it
+    /// is not expected to fire on an ordinary run.
+    #[cfg(unix)]
+    #[test]
+    fn tool_steps_ceiling_stops_a_run() {
+        let dir = unique_tempdir("e2e-steps");
+        fixture_with_target(&dir);
+        // The DETECT answer declares more tool steps than the seat allows.
+        let script = dir.join("seat.sh");
+        fs::write(
+            &script,
+            "#!/bin/sh\necho 'TOOL-STEPS: 40'\necho 'WORK: a busy idea'\n",
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+        let mut seat = echo_seat();
+        seat.ceilings.max_tool_steps = 10;
+        let request = request_in(&seat, &dir);
+        let adapter = ScriptAdapter {
+            command: "sh".into(),
+            args: vec![script.to_string_lossy().into_owned()],
+        };
+        let store = CapturingStore::default();
+        let report = run_seat(
+            &request,
+            &adapter,
+            &ScriptedGates { fail_class: None },
+            &&store,
+        )
+        .expect("run");
+        assert_eq!(report.verdict, Verdict::Reaped("max_tool_steps".into()));
+        let journal = fs::read_to_string(&request.journal_path).unwrap();
+        assert!(journal.contains("reaped: max_tool_steps"), "{journal}");
     }
 
     #[test]

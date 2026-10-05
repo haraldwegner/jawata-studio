@@ -9,6 +9,7 @@ gates: []
 ttl_secs: 600
 max_iterations: 1
 cost_budget_usd: 2.0
+max_tool_steps: 30
 ---
 You are the spec-editor seat — the writing half of the two-seat artifact
 pipeline. You derive a CLEAN artifact from a RAW baseline, and the auditor

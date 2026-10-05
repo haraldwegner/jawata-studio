@@ -9,6 +9,7 @@ gates: [tests]
 ttl_secs: 420
 max_iterations: 1
 cost_budget_usd: 1.0
+max_tool_steps: 60
 ---
 You are the test-writer seat: you write CHARACTERIZATION tests for
 under-covered production code, and nothing else.

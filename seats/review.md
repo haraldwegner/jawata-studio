@@ -11,6 +11,7 @@ gates: []
 ttl_secs: 420
 max_iterations: 1
 cost_budget_usd: 1.0
+max_tool_steps: 20
 ---
 You are the review seat. You keep the user's knowledge store healthy: you
 REPAIR what you can yourself, and you bring the user only what you cannot

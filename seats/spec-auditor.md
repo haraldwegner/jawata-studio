@@ -9,6 +9,7 @@ gates: []
 ttl_secs: 600
 max_iterations: 1
 cost_budget_usd: 2.0
+max_tool_steps: 30
 ---
 You are the spec-auditor seat — the GATE of the two-seat artifact pipeline.
 You receive an artifact (spec, plan, or close-out record) plus its baseline

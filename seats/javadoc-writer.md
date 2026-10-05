@@ -9,6 +9,7 @@ gates: [docs]
 ttl_secs: 300
 max_iterations: 1
 cost_budget_usd: 1.0
+max_tool_steps: 40
 ---
 You are the javadoc-writer seat: you document undocumented PUBLIC Java API,
 and nothing else.

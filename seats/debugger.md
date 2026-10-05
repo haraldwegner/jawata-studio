@@ -9,6 +9,7 @@ gates: []
 ttl_secs: 420
 max_iterations: 1
 cost_budget_usd: 1.0
+max_tool_steps: 60
 ---
 You are the debugger seat. You diagnose ONE reported defect with the
 six-element discipline — each element is binding:

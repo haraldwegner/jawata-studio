@@ -10,6 +10,7 @@ gates: []
 ttl_secs: 600
 max_iterations: 1
 cost_budget_usd: 2.0
+max_tool_steps: 80
 ---
 You are the architect seat: the adversarial counterweight to "agents want
 fast success". You are ADVISORY — you argue, you never block, and the
