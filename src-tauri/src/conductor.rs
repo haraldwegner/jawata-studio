@@ -1168,22 +1168,37 @@ mod tests {
         }
 
         // And it reaches the rendered artifact, not only the contract that
-        // builds it — the eight seats that render a command of their own.
-        let rendered: Vec<String> = EMBEDDED_SEATS
-            .iter()
-            .filter_map(|(_, body)| {
-                let seat = crate::runner::parse_seat_definition(body).ok()?;
-                render_claude_skill(&seat)
-            })
-            .collect();
-        assert_eq!(
-            rendered.len(),
-            8,
-            "the eight seats that render their own command (spec-editor and \
-             spec-auditor live inside /sprint)"
-        );
-        for skill in &rendered {
-            assert!(skill.contains(decl), "a rendered skill omits the declaration file");
+        // builds it — the eight seats that render a command of their own, on
+        // ALL THREE CHANNELS. The three renderers share one `lane1_contract`
+        // call today, so asserting one channel is nearly a tautology over the
+        // other two — nearly, and that gap is the point: a renderer that
+        // stopped calling it and hand-built its own preamble would be caught
+        // by the Claude gate alone and by nothing on the client the user
+        // actually runs.
+        for (channel, render) in [
+            ("claude", render_claude_skill as fn(&crate::runner::SeatDefinition) -> Option<String>),
+            ("cursor", render_cursor_command),
+            ("antigravity", render_antigravity_workflow),
+        ] {
+            let rendered: Vec<String> = EMBEDDED_SEATS
+                .iter()
+                .filter_map(|(_, body)| {
+                    let seat = crate::runner::parse_seat_definition(body).ok()?;
+                    render(&seat)
+                })
+                .collect();
+            assert_eq!(
+                rendered.len(),
+                8,
+                "{channel}: the eight seats that render their own command \
+                 (spec-editor and spec-auditor live inside /sprint)"
+            );
+            for skill in &rendered {
+                assert!(
+                    skill.contains(decl),
+                    "{channel}: a rendered artifact omits the declaration file"
+                );
+            }
         }
     }
 
