@@ -205,8 +205,9 @@ fn lane1_contract(seat: &SeatDefinition, command: &str) -> String {
         "## The loop (binding — you run the seat yourself)\n\n\
          You are the front-door agent executing the jawata **{name}** seat by\n\
          stance handoff. Work the loop, in order, with REAL jawata MCP calls:\n\n\
-         1. DETECT — find the work with the seat's own detectors (jawata\n\
-            tools), scoped to what the user named. Never invent targets.\n\
+         1. DETECT — find the work the way the Instrument discipline below\n\
+            says this seat finds it, scoped to what the user named. Never\n\
+            invent targets.\n\
          2. DO — produce the seat's output per the stance below.\n\
          3. VERIFY — the gates are jawata calls you MUST make and read:\n\
          {gates}\
@@ -224,6 +225,7 @@ fn lane1_contract(seat: &SeatDefinition, command: &str) -> String {
             genuinely still open. A `domain_fact` owes neither; it never turned\n\
             out any way at all, and inventing an outcome for one makes\n\
             retrieval rank on fiction.\n\n\
+         {instruments}\n\
          ## Execution context\n\n\
          Unlike the hosted runner, YOU perform detection and gates yourself.\n\
          Where the stance below assumes a hosted harness (e.g. \"you do not\n\
@@ -231,7 +233,45 @@ fn lane1_contract(seat: &SeatDefinition, command: &str) -> String {
          rules bind unchanged.\n",
         name = seat.name,
         gates = gates,
+        instruments = instrument_discipline(seat),
     )
+}
+
+/// The seat's instrument discipline, DERIVED from its `kind` and its own `tools`.
+///
+/// D12: *"instrument discipline is a rule in each seat's text rather than something an agent is
+/// expected to remember."* Derived rather than written ten times, because ten paragraphs are
+/// ten chances to disagree with the frontmatter beside them — the defect this sprint spent five
+/// audit rounds on. One renderer cannot drift from the fields it reads.
+fn instrument_discipline(seat: &SeatDefinition) -> String {
+    match seat.kind {
+        crate::runner::SeatKind::Code => format!(
+            "## Instrument discipline (binding)\n\n\
+             This seat reads the CODEBASE, so every question it asks has a compiler-accurate\n\
+             answer and reaching for one is not optional. Drive these, by name:\n\n\
+             {tools}\n\n\
+             A `grep`, `rg`, `sed` or hand-read of a source file is a DECLARED FALLBACK, never a\n\
+             shortcut: it carries `jawata-fallback: <why jawata cannot answer THIS>` in the\n\
+             command, and the declaration is logged. If an instrument refuses or is unreachable,\n\
+             SAY SO and stop — a gate you could not run has not passed, and an absence inferred\n\
+             from a failed lookup is not an absence.\n",
+            tools = seat
+                .tools
+                .iter()
+                .map(|t| format!("- `{t}`"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        crate::runner::SeatKind::Text => "## Instrument discipline (binding)\n\n\
+             This seat's input is an ARTIFACT — a document, a diff, a report.\n\
+             There is no compiler fact to fetch and no instrument to reach for. Your judgement IS the\n\
+             product, and the discipline is the other way round: every claim you make is about\n\
+             the text in front of you, quoted rather than paraphrased, and a claim you cannot\n\
+             ground in it does not go in the output. Where the artifact asserts something about\n\
+             CODE, you may say the claim is unverified; you may not verify it and you may not\n\
+             assume it.\n"
+            .to_string(),
+    }
 }
 
 /// Renders the seat's gate classes as named jawata-call bullet lines
@@ -780,6 +820,78 @@ mod tests {
     }
 
     #[test]
+    /// D12: *"instrument discipline is a rule in each seat's text rather than something an
+    /// agent is expected to remember."*
+    ///
+    /// DERIVED FROM `kind` AND `tools`, not written ten times. Ten hand-written paragraphs
+    /// would be ten chances to disagree with the frontmatter beside them, which is the defect
+    /// this sprint has been paying for all week — a claim in prose that the code next to it
+    /// falsifies. One renderer cannot drift from the fields it reads.
+    #[test]
+    fn every_seat_is_told_its_instrument_discipline_and_it_matches_its_kind() {
+        for seat in seats() {
+            // THE RULE IS ASSERTED ON THE SEAT, not only on a channel. Two seats — spec-editor
+            // and spec-auditor — live inside `/sprint` and render NO command of their own, so a
+            // test that only read `render_claude_skill` would skip them silently and D12's
+            // "each seat's text" would hold for eight of ten. Their copy reaches a reader
+            // through the `/sprint` skill.
+            let rule = instrument_discipline(&seat);
+            assert!(
+                rule.contains("## Instrument discipline"),
+                "{}: no instrument-discipline rule — the agent is left to remember it",
+                seat.name
+            );
+            // For the eight that DO render a command, the rule must actually be in the rendered
+            // text — a derived paragraph nothing emits is the hollow shape this repo keeps
+            // finding.
+            let rendered = match render_claude_skill(&seat) {
+                Some(r) => {
+                    assert!(
+                        r.contains("## Instrument discipline"),
+                        "{}: the rule exists and the rendered skill does not carry it",
+                        seat.name
+                    );
+                    r
+                }
+                None => rule,
+            };
+            match seat.kind {
+                crate::runner::SeatKind::Code => {
+                    // It must name the seat's OWN tools, so the rule is actionable rather than
+                    // an exhortation to "use jawata".
+                    for tool in &seat.tools {
+                        assert!(
+                            rendered.contains(tool.as_str()),
+                            "{}: declares tool '{tool}' and the rendered rule never names it",
+                            seat.name
+                        );
+                    }
+                    assert!(
+                        rendered.contains("jawata-fallback:"),
+                        "{}: a code seat must be told the declaration a text search costs",
+                        seat.name
+                    );
+                }
+                crate::runner::SeatKind::Text => {
+                    // AND THE TEXT SEATS MUST NOT BE TOLD TO FETCH FACTS. Before this, step 1
+                    // of the shared loop told every seat to "find the work with the seat's own
+                    // detectors (jawata tools)" — false for a seat whose input is an artifact,
+                    // and the kind of instruction that sends an auditor looking for a tool.
+                    assert!(
+                        rendered.contains("no compiler fact to fetch"),
+                        "{}: a text seat must be told its judgement IS the product",
+                        seat.name
+                    );
+                    assert!(
+                        !rendered.contains("jawata-fallback:"),
+                        "{}: a text seat has nothing to fall back FROM",
+                        seat.name
+                    );
+                }
+            }
+        }
+    }
+
     /// D12's MEASURE, over the SHIPPED seats rather than a fixture: *"each seat file carries the
     /// task kind and the tools field."*
     ///
