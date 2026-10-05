@@ -205,6 +205,17 @@ fn lane1_contract(seat: &SeatDefinition, command: &str) -> String {
         "## The loop (binding — you run the seat yourself)\n\n\
          You are the front-door agent executing the jawata **{name}** seat by\n\
          stance handoff. Work the loop, in order, with REAL jawata MCP calls:\n\n\
+         0. READ WHAT THE PROJECT SAYS IT IS. Open `{decl}` at the project's\n\
+            root and QUOTE its four facts — stack, build system, source roots,\n\
+            what counts as green — in your output. They are the project's own\n\
+            words: do not contradict them and do not improve on them.\n\
+            **If there is no such file, SAY SO** and name every fact you then\n\
+            had to assume. Do not infer a stack from the file extensions and\n\
+            proceed as though you had been told; `/setup` writes one, and a\n\
+            run on a project that has not declared itself is a run whose\n\
+            reader needs to know that. If the file is present and does not\n\
+            parse, that is a THIRD state — report it broken rather than\n\
+            absent, because the two ask different things of whoever reads you.\n\
          1. DETECT — find the work the way the Instrument discipline below\n\
             says this seat finds it, scoped to what the user named. Never\n\
             invent targets.\n\
@@ -232,6 +243,7 @@ fn lane1_contract(seat: &SeatDefinition, command: &str) -> String {
          use tools\"), the loop above wins on MECHANICS; the stance's content\n\
          rules bind unchanged.\n",
         name = seat.name,
+        decl = crate::runner::PROJECT_DECLARATION_FILE,
         gates = gates,
         instruments = instrument_discipline(seat),
     )
@@ -427,13 +439,18 @@ pub fn render_phrase_table(seats: &[SeatDefinition]) -> String {
 ///   in a single machine's `~/.claude/skills/`, so the pipeline the whole sprint
 ///   process depends on was simply absent everywhere else. Its body is now
 ///   single-sourced from `skills/sprint.md` and rides the same deploy as the rest.
-pub const UTILITY_MAP: [(&str, &str); 2] = [
+pub const UTILITY_MAP: [(&str, &str); 3] = [
     // Sprint 28f Stage 6: this line is the ONE every client displays — it is interpolated
     // into each generated artifact's frontmatter — and it said "the knowledge substrate the
     // store is rebuilt from" while the body 68 lines below said the opposite, in the same
     // commit whose subject was that the texts stop telling agents to write the store's
     // files. A description is a shipped claim, not a label.
     ("memorize", "Extract what this session actually learned, review it cold, and record it to the store — which stamps the review and writes the story file when a reader accepts it"),
+    // Sprint 28g D14: the project declares what it IS before any seat runs,
+    // because every seat's brief opens with these four facts quoted — and a
+    // project that has not declared itself makes every brief say so out loud
+    // rather than letting the seat infer and proceed.
+    ("setup", "Establish what this project is — stack, build system, source roots, and the command that says it is green — prove the green command by running it, and write the declaration every seat's brief quotes"),
     ("sprint", "Run the two-seat EDITOR+AUDITOR pipeline for a sprint doc and/or its actionable plan — the RAW working doc stays the audit baseline, the CLEAN spec is written for the user, a fresh-context auditor can REFUSE and loops until sign-off, and the user signs off LAST"),
 ];
 
@@ -532,6 +549,9 @@ Two agents agreeing is the common case and costs him nothing. A disagreement is 
 An empty run reports `no candidates — nothing in this session was durable and reusable`, and stores nothing. That is a good outcome, not a failed one."#,
         // Single-sourced: the pipeline is far too long to inline, and a second
         // copy would drift from the one the seats' own process runs.
+        // Single-sourced for the same reason /sprint is: long enough that a
+        // second copy would drift from the file a human reviews.
+        "setup" => include_str!("../../skills/setup.md"),
         "sprint" => include_str!("../../skills/sprint.md"),
         _ => "",
     }
@@ -541,6 +561,7 @@ An empty run reports `no candidates — nothing in this session was durable and 
 /// utility, and its rendered page should not claim otherwise.
 fn utility_title(command: &str) -> &'static str {
     match command {
+        "setup" => "the project declares what it is",
         "sprint" => "the two-seat artifact pipeline",
         _ => "jawata utility",
     }
@@ -937,6 +958,66 @@ mod tests {
             "his ruling names the architect as a seat that MUST use the tools; it is {code:?}"
         );
         assert_eq!(text.len() + code.len(), EMBEDDED_SEATS.len(), "every seat classified");
+    }
+
+    /// D14: every seat is told to read the project's own declaration before it
+    /// starts, and to NAME its absence rather than infer the facts.
+    ///
+    /// THE RENDERED SKILL IS THE BRIEF THAT ACTUALLY SHIPS, which is why this
+    /// gate reads it rather than the hosted runner's prompt. Measured while
+    /// building D14: `run_seat`, `run_javadoc_writer` and `run_test_writer` have
+    /// no caller outside runner.rs and all three sit in the hollow-wiring
+    /// baseline, so the hosted brief is carried by nothing today. Every seat
+    /// that runs, runs by stance handoff from one of these texts.
+    #[test]
+    fn every_rendered_seat_is_told_to_read_the_projects_declaration() {
+        let decl = crate::runner::PROJECT_DECLARATION_FILE;
+        for (file, body) in EMBEDDED_SEATS {
+            let seat = crate::runner::parse_seat_definition(body)
+                .unwrap_or_else(|e| panic!("{file} does not parse: {e}"));
+            // All ten, including the two that render no command of their own —
+            // asserting only the rendered channel would skip them silently, and
+            // D14 is about the brief EVERY seat gets.
+            let contract = lane1_contract(&seat, &seat.name);
+            assert!(
+                contract.contains(decl),
+                "{file}: the loop does not name the declaration file"
+            );
+            assert!(
+                contract.contains("QUOTE its four facts"),
+                "{file}: the loop does not say to QUOTE it — a seat told to 'consider' \
+                 the project's facts summarises them, and a summary is where a guess hides"
+            );
+            assert!(
+                contract.contains("If there is no such file, SAY SO"),
+                "{file}: the loop does not require the ABSENCE to be named, which is \
+                 the half D14 measures — an unnamed absence is indistinguishable from \
+                 a project whose facts the seat quietly invented"
+            );
+            assert!(
+                contract.contains("/setup"),
+                "{file}: the loop names no way to create one"
+            );
+        }
+
+        // And it reaches the rendered artifact, not only the contract that
+        // builds it — the eight seats that render a command of their own.
+        let rendered: Vec<String> = EMBEDDED_SEATS
+            .iter()
+            .filter_map(|(_, body)| {
+                let seat = crate::runner::parse_seat_definition(body).ok()?;
+                render_claude_skill(&seat)
+            })
+            .collect();
+        assert_eq!(
+            rendered.len(),
+            8,
+            "the eight seats that render their own command (spec-editor and \
+             spec-auditor live inside /sprint)"
+        );
+        for skill in &rendered {
+            assert!(skill.contains(decl), "a rendered skill omits the declaration file");
+        }
     }
 
     /// D12's three remaining clauses, each a claim about a NAMED seat's own

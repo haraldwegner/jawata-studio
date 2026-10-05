@@ -16,6 +16,7 @@ src/runner.rs|constant `PROPOSAL_END` is never used
 src/runner.rs|constant `WORK_PREFIX` is never used
 src/runner.rs|enum `CeilingKind` is never used
 src/runner.rs|enum `CronField` is never used
+src/runner.rs|enum `DeclarationState` is never used
 src/runner.rs|enum `Verdict` is never used
 src/runner.rs|function `append_journal` is never used
 src/runner.rs|function `ask_adapter` is never used
@@ -23,6 +24,7 @@ src/runner.rs|function `clip` is never used
 src/runner.rs|function `collect_profile_evidence` is never used
 src/runner.rs|function `compute_files_diff` is never used
 src/runner.rs|function `copy_tree` is never used
+src/runner.rs|function `declaration_block` is never used
 src/runner.rs|function `deliberate_duplicate_check` is never used
 src/runner.rs|function `due_seats` is never used
 src/runner.rs|function `execute_observation` is never used
@@ -31,9 +33,11 @@ src/runner.rs|function `journal_nothing_to_do` is never used
 src/runner.rs|function `new_run_id` is never used
 src/runner.rs|function `parse_file_blocks` is never used
 src/runner.rs|function `parse_observation` is never used
+src/runner.rs|function `parse_project_declaration` is never used
 src/runner.rs|function `parse_proposal` is never used
 src/runner.rs|function `proposed_test_classes` is never used
 src/runner.rs|function `purity_check` is never used
+src/runner.rs|function `read_declaration` is never used
 src/runner.rs|function `reap_process_tree` is never used
 src/runner.rs|function `record_human_verdict_and_sync` is never used
 src/runner.rs|function `record_human_verdict_inner` is never used
@@ -59,6 +63,7 @@ src/runner.rs|struct `GateOutcome` is never constructed
 src/runner.rs|struct `JournalEntry` is never constructed
 src/runner.rs|struct `PhaseOutput` is never constructed
 src/runner.rs|struct `PreDetected` is never constructed
+src/runner.rs|struct `ProjectDeclaration` is never constructed
 src/runner.rs|struct `ProposalFile` is never constructed
 src/runner.rs|struct `Proposal` is never constructed
 src/runner.rs|struct `ResidentGateExecutor` is never constructed

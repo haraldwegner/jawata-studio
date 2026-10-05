@@ -97,6 +97,168 @@ impl CeilingKind {
 }
 
 // ============================================================
+// The project declaration (D14) — what a project says it IS,
+// read into every brief before a seat guesses
+// ============================================================
+
+/// The file a project declares itself in, at its own root.
+///
+/// It lives WITH THE CODE rather than in the studio's `projects.json`, and the
+/// two are not alternatives: `projects.json` is this machine's bookkeeping
+/// about a workspace (resident port, token, heap ceiling), written by the
+/// manager and true only here. A declaration is the project's own statement
+/// about itself, committed, reviewed, and true on any machine that checks the
+/// repository out — including one with no studio installed at all.
+pub const PROJECT_DECLARATION_FILE: &str = "jawata-project.md";
+
+/// What a project says it is. Four facts, every one REQUIRED.
+///
+/// D14's measure is that a brief "quotes the project's own declaration rather
+/// than guessing", so a field left out is precisely the field a seat would
+/// then guess. There is no partial declaration: the parser refuses one and
+/// names what is absent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDeclaration {
+    /// The language and its version, as the project spells it.
+    pub stack: String,
+    /// The build system — what a seat must drive to build anything here.
+    pub build: String,
+    /// Where the source actually is. Plural, because a workspace of bundles
+    /// has several and a seat scoped to the wrong one finds nothing.
+    pub source_roots: Vec<String>,
+    /// What counts as green, as a command. Not a description of a feeling —
+    /// a seat has to be able to RUN it and read the answer.
+    pub green: String,
+}
+
+/// Parses a declaration out of the same frontmatter shape the seats use.
+///
+/// Deliberately the same hand-parser conventions as
+/// [`parse_seat_definition`], and deliberately next to it: two frontmatter
+/// parsers in one product that disagree about lists, comments or unknown keys
+/// is a difference nobody would ever mean to ship. Unknown keys are ERRORS for
+/// that function's own reason — a typo'd field must not silently become an
+/// absent one.
+pub fn parse_project_declaration(text: &str) -> Result<ProjectDeclaration, String> {
+    let mut lines = text.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return Err(format!(
+            "{PROJECT_DECLARATION_FILE} must start with a '---' frontmatter block"
+        ));
+    }
+    let mut stack = None;
+    let mut build = None;
+    let mut source_roots: Option<Vec<String>> = None;
+    let mut green = None;
+    let mut closed = false;
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            closed = true;
+            break;
+        }
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let (key, value) = trimmed
+            .split_once(':')
+            .ok_or_else(|| format!("frontmatter line without ':': '{trimmed}'"))?;
+        let value = value.trim();
+        match key.trim() {
+            "stack" => stack = Some(value.to_string()),
+            "build" => build = Some(value.to_string()),
+            "source_roots" => source_roots = Some(parse_inline_list(value)?),
+            "green" => green = Some(value.to_string()),
+            other => return Err(format!("unknown declaration key '{other}'")),
+        }
+    }
+    if !closed {
+        return Err("frontmatter block never closed with '---'".into());
+    }
+    // Each one names ITSELF in its refusal, so a reader fixes the field rather
+    // than re-reading the format.
+    let stack = stack.ok_or("declaration needs 'stack:' — the language and its version")?;
+    let build = build.ok_or("declaration needs 'build:' — the build system a seat must drive")?;
+    let source_roots = source_roots
+        .filter(|r| !r.is_empty())
+        .ok_or("declaration needs 'source_roots:' — a non-empty list of where the source is")?;
+    let green = green.ok_or("declaration needs 'green:' — the command that says the tree is green")?;
+    Ok(ProjectDeclaration {
+        stack,
+        build,
+        source_roots,
+        green,
+    })
+}
+
+/// The three states a project's declaration can be in, kept DISTINCT.
+///
+/// Absent and malformed are different facts and they ask the reader for
+/// different things — write one, or fix one. Collapsing them is how a seat
+/// ends up guessing while its brief reports that the project said nothing.
+enum DeclarationState {
+    Declared(ProjectDeclaration),
+    Absent,
+    Malformed(String),
+}
+
+fn read_declaration(workdir: &Path) -> DeclarationState {
+    let path = workdir.join(PROJECT_DECLARATION_FILE);
+    match fs::read_to_string(&path) {
+        Err(_) => DeclarationState::Absent,
+        Ok(text) => match parse_project_declaration(&text) {
+            Ok(d) => DeclarationState::Declared(d),
+            Err(e) => DeclarationState::Malformed(e),
+        },
+    }
+}
+
+/// The block every seat brief opens with. NEVER EMPTY — that is the whole
+/// point of it, and the reason the absent case renders text rather than
+/// nothing: a brief silently missing the project's facts is indistinguishable
+/// from a project that has none, and the seat guesses either way.
+fn declaration_block(workdir: &Path) -> String {
+    match read_declaration(workdir) {
+        DeclarationState::Declared(d) => format!(
+            "== THE PROJECT'S OWN DECLARATION (quoted from {file} — do not \
+             contradict it and do not improve on it) ==\n\
+             stack: {stack}\n\
+             build: {build}\n\
+             source roots: {roots}\n\
+             green: {green}\n\
+             These are the project's words. Where your task needs a fact this \
+             declaration does not carry, say the declaration does not carry it \
+             rather than supplying one.\n",
+            file = PROJECT_DECLARATION_FILE,
+            stack = d.stack,
+            build = d.build,
+            roots = d.source_roots.join(", "),
+            green = d.green,
+        ),
+        DeclarationState::Absent => format!(
+            "== NO DECLARATION — this project has not said what it is ==\n\
+             There is no {file} at this project's root, so nothing here tells you \
+             its stack, its build system, where its source roots are, or what \
+             counts as green. Do NOT infer them and then proceed as though you \
+             had been told: say in your output that the project carries no \
+             declaration, and name any fact you had to assume. `/setup` writes \
+             one.\n",
+            file = PROJECT_DECLARATION_FILE,
+        ),
+        DeclarationState::Malformed(why) => format!(
+            "== THE DECLARATION IS MALFORMED — it exists and does not parse ==\n\
+             {file} is present but could not be read: {why}\n\
+             This is NOT the same as having none, and it is not yours to fix \
+             silently. Report it, and treat every fact it would have carried as \
+             one you were not told.\n",
+            file = PROJECT_DECLARATION_FILE,
+            why = why,
+        ),
+    }
+}
+
+// ============================================================
 // Seat definitions — markdown + frontmatter
 // ============================================================
 
@@ -1251,6 +1413,12 @@ pub fn run_seat(
     let mut work_line = String::new();
     let mut evidence = String::new();
 
+    // D14: what the project says it IS, read before the first brief and
+    // carried into every one of them. One read per run — computing it per
+    // phase would let the DETECT and PROPOSE briefs disagree about the
+    // project if the file moved under a long run.
+    let declared = declaration_block(&request.workdir);
+
     // The accumulating ceilings, in ONE place. Both phase sites ask this
     // rather than each re-stating the comparison: a copied threshold test
     // is how two call sites come to disagree about which ceiling applies.
@@ -1280,11 +1448,12 @@ pub fn run_seat(
             facts = pre.facts.clone();
         } else {
             let detect_prompt = format!(
-                "{stance}\n\n== PHASE: DETECT ==\nWork scope (the ONLY files you may touch): {scope:?}.\n\
+                "{stance}\n\n{declared}\n== PHASE: DETECT ==\nWork scope (the ONLY files you may touch): {scope:?}.\n\
                  Inspect the scope and answer with exactly one line:\n\
                  either 'WORK: <one-line description of the single next work item>'\n\
                  or '{nothing}' if the scope needs nothing.",
                 stance = request.seat.stance,
+                declared = declared,
                 scope = request.scope,
                 nothing = NOTHING_TO_DO,
             );
@@ -1317,7 +1486,7 @@ pub fn run_seat(
             format!("\n== COMPILER FACTS (ground truth — never contradict) ==\n{facts}\n")
         };
         let do_prompt = format!(
-            "{stance}\n\n== PHASE: PROPOSE ==\nWork item: {work}.\n{facts_block}\
+            "{stance}\n\n{declared}\n== PHASE: PROPOSE ==\nWork item: {work}.\n{facts_block}\
              Implement exactly this work item, touching only files under {scope:?}.\n\
              First state your evidence (what you read, why the change is right), then\n\
              emit the COMPLETE NEW CONTENT of every file you change — never a diff —\n\
@@ -1329,6 +1498,7 @@ pub fn run_seat(
              {end}\n\
              DO NOT apply anything — this is a PROPOSAL for a human.",
             stance = request.seat.stance,
+            declared = declared,
             work = work_line,
             facts_block = facts_block,
             scope = request.scope,
@@ -2951,6 +3121,110 @@ You are the echo seat. You document what you are told to document.
     /// reason a turn bound is not a tool bound: `--max-turns 12` permits an
     /// unbounded number of tool steps inside those twelve turns. The
     /// adapter therefore counts `tool_use` BLOCKS, not events.
+    /// D14: a project declares what it is before any seat runs. All four
+    /// facts are REQUIRED, for the reason the measure gives — "quotes the
+    /// project's own declaration rather than GUESSING". A declaration missing
+    /// one field would have the seat guess exactly that field, so a partial
+    /// declaration is a refusal naming what is absent.
+    #[test]
+    fn a_project_declaration_is_parsed_or_refused_by_its_missing_field() {
+        let whole = "---\n\
+             stack: Java 21\n\
+             build: maven\n\
+             source_roots: [org.jawata.mcp/src, org.jawata.core/src]\n\
+             green: mvn verify\n\
+             ---\n\
+             Anything a human wants to add about the project goes here.\n";
+        let d = parse_project_declaration(whole).expect("the whole declaration parses");
+        assert_eq!(d.stack, "Java 21");
+        assert_eq!(d.build, "maven");
+        assert_eq!(d.source_roots, vec!["org.jawata.mcp/src", "org.jawata.core/src"]);
+        assert_eq!(d.green, "mvn verify");
+
+        // Each absent field is refused BY NAME — a seat told three of four
+        // facts guesses the fourth, which is the state this refuses.
+        for missing in ["stack", "build", "source_roots", "green"] {
+            let partial: String = whole
+                .lines()
+                .filter(|l| !l.trim_start().starts_with(&format!("{missing}:")))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let err = parse_project_declaration(&partial)
+                .expect_err("a declaration missing a field must be refused");
+            assert!(
+                err.contains(missing),
+                "the refusal for a missing '{missing}' must name it; got {err}"
+            );
+        }
+
+        // An unknown key is an error for the seat parser's own reason: a typo'd
+        // field must not silently become an absent one.
+        assert!(parse_project_declaration(
+            "---\nstack: a\nbuild: b\nsource_roots: [x]\ngreen: c\nsorce_roots: [y]\n---\n"
+        )
+        .is_err());
+    }
+
+    /// D14's measure, and the half that makes it shipped rather than built:
+    /// the brief a seat receives QUOTES the declaration, and a project with
+    /// none is NAMED as such rather than assumed.
+    #[test]
+    fn a_brief_quotes_the_declaration_and_names_its_absence() {
+        let dir = unique_tempdir("decl");
+        fs::create_dir_all(&dir).unwrap();
+
+        // ABSENT — the block says so, and names the file it looked for, so a
+        // reader can create it rather than wonder.
+        let absent = declaration_block(&dir);
+        assert!(
+            absent.contains("NO DECLARATION"),
+            "an absent declaration must be named, not omitted: {absent}"
+        );
+        assert!(
+            absent.contains(PROJECT_DECLARATION_FILE),
+            "the absence must name the file it looked for: {absent}"
+        );
+        assert!(
+            absent.contains("/setup"),
+            "and the command that writes one: {absent}"
+        );
+
+        // DECLARED — every fact appears verbatim, because the brief quotes
+        // rather than summarises.
+        fs::write(
+            dir.join(PROJECT_DECLARATION_FILE),
+            "---\nstack: Rust 1.80\nbuild: cargo\nsource_roots: [src-tauri/src]\n\
+             green: cargo test --workspace\n---\nbody\n",
+        )
+        .unwrap();
+        let quoted = declaration_block(&dir);
+        for fact in ["Rust 1.80", "cargo", "src-tauri/src", "cargo test --workspace"] {
+            assert!(quoted.contains(fact), "the brief must quote '{fact}': {quoted}");
+        }
+        assert!(!quoted.contains("NO DECLARATION"));
+
+        // MALFORMED is its OWN state, not absence. Conflating them is how a
+        // seat guesses while the brief claims the project said nothing — and
+        // the two need different actions from the reader: write one, or fix one.
+        fs::write(
+            dir.join(PROJECT_DECLARATION_FILE),
+            "---\nstack: Rust\nbuild: cargo\n---\n",
+        )
+        .unwrap();
+        let broken = declaration_block(&dir);
+        assert!(
+            broken.contains("DECLARATION IS MALFORMED") && broken.contains("source_roots"),
+            "a malformed declaration is reported as broken, naming the reason: {broken}"
+        );
+        assert!(!broken.contains("NO DECLARATION"));
+
+        // No state produces an empty block: a brief that silently says nothing
+        // about the project is the state every clause above exists to prevent.
+        for block in [absent, quoted, broken] {
+            assert!(!block.trim().is_empty());
+        }
+    }
+
     #[test]
     fn a_turn_can_carry_several_tool_steps_and_the_adapter_counts_them() {
         let adapter = ClaudeCodeAdapter::default();
@@ -3406,6 +3680,90 @@ You are the echo seat. You document what you are told to document.
         assert!((report.cost_usd - 2.75).abs() < 1e-9);
         let journal = fs::read_to_string(&request.journal_path).unwrap();
         assert!(journal.contains("reaped: cost_budget"));
+    }
+
+    /// D14's measure END TO END: the brief a seat ACTUALLY RECEIVES quotes the
+    /// project's declaration, and names its absence when there is none.
+    ///
+    /// The sibling unit test drives `declaration_block` directly, which proves
+    /// the text and nothing about whether a run uses it — a function whose only
+    /// caller is a test is this repository's most-recorded defect. The adapter's
+    /// prompt is the brief, so the prompt is what this reads: the script dumps
+    /// its own argument and the assertions are made against that file.
+    #[cfg(unix)]
+    #[test]
+    fn the_brief_a_seat_receives_carries_the_projects_declaration() {
+        let dir = unique_tempdir("e2e-decl");
+        fixture_with_target(&dir);
+        let seen = dir.join("prompts.txt");
+        let script = dir.join("seat.sh");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\necho '{NOTHING_TO_DO}'\n",
+                seen.display()
+            ),
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+        let adapter = ScriptAdapter {
+            command: "sh".into(),
+            args: vec![script.to_string_lossy().into_owned()],
+        };
+        let seat = echo_seat();
+
+        // --- a project that has NOT declared itself ---
+        let store = CapturingStore::default();
+        let report = run_seat(
+            &request_in(&seat, &dir),
+            &adapter,
+            &ScriptedGates { fail_class: None },
+            &&store,
+        )
+        .expect("run");
+        assert_eq!(report.verdict, Verdict::NothingToDo);
+        let brief = fs::read_to_string(&seen).expect("the script captured a prompt");
+        assert!(
+            brief.contains("NO DECLARATION"),
+            "the brief must NAME the absence rather than omit it: {brief}"
+        );
+        assert!(
+            brief.contains(PROJECT_DECLARATION_FILE) && brief.contains("/setup"),
+            "and say what is missing and what writes it: {brief}"
+        );
+
+        // --- the same project, having declared itself ---
+        // The workdir is the fixture PROJECT, not the temp root — the
+        // declaration belongs at the project's own root, which is where the
+        // run reads it from.
+        fs::write(
+            dir.join("fixture").join(PROJECT_DECLARATION_FILE),
+            "---\nstack: Zig 0.13\nbuild: zig build\nsource_roots: [lib/kernel]\n\
+             green: zig build test\n---\n",
+        )
+        .unwrap();
+        fs::remove_file(&seen).unwrap();
+        let store2 = CapturingStore::default();
+        run_seat(
+            &request_in(&seat, &dir),
+            &adapter,
+            &ScriptedGates { fail_class: None },
+            &&store2,
+        )
+        .expect("run");
+        let brief = fs::read_to_string(&seen).expect("the script captured a prompt");
+        for fact in ["Zig 0.13", "zig build", "lib/kernel", "zig build test"] {
+            assert!(
+                brief.contains(fact),
+                "the brief must quote the project's own '{fact}': {brief}"
+            );
+        }
+        assert!(
+            !brief.contains("NO DECLARATION"),
+            "a declared project must not also be reported as undeclared: {brief}"
+        );
     }
 
     /// The ceiling that bounds TOOL STEPS rather than model turns. A seat

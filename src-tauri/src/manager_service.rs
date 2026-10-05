@@ -2892,7 +2892,11 @@ impl ManagerService {
                             Ok(_) => {}
                             Err(error) => errors.push(error),
                         }
-                        // Sprint 26 (D6), v3.3.1: /memorize + /sprint ride along.
+                        // Sprint 26 (D6), v3.3.1: the utility commands ride along.
+                        // Named by UTILITY_MAP rather than here — this comment
+                        // listed two of them by name and 28g's /setup made it
+                        // stale, which is the hand-written-list-beside-a-list
+                        // shape this file has already paid for.
                         match write_managed_utility_commands(client, &commands_dir, force) {
                             Ok(written) if !written.is_empty() => {
                                 changed_sections.push("utilityCommands".into())
@@ -11125,7 +11129,20 @@ mod tests {
             fs::write(&cfg, "{}").unwrap();
             let dir = derive_seat_commands_dir(client, &display_path(&cfg)).unwrap();
             let written = write_managed_utility_commands(client, &dir, false).unwrap();
-            assert_eq!(written.len(), 2, "{client}: /memorize + /sprint");
+            // Sprint 28g D14 adds /setup, so the population is three. Asserted as
+            // a count AND by name: a count alone accepts a swap, and the set is what
+            // this test is for.
+            assert_eq!(written.len(), 3, "{client}: /memorize + /setup + /sprint");
+            let mut shipped: Vec<String> = utility_artifact_paths(client, &dir)
+                .into_iter()
+                .map(|(cmd, _)| cmd)
+                .collect();
+            shipped.sort();
+            assert_eq!(
+                shipped,
+                vec!["memorize", "setup", "sprint"],
+                "{client}: the shipped utility commands"
+            );
             for (cmd, path) in utility_artifact_paths(client, &dir) {
                 assert!(path.exists(), "{client}: /{cmd} missing");
                 let body = fs::read_to_string(&path).unwrap();
