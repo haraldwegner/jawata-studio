@@ -858,7 +858,6 @@ mod tests {
         );
     }
 
-    #[test]
     /// D12: *"instrument discipline is a rule in each seat's text rather than something an
     /// agent is expected to remember."*
     ///
@@ -1312,6 +1311,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn every_seat_file_is_embedded_and_the_prose_counts_match() {
         let seats_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../seats");
         let mut on_disk: Vec<String> = fs::read_dir(&seats_dir)

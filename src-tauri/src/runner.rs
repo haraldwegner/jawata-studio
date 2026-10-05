@@ -2957,7 +2957,6 @@ cost_budget_usd: 0.5
 You are the echo seat. You document what you are told to document.
 "#;
 
-    #[test]
     /// D12: EVERY SEAT STATES ITS TASK KIND, AND THE KIND HAS TEETH.
     ///
     /// His ruling: *"the auditor and the communicator read text and use none; the architect must
@@ -3017,6 +3016,7 @@ You are the echo seat. You document what you are told to document.
         assert!(err.contains("kind"), "got: {err}");
     }
 
+    #[test]
     fn seat_definition_parses_every_field() {
         let seat = parse_seat_definition(SEAT_FIXTURE).expect("parse");
         assert_eq!(seat.name, "echo-seat");
@@ -3937,8 +3937,6 @@ You are the echo seat. You document what you are told to document.
         let (none, no_errors) = load_seat_definitions(&dir.join("absent"));
         assert!(none.is_empty() && no_errors.is_empty());
     }
-
-    #[test]
 
     #[test]
     fn human_verdict_is_re_recorded_to_the_store_and_failure_is_loud() {
