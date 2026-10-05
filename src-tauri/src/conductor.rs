@@ -939,6 +939,72 @@ mod tests {
         assert_eq!(text.len() + code.len(), EMBEDDED_SEATS.len(), "every seat classified");
     }
 
+    /// D12's three remaining clauses, each a claim about a NAMED seat's own
+    /// text: the audit round cap is a STOP in the spec-auditor's text, the
+    /// architect's watch mode says a "no" is his decision rather than a logged
+    /// finding, and the cataloguer carries its two burned steps.
+    ///
+    /// A text claim is checked as text — but not as a bare `contains`, which
+    /// passes on a phrase and says nothing about whether the rule bites. Each
+    /// clause is therefore checked at the point where it would be useless if
+    /// absent: the cap at its stop-is-not-sign-off distinction, the "no" at
+    /// its slot in the report structure, and the cataloguer's ask-step at its
+    /// POSITION — a step that asks the lane AFTER the write is no step at all.
+    #[test]
+    fn three_named_seats_carry_the_clauses_d12_assigns_them() {
+        let seat = |name: &str| -> &str {
+            EMBEDDED_SEATS
+                .iter()
+                .find(|(f, _)| *f == format!("{name}.md"))
+                .map(|(_, body)| *body)
+                .unwrap_or_else(|| panic!("{name}.md is not embedded"))
+        };
+
+        // --- the spec-auditor: the cap is a STOP in its own text ---
+        let auditor = seat("spec-auditor");
+        assert!(
+            auditor.contains("ROUND CAP IS YOURS TO STOP AT"),
+            "the spec-auditor does not carry the round cap; it would live only in \
+             the orchestrator's text, which is where it was forgotten"
+        );
+        assert!(
+            auditor.contains("STOPPING IS NOT SIGNING OFF"),
+            "the cap without that distinction is its dangerous half — an auditor \
+             that stops by blessing an artifact it still has findings against"
+        );
+
+        // --- the architect: a "no" is a decision, and it has somewhere to go ---
+        let architect = seat("architect");
+        assert!(
+            architect.contains("A \"NO\" IS HIS DECISION, NOT A FINDING YOU LOG"),
+            "the architect does not carry the no-is-a-decision rule"
+        );
+        assert!(
+            architect.contains("Decisions for you"),
+            "the rule exists and the report structure gives its output no section \
+             — a rule whose output has nowhere to go is dropped at the first run"
+        );
+
+        // --- the cataloguer: the ask comes BEFORE the write ---
+        let cataloguer = seat("cataloguer");
+        let ask = cataloguer
+            .find("ASK THE LANE BEFORE YOU WRITE")
+            .expect("the cataloguer does not carry the ask-the-lane step");
+        let write = cataloguer
+            .find("RECORD A JOB PER MEMBER")
+            .expect("the cataloguer's write step moved or was renamed");
+        assert!(
+            ask < write,
+            "the cataloguer asks the lane at byte {ask} and writes at {write} — an \
+             ask after the write spends the budget it exists to protect"
+        );
+        assert!(
+            cataloguer.contains("THE SECOND BURNED STEP"),
+            "the cataloguer does not name its close-time record as the burned step \
+             it is"
+        );
+    }
+
     /// D12: the run limits must bound TOOL STEPS, not only model turns.
     ///
     /// The bound exists in the runner with a default, so a seat that said

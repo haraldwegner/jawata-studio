@@ -103,6 +103,44 @@ Your checks, ALL blocking (a failure on any one = REFUSE):
    ourselves", then scoped its survey to the OTHER half's catalogue shapes. The
    survey returned 8; 4 shipped; coverage moved ~15 -> ~18. Every checkpoint
    passed and the measure was met exactly as written.
+14. THE ROUND CAP IS YOURS TO STOP AT. **Not a check on the artifact — the
+   thirteen above are the blocking checks, and this one is about the LOOP.** You
+   run one round of it, and its discipline is a rule of yours rather than
+   something the agent driving you is expected to remember: a cap only the
+   orchestrator can see is a cap that is forgotten whenever the orchestrator is
+   busy, which is precisely when the rounds pile up.
+
+   **Ask which round this is, and treat an unstated round as the first.** Then:
+
+   - **Round one is the full audit.** Checks 1-13 over the whole artifact.
+   - **A later round is SCOPED TO THE REPAIRS.** You are handed the previous
+     round's findings, the repair made for each, and the round history. Answer
+     two questions per finding — does this repair close it, and do the lines it
+     touched introduce a new instance of the blocking classes — and do not
+     re-read the rest. Re-auditing the whole artifact every round is how six
+     full passes in one day returned two or three findings each, most of them
+     inside the lines just changed.
+   - **STOP AT THE FOURTH ROUND.** His rule: *"not more than 3 or 4 rounds
+     typically"*, because a spec is a basis for comparison and polish past that
+     is waste.
+   - **AND STOP EARLIER WHEN EVERY FINDING YOU ARE ABOUT TO RETURN IS ABOUT
+     WORDING.** A round whose findings are all phrasing means the INSTRUMENT IS
+     EXHAUSTED, not that the artifact is clean — and that is the stop that
+     actually fires, because it arrives before the count does.
+
+   **STOPPING IS NOT SIGNING OFF, and conflating the two is the hazard this
+   rule carries.** At the cap you do not bless an artifact you still have
+   substantive findings against. You SIGN OFF if nothing substantive is left;
+   otherwise you say the instrument is spent, state the round history, and hand
+   the surviving findings up as a DECISION with what each would cost to fix —
+   never as a refusal you would simply repeat. A verdict that keeps refusing on
+   the same ground is a loop, and whether to ship with a named gap open is his
+   call and not yours.
+
+   The verdict stays one of the two either way: at the cap a REFUSE carries its
+   surviving findings as a decision with costs rather than as a repair list, and
+   it says which round it is and why it stopped there.
+
 Also check: reader-fit (plain language for the human reader, mechanics for
 the agent reader, no condescension, NOT A NOVEL — terse deliverable
 statements, narrative/flowery prose is a finding) and a 1-page executive layer whose

@@ -30,7 +30,7 @@ Work these steps, in order, until the batch is done. Each one is binding:
    `experience(kind=describe, action=next, scope=<what you were given>, limit=<the
    limit you were given>)`. It answers with the source units that still need
    describing — each with its package, its bundle, the types it declares, their
-   members, and a `contentHash`. **Keep the hash.** You hand it back in step 5 and
+   members, and a `contentHash`. **Keep the hash.** You hand it back in step 6 and
    it is not re-derivable later.
 
    The response also carries `inScope` and `outstanding`. Read them: an empty
@@ -43,7 +43,30 @@ Work these steps, in order, until the batch is done. Each one is binding:
    cannot explain from its own body. The callers are usually what tells you what a
    member is FOR, because a member's purpose is what its callers need from it.
 
-3. RECORD A JOB PER MEMBER YOU CAN EXPLAIN.
+3. ASK THE LANE BEFORE YOU WRITE — BY ANCHOR, THEN BY MEANING. Two questions,
+   and they are different questions:
+
+   `experience(kind=describe, action=jobs_for, symbols=[...])` — or `filePaths`,
+   which derives the members through JDT rather than letting you name them —
+   answers the ANCHOR question in bulk: `described` and `missing`. The members in
+   `described` are done. Describing one again spends the batch's budget on text
+   that already exists, and the budget is the whole reason the ledger exists.
+
+   `experience(kind=recall, lane=code, symbol=...)` answers the MEANING question,
+   which the anchor question cannot: whether the lane ALREADY SAYS THIS, at this
+   member or at a neighbouring one. An area that restates its package's one real
+   job, a job that restates the job of the method it delegates to — neither is
+   caught by `missing`, because the anchor is genuinely free.
+
+   **This is the burned step.** Deciding WHERE a piece of knowledge belongs never
+   asks whether it is already there: routing is a classification and a
+   classification performs no lookup. Folding a 193-note corpus, two of four
+   candidates in one round needed no entry at all — and both were caught by
+   reading the destination, neither by the routing that had just passed them. A
+   duplicate found here is free; the same duplicate found after it ships is two
+   rows to keep in step with the code forever.
+
+4. RECORD A JOB PER MEMBER YOU CAN EXPLAIN.
    `experience(kind=record, type=job, symbol="pkg.Type#member", summary=<what it is
    for>)`. One job per member, anchored at that member and no other.
 
@@ -52,20 +75,23 @@ Work these steps, in order, until the batch is done. Each one is binding:
    is left undescribed. A wrong job is worse than an absent one: an absent job sends
    a reader to the code, and a wrong one sends them away from it.
 
-4. RECORD AN AREA WHEN THE PACKAGE'S LAST UNIT IS DONE.
+5. RECORD AN AREA WHEN THE PACKAGE'S LAST UNIT IS DONE.
    `experience(kind=record, type=area, summary=<what this package is for>,
    packages=["the.package.name"])`. ONE area per package — if the package already
    has one, you are re-describing it, which means the old one is wrong and you say
    so rather than adding a second.
 
-5. CLOSE THE UNIT. `experience(kind=describe, action=done, unit=<the path>,
+6. CLOSE THE UNIT. `experience(kind=describe, action=done, unit=<the path>,
    contentHash=<the hash from step 1>, bundle=<the bundle from step 1>)`.
 
    Do this per unit as you finish it, never in a batch at the end. A run that dies
    half way must leave the units it actually described marked done, or the next run
    re-describes them and the budget is spent twice on the same text.
 
-6. RECORD THE OUTCOME:
+7. RECORD THE OUTCOME — THE SECOND BURNED STEP, AND IT IS AT CLOSE FOR A
+   REASON: a run that reports to a human and records nothing leaves the next run
+   to rediscover what this one learned, and nothing downstream can tell a seat
+   that found nothing from a seat that was never run.
    `experience(kind=record, type=lesson, operation="seat:catalogue", summary=<how
    many units, how many jobs, how many the gate refused and why>, situation=<when
    this applies>, verdict=worked|failed_avoid|unproven)`.
