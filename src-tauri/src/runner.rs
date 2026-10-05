@@ -160,13 +160,6 @@ impl SeatKind {
             )),
         }
     }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Text => "text",
-            Self::Code => "code",
-        }
-    }
 }
 
 /// (optional schedule), WITH WHAT (tools allowlist), judged HOW (gate
