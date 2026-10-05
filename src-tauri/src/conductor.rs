@@ -882,6 +882,21 @@ mod tests {
             // For the eight that DO render a command, the rule must actually be in the rendered
             // text — a derived paragraph nothing emits is the hollow shape this repo keeps
             // finding.
+            // THE UNMAPPED SEATS ARE NOT ASSERTED OVER THE RENDERER'S OWN OUTPUT.
+            // Until 2026-10-05 the None arm read `rendered = rule`, so every
+            // assertion below it compared `instrument_discipline`'s literal against
+            // substrings of itself — a tautology, about a value production never
+            // produces for those two seats. It passed, and it made the gap look
+            // covered. Worse, the comment above claimed their copy "reaches a reader
+            // through the `/sprint` skill": measured, `skills/sprint.md` contains ZERO
+            // occurrences of "Instrument discipline", and no seat FILE contains one
+            // either — the paragraph exists only at render time.
+            //
+            // So this seat's discipline reaches NO reader today, and that is recorded
+            // rather than asserted away: where it should live is a design question
+            // (hand-write it into two seat files and accept two copies that can drift
+            // from the frontmatter beside them, or have the materializer inject the
+            // derived paragraph), and it is open.
             let rendered = match render_claude_skill(&seat) {
                 Some(r) => {
                     assert!(
@@ -891,7 +906,25 @@ mod tests {
                     );
                     r
                 }
-                None => rule,
+                None => {
+                    assert!(
+                        command_for(&seat.name).is_none(),
+                        "{}: renders no skill yet IS command-mapped — one of the two is wrong",
+                        seat.name
+                    );
+                    assert_eq!(
+                        EMBEDDED_SEATS
+                            .iter()
+                            .filter_map(|(_, b)| crate::runner::parse_seat_definition(b).ok())
+                            .filter(|s| command_for(&s.name).is_none())
+                            .count(),
+                        2,
+                        "exactly two seats live inside /sprint and render no command of \
+                         their own; a third means a seat was added without a command and \
+                         its discipline reaches nobody"
+                    );
+                    continue;
+                }
             };
             match seat.kind {
                 crate::runner::SeatKind::Code => {
@@ -1268,6 +1301,27 @@ mod tests {
     }
 
     /// D12: the run limits must bound TOOL STEPS, not only model turns.
+    ///
+    /// ARCHITECT FINDING F3 DECLINED, 2026-10-05, and the ground is in the field's own
+    /// javadoc. F3 reads this gate as rule 13's shape — a guard over a fact the parser
+    /// could own — and proposes making `max_tool_steps` REQUIRED in frontmatter the way
+    /// `kind` is, after which this text grep deletes. The premise is correct: the grep
+    /// exists only because the field defaults.
+    ///
+    /// It is declined because the cure costs more than the guard. `kind` is required
+    /// because it is a JUDGEMENT with no safe default — nothing can answer for the author
+    /// which kind of work a seat does. A step ceiling is a RUNAWAY BOUND with a safe
+    /// default, and this field's own javadoc says so in the words that settle it: "like
+    /// the wall TTL it is not expected to fire on an ordinary run". `wall_ttl_secs` is the
+    /// same kind of bound and it defaults. Requiring one of four sibling ceilings while
+    /// three default is an asymmetry a reader of a seat file cannot explain, adopted to
+    /// delete one assertion — and it makes `seat_definition_defaults_ceilings`, whose
+    /// whole subject is that ceilings default when absent, incoherent for one field.
+    /// Measured cost of the cure as attempted: 17 failing tests, every one a fixture that
+    /// legitimately omits a defaulted field.
+    ///
+    /// What survives of F3: if all four ceilings are ever made required together, this
+    /// gate deletes with them. The asymmetry is the objection, not the principle.
     ///
     /// The bound exists in the runner with a default, so a seat that said
     /// nothing would still be bounded — which is exactly why this gate reads

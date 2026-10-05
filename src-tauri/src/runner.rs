@@ -2791,9 +2791,18 @@ pub fn load_seat_definitions(
 }
 
 /// The scheduler's pure core: which of these seats are due at the given
-/// wall-clock minute? The manager's scheduler thread calls this once per
-/// minute and triggers a run per due seat; `last_fired` de-duplicates a
-/// minute that gets polled twice.
+/// wall-clock minute?
+///
+/// ITS ONLY CALLER IS [`scheduler_tick`], WHICH PRODUCTION DOES NOT CALL —
+/// see that function's own note. Two claims stood here until 2026-10-05 and
+/// both were false: "the manager's scheduler thread calls this once per
+/// minute", when there is no scheduler thread and this function is in the
+/// hollow-wiring baseline; and that a `last_fired` field de-duplicates a
+/// doubly-polled minute, when no such symbol exists anywhere in this crate.
+/// The second is the worse of the two — an invented field reads as a design
+/// a reader can rely on. The sentence was corrected on `scheduler_tick` in
+/// the same commit that left it standing four lines below, which is why it is
+/// quoted here rather than quietly replaced.
 pub fn due_seats<'a>(
     seats: &'a [SeatDefinition],
     minute: u32,
