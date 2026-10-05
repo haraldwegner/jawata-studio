@@ -115,6 +115,48 @@ impl GateClass {
 }
 
 /// A seat = one narrow agent definition: WHO runs (model/effort), WHEN
+/// WHAT A SEAT'S INPUT IS, which decides whether reaching for a compiler-accurate
+/// instrument is optional.
+///
+/// His ruling, which this encodes: *"the auditor and the communicator read text and use none;
+/// the architect must use them; the production seats already do."*
+///
+/// It is REQUIRED and it is CROSS-CHECKED against `tools`, because a field nothing reads is
+/// one more frontmatter line — a defect this project spent a whole checkpoint on, where every
+/// gate asserted a new field was WRITTEN and none that anything READ it. Here the pairing
+/// decides whether a seat loads at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SeatKind {
+    /// Reads an ARTIFACT — a document, a diff, a report. Its judgement is about prose, there is
+    /// no compiler fact to fetch, and an empty `tools` is correct rather than lazy.
+    Text,
+    /// Reads the CODEBASE. A compiler-accurate answer exists for every question it asks, so an
+    /// empty `tools` is a contradiction: the seat would reach for a text search, which is the
+    /// one thing this product exists to replace.
+    Code,
+}
+
+impl SeatKind {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "text" => Ok(Self::Text),
+            "code" => Ok(Self::Code),
+            other => Err(format!(
+                "kind '{other}': a seat is 'text' (reads an artifact, no tools) or \
+                 'code' (reads the codebase, must name tools)"
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Code => "code",
+        }
+    }
+}
+
 /// (optional schedule), WITH WHAT (tools allowlist), judged HOW (gate
 /// classes + ceilings), and the stance prompt (the markdown body).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -122,6 +164,8 @@ impl GateClass {
 pub struct SeatDefinition {
     pub name: String,
     pub model: String,
+    /// WHAT this seat reads — see [`SeatKind`]. Required; cross-checked against `tools`.
+    pub kind: SeatKind,
     pub effort: Option<String>,
     /// Cron-like five-field schedule (`m h dom mon dow`). Parsed and matched
     /// by `scheduler_tick` (library-level, test-proven); NOT yet fired by the
@@ -150,6 +194,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     let mut name = None;
     let mut model = None;
     let mut effort = None;
+    let mut kind = None;
     let mut schedule = None;
     let mut tools: Vec<String> = Vec::new();
     let mut gate_classes: Vec<GateClass> = Vec::new();
@@ -179,6 +224,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
             "name" => name = Some(value.to_string()),
             "model" => model = Some(value.to_string()),
             "effort" => effort = Some(value.to_string()),
+            "kind" => kind = Some(SeatKind::parse(value)?),
             "schedule" => schedule = Some(value.trim_matches('"').to_string()),
             "tools" => tools = parse_inline_list(value)?,
             "gates" => {
@@ -212,6 +258,28 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     }
     let name = name.ok_or("seat definition needs 'name:'")?;
     let model = model.ok_or("seat definition needs 'model:'")?;
+    // REQUIRED rather than defaulted: a default would answer for the author which kind of work
+    // this seat does, which is the one thing the field is for.
+    let kind = kind.ok_or(
+        "seat definition needs 'kind:' — 'text' (reads an artifact, no tools) or 'code' \
+         (reads the codebase, must name tools)",
+    )?;
+    // THE PAIRING, and it is why the field is not decoration. Each refusal names BOTH halves,
+    // so the author knows which one they meant to change.
+    if kind == SeatKind::Code && tools.is_empty() {
+        return Err(format!(
+            "seat '{name}' declares 'kind: code' but names no tools — a seat that reads the \
+             codebase has a compiler-accurate answer available for every question it asks, so \
+             an empty 'tools' would send it to a text search instead"
+        ));
+    }
+    if kind == SeatKind::Text && !tools.is_empty() {
+        return Err(format!(
+            "seat '{name}' declares 'kind: text' but names tools {tools:?} — a seat that reads \
+             an artifact has no compiler fact to fetch, and an allowlist nothing needs is how \
+             an allowlist stops meaning anything"
+        ));
+    }
     let stance_trimmed = stance.trim();
     if stance_trimmed.is_empty() {
         return Err("seat definition needs a stance body below the frontmatter".into());
@@ -219,6 +287,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     Ok(SeatDefinition {
         name,
         model,
+        kind,
         effort,
         schedule,
         tools,
@@ -2628,6 +2697,7 @@ mod tests {
     const SEAT_FIXTURE: &str = r#"---
 name: echo-seat
 model: claude-sonnet-5
+kind: code
 effort: low
 schedule: "*/30 * * * *"
 tools: [search_symbols, find_references]
@@ -2640,6 +2710,65 @@ You are the echo seat. You document what you are told to document.
 "#;
 
     #[test]
+    /// D12: EVERY SEAT STATES ITS TASK KIND, AND THE KIND HAS TEETH.
+    ///
+    /// His ruling: *"the auditor and the communicator read text and use none; the architect must
+    /// use them; the production seats already do."* So the kind is not a label — it is a claim
+    /// about what the seat's input IS, and the tools field has to agree with it:
+    ///
+    ///   `kind: text` — the seat reads an ARTIFACT (a document, a diff, a report). Its judgement
+    ///   is about prose, there is no compiler fact to fetch, and an empty `tools` is correct.
+    ///
+    ///   `kind: code` — the seat reads the CODEBASE. A compiler-accurate answer exists for every
+    ///   question it asks, so reaching for one is not optional and an empty `tools` is a
+    ///   contradiction rather than a default.
+    ///
+    /// THE PAIRING IS WHAT MAKES THE FIELD LOAD-BEARING. A `kind` nothing cross-checks would be
+    /// one more frontmatter line — this repository spent a whole checkpoint on a field whose
+    /// every gate asserted it was WRITTEN and none that anything READ it. Here the parser
+    /// refuses the two states that cannot be true, so the field decides whether a seat loads.
+    #[test]
+    fn a_code_seat_must_name_tools_and_a_text_seat_must_not() {
+        let with = |kind: &str, tools: &str| {
+            format!(
+                "---\nname: s\nmodel: m\nkind: {kind}\ntools: {tools}\ngates: []\n\
+                 ttl_secs: 60\nmax_iterations: 1\ncost_budget_usd: 0.1\n---\nbody\n"
+            )
+        };
+
+        // The two legitimate shapes load.
+        let text = parse_seat_definition(&with("text", "[]")).expect("a text seat with no tools");
+        assert_eq!(text.kind, SeatKind::Text);
+        assert!(text.tools.is_empty());
+        let code = parse_seat_definition(&with("code", "[search_symbols]")).expect("a code seat");
+        assert_eq!(code.kind, SeatKind::Code);
+
+        // A code seat with no tools is the defect the pairing exists to catch: it would reach
+        // for grep, which is what the whole product refuses.
+        let err = parse_seat_definition(&with("code", "[]")).unwrap_err();
+        assert!(
+            err.contains("kind: code") && err.contains("tools"),
+            "the refusal must name both halves so the author knows which to change; got: {err}"
+        );
+
+        // And a text seat holding tools is the other contradiction: it claims an instrument it
+        // has no question for, which is how an allowlist stops meaning anything.
+        let err = parse_seat_definition(&with("text", "[search_symbols]")).unwrap_err();
+        assert!(err.contains("kind: text"), "got: {err}");
+    }
+
+    /// AND THE FIELD IS REQUIRED, because a default would answer the question for the author.
+    #[test]
+    fn a_seat_without_a_kind_does_not_load() {
+        // NO `kind:` LINE — that is the whole fixture. A sweep that added the field to every
+        // frontmatter in this file put one here too, and this test caught it, which is the
+        // cheapest possible demonstration that the requirement is live.
+        let no_kind = "---\nname: s\nmodel: m\ntools: []\ngates: []\n\
+                       ttl_secs: 60\nmax_iterations: 1\ncost_budget_usd: 0.1\n---\nbody\n";
+        let err = parse_seat_definition(no_kind).unwrap_err();
+        assert!(err.contains("kind"), "got: {err}");
+    }
+
     fn seat_definition_parses_every_field() {
         let seat = parse_seat_definition(SEAT_FIXTURE).expect("parse");
         assert_eq!(seat.name, "echo-seat");
@@ -2656,7 +2785,7 @@ You are the echo seat. You document what you are told to document.
 
     #[test]
     fn seat_definition_rejects_unknown_key_and_missing_name() {
-        let unknown = "---\nname: x\nmodel: m\nttl_seconds: 5\n---\nbody\n";
+        let unknown = "---\nname: x\nmodel: m\nkind: text\nttl_seconds: 5\n---\nbody\n";
         let err = parse_seat_definition(unknown).unwrap_err();
         assert!(err.contains("unknown frontmatter key 'ttl_seconds'"), "{err}");
 
@@ -2667,7 +2796,7 @@ You are the echo seat. You document what you are told to document.
 
     #[test]
     fn seat_definition_defaults_ceilings() {
-        let seat = parse_seat_definition("---\nname: s\nmodel: m\n---\nstance\n").unwrap();
+        let seat = parse_seat_definition("---\nname: s\nmodel: m\nkind: text\n---\nstance\n").unwrap();
         assert_eq!(seat.ceilings, Ceilings::default());
         assert!(seat.gate_classes.is_empty());
         assert!(seat.schedule.is_none());
@@ -3338,10 +3467,10 @@ You are the echo seat. You document what you are told to document.
     fn scheduler_returns_exactly_the_due_seats() {
         let every_30 = parse_seat_definition(SEAT_FIXTURE).unwrap(); // */30 * * * *
         let daily_6 = parse_seat_definition(
-            "---\nname: nightly\nmodel: m\nschedule: \"0 6 * * *\"\n---\nstance\n",
+            "---\nname: nightly\nmodel: m\nkind: text\nschedule: \"0 6 * * *\"\n---\nstance\n",
         )
         .unwrap();
-        let adhoc = parse_seat_definition("---\nname: adhoc\nmodel: m\n---\nstance\n").unwrap();
+        let adhoc = parse_seat_definition("---\nname: adhoc\nmodel: m\nkind: text\n---\nstance\n").unwrap();
         let seats = vec![every_30, daily_6, adhoc];
 
         let at_6_00: Vec<&str> = due_seats(&seats, 0, 6, 1, 1, 0)
@@ -4550,7 +4679,7 @@ You are the echo seat. You document what you are told to document.
         // purity + Always + all three declared classes — the FOUR-class
         // demonstration of the C8 gate at the suite level.
         let seat = parse_seat_definition(
-            "---\nname: full\nmodel: m\ngates: [behavior, tests, docs]\n---\nstance\n",
+            "---\nname: full\nmodel: m\nkind: text\ngates: [behavior, tests, docs]\n---\nstance\n",
         )
         .unwrap();
         let proposal = Proposal {

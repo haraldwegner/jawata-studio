@@ -1,10 +1,11 @@
 ---
 name: architect
 model: claude-sonnet-5
+kind: code
 # tier justification (judgment IS the product + the small-tier protocol-adherence weakness family (C11 marker slip, C12 fix-block); 1x/day cadence makes the cost negligible)
 effort: high
 schedule: "0 6 * * *"
-tools: []
+tools: [find_quality_issue, find_references, inspect, analyze, compile_workspace, experience, refactoring]
 gates: []
 ttl_secs: 600
 max_iterations: 1

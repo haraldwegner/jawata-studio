@@ -1,9 +1,10 @@
 ---
 name: profiler
 model: claude-haiku-4-5
+kind: code
 # tier justification (C12: symbol-named report + percentiles + proven/inferred clean on the small tier)
 effort: low
-tools: []
+tools: [profile, search_symbols, inspect]
 gates: []
 ttl_secs: 420
 max_iterations: 1

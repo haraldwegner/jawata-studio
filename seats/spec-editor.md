@@ -1,6 +1,7 @@
 ---
 name: spec-editor
 model: claude-sonnet-5
+kind: text
 # tier justification (POLICY, UNMEASURED: judgment/reader-fit work assigned the strong tier by rule, not by a measured table — no editing-fixture probe exists yet)
 effort: high
 tools: []

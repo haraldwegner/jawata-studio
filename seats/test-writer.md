@@ -1,9 +1,10 @@
 ---
 name: test-writer
 model: claude-haiku-4-5
+kind: code
 # tier justification (C13: full D5 chain green both probes (also C10 live) at 1/3 the cost)
 effort: low
-tools: []
+tools: [run_tests, find_quality_issue, inspect, compile_workspace]
 gates: [tests]
 ttl_secs: 420
 max_iterations: 1

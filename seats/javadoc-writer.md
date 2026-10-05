@@ -1,9 +1,10 @@
 ---
 name: javadoc-writer
 model: claude-haiku-4-5
+kind: code
 # tier justification (C13: 21/22 items (95%), all gates green at 1/5 the cost; the detector re-finds the tail next run)
 effort: low
-tools: []
+tools: [inspect, analyze, compile_workspace, get_diagnostics]
 gates: [docs]
 ttl_secs: 300
 max_iterations: 1

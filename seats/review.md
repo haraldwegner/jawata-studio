@@ -1,6 +1,7 @@
 ---
 name: review
 model: claude-sonnet-5
+kind: text
 # tier justification (the product is a DELETION from the user's own knowledge store —
 # the two lists must be read correctly and the user's selection obeyed exactly;
 # invoked by hand, so the cost is per-use and rare)

@@ -1,9 +1,10 @@
 ---
 name: debugger
 model: claude-sonnet-5
+kind: code
 # tier justification (C12: haiku violated the verdict single-file protocol 2x (purity refused); sonnet clean + sharper probe)
 effort: high
-tools: []
+tools: [debug, experience, analyze, find_references]
 gates: []
 ttl_secs: 420
 max_iterations: 1

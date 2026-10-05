@@ -1,11 +1,12 @@
 ---
 name: cataloguer
 model: claude-sonnet-5
+kind: code
 # tier justification (the product is a JUDGEMENT repeated many times — "what is this
 # member FOR" is the whole content, and a summary that restates the signature is
 # refused by the store's own gate, so a cheaper tier spends the run on rejections)
 effort: medium
-tools: []
+tools: [inspect, search_symbols, analyze, experience]
 gates: []
 ttl_secs: 900
 max_iterations: 1

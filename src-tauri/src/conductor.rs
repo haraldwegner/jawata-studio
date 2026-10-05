@@ -780,6 +780,53 @@ mod tests {
     }
 
     #[test]
+    /// D12's MEASURE, over the SHIPPED seats rather than a fixture: *"each seat file carries the
+    /// task kind and the tools field."*
+    ///
+    /// The parser's own test proves the pairing refuses the two impossible shapes. It proves
+    /// nothing about the ten files that ship — a fixture passing is what this repository means
+    /// by a gate that cannot fail. This drives every embedded seat through the real parser and
+    /// asserts the population, so a seat added without a kind cannot reach a release.
+    #[test]
+    fn every_shipped_seat_declares_a_kind_that_agrees_with_its_tools() {
+        let mut text = Vec::new();
+        let mut code = Vec::new();
+        for (file, body) in EMBEDDED_SEATS {
+            let seat = crate::runner::parse_seat_definition(body)
+                .unwrap_or_else(|e| panic!("{file} does not parse: {e}"));
+            match seat.kind {
+                crate::runner::SeatKind::Text => {
+                    // The parser already refuses tools here; asserted anyway, because this is
+                    // the claim a reader of the seat files is relying on.
+                    assert!(seat.tools.is_empty(), "{file} is text and names tools");
+                    text.push(seat.name);
+                }
+                crate::runner::SeatKind::Code => {
+                    assert!(!seat.tools.is_empty(), "{file} is code and names none");
+                    code.push(seat.name);
+                }
+            }
+        }
+
+        // THE POPULATION, by his own ruling rather than by whatever the files happen to say:
+        // *"the auditor and the communicator read text and use none; the architect must use
+        // them; the production seats already do."* The architect is named in that sentence, so
+        // its membership is asserted by name — if it ever drifts to `text` this fails loudly
+        // rather than reporting a tidy count.
+        text.sort();
+        code.sort();
+        assert_eq!(
+            text,
+            vec!["report", "review", "spec-auditor", "spec-editor"],
+            "the text seats are the ones whose input is an ARTIFACT"
+        );
+        assert!(
+            code.contains(&"architect".to_string()),
+            "his ruling names the architect as a seat that MUST use the tools; it is {code:?}"
+        );
+        assert_eq!(text.len() + code.len(), EMBEDDED_SEATS.len(), "every seat classified");
+    }
+
     fn every_seat_file_is_embedded_and_the_prose_counts_match() {
         let seats_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../seats");
         let mut on_disk: Vec<String> = fs::read_dir(&seats_dir)
