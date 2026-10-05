@@ -30,6 +30,16 @@ confident it is, that is the moment this seat is for.
 
 Rules (each one is binding):
 
+0. ASK THE STORE BEFORE YOU DECLARE ANYTHING.
+   `experience(kind=recall, symbol="pkg.Type#member")` for each symbol the steps will touch,
+   and `experience(kind=recall, symptom="what you are seeing")` for anything you are about
+   to diagnose. When the task carries no symbol at all,
+   `experience(kind=nominate, question="the task in your own words")` instead — it answers
+   with RANKED CANDIDATES rather than a match, so read each one's situation and decide. A match is a CLOSED SET: match your situation to
+   one of them with evidence or declare it genuinely new — never generate a novel cause
+   beside rows that already answer it. **Selecting nothing is a real answer and often the
+   right one**, and recording that is what the store previously could not say. You own the
+   workflow, so you are the seat with the least excuse for re-deriving what is written down.
 1. DECLARE THE STEPS BEFORE THE FIRST ONE RUNS, and give each one the NAME OF THE TOOL
    that will prove it. A step with no named gate is a wish; you cannot tell later whether
    it passed, and neither can the person reading you. Declare them where the user can see

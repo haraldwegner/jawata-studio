@@ -878,7 +878,7 @@ mod tests {
             // THE RULE IS ASSERTED ON THE SEAT, not only on a channel. Two seats — spec-editor
             // and spec-auditor — live inside `/sprint` and render NO command of their own, so a
             // test that only read `render_claude_skill` would skip them silently and D12's
-            // "each seat's text" would hold for eight of ten. Their copy reaches a reader
+            // "each seat's text" would hold for nine of eleven. Their copy reaches a reader
             // through the `/sprint` skill.
             let rule = instrument_discipline(&seat);
             assert!(
@@ -886,7 +886,7 @@ mod tests {
                 "{}: no instrument-discipline rule — the agent is left to remember it",
                 seat.name
             );
-            // For the eight that DO render a command, the rule must actually be in the rendered
+            // For the nine that DO render a command, the rule must actually be in the rendered
             // text — a derived paragraph nothing emits is the hollow shape this repo keeps
             // finding.
             // THE UNMAPPED SEATS ARE NOT ASSERTED OVER THE RENDERER'S OWN OUTPUT.
@@ -987,7 +987,7 @@ mod tests {
     /// task kind and the tools field."*
     ///
     /// The parser's own test proves the pairing refuses the two impossible shapes. It proves
-    /// nothing about the ten files that ship — a fixture passing is what this repository means
+    /// nothing about the eleven files that ship — a fixture passing is what this repository means
     /// by a gate that cannot fail. This drives every embedded seat through the real parser and
     /// asserts the population, so a seat added without a kind cannot reach a release.
     #[test]
@@ -1207,7 +1207,7 @@ mod tests {
         }
 
         // And it reaches the rendered artifact, not only the contract that
-        // builds it — the eight seats that render a command of their own, on
+        // builds it — the nine seats that render a command of their own, on
         // ALL THREE CHANNELS. The three renderers share one `lane1_contract`
         // call today, so asserting one channel is nearly a tautology over the
         // other two — nearly, and that gap is the point: a renderer that
@@ -1333,7 +1333,7 @@ mod tests {
     /// The bound exists in the runner with a default, so a seat that said
     /// nothing would still be bounded — which is exactly why this gate reads
     /// the seat's own FRONTMATTER TEXT rather than the parsed value. Every
-    /// other ceiling is declared on all ten seats; a step ceiling visible
+    /// other ceiling is declared on all eleven seats; a step ceiling visible
     /// only as a constant in Rust is the one limit a reader of the seat file
     /// cannot see, and "it has a default" is how it would stay that way.
     #[test]
