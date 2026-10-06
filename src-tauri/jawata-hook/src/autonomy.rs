@@ -231,15 +231,25 @@ pub fn note_prompt(base: &Path, session: &str, prompt: &str, machine: bool) -> b
     // The stop side has had this check since an earlier overnight sleep; two
     // lists nothing forces to agree is how the same fix lands in one of them,
     // which happened twice in this crate this week.
-    // THE BLOCK SHAPE DECIDES IT, and the text is only the belt.
+    // THE MARKER DECIDES IT, AND NOTHING MAY CUT IN FRONT OF IT (2026-10-06, his
+    // ruling after it cost him a night). Every harness event stamps itself at the
+    // START of the prompt — `<task-notification>`, `<agent-message from="…">` —
+    // and his keyboard stamps nothing. That is the whole test.
     //
-    // `machine` is the caller's verdict from the EVENT — a `tool_result` block,
-    // a `toolUseResult` field, a `sourceToolAssistantUUID` — which is what his
-    // channel ruling actually asks and what `is_harness_text` can only guess.
-    // The text test stays BESIDE it rather than under it: the transcript entry
-    // is occasionally not findable (not yet flushed, tail too short), and then
-    // `machine` is false by default and the wrapper list is all there is.
-    if machine || crate::stop::is_harness_text(prompt) {
+    // `machine`, the transcript-shape verdict, USED TO SIT IN FRONT OF THIS in an
+    // `||`, which meant either side could cause the ignore. It answered true for
+    // his own typed messages — the needle misses (the turn is not flushed when the
+    // hook runs) and its fallback then reports the shape of the PREVIOUS user turn,
+    // so after any tool call or subagent report his next message inherited the
+    // machine-ness of its neighbour. `outcomes.log` recorded
+    // `autonomy-harness-ignored [block-shape] continue the plan and autocontinue`:
+    // the grant discarded before `arms` was ever consulted.
+    //
+    // It is left COMPUTED and reported below, deliberately — it is evidence about
+    // the inference, not a vote. Swapping the two sides would NOT have fixed this:
+    // an `||` is cut off from whichever side answers first, so the only repair is
+    // that the inference stops deciding.
+    if crate::stop::is_harness_text(prompt) {
         // AND IT SAYS SO. The auditor's strongest finding on this change: a silent
         // early return makes the NEXT failure exactly as invisible as this one was.
         // Today was diagnosable to the second only because `autonomy-changed`
@@ -834,10 +844,23 @@ mod tests {
         note_prompt(&d, "s", "work the plan and autocontinue", false);
         assert_eq!(state(&d, "s"), Autonomy::Granted);
 
-        // Wrapperless prose — invisible to the text belt, which is the point.
-        let handback = "  This agent's report was delivered to you as a message \
-                        from \"autocontinue\". VERDICT: RESOLVABLE";
-        assert!(!crate::stop::is_harness_text(handback));
+        // THE SHAPE A HANDBACK ACTUALLY HAS, read off his own `outcomes.log` on
+        // 2026-10-05 (17:55:48 and 19:26:27): `<agent-message from="…">`. The
+        // fixture was wrapperless prose, which is what justified deciding this from
+        // the transcript instead — and that decision then read HIS OWN TYPING as a
+        // machine event and discarded every grant he gave. The marker is now the
+        // judge and the list names this channel.
+        //
+        // THE GAP, STATED RATHER THAN CLOSED: this javadoc used to assert the
+        // 2026-10-04 handback carried no wrapper. That claim is not reconcilable
+        // with the two wrapped ones above, and no raw payload was captured for
+        // either. If a wrapperless handback is real, the property this test names
+        // does not hold for it, and the symptom is a grant REVOKED — which he can
+        // retype — rather than a grant that can never be armed, which is what the
+        // transcript check cost him.
+        let handback = "<agent-message from=\"ab0846672ae0a4b77\">This agent's report \
+                        mentions \"autocontinue\". VERDICT: RESOLVABLE</agent-message>";
+        assert!(crate::stop::is_harness_text(handback));
         assert!(
             !note_prompt(&d, "s", handback, true),
             "a machine event changes no state, so it reports no change"

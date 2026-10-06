@@ -1401,6 +1401,13 @@ pub fn is_harness_text(t: &str) -> bool {
         || opens_tag(t, "local-command-caveat")
         || opens_tag(t, "command-name")
         || opens_tag(t, "local-command-stdout")
+        // THE SEVENTH CHANNEL, and its absence is why the transcript-inference check
+        // existed at all. A subagent handback arrives as `<agent-message from="…">`,
+        // which this list never named — so it was scored as HIS KEYBOARD and revoked
+        // a live grant. That is what `prompt_channel_is_machine` was built to catch,
+        // and catching it cost the opposite defect: his own typing read as machine.
+        // One entry here is what that engine was standing in for.
+        || opens_tag(t, "agent-message")
 }
 
 /// Does this text open the named tag — with or without attributes on it?
