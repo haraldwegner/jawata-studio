@@ -1150,8 +1150,17 @@
            as a library. Its own block for the same reason the describing block has one. -->
       {#if selectedRow?.catalogue}
         <div class="lane-split">
+          <!-- C13's clause asks for the catalogue "counted as the panel counts them
+               (189 of 298)" — so the denominator is the row's OWN total, the same figure
+               the table above renders, never a literal. A hand-written 298 beside a
+               number the resident reports is the defect this sprint has recorded at
+               almost every checkpoint; `total` is undefined on an engine that cannot say,
+               and then the share is simply not claimed. -->
           <span class="lane lane-catalogue">
             <strong>{selectedRow.catalogue.entries}</strong>
+            {#if selectedRow.total !== undefined}
+              of {selectedRow.total}
+            {/if}
             pattern rows
           </span>
           {#if selectedRow.catalogue.byNamespace}
@@ -1176,9 +1185,11 @@
         </div>
         <p class="hint">
           The architect's template library — patterns it reaches for when a design question
-          has no answer in what we have lived. <strong>The two numbers are two different
-          populations and neither stands for the other</strong>: the first is what this store
-          HOLDS, and a per-namespace figure is what that source last SEEDED. They drift apart
+          has no answer in what we have lived. <strong>These are different populations and
+          none stands for another</strong>: the first is how many of this store's rows are
+          patterns, shown against the store's whole count so the library's SHARE is legible
+          rather than a bare figure; a per-namespace number is what that source last SEEDED.
+          The held and the seeded counts drift apart
           the moment a pattern is added here or retired upstream, so one number in place of
           both would be wrong about one of them. Nothing in ordinary use removes a pattern —
           a re-seed supersedes rows rather than deleting them, so the library only ever grows.
