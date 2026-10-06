@@ -104,6 +104,31 @@
     acceptedSample?: { symbol?: string; summary: string }[];
     /** How many rows the sample was drawn FROM — absent when the resident could not say. */
     acceptedRows?: number;
+    /**
+     * Sprint 28g D27: the PATTERN CATALOGUE, as its own thing.
+     *
+     * His ruling: "They are the pattern templates for the architect and not just
+     * experiences… The value should even be higher than our own experiences." The lane
+     * split above cannot show that — a catalogue row carries a lane like any other row,
+     * so its 189 entries were folded into those counts and the architect's template
+     * library was invisible as a library.
+     *
+     * TWO POPULATIONS, TWO NUMBERS, and the hint says which is which. `entries` is what
+     * this store HOLDS; the per-namespace figure for the upstream fork is what the
+     * EXTRACTION seeded. They are close and they are not the same question, so a single
+     * number would be wrong about one of them.
+     *
+     * Read from the resident, never listed here, for the reason `lanes` gives: a
+     * namespace added upstream needs no change in this file.
+     */
+    catalogue?: {
+      entries: number;
+      byNamespace?: Record<string, number>;
+      awaitingReview?: number;
+      curesClean?: boolean;
+      curesDeclared?: number;
+      curesUnresolved?: number;
+    };
   };
   $: storeRows = buildStoreRows(statuses, storeMode);
   // Self-healing selection: switching store mode regroups the rows and can orphan the key.
@@ -144,7 +169,8 @@
           describedLost: lostDescribeWrites(first?.stats),
           describedAreas: describedAreas(first?.stats),
           acceptedSample: acceptedSample(first?.stats),
-          acceptedRows: acceptedRows(first?.stats)
+          acceptedRows: acceptedRows(first?.stats),
+          catalogue: catalogueBlock(first?.stats)
         }
       ];
     }
@@ -162,7 +188,8 @@
       describedLost: lostDescribeWrites(status.stats),
       describedAreas: describedAreas(status.stats),
       acceptedSample: acceptedSample(status.stats),
-      acceptedRows: acceptedRows(status.stats)
+      acceptedRows: acceptedRows(status.stats),
+      catalogue: catalogueBlock(status.stats)
     }));
   }
 
@@ -188,6 +215,46 @@
       if (Number.isFinite(count)) out[key] = count;
     }
     return Object.keys(out).length > 0 ? out : undefined;
+  }
+
+  /**
+   * Sprint 28g D27 — the catalogue block the resident reports, or undefined on an engine
+   * that does not report one.
+   *
+   * Undefined rather than zeroes: a store whose engine cannot say how many patterns it
+   * holds has not told us there are none, and rendering 0 would be this view inventing
+   * an answer the engine declined to give.
+   */
+  function catalogueBlock(
+    stats: KnowledgeWorkspaceStatus["stats"]
+  ): StoreRow["catalogue"] | undefined {
+    const raw = (stats as Record<string, unknown> | null | undefined)?.catalogue;
+    if (!raw || typeof raw !== "object") return undefined;
+    const source = raw as Record<string, unknown>;
+    const entries = Number(source.entries);
+    if (!Number.isFinite(entries)) return undefined;
+    const ns = source.byNamespace;
+    const byNamespace: Record<string, number> = {};
+    if (ns && typeof ns === "object") {
+      for (const [k, v] of Object.entries(ns as Record<string, unknown>)) {
+        const n = Number(v);
+        if (Number.isFinite(n)) byNamespace[k] = n;
+      }
+    }
+    const cures = source.cures as Record<string, unknown> | undefined;
+    const awaiting = Number(source.awaitingReview);
+    return {
+      entries,
+      byNamespace: Object.keys(byNamespace).length > 0 ? byNamespace : undefined,
+      awaitingReview: Number.isFinite(awaiting) ? awaiting : undefined,
+      curesClean: typeof cures?.clean === "boolean" ? (cures.clean as boolean) : undefined,
+      curesDeclared: Number.isFinite(Number(cures?.declared))
+        ? Number(cures?.declared)
+        : undefined,
+      curesUnresolved: Number.isFinite(Number(cures?.unresolved))
+        ? Number(cures?.unresolved)
+        : undefined
+    };
   }
 
   /** The `describing` block the resident reports, or undefined on an older engine. */
@@ -1074,6 +1141,51 @@
         </p>
       {/if}
 
+      <!-- Sprint 28g D27: THE PATTERN CATALOGUE, as its own thing.
+
+           His ruling: "They are the pattern templates for the architect and not just
+           experiences… The value should even be higher than our own experiences." A
+           catalogue row carries a lane like any other row, so until now its entries were
+           folded into the strip above and the architect's template library was invisible
+           as a library. Its own block for the same reason the describing block has one. -->
+      {#if selectedRow?.catalogue}
+        <div class="lane-split">
+          <span class="lane lane-catalogue">
+            <strong>{selectedRow.catalogue.entries}</strong>
+            pattern rows
+          </span>
+          {#if selectedRow.catalogue.byNamespace}
+            {#each Object.entries(selectedRow.catalogue.byNamespace) as [ns, count] (ns)}
+              <span class="lane">
+                <strong>{count}</strong>
+                {ns}
+              </span>
+            {/each}
+          {/if}
+          {#if selectedRow.catalogue.curesDeclared !== undefined}
+            <span
+              class="lane"
+              class:lane-unclassified={selectedRow.catalogue.curesUnresolved !== 0}
+            >
+              <strong>{selectedRow.catalogue.curesDeclared}</strong>
+              cures{selectedRow.catalogue.curesUnresolved
+                ? `, ${selectedRow.catalogue.curesUnresolved} unresolved`
+                : ", all resolved"}
+            </span>
+          {/if}
+        </div>
+        <p class="hint">
+          The architect's template library — patterns it reaches for when a design question
+          has no answer in what we have lived. <strong>The two numbers are two different
+          populations and neither stands for the other</strong>: the first is what this store
+          HOLDS, and a per-namespace figure is what that source last SEEDED. They drift apart
+          the moment a pattern is added here or retired upstream, so one number in place of
+          both would be wrong about one of them. Nothing in ordinary use removes a pattern —
+          a re-seed supersedes rows rather than deleting them, so the library only ever grows.
+          A namespace with no rows is absent rather than zero, as the lanes are.
+        </p>
+      {/if}
+
       <!-- Sprint 28f Stage 7: how much of the CODE has been described. Its own block and
            not folded into the lanes above: a lane count says what the store HOLDS, this
            says how far a job has got, and one strip mixing the two reads as neither. -->
@@ -1474,6 +1586,13 @@
   .lane-unclassified {
     opacity: 0.7;
     border-style: dashed;
+  }
+  /* Sprint 28g D27: the catalogue total reads as the HEADLINE of its own strip, so a
+     glance separates "what the library holds" from the per-source figures beside it.
+     Weight only — no colour, because the strip already distinguishes blocks by position
+     and a second channel here would compete with the unclassified marker. */
+  .lane-catalogue {
+    font-weight: 600;
   }
   /* Sprint 28f Stage 7: the sample is PROSE to be read, not a row of counts — so it is a
      list with the sentence given the room to be read, where the lane strip above is a
