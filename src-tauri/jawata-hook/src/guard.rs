@@ -115,6 +115,10 @@ const BUILD_TOOLS: &[&str] = &["mvn", "mvnw", "./mvnw", "gradle", "gradlew", "./
 /// this is not a full suite and the gate does not apply.
 const TEST_FILTERS: &[&str] = &["-Dtest=", "-Dit.test=", "--tests", "-DfailIfNoTests"];
 
+/// What a suite script needs before it runs EVERYTHING. Without it the script
+/// selects by compiler reach and is cheap, so the cadence gate leaves it alone.
+const FULL_SUITE_FLAG: &str = "--full";
+
 /// Whether this command runs the WHOLE suite, and under which spelling.
 ///
 /// Two shapes. A project's own suite script by name, and a build tool reaching
@@ -135,6 +139,17 @@ fn full_suite_in(command: &str) -> Option<&'static str> {
         let Some(first) = words.next() else { continue };
         let head = first.rsplit(['/', '\\']).next().unwrap_or(first);
         if let Some(script) = SUITE_SCRIPTS.iter().find(|s| **s == head) {
+            // A suite script now SELECTS by default: it runs only the tests the
+            // coverage evidence says the change reaches, and `--full` is what
+            // asks for everything. So `--full` is the expensive shape this gate
+            // is for, and a bare call is not — the same distinction
+            // TEST_FILTERS already draws for a build tool, pointed the other
+            // way round because here the narrow form is the default.
+            //
+            // Harald, 2026-10-06: "Only full runs for checkpoints."
+            if !segment.split_whitespace().any(|w| w == FULL_SUITE_FLAG) {
+                continue;
+            }
             return Some(script);
         }
         let Some(tool) = BUILD_TOOLS.iter().find(|t| {
@@ -190,8 +205,10 @@ pub fn judge(command: &str) -> Verdict {
                 reason: format!(
                     "Full suite run (`{runner}`) is blocked outside a checkpoint or a release. \
                      The whole suite belongs at the two borders where a claim is actually made; \
-                     between them, run the touched classes and their siblings plus whatever a \
-                     mutation needs. Measured on one sprint: 17 full runs, 3¼ hours, a quarter \
+                     between them, DROP `{FULL_SUITE_FLAG}` — the runner then runs only the \
+                     tests the coverage evidence says your change reaches, needs no declaration, \
+                     and widens itself back with a printed reason wherever that evidence cannot \
+                     carry the claim. Measured on one sprint: 17 full runs, 3¼ hours, a quarter \
                      of the sprint, and ~13 of them provable at the next checkpoint for free. \
                      If this IS one, re-run with `{CHECKPOINT_DECLARATION} <stage or id>` or \
                      `{RELEASE_DECLARATION} <version>` in the command; the declaration is \
@@ -421,8 +438,23 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_full_suite_run_is_denied_and_taught_both_declarations() {
-        let cmd = suite_cmd("");
+    fn a_selecting_run_is_not_the_shape_this_gate_is_for() {
+        // Harald, 2026-10-06: "Only full runs for checkpoints."
+        //
+        // The suite script SELECTS by default now — it runs only the tests the
+        // coverage evidence says the change reaches — so a bare call is the
+        // cheap inner-loop shape and costs nothing worth declaring. Denying it
+        // would make a checkpoint declaration the price of an ordinary test
+        // run, which both slows the loop and empties the declaration log of
+        // meaning: a log in which every run is declared a checkpoint cannot
+        // say which ones were.
+        assert!(!denied(&suite_cmd("")));
+        assert!(!denied(&suite_cmd(" --impacted")));
+    }
+
+    #[test]
+    fn a_full_suite_run_is_denied_and_taught_both_declarations() {
+        let cmd = suite_cmd(" --full");
         assert!(denied(&cmd));
         let Verdict::Deny { reason } = judge(&cmd) else {
             panic!("expected a denial");
@@ -439,8 +471,8 @@ mod tests {
 
     #[test]
     fn either_declaration_lets_the_suite_through() {
-        assert!(!denied(&suite_cmd("  # checkpoint: C4")));
-        assert!(!denied(&suite_cmd("  # release: v4.2.0")));
+        assert!(!denied(&suite_cmd(" --full  # checkpoint: C4")));
+        assert!(!denied(&suite_cmd(" --full  # release: v4.2.0")));
     }
 
     #[test]
@@ -448,7 +480,7 @@ mod tests {
         // `jawata-author:` short-circuits to Allow for the Java gates. With the
         // suite check placed after it, an unrelated authoring window would buy a
         // free full run — the same lattice defect v3.8.1 shipped one gate over.
-        let cmd = format!("jawata-author: a fixture && {}", suite_cmd(""));
+        let cmd = format!("jawata-author: a fixture && {}", suite_cmd(" --full"));
         assert!(denied(&cmd), "an authoring window must not open the suite gate");
     }
 
