@@ -549,6 +549,44 @@ adversarial code audits ran, all six REFUSED, and every one correctly answered
 is not their brief and they will not volunteer it. The architect is the only
 seat whose whole mandate is that question, and it was run zero times.
 
+### ONE auditor, ONE architect, then fix and move on (Harald, 2026-10-06, BINDING)
+
+**The checkpoint runs the auditor ONCE and the architect ONCE. Make the fixes. Only the
+ARCHITECT can stop the work, and only by calling a SHOWSTOPPER — then stop for him.
+Otherwise fix, test, and move on.** His words:
+
+> *"I don't fucking want 2 rounds of audits or even more walking through everything burning
+> my money — one is enough. … So run an auditor and an architect at the checkpoint, make the
+> fixes unless the architect says it is a showstopper. If it is a showstopper than stop for
+> me. If not fix and test and move on. This is the new rule here for the sprints. I don't
+> want you to burn too much. You will fail anyhow and need my correction as in the
+> autocontinue case."*
+
+**THE REASONING IS HIS AND IT IS NOT "audits are not worth it".** It is that MORE ROUNDS DO
+NOT CONVERGE. The correction arrives from him regardless — the autocontinue mechanic took
+dozens of attempts and was settled by one sentence of his, not by another pass — so rounds
+spent chasing the last finding buy a longer record and not a right answer.
+
+**THE FAILURE SHAPE TO REFUSE, because it never arrives announcing itself.** A round-1 audit
+REFUSES, every blocker is folded, and the fold is then treated as needing its own audit —
+*"the folds themselves are unaudited"* reads like diligence and is the trigger for round two.
+It is not a blocker. A folded blocker is closed; the next gate that sees the code is the
+suite and, at the release, S18's verification against the built artifact.
+
+What this REPLACES: nothing in the spec/plan pipeline, which already caps at one round for a
+spec and none for a plan. This is the EXECUTION checkpoint, which was never capped, and the
+gap is how C5 ran a round 2 at all.
+
+**A SECOND ROUND IS NOT FORBIDDEN — IT IS HIS TO ORDER.** The agent does not open one, and
+does not open one by arguing that the fold is unreviewed. If the architect says showstopper,
+the agent stops and he decides what runs next.
+
+**And the agent may not invent this rule's siblings.** C5 closed once on a cap the agent had
+written into its own evidence cells and then cited as authority, with a precedent imported
+from a different sprint's plan file that happened to be in context. Before citing any process
+rule, trace it to a governing section or to his words — two greps, one minute. A rule that
+exists only in prose the agent wrote is not a rule.
+
 ### The escalation trigger (binding)
 
 **A defect introduced by the fixing commit, TWICE IN A ROW, is a DESIGN ALARM.**
@@ -706,6 +744,12 @@ Stages sequential; STOP at every checkpoint with the summary format; every numbe
 annotated expected-vs-actual; never advance after a failure and never deviate from the
 plan without the user's decision; commits per checkpoint; push/tag/release only on the
 user's explicit word; update the plan file when a user-approved change lands.
+
+**What the checkpoint RUNS is capped: one auditor, one architect, fix, test, move on —
+only the architect may stop the work, by calling a showstopper.** See *ONE auditor, ONE
+architect, then fix and move on* above (Harald, 2026-10-06). "Never advance after a
+failure" means a failing GATE, not an open audit finding: a folded blocker is closed, and
+the fold does not earn a second round.
 
 **THE FULL SUITE RUNS AT CHECKPOINTS AND AT RELEASES. NOWHERE ELSE.** (Harald,
 2026-09-08, verbatim: *"Full suite runs at the checkpoints and when we release
