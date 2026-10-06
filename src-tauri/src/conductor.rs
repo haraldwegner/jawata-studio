@@ -312,7 +312,11 @@ fn gate_call_lines(seat: &SeatDefinition) -> String {
             GateClass::Always => {}
             GateClass::Behavior => lines.push(
                 "   - behavior: prove behavior preservation — `run_tests` green on\n\
-                 the touched scope; structural changes go through\n\
+                 the touched scope, with `fullRun=true` so the whole scope\n\
+                 really runs (a package scope otherwise narrows itself to the\n\
+                 tests your change is known to reach, and 'behavior preserved'\n\
+                 proved by a narrowed run is the false green this gate exists\n\
+                 to refuse); structural changes go through\n\
                  `refactoring(action=plan)` + `apply_plan` (parity-gated).\n"
                     .to_string(),
             ),
