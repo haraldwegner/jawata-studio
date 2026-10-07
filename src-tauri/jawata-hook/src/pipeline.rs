@@ -99,6 +99,21 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
         // store's answer can be checked against the call's own subject. In
         // Observe mode (the shipping default) it records what it WOULD have
         // held and falls through; only in Block mode does it stop the call.
+        // Sprint 28g D40a — THE CATALOGUER'S OWN CALL GETS NOTHING, and it short-circuits
+        // the WHOLE arm rather than only the injection at the end of it.
+        //
+        // The first version suppressed the ordinary recall alone and its test failed, which
+        // is how the arm's real shape surfaced: the recall GATE runs first and asks the store
+        // about the same member before the injection is ever reached. Every one of the four
+        // steps here is keyed to a symbol the describing call names — and a crawl names one
+        // per unit, so each unit paid for the lot.
+        Role::ToolRecall if is_describing_call(payload) => Outcome::Silent(
+            SilenceReason::NotThisLanesMoment(
+                "a describing call writes a member's job; prior rows about that same member \
+                 are not candidates it can weigh, and the crawl pays for them per unit"
+                    .into(),
+            ),
+        ),
         Role::ToolRecall => match recall_gate(client, config, payload, store) {
             Some(outcome) => outcome,
             // Sprint 28f Stage 8 D2 — THE AREA, on first opening a file in a package.
@@ -382,6 +397,33 @@ pub(crate) fn tool_name_in(payload: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Whether this tool call is the cataloguer WRITING a description.
+///
+/// Keyed on the VERB rather than on the tool, because `experience` carries `recall`,
+/// `nominate` and `record` too and a nominee is what those are for. The tool name is matched
+/// by suffix: every client prefixes it differently and the workspace's own name is in the
+/// middle (`mcp__jawata-javata-dev__experience`), so a full-name match would hold for one
+/// workspace and fail silently in the next.
+///
+/// It reads `kind` under `tool_input` AND at the top level, which is the duplicate gate's own
+/// recorded lesson: one client nests the call's arguments and the other does not, and a reader
+/// of only the nested shape answers "not describing" for every call from the other.
+fn is_describing_call(payload: &str) -> bool {
+    match tool_name_in(payload) {
+        Some(tool) if tool.ends_with("experience") => {}
+        _ => return false,
+    }
+    let Ok(value) = parse_payload(payload) else {
+        return false;
+    };
+    let describing = [value.get("tool_input"), Some(&value)]
+        .into_iter()
+        .flatten()
+        .filter_map(|scope| scope.get("kind").and_then(|k| k.as_str()))
+        .any(|kind| kind == "describe");
+    describing
 }
 
 /// The file an editing tool is about to write.
@@ -731,6 +773,7 @@ fn recall(
     // Stage 5: the ledger is per session, so a skip is a property of ONE
     // conversation rather than of the machine.
     let session = session_id_in(payload).unwrap_or_default();
+
     let cues = match cues_for(role, payload) {
         Ok(c) => c,
         Err(reason) => return Outcome::Silent(reason),
@@ -2889,6 +2932,71 @@ mod tests {
             &SymbolAsserting,
         );
         assert!(matches!(out, Outcome::Emitted(_)), "{out:?}");
+    }
+
+    /// Sprint 28g D40a — the crawler's own call draws no nominees.
+    ///
+    /// The store here PANICS if asked: the claim is not that the block came back empty but
+    /// that nothing was asked at all, and a stub returning nothing would pass either way.
+    #[test]
+    fn a_describing_call_asks_the_store_nothing() {
+        struct NeverAsk;
+        impl Store for NeverAsk {
+            fn ask(&self, args: serde_json::Value) -> Result<Answer, QueryError> {
+                panic!("a describing call must ask nothing; asked: {args}");
+            }
+            fn ask_value(&self, args: serde_json::Value) -> Result<serde_json::Value, QueryError> {
+                panic!("a describing call must ask nothing; asked: {args}");
+            }
+        }
+        let out = run(
+            Role::ToolRecall,
+            &config("claude-code"),
+            r#"{"tool_name":"mcp__jawata-javata-dev__experience","tool_input":{"kind":"describe","action":"done","unit":"com.example.Thing#close","contentHash":"abc"}}"#,
+            &NeverAsk,
+        );
+        match out {
+            Outcome::Silent(SilenceReason::NotThisLanesMoment(why)) => {
+                assert!(why.contains("describing call"), "{why}");
+            }
+            other => panic!("expected the describing-call silence: {other:?}"),
+        }
+    }
+
+    /// THE CONTROL, and it is the whole reason the suppression is keyed to the verb.
+    ///
+    /// `experience` also carries `record`, and a write is exactly the moment a prior row about
+    /// the same member IS worth seeing. Keying this off the tool name instead would have
+    /// turned the check off at the one call that needs it — and the duplicate it exists to
+    /// catch is the one this sprint measured.
+    #[test]
+    fn a_recording_call_on_the_same_member_still_recalls() {
+        let out = run(
+            Role::ToolRecall,
+            &config("claude-code"),
+            r#"{"tool_name":"mcp__jawata-javata-dev__experience","tool_input":{"kind":"record","type":"lesson","symbol":"com.example.Thing#close"}}"#,
+            &Stub(Ok(Answer::Text("[lesson] a prior row".into()))),
+        );
+        assert!(matches!(out, Outcome::Emitted(_)), "{out:?}");
+    }
+
+    /// The other client's payload shape: the arguments at the top level rather than nested.
+    ///
+    /// The duplicate gate records this exact trap — a reader of only the nested shape answers
+    /// "not describing" for every call from the client that does not nest, which is a
+    /// suppression that silently holds for one client and not the other.
+    #[test]
+    fn a_describing_call_is_recognised_unnested_too() {
+        assert!(is_describing_call(
+            r#"{"tool_name":"mcp__jawata-patterns__experience","kind":"describe","unit":"com.example.Thing#close"}"#
+        ));
+        assert!(!is_describing_call(
+            r#"{"tool_name":"mcp__jawata-patterns__experience","kind":"recall","symbol":"com.example.Thing#close"}"#
+        ));
+        assert!(
+            !is_describing_call(r#"{"tool_name":"Edit","tool_input":{"kind":"describe"}}"#),
+            "a non-experience tool naming a kind is not the cataloguer"
+        );
     }
 
     /// And the TYPED slash-command skip still holds for the prompt role —
