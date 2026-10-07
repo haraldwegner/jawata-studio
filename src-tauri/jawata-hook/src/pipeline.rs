@@ -2934,12 +2934,31 @@ mod tests {
         assert!(matches!(out, Outcome::Emitted(_)), "{out:?}");
     }
 
-    /// Sprint 28g D40a — the crawler's own call draws no nominees.
+    /// Sprint 28g D40a — a describing call is silenced DELIBERATELY, and named as such.
     ///
-    /// The store here PANICS if asked: the claim is not that the block came back empty but
-    /// that nothing was asked at all, and a stub returning nothing would pass either way.
+    /// WHAT THIS PROVES, corrected at C14 after an audit measured the first version's claim and
+    /// found it false. The original fixture passed `"unit":"com.example.Thing#close"` — a member
+    /// FQN. The product sends no such thing: `describeNext` emits `unit` as the unit's own PATH
+    /// and `describeDone` consumes it as one, and none of the four describe actions (`area`,
+    /// `next`, `done`, `jobs_for`) carries a `#`-bearing string at all. That fabricated `#` is
+    /// the single thing that made the recall gate's `member_cues` fire, so the first version's
+    /// mutation went red for a reason production traffic never produces.
+    ///
+    /// MEASURED on the real payload shape, with this arm disabled: the outcome is
+    /// `Silent(PayloadUnreadable("the payload carried no recognised tool input — the event shape
+    /// moved"))` and the panicking store is NEVER asked. So "nothing is asked" was ALREADY TRUE
+    /// before this arm existed, and the deliverable is NOT that it became true.
+    ///
+    /// What the arm actually buys is honesty, and it is worth having: without it a well-formed
+    /// describing call falls through to a diagnostic claiming THE EVENT SHAPE MOVED, which is a
+    /// false report about a call the product makes on purpose. With it, the silence says which
+    /// lane's moment this is not. The assertion below reads that reason rather than the absence,
+    /// because the absence cannot discriminate.
+    ///
+    /// The store still PANICS if asked — kept as a standing floor rather than as this test's
+    /// discriminator, so a future change that DID start asking would fail loudly here.
     #[test]
-    fn a_describing_call_asks_the_store_nothing() {
+    fn a_describing_call_is_silenced_by_name_not_by_accident() {
         struct NeverAsk;
         impl Store for NeverAsk {
             fn ask(&self, args: serde_json::Value) -> Result<Answer, QueryError> {
@@ -2949,18 +2968,41 @@ mod tests {
                 panic!("a describing call must ask nothing; asked: {args}");
             }
         }
-        let out = run(
+        // The shape the product really sends: `unit` is a path, and carries no member cue.
+        let real = run(
             Role::ToolRecall,
             &config("claude-code"),
-            r#"{"tool_name":"mcp__jawata-javata-dev__experience","tool_input":{"kind":"describe","action":"done","unit":"com.example.Thing#close","contentHash":"abc"}}"#,
+            r#"{"tool_name":"mcp__jawata-javata-dev__experience","tool_input":{"kind":"describe","action":"done","unit":"/tmp/proj/src/com/example/Thing.java","contentHash":"abc"}}"#,
             &NeverAsk,
         );
-        match out {
+        match real {
             Outcome::Silent(SilenceReason::NotThisLanesMoment(why)) => {
-                assert!(why.contains("describing call"), "{why}");
+                assert!(
+                    why.contains("describing call"),
+                    "the silence must NAME the describing call rather than report a moved event \
+                     shape, which is what this payload got before the arm existed: {why}"
+                );
             }
-            other => panic!("expected the describing-call silence: {other:?}"),
+            other => panic!("expected the named describing-call silence: {other:?}"),
         }
+
+        // A FORWARD GUARD, labelled as one: no describe action carries a member FQN today, so
+        // this shape is hypothetical. If one ever does, the arm must still win over the recall
+        // gate — which is the only case where this suppression prevents a real store ask.
+        let with_a_member_cue = run(
+            Role::ToolRecall,
+            &config("claude-code"),
+            r#"{"tool_name":"mcp__jawata-javata-dev__experience","tool_input":{"kind":"describe","action":"jobs_for","symbol":"com.example.Thing#close"}}"#,
+            &NeverAsk,
+        );
+        assert!(
+            matches!(
+                with_a_member_cue,
+                Outcome::Silent(SilenceReason::NotThisLanesMoment(_))
+            ),
+            "a describing call that DID carry a member cue must still be silenced by the verb, \
+             not handed to the recall gate: {with_a_member_cue:?}"
+        );
     }
 
     /// THE CONTROL, and it is the whole reason the suppression is keyed to the verb.
