@@ -12,17 +12,19 @@ use std::path::Path;
 /// fails the build on a seat that exists on disk and is registered here).
 /// Materialized into `<config>/seats/` where absent; the materialized copy
 /// wins so a user-edited seat regenerates every channel on redeploy.
-pub const EMBEDDED_SEATS: [(&str, &str); 11] = [
+pub const EMBEDDED_SEATS: [(&str, &str); 13] = [
     ("architect.md", include_str!("../../seats/architect.md")),
     ("cataloguer.md", include_str!("../../seats/cataloguer.md")),
     ("debugger.md", include_str!("../../seats/debugger.md")),
     ("javadoc-writer.md", include_str!("../../seats/javadoc-writer.md")),
     ("main.md", include_str!("../../seats/main.md")),
+    ("pm.md", include_str!("../../seats/pm.md")),
     ("profiler.md", include_str!("../../seats/profiler.md")),
     ("report.md", include_str!("../../seats/report.md")),
     ("review.md", include_str!("../../seats/review.md")),
     ("spec-auditor.md", include_str!("../../seats/spec-auditor.md")),
     ("spec-editor.md", include_str!("../../seats/spec-editor.md")),
+    ("test-manager.md", include_str!("../../seats/test-manager.md")),
     ("test-writer.md", include_str!("../../seats/test-writer.md")),
 ];
 
