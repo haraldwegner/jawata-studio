@@ -100,6 +100,15 @@
      * `described` above draws by carrying the numerator only.
      */
     describedAreas?: string[];
+    /**
+     * The resident's own statement that the list above was TRUNCATED — present only then.
+     *
+     * 2026-10-08. The complement clause the field above documents ("an area with no row
+     * here has not been described yet") is true only when the read was complete, and the
+     * resident caps it. When this is set the panel prints it INSTEAD of that clause: the
+     * producer admits the filter and the view must not go on denying it.
+     */
+    describedAreasTruncated?: string;
     /** A sample of the rows the admission gate accepted — what was written, not how much. */
     acceptedSample?: { symbol?: string; summary: string }[];
     /** How many rows the sample was drawn FROM — absent when the resident could not say. */
@@ -168,6 +177,7 @@
           described: describedSplit(first?.stats),
           describedLost: lostDescribeWrites(first?.stats),
           describedAreas: describedAreas(first?.stats),
+          describedAreasTruncated: describedAreasTruncated(first?.stats),
           acceptedSample: acceptedSample(first?.stats),
           acceptedRows: acceptedRows(first?.stats),
           catalogue: catalogueBlock(first?.stats)
@@ -187,6 +197,7 @@
       described: describedSplit(status.stats),
       describedLost: lostDescribeWrites(status.stats),
       describedAreas: describedAreas(status.stats),
+      describedAreasTruncated: describedAreasTruncated(status.stats),
       acceptedSample: acceptedSample(status.stats),
       acceptedRows: acceptedRows(status.stats),
       catalogue: catalogueBlock(status.stats)
@@ -322,6 +333,22 @@
     const raw = describingBlock(stats)?.describedAreas;
     if (!Array.isArray(raw)) return undefined;
     return raw.filter((p): p is string => typeof p === "string" && p.length > 0);
+  }
+
+  /**
+   * The resident's truncation note for the list above, when it set one.
+   *
+   * Undefined on an older engine, which is why the panel branches on presence rather than
+   * on a boolean: an engine that does not publish this cannot be distinguished from one
+   * whose read was complete, and the complement clause is what an absent note leaves
+   * standing. That is the honest reading — the note is an ADMISSION, so its absence can
+   * only mean "nothing was admitted", never "nothing was truncated".
+   */
+  function describedAreasTruncated(
+    stats: KnowledgeWorkspaceStatus["stats"]
+  ): string | undefined {
+    const raw = describingBlock(stats)?.describedAreasTruncated;
+    return typeof raw === "string" && raw.length > 0 ? raw : undefined;
   }
 
   /**
@@ -1239,14 +1266,28 @@
               <span class="lane">{area}</span>
             {/each}
           </div>
+          <!-- 2026-10-08, the C14 architect watch: THE COMPLEMENT CLAUSE IS ONLY TRUE WHEN
+               THE READ WAS NOT TRUNCATED, and this panel asserted it unconditionally, in
+               bold, to a human. The producer caps that read and now says so in
+               `describedAreasTruncated`; nothing here read it. So the defect was the
+               missing half of the producer's own repair: one side of the wire learned to
+               admit a filter and the other side went on denying it. Where the note is
+               present the universal negative is REPLACED by it rather than printed beside
+               it — two sentences contradicting each other is worse than either alone. -->
           <p class="hint">
             Areas with a summary written — <strong
               >{selectedRow.describedAreas.length} described</strong
-            >. Any area not listed here is <strong>not described yet</strong>. Which areas
-            those ARE cannot be answered from the store: it needs the set of packages a
-            project holds, so <code>experience(kind=describe, action=next)</code> answers
-            it against a loaded project, one row per package in scope — the same place the
-            share above gets its denominator.
+            >.
+            {#if selectedRow.describedAreasTruncated}
+              <strong>This list is not every described area.</strong>
+              {selectedRow.describedAreasTruncated}
+            {:else}
+              Any area not listed here is <strong>not described yet</strong>.
+            {/if}
+            Which areas those ARE cannot be answered from the store: it needs the set of
+            packages a project holds, so <code>experience(kind=describe, action=next)</code>
+            answers it against a loaded project, one row per package in scope — the same
+            place the share above gets its denominator.
           </p>
         {:else}
           <p class="hint">
