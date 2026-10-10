@@ -40,3 +40,22 @@ and two meta-flagged lines are unexplained. One project's transcripts is a sampl
 
 Not folded in code: the classifier unification and the stop-side `seats_in` / `user_asked` twin are a
 behaviour change on the stop side with its own gates, outside C1's written clauses. **Carried, named open.**
+
+## D4 — what was asked of the experience store and the pattern catalogue, and what was selected
+
+**Recorded after the fact (2026-10-11), not before the design.** The consultation was run once C1's
+repair was already committed (`b9a5879`, `c7bc840`, `ba66540`). Stage 6's exit was not met at the time
+C1 closed; this section is the repair, and the lateness is the finding.
+
+Asked: *"a background grant must be ended by the human's own typed message, including a typed slash
+command, but not by machine events that arrive through the same prompt hook with a different wrapper."*
+
+| Candidate | Judged | Why |
+|---|---|---|
+| `8df56474` | selected | It names the same defect, but it was recorded from this repair, so it confirms the fix and did not inform it |
+| `24cf71e2` (a subagent hand-back revokes the grant; outcome `unproven`) | seen, not selected | It describes a different revocation route, covered by the harness-marker keying the grant already uses. That coverage was not re-verified for this section |
+| `80f53023` (a one-shot refusal is unbounded where no human types) | seen, not selected | It applies to the exception token in S0, not to the grant |
+
+No catalogue pattern was selected. The repair is a classification of one prompt shape, and the
+architect's closing design (one `enum Channel` used by both sides) is a refactoring, not a catalogue
+pattern.

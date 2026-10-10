@@ -53,3 +53,21 @@ nothing.
 - The Bash `jawata-author:` early-allow (also opens the shell-write route) — pre-existing, unchanged here.
 - The script-generation guard has no shape check (dormant).
 - The exception's binding to a tool name and not an edit.
+
+## D4 — what was asked of the experience store and the pattern catalogue, and what was selected
+
+**Recorded after the fact (2026-10-11), not before the design.** The consultation was run after the
+classifier and this report were committed, so it informed the record and not the build. Stage 6's exit
+(`ARCHITECT-REPORT-C<n>.md` names what was asked and what was selected) was not met at the time C0
+closed; this section is the repair, and the lateness is the finding.
+
+`experience(kind=nominate)` was asked three questions in the report's own words:
+
+| Asked | Selected | What it changes |
+|---|---|---|
+| A guard classifies a hand edit from the edit's old and new text alone and must refuse the shapes a refactoring tool already performs without refusing new-code authoring | `6794c8ce` (a fixture written to exercise an operation is written in the shape it handles) | It is the mechanism behind §5: the census the rules were tuned on cannot show their false refusals, so 24 of 47 is a fit figure. It supports the carried action, a labelled held-out sample of about 100 refusals, and nothing else |
+| A grant ended by the human's typed message, including a typed slash command, but not by machine events | `8df56474` | Nothing for C0. It belongs to S1/C1 and is the entry recorded from that very fix, so it contributed nothing to the design |
+| Classify the tool calls of an unattended run as code-changing or not | **none** | The store had nothing for it. Nothing selected |
+
+No pattern from the catalogue was nominated or selected: the classifier is a rule set over text, and
+no catalogue entry names that situation.
