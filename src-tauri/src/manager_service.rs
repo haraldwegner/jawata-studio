@@ -11426,6 +11426,23 @@ mod tests {
         assert!(!architect.exists(), "the saved setting survived the redeploy and was honoured");
     }
 
+    /// A client that reads another client's seat directory is not an independent choice for a
+    /// seat's client list: dropping the seat from the SOURCE removes it for both, so offering
+    /// the inheriting client alone would let a seat vanish from both while the view read ticked.
+    #[test]
+    fn only_independent_clients_are_offered_for_a_seats_client_list() {
+        let offered = ManagerService::seat_command_clients();
+        assert!(!offered.is_empty(), "control: there is at least one client to offer");
+        for client in &offered {
+            let row = crate::client_dialect::client(&client.id).expect("a roster client");
+            assert!(
+                row.seats_inherited_from.is_empty(),
+                "{} inherits another client's seat directory and must not be offered",
+                client.id
+            );
+        }
+    }
+
     /// An unreadable settings file stops the seat commands for that deploy and SAYS so. Falling
     /// back to "no settings" would re-enable a seat the user turned off.
     #[test]
