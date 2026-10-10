@@ -420,19 +420,31 @@ const INTERPRETER_ROUTES: &[&str] = &[
 /// backslash; and read as a shell command it takes no write route of its own,
 /// which is what stops `os.system('sed -i … Foo.java')` being called a sentence.
 ///
-/// ERRORS GO TOWARD DENIAL. A stray apostrophe flips the parity of every quote
-/// after it; the result is that a bare path reads as bare and is denied, or that
-/// prose reads as bare and is denied. The one direction that matters — a path
-/// read as prose — needs a literal that holds whitespace, starts like prose, and
-/// is a path: a spaced relative path, which a Java source tree does not have.
-/// Accepted and stated. A goodwill failure that crafts the quoting is outside
-/// what a text predicate can stop and is what the audit ledger exists for.
+/// ERRORS GO TOWARD DENIAL, BY CONSTRUCTION RATHER THAN BY HOPE. An apostrophe between two
+/// letters is a word, not a quote, and is ignored by `quote_frames`; any quote still left
+/// open after that means the text is not read the way it is written, and the whole command
+/// is denied. (The first version said a stray apostrophe could only flip prose to bare. It
+/// can flip a bare path INTO a literal: `python3 w.py "don't" Foo.java "ok"` was allowed.
+/// Found by the C4 audit.)
+///
+/// What remains, stated: a single-line literal with whitespace INSIDE, no padding at the
+/// edges, not starting like a path, that is nonetheless a path — a spaced relative path,
+/// which a Java source tree does not have — or a multi-line literal assembled into one by
+/// the script (`'x\nsrc/Foo.java'.splitlines()[1]`). A goodwill failure that crafts the
+/// quoting is outside what a text predicate can stop and is what the audit ledger is for.
 fn only_prose_mentions_java(command: &str) -> bool {
     let routes = write_routes(command);
     if routes.is_empty() || !routes.iter().all(|r| INTERPRETER_ROUTES.contains(r)) {
         return false;
     }
     let frames = quote_frames(command);
+    // A quote left open ANYWHERE means the text is not read the way it is written, and the
+    // frames after it are on the wrong parity: `python3 w.py "don't" Foo.java "ok"` pairs the
+    // quote before `ok` with the one after `don't`, so Foo.java lands inside a "literal" and
+    // reads as prose. An unbalanced command is not read at all — it is denied. (C4 audit.)
+    if frames.iter().any(|f| f.close.is_none()) {
+        return false;
+    }
     let mut found = false;
     for (at, _) in command.match_indices(".java") {
         found = true;
@@ -449,7 +461,13 @@ fn only_prose_mentions_java(command: &str) -> bool {
         };
         let literal = &command[frame.open + 1..close];
         let begins_like_a_path = literal.trim_start().starts_with(['/', '~', '.']);
+        // A single-line literal with whitespace at either end is how a path hides from the
+        // whitespace rule: `'src/Foo.java '.strip()` is a sentence by every other test here
+        // and a path one call later. A multi-line literal is a document body, whose edges are
+        // newlines by construction, so it is exempt from this one check only.
+        let padded = !literal.contains('\n') && literal != literal.trim();
         if !literal.contains(char::is_whitespace)
+            || padded
             || begins_like_a_path
             || literal.contains('\\')
             || !write_routes(literal).is_empty()
@@ -474,12 +492,19 @@ struct QuoteFrame {
 fn quote_frames(command: &str) -> Vec<QuoteFrame> {
     let mut done: Vec<QuoteFrame> = Vec::new();
     let mut open: Vec<(char, usize)> = Vec::new();
-    let mut chars = command.char_indices();
+    let mut chars = command.char_indices().peekable();
+    let mut previous: Option<char> = None;
     while let Some((i, c)) = chars.next() {
+        let before = previous;
+        previous = Some(c);
         match c {
             '\\' => {
                 chars.next();
             }
+            // "don't", "it's": an apostrophe with a letter or digit on both sides is part of a
+            // word. Read as a quote it would open a literal that swallows the real ones.
+            '\'' if before.is_some_and(char::is_alphanumeric)
+                && chars.peek().is_some_and(|(_, n)| n.is_alphanumeric()) => {}
             '\'' | '"' => match open.last() {
                 Some(&(q, start)) if q == c => {
                     open.pop();
@@ -748,6 +773,13 @@ mod tests {
         // The same, one line, with the shell's own quoting around Python's.
         assert!(!denied("python3 -c \"open('a.md','w').write('see Foo.java')\""));
         assert!(!denied("python3 -c 'open(\"a.md\",\"w\").write(\"see Foo.java\")'"));
+        // Prose with an apostrophe in a word is still prose: the apostrophe is not a quote.
+        assert!(!denied("python3 -c \"open('a.md','w').write('don't forget Foo.java')\""));
+        // A document body assembled over several lines keeps its newline edges and is exempt
+        // from the padding rule, which is meant for one-line literals only.
+        assert!(!denied(
+            "python3 - <<'PY'\nopen('a.md','w').write('''\nsee Foo.java here\n''')\nPY"
+        ));
     }
 
     /// The other half of the cut: every shape that stays a write. Each is a
@@ -775,6 +807,13 @@ mod tests {
             "python3 -c \"x = 'see Foo.java",
             // a stray apostrophe in a comment must not swallow the real path
             "python3 - <<'PY'\n# don't\nopen('Foo.java','w')\nPY",
+            // C4 audit: an apostrophe INSIDE A WORD left a quote open and put the parity of
+            // every later quote one off, so the bare Foo.java was read as the inside of a
+            // literal that contained whitespace. A quote left open anywhere is a deny.
+            "python3 w.py \"don't\" Foo.java \"ok\"",
+            // C4 audit: padding is how a path hides from the whitespace rule.
+            "python3 -c \"open('src/Foo.java '.strip(),'w')\"",
+            "python3 -c \"open(' src/Foo.java','w')\"",
         ] {
             assert!(denied(cmd), "a write to Java was let through as prose: {cmd}");
         }
