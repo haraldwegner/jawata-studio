@@ -773,6 +773,35 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// 28g D23: the plan auditor checks the wire, not the part. The clause lives in two
+    /// texts — the hosted seat and the /sprint skill the front-door agent reads — and a
+    /// clause in one of them is a clause the other auditor never applies.
+    #[test]
+    fn both_auditor_texts_refuse_a_gate_that_only_exercises_the_fresh_function() {
+        let seat = EMBEDDED_SEATS
+            .iter()
+            .find(|(name, _)| *name == "spec-auditor.md")
+            .map(|(_, body)| *body)
+            .expect("the spec-auditor seat is embedded");
+        let skill = include_str!("../../skills/sprint.md");
+        for (what, text) in [("seat", seat), ("skill", skill)] {
+            for needle in [
+                "STAGE GATES CHECK THE WIRE, NOT THE PART",
+                "PRODUCTION caller through the incoming call hierarchy",
+                "called only\n   by tests is a BLOCKING finding",
+                "final\n   consumer in the live process",
+                "WHOLE cumulative set",
+            ] {
+                // The two texts wrap differently, so compare with whitespace folded.
+                let fold = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+                assert!(
+                    fold(text).contains(&fold(needle)),
+                    "the {what} lost D23's clause: {needle:?}"
+                );
+            }
+        }
+    }
+
     fn unique_tempdir(label: &str) -> std::path::PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);

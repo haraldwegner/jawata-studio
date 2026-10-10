@@ -68,6 +68,19 @@ Your checks, ALL blocking (a failure on any one = REFUSE):
    shipped as a flag and chosen by nobody. Default it on at the choke, or do
    not build it.
 
+   FOR A PLAN, THE STAGE GATES CHECK THE WIRE, NOT THE PART (28g D23).
+   REFUSE THIS SHAPE: a stage whose gate only exercises the freshly built
+   function — its own unit test, called by itself. That gate is green the day
+   the function is written and says nothing about whether anything reaches it;
+   a green suite over a part nobody calls is how a capability ships
+   unemployed. Each stage's gate must (a) show, for every new public member, a
+   PRODUCTION caller through the incoming call hierarchy — a member called only
+   by tests is a BLOCKING finding, not a note; (b) name the capability's final
+   consumer in the live process; (c) add one promise to a cumulative
+   end-to-end gate, and the plan must run the WHOLE cumulative set at every
+   later checkpoint, not only the newest promise. A plan may not satisfy (a)
+   by pointing at the test that calls it.
+
 11. NO ACTIVITY REWRITTEN AS A PROPERTY — for every verb in the baseline
    that names WORK (design, investigate, decide, measure, prototype),
    confirm the artifact still names work, attached to something
