@@ -742,6 +742,7 @@ mod tests {
     fn what_merely_mentions_the_agent_or_attaches_another_one_is_not_refused() {
         // Command position, not a substring: these are the false refusals a looser rule makes.
         assert!(!denied("echo 'attach -javaagent:jacocoagent.jar by hand'"));
+        assert!(!denied("echo -javaagent:jacocoagent.jar"), "the flag as a bare word of another command");
         assert!(!denied("git commit -m 'drop the jacoco agent download'"));
         assert!(!denied("ls ~/.m2/repository/org/jacoco"));
         // A different agent is a different job, and "any -javaagent" would refuse every profiler.
