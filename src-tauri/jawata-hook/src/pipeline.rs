@@ -355,21 +355,22 @@ fn guard(client: Client, payload: &str) -> Outcome {
     // survive" used to be separate text rules; the bracket cannot be invoked without
     // an absolute directory, so the working-directory rule RETIRED with it instead of
     // being policed beside it.
-    if let Some(crate::guard::Verdict::Deny { reason }) = crate::local::unbracketed_gate(&command) {
-        return emit_permission(client, false, reason);
-    }
-
+    let capture = crate::local::unbracketed_gate(&command);
     let verdict = crate::guard::judge(&command);
     // D35: every full-suite attempt leaves one line — what it was, whether it was let
-    // through, and the reason it declared — so the cadence can be READ afterwards
-    // instead of reconstructed from memory.
+    // through, and the reason it declared — so the cadence can be READ afterwards. It is
+    // written BEFORE the capture rule can return: a plain unbracketed `--full` is the
+    // commonest refused attempt and used to leave no line at all.
     if let Some(runner) = crate::guard::full_suite_in(&command) {
         let (kind, reason) = crate::guard::suite_declaration_in(&command);
-        let allowed = matches!(verdict, crate::guard::Verdict::Allow);
+        let allowed = capture.is_none() && matches!(verdict, crate::guard::Verdict::Allow);
         emit_gate_signal(
             crate::cadence::SIGNAL,
             &crate::cadence::detail(allowed, kind, &reason, &runner),
         );
+    }
+    if let Some(crate::guard::Verdict::Deny { reason }) = capture {
+        return emit_permission(client, false, reason);
     }
     let emission = match verdict {
         crate::guard::Verdict::Allow => Emission::Permission {

@@ -6432,8 +6432,8 @@ fi
 /// "would be satisfied while Read walked out of the workspace" — only the
 /// registration withheld the tools.
 ///
-/// The other rules cannot leak onto a reading tool: `gate_without_absolute_cd`,
-/// `uncaptured_gate` and `guard::judge` all read the COMMAND, which is empty
+/// The other rules cannot leak onto a reading tool: `unbracketed_gate` and
+/// `guard::judge` all read the COMMAND, which is empty
 /// for a Read, and the answering-then-working gate keys on `is_mutating_tool`.
 /// A path rendered as a COMMAND the client's shell will actually execute.
 ///

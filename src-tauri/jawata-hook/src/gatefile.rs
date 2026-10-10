@@ -52,39 +52,101 @@ pub enum GateKind {
 /// Interpreters whose first non-flag argument is the script they run.
 const SHELLS: &[&str] = &["bash", "sh", "zsh", "dash"];
 
-/// Wrappers that run what follows them.
-const WRAPPERS: &[&str] = &["sudo", "env", "time", "nice", "command", "nohup", "exec", "npx"];
+/// Wrappers that run what follows them — ONE table, shared by every rule that asks
+/// "what does this segment run". There used to be two (this one and `guard::PREFIXES`)
+/// and they disagreed on `xargs`, `exec` and `npx`, so two rules could read one command
+/// differently.
+const WRAPPERS: &[&str] =
+    &["sudo", "env", "time", "nice", "command", "nohup", "exec", "npx", "xargs", "timeout", "eval"];
 
 fn basename(word: &str) -> &str {
     word.rsplit(['/', '\\']).next().unwrap_or(word)
 }
 
-/// The words of a segment past leading wrappers and `NAME=value` assignments.
-fn command_words(segment: &str) -> Vec<&str> {
-    segment
-        .split_whitespace()
-        .skip_while(|w| {
-            WRAPPERS.contains(&basename(w)) || (w.contains('=') && !w.starts_with('-') && !w.contains('/'))
-        })
-        .collect()
+/// Words of a command, quote-aware: whitespace separates outside quotes, the quotes
+/// themselves are removed, a backslash escapes the next character outside single quotes.
+pub fn shell_words(s: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut cur = String::new();
+    let mut has = false;
+    let (mut single, mut double) = (false, false);
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if !single => {
+                if let Some(n) = chars.next() {
+                    cur.push(n);
+                    has = true;
+                }
+            }
+            '\'' if !double => {
+                single = !single;
+                has = true;
+            }
+            '"' if !single => {
+                double = !double;
+                has = true;
+            }
+            c if c.is_whitespace() && !single && !double => {
+                if has {
+                    words.push(std::mem::take(&mut cur));
+                    has = false;
+                }
+            }
+            c => {
+                cur.push(c);
+                has = true;
+            }
+        }
+    }
+    if has {
+        words.push(cur);
+    }
+    words
+}
+
+/// The words of a segment past leading wrappers, their arguments and `NAME=value`
+/// assignments.
+pub fn command_words(segment: &str) -> Vec<String> {
+    let all = shell_words(segment);
+    let mut i = 0;
+    while i < all.len() {
+        let w = &all[i];
+        let bare = basename(w);
+        if WRAPPERS.contains(&bare) {
+            i += 1;
+            // `timeout 600 cmd`: the duration is the wrapper's, not the command's.
+            if bare == "timeout" {
+                while i < all.len()
+                    && (all[i].starts_with('-') || all[i].chars().next().is_some_and(|c| c.is_ascii_digit()))
+                {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if w.contains('=') && !w.starts_with('-') && !w.contains('/') {
+            i += 1;
+            continue;
+        }
+        break;
+    }
+    all[i..].to_vec()
 }
 
 /// The script a segment RUNS, as written — `None` when it runs something that
 /// is not a script path, or an inline program (`bash -c ...`).
 pub fn script_run_by(segment: &str) -> Option<String> {
     let words = command_words(segment);
-    let head = *words.first()?;
+    let head = words.first()?;
     if SHELLS.contains(&basename(head)) {
-        let script = words.iter().skip(1).find(|w| !w.starts_with('-'))?;
-        // `bash -c "..."` carries a program, not a path; the first non-flag
-        // word there is that program's text.
-        if words.iter().skip(1).any(|w| *w == "-c") {
+        if words.iter().skip(1).any(|w| w == "-c") {
             return None;
         }
-        return Some(script.trim_matches(['"', '\'']).to_string());
+        return words.iter().skip(1).find(|w| !w.starts_with('-')).cloned();
     }
     if head.contains('/') || head.ends_with(".sh") {
-        return Some(head.trim_matches(['"', '\'']).to_string());
+        return Some(head.clone());
     }
     None
 }
@@ -121,21 +183,22 @@ pub fn declared(script: &str, base: &Path) -> Option<GateKind> {
 ///
 /// The bracket must not become a way to hide a run from the rules that police WHAT is
 /// run. Its head is the hook binary, so without this a whole-suite run wrapped in it
-/// would pass the cadence gate unseen — the capture rule is satisfied by the bracket,
-/// and the cadence rule would never learn there was a suite inside. The directory is
-/// the bracket's own `--cd`, which is also where a relative script inside is read from.
+/// would pass the cadence gate unseen. The directory is the bracket's own `--cd`, which
+/// is also where a relative script inside is read from.
 pub fn bracket_inner(segment: &str) -> Option<(PathBuf, String)> {
     let words = command_words(segment);
     let head = basename(words.first()?);
-    if !head.starts_with("jawata-hook") || words.get(1) != Some(&crate::bracket::SUBCOMMAND) {
+    if !head.starts_with("jawata-hook")
+        || words.get(1).map(String::as_str) != Some(crate::bracket::SUBCOMMAND)
+    {
         return None;
     }
     let dir = words
         .iter()
-        .position(|w| *w == "--cd")
+        .position(|w| w == "--cd")
         .and_then(|i| words.get(i + 1))
-        .map(|d| PathBuf::from(d.trim_matches(['"', '\''])))?;
-    let split = words.iter().position(|w| *w == "--")?;
+        .map(PathBuf::from)?;
+    let split = words.iter().position(|w| w == "--")?;
     let inner = words[split + 1..].join(" ");
     (!inner.is_empty()).then_some((dir, inner))
 }
@@ -147,12 +210,18 @@ fn is_long_tool(segment: &str) -> bool {
     let Some(head) = words.first().map(|w| basename(w)) else {
         return false;
     };
-    let second = words.get(1).copied().unwrap_or("");
+    // `cargo +nightly test`: a toolchain selector is not the subcommand.
+    let rest: Vec<&str> =
+        words.iter().skip(1).map(String::as_str).filter(|w| !w.starts_with('+')).collect();
+    let second = rest.first().copied().unwrap_or("");
+    let third = rest.get(1).copied().unwrap_or("");
     head == "mvn"
         || head == "mvnw"
         || head == "svelte-check"
         || (head == "cargo" && (second == "test" || second == "build"))
         || (head == "vite" && second == "build")
+        || (head == "npm"
+            && (second == "test" || (second == "run" && matches!(third, "check" | "build" | "test"))))
 }
 
 /// Whether this segment RUNS a long gate: a long tool, or a script that declares itself one.
@@ -174,8 +243,7 @@ pub fn dir_after(segment: &str, base: &Path) -> PathBuf {
     let words = command_words(segment);
     if words.first().map(|w| basename(w)) == Some("cd") {
         if let Some(target) = words.get(1) {
-            let target = target.trim_matches(['"', '\'']);
-            let p = Path::new(target);
+            let p = Path::new(target.as_str());
             return if p.is_absolute() { p.to_path_buf() } else { base.join(p) };
         }
     }
@@ -186,6 +254,159 @@ pub fn dir_after(segment: &str, base: &Path) -> PathBuf {
 /// sets to the session's.
 pub fn start_dir() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// One command of a command line, with what a rule needs to judge it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Segment {
+    /// What this segment runs. For a bracket call, the command it WRAPS.
+    pub text: String,
+    /// Where it runs: the cumulative effect of every earlier `cd`, or a bracket's `--cd`.
+    pub dir: PathBuf,
+    /// Whether it is the inside of a bracket call.
+    pub bracketed: bool,
+}
+
+/// Split a command line into the commands it runs — ONE splitter for every rule.
+///
+/// Three rules used to split the same command three ways (`&&`/`;` in the capture rule,
+/// `| ; \n &` in the guard, whitespace in the head test), so one command could be judged
+/// differently by two rules: a newline between `cd` and a gate hid the gate from the
+/// capture rule, and a separator inside a quoted commit message handed a rule a
+/// "command" that was prose. This is quote-aware (a separator inside quotes is text),
+/// drops comments, skips heredoc bodies (they are data), unwraps `bash -c "..."` and
+/// `eval "..."` into the commands they carry, sees through a bracket call, and tracks
+/// `cd`.
+pub fn segments(command: &str, start: &Path) -> Vec<Segment> {
+    let mut out = Vec::new();
+    let mut base = start.to_path_buf();
+    collect(command, &mut base, &mut out, 0);
+    out
+}
+
+fn collect(command: &str, base: &mut PathBuf, out: &mut Vec<Segment>, depth: usize) {
+    for piece in split_commands(command) {
+        let here = base.clone();
+        *base = dir_after(&piece, base);
+        if let Some((dir, inner)) = bracket_inner(&piece) {
+            out.push(Segment { text: inner, dir, bracketed: true });
+            continue;
+        }
+        // `bash -c "a; b"` / `eval "a; b"`: the quoted string is itself a command line.
+        if depth < 4 {
+            let words = shell_words(&piece);
+            let carried = match words.first().map(|w| basename(w)) {
+                Some(h) if SHELLS.contains(&h) => words
+                    .iter()
+                    .position(|w| w == "-c")
+                    .and_then(|i| words.get(i + 1))
+                    .cloned(),
+                Some("eval") if words.len() > 1 => Some(words[1..].join(" ")),
+                _ => None,
+            };
+            if let Some(inner) = carried {
+                let mut inner_base = here.clone();
+                collect(&inner, &mut inner_base, out, depth + 1);
+                continue;
+            }
+        }
+        out.push(Segment { text: piece, dir: here, bracketed: false });
+    }
+}
+
+/// The commands of a line, split at separators OUTSIDE quotes. Comments and heredoc
+/// bodies are not commands and are dropped.
+fn split_commands(command: &str) -> Vec<String> {
+    let chars: Vec<char> = command.chars().collect();
+    let mut pieces = Vec::new();
+    let mut cur = String::new();
+    let (mut single, mut double) = (false, false);
+    let mut heredoc: Option<String> = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let prev = if i == 0 { ' ' } else { chars[i - 1] };
+        if !single && !double {
+            // A comment runs to the end of the line.
+            if c == '#' && (prev.is_whitespace() || cur.trim().is_empty()) {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            // `<<WORD` / `<<'WORD'` / `<<-WORD`: remember the terminator; the body is
+            // skipped at the end of this line.
+            if c == '<' && chars.get(i + 1) == Some(&'<') && chars.get(i + 2) != Some(&'<') {
+                let mut j = i + 2;
+                if chars.get(j) == Some(&'-') {
+                    j += 1;
+                }
+                while chars.get(j).is_some_and(|c| *c == ' ') {
+                    j += 1;
+                }
+                let mut word = String::new();
+                while let Some(&w) = chars.get(j) {
+                    if w.is_whitespace() || ";&|()".contains(w) {
+                        break;
+                    }
+                    if w != '\'' && w != '"' {
+                        word.push(w);
+                    }
+                    j += 1;
+                }
+                if !word.is_empty() {
+                    heredoc = Some(word);
+                }
+                cur.push_str(&chars[i..j].iter().collect::<String>());
+                i = j;
+                continue;
+            }
+            if c == '\n' {
+                if let Some(delim) = heredoc.take() {
+                    pieces.push(std::mem::take(&mut cur));
+                    i += 1;
+                    while i < chars.len() {
+                        let mut j = i;
+                        while j < chars.len() && chars[j] != '\n' {
+                            j += 1;
+                        }
+                        let line: String = chars[i..j].iter().collect();
+                        i = j + 1;
+                        if line.trim() == delim {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+            }
+            if matches!(c, '\n' | ';' | '&' | '|' | '(' | ')' | '`') {
+                pieces.push(std::mem::take(&mut cur));
+                i += 1;
+                continue;
+            }
+        }
+        match c {
+            '\\' if !single => {
+                cur.push(c);
+                if let Some(n) = chars.get(i + 1) {
+                    cur.push(*n);
+                    i += 1;
+                }
+            }
+            '\'' if !double => {
+                single = !single;
+                cur.push(c);
+            }
+            '"' if !single => {
+                double = !double;
+                cur.push(c);
+            }
+            _ => cur.push(c),
+        }
+        i += 1;
+    }
+    pieces.push(cur);
+    pieces.into_iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()
 }
 
 #[cfg(test)]
@@ -278,6 +499,63 @@ mod tests {
         assert!(bracket_inner("./a.sh 4 --full").is_none());
         assert!(bracket_inner("jawata-hook-guard bracket --cd /repo --out /o --").is_none(), "nothing wrapped");
         assert!(bracket_inner("echo jawata-hook-guard bracket --cd /r -- x").is_none(), "named, not run");
+    }
+
+    fn texts(cmd: &str) -> Vec<String> {
+        segments(cmd, Path::new("/w")).into_iter().map(|s| s.text).collect()
+    }
+
+    #[test]
+    fn one_splitter_cuts_on_every_separator_outside_quotes() {
+        assert_eq!(vec!["a", "b", "c", "d", "e", "f"], texts("a && b || c ; d\ne & f"));
+        assert_eq!(vec!["a", "b"], texts("a | b"));
+        // `$(` leaves a bare `$` on the piece before it; the command inside is its own segment.
+        assert_eq!(vec!["a $", "b", "c"], texts("a $(b) && (c)"));
+    }
+
+    #[test]
+    fn a_separator_inside_quotes_is_text() {
+        assert_eq!(vec!["git commit -m \"a; b && c\""], texts("git commit -m \"a; b && c\""));
+        assert_eq!(vec!["echo 'x | y'"], texts("echo 'x | y'"));
+    }
+
+    #[test]
+    fn comments_and_heredoc_bodies_are_not_commands() {
+        assert_eq!(vec!["echo hi"], texts("echo hi # && mvn test"));
+        assert_eq!(vec!["cat <<'EOF'", "echo after"], texts("cat <<'EOF'\nmvn test\n./x.sh\nEOF\necho after"));
+        assert_eq!(vec!["echo a#b"], texts("echo a#b"), "a hash inside a word is not a comment");
+    }
+
+    #[test]
+    fn a_shell_c_string_and_eval_are_commands_in_their_own_right() {
+        assert_eq!(vec!["mvn test", "echo done"], texts("bash -c \"mvn test; echo done\""));
+        assert_eq!(vec!["mvn test"], texts("eval mvn test"));
+        assert_eq!(vec!["mvn test"], texts("eval \"mvn test\""));
+    }
+
+    #[test]
+    fn a_cd_on_an_earlier_line_moves_every_later_segment() {
+        let segs = segments("cd /a/b\ncd c\n./x.sh", Path::new("/w"));
+        assert_eq!(PathBuf::from("/a/b/c"), segs.last().unwrap().dir);
+    }
+
+    #[test]
+    fn a_bracket_call_becomes_its_wrapped_command_run_where_the_bracket_says() {
+        let segs = segments(
+            "/h/jawata-hook-guard bracket --cd /repo --out /tmp/o -- ./a.sh 4 --full",
+            Path::new("/w"),
+        );
+        assert_eq!(1, segs.len());
+        assert!(segs[0].bracketed);
+        assert_eq!("./a.sh 4 --full", segs[0].text);
+        assert_eq!(PathBuf::from("/repo"), segs[0].dir);
+    }
+
+    #[test]
+    fn words_are_read_quote_aware() {
+        assert_eq!(vec!["a b", "c"], shell_words("'a b' c"));
+        assert_eq!(vec!["a b", "c"], shell_words("\"a b\" c"));
+        assert_eq!(vec!["a b"], shell_words("a\\ b"));
     }
 
     #[test]

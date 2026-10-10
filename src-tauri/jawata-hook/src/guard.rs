@@ -143,29 +143,20 @@ const FULL_SUITE_FLAG: &str = "--full";
 /// looks like a test command and runs none — a build before a suite is not the
 /// suite, and denying it would block the step that PRECEDES every legitimate run.
 pub(crate) fn full_suite_in(command: &str) -> Option<String> {
-    let mut base = crate::gatefile::start_dir();
-    for segment in segments(command) {
-        let mut here = base.clone();
-        base = crate::gatefile::dir_after(segment, &base);
-        // A bracketed run is still a run: judge what it WRAPS, from where it runs.
-        let wrapped = crate::gatefile::bracket_inner(segment);
-        let segment = match &wrapped {
-            Some((dir, inner)) => {
-                here = dir.clone();
-                inner.as_str()
-            }
-            None => segment,
-        };
+    // The shared segmenter: quote-aware, newline- and `||`-aware, sees through a
+    // bracket call and tracks `cd`. The same one the capture rule uses.
+    for seg in crate::gatefile::segments(command, &crate::gatefile::start_dir()) {
+        let segment = seg.text.as_str();
+        let here = seg.dir.clone();
         // COMMAND POSITION for both shapes, which is this file's standing
         // discipline and not a nuance: scanning every word made
-        // `echo 'remember to run run-suite.sh'` a denial. Caught by this gate's
+        // `echo 'remember to run the suite script'` a denial. Caught by this gate's
         // own prose test on its first run, the same way `echo 'python Foo.java'`
         // is called out for the write gate above.
-        let mut words = segment.split_whitespace().skip_while(|w| {
-            let bare = w.rsplit(['/', '\\']).next().unwrap_or(w);
-            PREFIXES.contains(&bare) || (w.contains('=') && !w.starts_with('-'))
-        });
-        let Some(first) = words.next() else { continue };
+        // The head comes from the SHARED word reader, past the same wrappers every other
+        // rule skips — this file used to carry its own wrapper table here.
+        let words = crate::gatefile::command_words(segment);
+        let Some(first) = words.first() else { continue };
         let head = first.rsplit(['/', '\\']).next().unwrap_or(first);
         if let Some(script) = crate::gatefile::suite_script_run_by(segment, &here) {
             // A suite script now SELECTS by default: it runs only the tests the

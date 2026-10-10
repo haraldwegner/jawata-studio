@@ -436,18 +436,19 @@ pub fn unbracketed_gate(command: &str) -> Option<Verdict> {
     if command.contains("gate-output-ok:") {
         return None;
     }
-    let mut base = crate::gatefile::start_dir();
-    for segment in command.replace("&&", ";").split(';') {
-        let here = base.clone();
-        // `cd X ; ./gate` — the script is read from where it will actually run.
-        base = crate::gatefile::dir_after(segment, &base);
-        // A bracket call is the answer, not the offence: its head is the hook
-        // binary, so what it runs is not judged as a bare invocation here.
-        if !crate::gatefile::runs_long_gate(segment, &here) {
+    for seg in crate::gatefile::segments(command, &crate::gatefile::start_dir()) {
+        // A bracket call is the answer, not the offence: what it wraps is kept by it.
+        if seg.bracketed {
             continue;
         }
-        if segment.contains("--version") || segment.contains("-version")
-            || segment.contains("--help")
+        if !crate::gatefile::runs_long_gate(&seg.text, &seg.dir) {
+            continue;
+        }
+        // A probe, not a run. EXACT words: the first version tested a substring, so
+        // `-Dapi-version=2` or `--helpful` walked a real build past the rule.
+        if crate::gatefile::shell_words(&seg.text)
+            .iter()
+            .any(|w| matches!(w.as_str(), "--version" | "-version" | "-V" | "--help" | "-h"))
         {
             continue;
         }
@@ -848,6 +849,72 @@ mod tests {
         }
     }
 
+    /// The audit's probes, as the shapes they were: every one reached the shell
+    /// unjudged because the capture rule cut the command line differently from the other
+    /// rules. One splitter now; each of these is a long run and each is refused.
+    #[test]
+    fn a_long_run_is_judged_however_the_command_line_is_cut() {
+        let (dir, name) = a_declared_gate();
+        let abs = format!("{dir}/{name}");
+        for cmd in [
+            format!("echo hi\n{abs} 4"),
+            format!("false || {abs} 4"),
+            format!("true & {abs} 4"),
+            format!("cd {dir}\n./{name} 4"),
+            format!("bash -c \"{abs} 4\""),
+            format!("eval {abs} 4"),
+            format!("timeout 600 {abs} 4"),
+            format!("(cd {dir} && ./{name} 4)"),
+            format!("x=$({abs} 4)"),
+            "echo hi\nmvn -q install".to_string(),
+            "cargo +nightly test".to_string(),
+            "timeout 600 mvn test".to_string(),
+            "(mvn test)".to_string(),
+            "false || cargo test".to_string(),
+            "npm run check".to_string(),
+            "xargs mvn test".to_string(),
+        ] {
+            assert!(unbracketed_gate(&cmd).is_some(), "a long run reached the shell unjudged: {cmd:?}");
+        }
+    }
+
+    /// The other half, and the reason the splitter is quote-aware: a separator inside a
+    /// quoted message, or text in a heredoc body, is DATA. The old splitters handed the
+    /// rule a "command" that was prose, which is the false refusal R6a set out to end.
+    #[test]
+    fn a_separator_inside_quotes_or_a_heredoc_is_not_a_second_command() {
+        let (dir, name) = a_declared_gate();
+        let abs = format!("{dir}/{name}");
+        for cmd in [
+            format!("git commit -m \"the guard refused it; then {abs} 4 ran\""),
+            format!("echo 'a && {abs} 4'"),
+            format!("cat <<'EOF'\n{abs} 4\nmvn test\nEOF"),
+            format!("cat <<EOF > /tmp/doc.md\nrun {abs} 4 then mvn test\nEOF"),
+            format!("echo hi # {abs} 4 and mvn test"),
+        ] {
+            assert!(unbracketed_gate(&cmd).is_none(), "prose was judged as a command: {cmd:?}");
+        }
+        // The control: the same words as REAL commands are refused.
+        assert!(unbracketed_gate(&format!("echo a && {abs} 4")).is_some());
+    }
+
+    /// The exemption is for a probe, not for any command that mentions one. The audit
+    /// walked a real build past the rule with `-Dapi-version=2`.
+    #[test]
+    fn only_a_whole_word_probe_is_exempt() {
+        let (dir, name) = a_declared_gate();
+        for cmd in [
+            "mvn -q install -Dapi-version=2".to_string(),
+            "cargo test --features api-version".to_string(),
+            format!("{dir}/{name} 4 --helpful"),
+        ] {
+            assert!(unbracketed_gate(&cmd).is_some(), "a substring walked a build past the rule: {cmd:?}");
+        }
+        for cmd in ["mvn --version", "mvn -V", "cargo test --help", "mvn -h"] {
+            assert!(unbracketed_gate(cmd).is_none(), "a real probe was refused: {cmd:?}");
+        }
+    }
+
     #[test]
     fn the_refusal_names_the_exact_binary_to_run() {
         let Some(Verdict::Deny { reason }) = unbracketed_gate("mvn -q install") else {
@@ -913,12 +980,17 @@ mod tests {
                 continue;
             }
             let text = std::fs::read_to_string(&path).unwrap();
-            // Everything before the first test module is what compiles into the binary.
-            let shipped = text.split("#[cfg(test)]").next().unwrap_or(&text);
+            // Everything before the TESTS MODULE. The first version cut at the first
+            // `#[cfg(test)]`, which sits on a mid-file item in safety.rs and left three
+            // hundred lines unscanned; it also dropped everything after a `//` on a line,
+            // which hides a name written after a URL in a string. Comments are scanned too:
+            // a name in a comment does not compile in, but "none of our script names appear
+            // outside the tests" is the claim, and it should be true as stated.
+            let cut = text.find("#[cfg(test)]\nmod tests").unwrap_or(text.len());
+            let shipped = &text[..cut];
             for (n, line) in shipped.lines().enumerate() {
-                let code = line.split("//").next().unwrap_or(line);
                 for name in &names {
-                    if code.contains(name.as_str()) {
+                    if line.contains(name.as_str()) {
                         hits.push(format!("{}:{}: {name}", path.display(), n + 1));
                     }
                 }
