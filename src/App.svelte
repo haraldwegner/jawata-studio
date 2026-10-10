@@ -8,6 +8,7 @@
   import RuntimeSettings from "./lib/components/RuntimeSettings.svelte";
   import MemoryView from "./lib/components/MemoryView.svelte";
   import FieldView from "./lib/components/FieldView.svelte";
+  import SeatsView from "./lib/components/SeatsView.svelte";
   import HelpView from "./lib/components/HelpView.svelte";
   import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
   import { createAppStore } from "./lib/stores/app";
@@ -26,7 +27,7 @@
   const MIN_RIGHT_PANEL_WIDTH = 420;
   const SPLITTER_WIDTH = 12;
 
-  let currentView: "dashboard" | "memory" | "field" | "settings" | "help" = "dashboard";
+  let currentView: "dashboard" | "memory" | "field" | "seats" | "settings" | "help" = "dashboard";
   /** Sprint 10 v0.10.4: which workspace the Register Project / Import
    * forms add to. Owned at App.svelte so the Workspaces card and the
    * forms stay in sync. Defaults to the first existing workspace if
@@ -442,6 +443,13 @@
           Reporting
         </button>
         <button
+          class="tab {currentView === 'seats' ? 'active' : ''}"
+          on:click={() => (currentView = 'seats')}
+          type="button"
+        >
+          Seats
+        </button>
+        <button
           class="tab {currentView === 'settings' ? 'active' : ''}"
           on:click={() => (currentView = 'settings')}
           type="button"
@@ -691,6 +699,15 @@
          recording and carries the /report tile's two switches. -->
     <section class="dashboard-main">
       <FieldView disabled={$appStore.isBusy} />
+    </section>
+  {:else if currentView === 'seats'}
+    <!-- Sprint 28g (D19/D20): the seats view. A change is written by the view, then the
+         dashboard's own Deploy is requested so it reaches the agents' directories. -->
+    <section class="dashboard-main">
+      <SeatsView
+        disabled={$appStore.isBusy || $appStore.deployBusy}
+        on:changed={() => appStore.deployToAgents("deploy")}
+      />
     </section>
   {:else if currentView === 'help'}
     <section class="dashboard-main">

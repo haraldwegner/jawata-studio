@@ -813,3 +813,59 @@ export function fieldSetSilence(
 ): Promise<FieldStatus> {
   return invoke("field_set_silence", { workspace, nudges, silenced });
 }
+
+// ===== Sprint 28g (D19 / D20): the seats view =====
+
+/** A client a seat's command can be written for. */
+export interface ClientChoice {
+  id: string;
+  label: string;
+}
+
+/** One seat, as the seats view shows it. Everything is read from the seat's own file and the
+ * settings beside it; nothing here is a copy. */
+export interface SeatRow {
+  name: string;
+  /** The slash command a person types. `null` for a driven seat, which has none. */
+  command: string | null;
+  purpose: string;
+  fires: string;
+  /** The cron, when the seat is scheduled. */
+  schedule: string | null;
+  tools: string[];
+  /** Gate classes beyond the always-on one. Empty is a real answer. */
+  gates: string[];
+  /** The brain as resolved, any override already applied. */
+  model: string;
+  modelOverridden: boolean;
+  enabled: boolean;
+  /** `null` means every client seat commands are written for. */
+  clients: string[] | null;
+  customised: boolean;
+}
+
+export interface SeatsView {
+  seats: SeatRow[];
+  clients: ClientChoice[];
+  /** Malformed seat files and an unreadable settings file. Never swallowed. */
+  errors: string[];
+}
+
+/** One setting per request, so a call cannot name two at once. */
+export type SeatChange =
+  | { setting: "enabled"; value: boolean }
+  | { setting: "clients"; value: string[] }
+  | { setting: "model"; value: string }
+  | { setting: "reset" };
+
+/** Every deployed seat with its four settings. File reads only. */
+export function seatsView(): Promise<SeatsView> {
+  return invoke("seats_view");
+}
+
+/** Change ONE setting of ONE seat; returns the refreshed view. A refusal (no such seat, a
+ * client seat commands are not written for, an empty brain) arrives as a rejected promise
+ * with a message, and nothing was written. */
+export function seatChange(seat: string, change: SeatChange): Promise<SeatsView> {
+  return invoke("seat_change", { seat, change });
+}
