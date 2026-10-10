@@ -1410,6 +1410,18 @@ pub fn is_harness_text(t: &str) -> bool {
         || opens_tag(t, "agent-message")
 }
 
+/// Is this text a SLASH COMMAND the human typed, in the wrapper the harness gives it?
+///
+/// `is_harness_text` lists `command-name` among the machine's own wrappers, because the
+/// stop side must not read it as a question. That is right for the stop side and wrong for
+/// the GRANT: a typed `/sprint` is his keyboard, and it is the one message that — read as
+/// harness text — returned from `note_prompt` before the clear, so a grant survived his
+/// own typing (S1, the revocation repair that was S9b's step 2). The grant asks THIS first:
+/// a command he typed is read as a command, before the channel test.
+pub fn is_typed_command(t: &str) -> bool {
+    opens_tag(t.trim_start(), "command-name")
+}
+
 /// Does this text open the named tag — with or without attributes on it?
 ///
 /// THE ATTRIBUTE WAS THE 2026-10-04 REVOCATION, and it was one character wide.
