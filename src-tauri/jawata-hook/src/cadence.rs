@@ -69,7 +69,7 @@ impl Report {
 
     pub fn render(&self) -> String {
         let mut s = format!(
-            "full-suite attempts: {}\n  ran: {}\n  refused (no declaration): {}\n  declared a checkpoint: {}\n  declared a release: {}\n",
+            "full-suite attempts: {}\n  ran: {}\n  refused (no declaration, or not bracketed): {}\n  declared a checkpoint: {}\n  declared a release: {}\n",
             self.attempts.len(),
             self.ran(),
             self.refused(),
