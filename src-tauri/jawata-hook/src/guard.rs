@@ -192,6 +192,52 @@ pub(crate) fn full_suite_in(command: &str) -> Option<String> {
     None
 }
 
+/// The JaCoCo agent, run or fetched from the shell — the Sprint 8 coverage run, in which
+/// an agent was downloaded into the project and attached by hand while `run_tests`
+/// already collects the same evidence (`coverage=true`).
+///
+/// Three shapes, all at COMMAND POSITION or in a leading `NAME=value`, so a command that
+/// merely mentions the word (`echo`, a commit message, a `grep`) is not one: a `java`
+/// invocation carrying a `-javaagent:` for a jacoco jar; the same flag smuggled in through
+/// `JAVA_TOOL_OPTIONS` / `MAVEN_OPTS` / `JAVA_OPTS`; and a `curl` / `wget` that fetches a
+/// jacoco jar. It recognises the JaCoCo agent and nothing else — another coverage agent is
+/// a different name, and widening this to "any `-javaagent`" would refuse profilers and
+/// APM agents that have nothing to do with coverage.
+pub(crate) fn coverage_agent_in(command: &str) -> Option<&'static str> {
+    let mentions_jacoco = |w: &str| w.to_ascii_lowercase().contains("jacoco");
+    for seg in crate::gatefile::segments(command, &crate::gatefile::start_dir()) {
+        let segment = seg.text.as_str();
+        // A `NAME=value` in front of the command: the option variables the JVM and Maven read.
+        for w in crate::gatefile::shell_words(segment) {
+            let Some((name, value)) = w.split_once('=') else { break };
+            if name.is_empty() || !name.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+                break;
+            }
+            if ["JAVA_TOOL_OPTIONS", "MAVEN_OPTS", "JAVA_OPTS", "JDK_JAVA_OPTIONS"].contains(&name)
+                && value.contains("-javaagent:")
+                && mentions_jacoco(value)
+            {
+                return Some("an agent attached through an environment variable");
+            }
+        }
+        let words = crate::gatefile::command_words(segment);
+        let Some(first) = words.first() else { continue };
+        let head = first.rsplit(['/', '\\']).next().unwrap_or(first);
+        let head = head.trim_end_matches(".exe");
+        if ["java", "javaw"].contains(&head)
+            && words.iter().any(|w| w.starts_with("-javaagent:") && mentions_jacoco(w))
+        {
+            return Some("a JaCoCo agent attached to a JVM");
+        }
+        if ["curl", "wget"].contains(&head)
+            && words.iter().any(|w| mentions_jacoco(w) && w.to_ascii_lowercase().contains(".jar"))
+        {
+            return Some("a JaCoCo jar fetched into the project");
+        }
+    }
+    None
+}
+
 /// Decide on one shell command.
 pub fn judge(command: &str) -> Verdict {
     // THE SUITE CADENCE GATE RUNS FIRST, before the Java declarations below —
@@ -235,6 +281,27 @@ pub fn judge(command: &str) -> Verdict {
                      logged. \"Only the full suite says what else the change did\" is TRUE and \
                      is not a reason — that damage surfaces at the checkpoint either way, and \
                      bisecting one red checkpoint is cheaper than the runs spent avoiding it."
+                ),
+            };
+        }
+    }
+    // THE COVERAGE-AGENT REFUSAL (D3). Runs before the declarations for the same reason the
+    // cadence gate does: `jawata-author:` opens Java writes, and this has nothing to do with
+    // authoring. `jawata-fallback:` is the one way through, because a justified reason is
+    // exactly what a project with no `run_tests` (a non-Maven build, an engine that is down)
+    // would give — and it is logged.
+    if let Some(what) = coverage_agent_in(command) {
+        if !command.contains(FALLBACK_DECLARATION) {
+            return Verdict::Deny {
+                reason: format!(
+                    "Coverage is collected by `run_tests`, not by hand: this command runs {what}. \
+                     Call `run_tests(coverage=true, scope=...)` — it runs the same JaCoCo on the \
+                     project's own classpath, stores the evidence with its provenance, and answers \
+                     `coverage_report` / `coverage_uncovered` from it. A hand-attached agent \
+                     produces a `.exec` file nothing downstream reads, in a directory it then has \
+                     to be cleaned out of. If `run_tests` genuinely cannot run this build, say why \
+                     with `{FALLBACK_DECLARATION} <reason>` in the command; the declaration is \
+                     logged."
                 ),
             };
         }
@@ -637,6 +704,60 @@ mod tests {
         // say which ones were.
         assert!(!denied(&suite_cmd("")));
         assert!(!denied(&suite_cmd(" --impacted")));
+    }
+
+    // ===== The coverage-agent refusal (D3: the Sprint 8 coverage run) =====
+
+    const AGENT_URL: &str =
+        "https://repo1.maven.org/maven2/org/jacoco/org.jacoco.agent/0.8.11/org.jacoco.agent-0.8.11-runtime.jar";
+
+    fn denial_text(cmd: &str) -> String {
+        match judge(cmd) {
+            Verdict::Deny { reason } => reason,
+            other => panic!("expected a refusal for {cmd:?}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_sprint_8_coverage_run_is_refused_and_names_run_tests() {
+        // The shape that happened: the agent fetched into the project, then attached by hand.
+        let fetch = format!("curl -sL -o jacocoagent.jar {AGENT_URL}");
+        let attach = "java -javaagent:jacocoagent.jar=destfile=jacoco.exec -jar app.jar";
+        for cmd in [fetch.as_str(), attach, &format!("{fetch} && {attach}")] {
+            let reason = denial_text(cmd);
+            assert!(reason.contains("run_tests"), "the refusal must name the tool: {reason}");
+            assert!(reason.contains("coverage=true"), "and the argument that does it: {reason}");
+        }
+    }
+
+    #[test]
+    fn the_same_agent_through_an_environment_variable_or_a_wrapper_is_still_the_run() {
+        assert!(denied("JAVA_TOOL_OPTIONS=-javaagent:/t/jacocoagent.jar=output=file java -jar app.jar"));
+        assert!(denied("MAVEN_OPTS='-javaagent:/t/org.jacoco.agent-runtime.jar' mvn -q package"));
+        assert!(denied("timeout 600 java -javaagent:/t/jacocoagent.jar -cp target/classes Main"));
+        assert!(denied("wget -q -P lib https://example.org/jacoco/jacocoagent.jar"));
+    }
+
+    #[test]
+    fn what_merely_mentions_the_agent_or_attaches_another_one_is_not_refused() {
+        // Command position, not a substring: these are the false refusals a looser rule makes.
+        assert!(!denied("echo 'attach -javaagent:jacocoagent.jar by hand'"));
+        assert!(!denied("git commit -m 'drop the jacoco agent download'"));
+        assert!(!denied("ls ~/.m2/repository/org/jacoco"));
+        // A different agent is a different job, and "any -javaagent" would refuse every profiler.
+        assert!(!denied("java -javaagent:/opt/otel/opentelemetry-javaagent.jar -jar app.jar"));
+        // The jar is the thing fetched; a page about it is not.
+        assert!(!denied("curl -s https://www.jacoco.org/jacoco/"));
+        // And the plain JVM, with nothing attached.
+        assert!(!denied("java -jar app.jar"));
+    }
+
+    #[test]
+    fn a_declared_reason_opens_the_coverage_refusal_and_jawata_author_does_not() {
+        let attach = "java -javaagent:jacocoagent.jar -jar app.jar";
+        assert!(!denied(&format!("{attach}  # {FALLBACK_DECLARATION} run_tests cannot run this Ant build")));
+        // `jawata-author:` claims Java authoring, which this is not.
+        assert!(denied(&format!("{attach}  # {AUTHOR_DECLARATION} none")));
     }
 
     #[test]
