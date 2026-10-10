@@ -658,4 +658,32 @@ mod tests {
         assert!(view.errors.iter().any(|e| e.contains(SETTINGS_FILE)), "{:?}", view.errors);
         assert_eq!(view.seats.len(), crate::conductor::EMBEDDED_SEATS.len(), "the seats still list");
     }
+
+    /// The seats view is a Rust model read by TypeScript, and no test takes that path: the
+    /// suite calls `change_seat` with enum values and never through JSON. A renamed tag or a
+    /// snake_case key would pass every other test and fail only in a running window. This pins
+    /// the exact payloads `tauri.ts` sends and the exact keys `SeatsView.svelte` reads.
+    #[test]
+    fn the_wire_shape_is_what_the_front_end_sends_and_reads() {
+        let sent = |json: &str| serde_json::from_str::<SeatChange>(json).unwrap();
+        assert_eq!(sent(r#"{"setting":"enabled","value":false}"#), SeatChange::Enabled { value: false });
+        assert_eq!(
+            sent(r#"{"setting":"clients","value":["claude"]}"#),
+            SeatChange::Clients { value: vec!["claude".into()] }
+        );
+        assert_eq!(sent(r#"{"setting":"model","value":"x"}"#), SeatChange::Model { value: "x".into() });
+        assert_eq!(sent(r#"{"setting":"reset"}"#), SeatChange::Reset);
+
+        let dir = seeded("view-wire");
+        let value = serde_json::to_value(seats_view(&dir, both_clients())).unwrap();
+        assert!(value["errors"].is_array() && value["clients"][0]["id"].is_string());
+        assert!(value["clients"][0]["label"].is_string());
+        let row = &value["seats"][0];
+        for key in [
+            "name", "purpose", "fires", "schedule", "tools", "gates", "model", "enabled",
+            "clients", "customised",
+        ] {
+            assert!(row.get(key).is_some(), "the view reads `{key}` and the row does not carry it");
+        }
+    }
 }
