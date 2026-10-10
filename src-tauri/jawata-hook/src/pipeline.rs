@@ -279,13 +279,58 @@ fn guard(client: Client, payload: &str) -> Outcome {
         // than being judged by it — authoring new code is not a refactor, and
         // the declaration is the audit trail.
         if tool.eq_ignore_ascii_case("Bash") && payload.contains(crate::guard::AUTHOR_DECLARATION) {
-            if let (Some(home), Some(session)) = (home_dir(), session_id_in(payload)) {
-                let reason = after_marker(payload, crate::guard::AUTHOR_DECLARATION);
-                crate::editgate::open_window(&home, &session, &reason);
+            let reason = after_marker(payload, crate::guard::AUTHOR_DECLARATION);
+            match crate::editgate::parse_declaration(&reason) {
+                // D2: a reason that names a tool and no failure has nothing to put on the record.
+                crate::editgate::Declaration::Incomplete { tool } => {
+                    return emit_permission(
+                        client,
+                        false,
+                        format!(
+                            "A DECLARATION THAT NAMES NO FAILURE - '{tool}:' says a tool is involved and not \
+                             what it did. Say what happened (at least {} words), e.g. \
+                             '{} {tool}: refused the move with SYMBOL_NOT_FOUND on an anonymous class'. \
+                             The declaration then covers ONE edit that {tool} would have done.",
+                            crate::editgate::MIN_FAILURE_WORDS,
+                            crate::guard::AUTHOR_DECLARATION,
+                        ),
+                    )
+                }
+                crate::editgate::Declaration::Exception { tool, failure } => {
+                    if let (Some(home), Some(session)) = (home_dir(), session_id_in(payload)) {
+                        crate::editgate::open_exception(&home, &session, tool, &failure);
+                        // A reason of this shape is also authoring as far as every OTHER edit goes.
+                        crate::editgate::open_window(&home, &session, &reason);
+                    }
+                }
+                crate::editgate::Declaration::Authoring => {
+                    if let (Some(home), Some(session)) = (home_dir(), session_id_in(payload)) {
+                        crate::editgate::open_window(&home, &session, &reason);
+                    }
+                }
             }
             return emit_permission(client, true, String::new());
         }
         if let Some(path) = edit_path_in(payload) {
+            // D1: an edit that PERFORMS a refactoring a tool performs is refused by name - inside
+            // an authoring window too, because the window is how forty-seven of them got through.
+            if crate::editgate::is_editing_tool(&tool) && crate::editgate::is_java_source(&path) {
+                for (old, new) in crate::editgate::edit_pairs(payload) {
+                    if let Some(shape) = crate::editshape::classify(&old, &new) {
+                        let home = home_dir();
+                        let session = session_id_in(payload);
+                        if let crate::editgate::EditVerdict::Denied(reason) = crate::editgate::judge_shaped(
+                            &shape,
+                            &path,
+                            home.as_deref(),
+                            session.as_deref(),
+                            crate::editgate::shape_check_enabled(),
+                        ) {
+                            return emit_permission(client, false, reason);
+                        }
+                    }
+                }
+            }
             let window_open = match (home_dir(), session_id_in(payload)) {
                 (Some(home), Some(session)) => crate::editgate::window_is_open(&home, &session),
                 _ => false,

@@ -195,6 +195,70 @@ fn a_declared_authoring_window_lets_the_next_java_edit_through() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+fn decision_of(out: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(out).unwrap_or_else(|e| panic!("JSON from {out:?}: {e}"));
+    v["hookSpecificOutput"]["permissionDecision"]
+        .as_str()
+        .or_else(|| v["permission"].as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn bash(session: &str, command: &str) -> String {
+    serde_json::json!({"session_id": session, "tool_name": "Bash", "tool_input": {"command": command}}).to_string()
+}
+
+fn edit(session: &str, target: &std::path::Path, old: &str, new: &str) -> String {
+    serde_json::json!({
+        "session_id": session, "tool_name": "Edit",
+        "tool_input": {"file_path": target.to_string_lossy(), "old_string": old, "new_string": new}
+    })
+    .to_string()
+}
+
+/// D1 and D2 through the REAL binary: a tool-shaped edit is refused BY NAME even inside an open
+/// authoring window; a declaration that names the tool and its failure covers exactly ONE such
+/// edit; a declaration that names a tool and no failure is itself refused; authoring still passes.
+#[test]
+fn a_tool_shaped_edit_is_refused_by_name_and_one_declared_failure_covers_one_edit() {
+    let home = scratch("shaped");
+    let target = home.join("Slot.java");
+    std::fs::write(&target, "class Slot {}").unwrap();
+    let (s, vis_old, vis_new) = ("s-shaped", "    private long exitTs() {", "    public long exitTs() {");
+
+    // The window is open, as it is for all authoring.
+    let opened = guard_says(&bash(s, "echo jawata-author: adding a listener class"), &home);
+    assert_ne!("deny", decision_of(&opened), "{opened}");
+
+    // 1. A visibility change by hand is refused, naming the tool, inside the window.
+    let refused = guard_says(&edit(s, &target, vis_old, vis_new), &home);
+    assert_eq!("deny", decision_of(&refused), "{refused}");
+    assert!(refused.contains("change_method_signature"), "refusal names the tool: {refused}");
+
+    // 2. Authoring in the same window passes (the control: the window itself still works).
+    let authoring = guard_says(&edit(s, &target, "    void a() {}\n", "    void a() {}\n\n    void b() { work(); }\n"), &home);
+    assert_ne!("deny", decision_of(&authoring), "authoring passes inside the window: {authoring}");
+
+    // 3. A declaration naming the tool and no failure is refused outright.
+    let empty = guard_says(&bash(s, "echo jawata-author: change_method_signature: broken"), &home);
+    assert_eq!("deny", decision_of(&empty), "a tool with no named failure: {empty}");
+
+    // 4. Named failure: it covers THE NEXT such edit...
+    let named = guard_says(
+        &bash(s, "echo jawata-author: change_method_signature: refused the visibility change on a private nested member"),
+        &home,
+    );
+    assert_ne!("deny", decision_of(&named), "{named}");
+    let covered = guard_says(&edit(s, &target, vis_old, vis_new), &home);
+    assert_ne!("deny", decision_of(&covered), "the declared edit passes once: {covered}");
+
+    // 5. ...and a SECOND hand edit under the same declaration is refused.
+    let second = guard_says(&edit(s, &target, vis_old, vis_new), &home);
+    assert_eq!("deny", decision_of(&second), "a second edit under one declaration: {second}");
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 #[test]
 fn a_brand_new_java_file_is_not_a_hand_edit() {
     let home = scratch("newfile");

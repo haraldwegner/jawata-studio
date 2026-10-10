@@ -171,6 +171,152 @@ pub fn judge_edit(
     ))
 }
 
+// ---- D1 / D2: the shape of the edit, and the exception that covers one ------------------------
+
+/// The tools whose refusal can be answered by a declared failure.
+///
+/// A declaration reads `jawata-author: <tool>: <what it did>`. The colon is the signal: without it
+/// a reason such as "extract the parser into a new class" is authoring, and a reason that merely
+/// STARTS with a tool's name must not be mistaken for a defect report.
+pub const DECLARABLE_TOOLS: &[&str] = &[
+    "organize_imports",
+    "change_method_signature",
+    "rename_symbol",
+    "data",
+    "apply_cleanup",
+    "extract",
+    "move",
+    "inline",
+    "hierarchy",
+    "refactor_to_pattern",
+    "generate",
+];
+
+/// What a `jawata-author:` reason says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Declaration {
+    /// Authoring: opens the window, covers no tool-shaped edit.
+    Authoring,
+    /// Names a tool and a failure: covers exactly ONE tool-shaped edit of that tool.
+    Exception { tool: &'static str, failure: String },
+    /// Names a tool and no failure. Refused — there is nothing for the record to say.
+    Incomplete { tool: &'static str },
+}
+
+/// Words a failure must have before it counts as named. A tool name and "broken" is not a report.
+pub const MIN_FAILURE_WORDS: usize = 3;
+
+pub fn parse_declaration(reason: &str) -> Declaration {
+    let reason = reason.trim();
+    let Some((head, tail)) = reason.split_once(':') else {
+        return Declaration::Authoring;
+    };
+    let head = head.trim().to_ascii_lowercase();
+    let Some(tool) = DECLARABLE_TOOLS
+        .iter()
+        .copied()
+        .find(|t| head == *t || head.strip_prefix(*t).is_some_and(|rest| rest.starts_with('_') || rest.starts_with('.')))
+    else {
+        return Declaration::Authoring;
+    };
+    let failure = tail.trim();
+    if failure.split_whitespace().count() >= MIN_FAILURE_WORDS {
+        Declaration::Exception { tool, failure: failure.to_string() }
+    } else {
+        Declaration::Incomplete { tool }
+    }
+}
+
+fn exception_path(home: &Path, session_id: &str) -> PathBuf {
+    window_path(home, &format!("{session_id}.once"))
+}
+
+/// Record a one-use exception. Best effort, like the window: an exception that cannot be recorded
+/// simply does not open, which is the safe direction.
+pub fn open_exception(home: &Path, session_id: &str, tool: &str, failure: &str) {
+    let path = exception_path(home, session_id);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let _ = std::fs::write(&path, format!("{now}\t{tool}\t{failure}\n"));
+}
+
+/// Consume the exception if it is fresh and names this tool. TAKING it is the point: the same
+/// declaration cannot cover a second edit.
+pub fn take_exception(home: &Path, session_id: &str, tool: &str) -> Option<String> {
+    let path = exception_path(home, session_id);
+    let body = std::fs::read_to_string(&path).ok()?;
+    let mut fields = body.trim_end().splitn(3, '\t');
+    let opened: u64 = fields.next()?.parse().ok()?;
+    let declared = fields.next()?;
+    let failure = fields.next()?.to_string();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    if now.saturating_sub(opened) >= WINDOW_TTL_SECS || declared != tool {
+        return None;
+    }
+    // Remove BEFORE answering: if the removal fails the exception must not be usable twice.
+    std::fs::remove_file(&path).ok()?;
+    Some(failure)
+}
+
+/// The text of the refusal: it names the tool and the call, and says how to be covered once.
+pub fn shaped_refusal(shape: &crate::editshape::Shape, edit_path: &str) -> String {
+    format!(
+        "USE {tool} — this edit of {edit_path} is {what}, and {tool} does it: {call}. \
+         The window you opened covers authoring; it does not cover an edit a tool performs. \
+         If {tool} FAILS on this case, name the failure once: run a Bash command containing \
+         'jawata-author: {tool}: <what it did, at least {MIN_FAILURE_WORDS} words>', then make THIS edit — \
+         the declaration covers that one edit and no other.",
+        tool = shape.tool,
+        what = shape.name,
+        call = shape.call,
+    )
+}
+
+/// Judge an edit whose shape a tool performs. `enabled` is the TEST-ONLY toggle for D1's control
+/// (the check turned off lets everything through); the shipped switch is S2b's.
+pub fn judge_shaped(
+    shape: &crate::editshape::Shape,
+    edit_path: &str,
+    home: Option<&Path>,
+    session_id: Option<&str>,
+    enabled: bool,
+) -> EditVerdict {
+    if !enabled {
+        return EditVerdict::Allowed("shape check switched off");
+    }
+    if let (Some(home), Some(session)) = (home, session_id) {
+        if take_exception(home, session, shape.tool).is_some() {
+            return EditVerdict::Allowed("a declared tool failure, used once");
+        }
+    }
+    EditVerdict::Denied(shaped_refusal(shape, edit_path))
+}
+
+/// Debug builds only: the shipped binary has no off switch from the environment.
+pub fn shape_check_enabled() -> bool {
+    !(cfg!(debug_assertions) && std::env::var("JAWATA_TEST_EDITSHAPE_OFF").is_ok())
+}
+
+/// Every (old, new) text pair the edit call carries: `Edit` has one, `MultiEdit` several, and a
+/// `Write` has none — a whole file is never a refactoring of itself.
+pub fn edit_pairs(payload: &str) -> Vec<(String, String)> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
+        return Vec::new();
+    };
+    let input = value.get("tool_input").unwrap_or(&value);
+    let pair = |v: &serde_json::Value| {
+        let old = v.get("old_string").and_then(serde_json::Value::as_str)?;
+        let new = v.get("new_string").and_then(serde_json::Value::as_str)?;
+        Some((old.to_string(), new.to_string()))
+    };
+    if let Some(edits) = input.get("edits").and_then(serde_json::Value::as_array) {
+        return edits.iter().filter_map(pair).collect();
+    }
+    pair(input).into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,6 +383,64 @@ mod tests {
             judge_edit("Edit", "A.java", r#"{"x":"jawata-fallback: porting a fixture"}"#, false, true),
             EditVerdict::Allowed(_)
         ));
+    }
+
+    fn visibility_shape() -> crate::editshape::Shape {
+        crate::editshape::classify("private int f() {", "public int f() {").expect("a visibility change")
+    }
+
+    #[test]
+    fn a_declaration_must_carry_the_colon_and_the_failure_to_be_an_exception() {
+        assert_eq!(Declaration::Authoring, parse_declaration("adding a new listener class"));
+        // Starts with a tool's name but is prose: the colon is the signal.
+        assert_eq!(Declaration::Authoring, parse_declaration("extract the parser into a new class"));
+        assert_eq!(Declaration::Authoring, parse_declaration("unknown_tool: some words about it"));
+        assert!(matches!(
+            parse_declaration("extract_method: INTERNAL_ERROR source not specified on one file"),
+            Declaration::Exception { tool: "extract", .. }
+        ));
+        assert_eq!(
+            Declaration::Incomplete { tool: "rename_symbol" },
+            parse_declaration("rename_symbol: broken"),
+            "two words of failure is not a report"
+        );
+    }
+
+    #[test]
+    fn one_exception_covers_one_edit_of_its_own_tool_and_no_other() {
+        let dir = std::env::temp_dir().join(format!("jawata-exception-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shape = visibility_shape();
+
+        // No exception: refused, by name.
+        match judge_shaped(&shape, "A.java", Some(&dir), Some("s"), true) {
+            EditVerdict::Denied(r) => assert!(r.contains(shape.tool) && r.contains(shape.call), "{r}"),
+            other => panic!("{other:?}"),
+        }
+        // An exception for a DIFFERENT tool does not cover it, and is not spent by trying.
+        open_exception(&dir, "s", "rename_symbol", "refused to rename across two bundles");
+        assert!(matches!(judge_shaped(&shape, "A.java", Some(&dir), Some("s"), true), EditVerdict::Denied(_)));
+        assert!(take_exception(&dir, "s", "rename_symbol").is_some(), "still there for its own tool");
+        // The right tool: covered once, then refused.
+        open_exception(&dir, "s", shape.tool, "the visibility change was refused with no reason");
+        assert!(matches!(judge_shaped(&shape, "A.java", Some(&dir), Some("s"), true), EditVerdict::Allowed(_)));
+        assert!(matches!(judge_shaped(&shape, "A.java", Some(&dir), Some("s"), true), EditVerdict::Denied(_)));
+        // Another session never inherits it.
+        open_exception(&dir, "s", shape.tool, "the visibility change was refused with no reason");
+        assert!(matches!(judge_shaped(&shape, "A.java", Some(&dir), Some("other"), true), EditVerdict::Denied(_)));
+        // The control: the check switched off lets the same edit through.
+        assert!(matches!(judge_shaped(&shape, "A.java", Some(&dir), Some("other"), false), EditVerdict::Allowed(_)));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_edit_call_carries_its_pairs_in_every_shape_and_a_write_carries_none() {
+        let edit = r#"{"tool_input":{"file_path":"A.java","old_string":"a","new_string":"b"}}"#;
+        assert_eq!(vec![("a".to_string(), "b".to_string())], edit_pairs(edit));
+        let multi = r#"{"tool_input":{"edits":[{"old_string":"a","new_string":"b"},{"old_string":"c","new_string":"d"}]}}"#;
+        assert_eq!(2, edit_pairs(multi).len());
+        assert!(edit_pairs(r#"{"tool_input":{"file_path":"A.java","content":"x"}}"#).is_empty());
     }
 
     #[test]

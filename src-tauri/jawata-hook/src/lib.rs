@@ -17,6 +17,7 @@ pub mod cue;
 pub mod areamemo;
 pub mod dupgate;
 pub mod editgate;
+pub mod editshape;
 pub mod javawatch;
 pub mod emit;
 pub mod field;
