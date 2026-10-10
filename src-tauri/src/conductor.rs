@@ -1353,6 +1353,25 @@ mod tests {
     /// other ceiling is declared on all eleven seats; a step ceiling visible
     /// only as a constant in Rust is the one limit a reader of the seat file
     /// cannot see, and "it has a default" is how it would stay that way.
+    /// A REGRESSION LOCK, labelled as one: it holds the rules that justify the `ux` seat's
+    /// existence, so that deleting one no longer passes the whole suite (the C7 audit found it
+    /// would). It does not prove the seat WORKS - a stance cannot be tested for that - only that
+    /// the clauses C7 depends on are still written down.
+    #[test]
+    fn the_ux_seat_keeps_the_rules_that_justify_it() {
+        let (_, body) = EMBEDDED_SEATS.iter().find(|(f, _)| *f == "ux.md").expect("ux.md is embedded");
+        let text = body.to_lowercase();
+        for (needle, why) in [
+            ("asked for by nothing", "U-THREE's finding phrase"),
+            ("approved itself", "U-FOUR: a plan-declared deviation reaches the human as a decision"),
+            ("the one seat exempt", "C7's clause 4: the exemption is declared in writing"),
+            ("never edit a component", "the seat proposes and never builds"),
+            ("census", "U-ONE: the count that can fail"),
+        ] {
+            assert!(text.contains(needle), "ux.md no longer says {needle:?} - {why}");
+        }
+    }
+
     /// The seats view READS `purpose` and `fires` from the seat's own file. A shipped seat that
     /// declares neither would render as a blank row, which looks like a seat with nothing to
     /// say rather than a missing field — so the requirement is held here, on the shipped set.

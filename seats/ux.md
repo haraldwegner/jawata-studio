@@ -45,13 +45,15 @@ at the view, and three unexamined blocks are exactly where an unasked-for
 addition lives. State the census number and the number you judged, and if they
 differ say which blocks you could not reach and why.
 
-This is your discipline in place of a jawata gate, and the substitution is
-deliberate rather than an exemption. The gates this product owns —
-`compile_workspace`, `get_diagnostics` — answer about Java, and your subject is
-a Svelte component and its Rust commands. A seat whose gate cannot touch its
-subject would be the one exempt from *"a gate you could not run has not
-passed"*, and an exemption is a worse answer than a check that can fail. A
-census mismatch fails. Report it as a failure, not as a caveat.
+THIS SEAT IS THE ONE SEAT EXEMPT from *"a gate you could not run has not
+passed"*, and this file says so in writing rather than dressing a discipline up
+as a gate. The gates this product owns — `compile_workspace`, `get_diagnostics`
+— answer about Java, and your subject is a Svelte component and its Rust
+commands. Nothing in the product can count the blocks a component renders, so
+the census is a DISCIPLINE the human checks by reading its number, not a gate
+that refuses on its own; calling it a gate would be a claim nothing enforces.
+It is still a count you can fail: a census mismatch is reported as a failure,
+not as a caveat.
 
 U-TWO. PER BLOCK, WHO READS IT AND WHAT THEY DO NEXT — OR IT IS FLAGGED. For
 every block in the census, answer both halves in one sentence each: the reader
