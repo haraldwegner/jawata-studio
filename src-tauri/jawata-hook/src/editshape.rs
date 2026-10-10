@@ -230,7 +230,8 @@ fn rename_shape(ot: &[String], nt: &[String]) -> Option<Shape> {
         return None;
     }
     let mut pair: Option<(&String, &String)> = None;
-    for (a, b) in ot.iter().zip(nt) {
+    let mut at_a_declaration = false;
+    for (i, (a, b)) in ot.iter().zip(nt).enumerate() {
         if a == b {
             continue;
         }
@@ -242,8 +243,31 @@ fn rename_shape(ot: &[String], nt: &[String]) -> Option<Shape> {
             Some((x, y)) if x == a && y == b => {}
             Some(_) => return None,
         }
+        at_a_declaration |= declares(ot, i);
     }
-    pair.map(|_| RENAME)
+    // A rename changes the NAME OF A DECLARATION. Swapping one identifier for another at every
+    // use (`Wait.SPIN` -> `Wait.BLOCK`, `System.err` -> `System.out`, `HashMap` ->
+    // `ConcurrentHashMap`) is a different edit, and a tool that renames declarations does not do it.
+    // The held-out look refused those as renames until this was required.
+    (pair.is_some() && at_a_declaration).then_some(RENAME)
+}
+
+/// Whether the identifier at `i` is being DECLARED: it follows a type or a declaring keyword, is not
+/// a member access or a construction, and is followed by something a declaration continues with.
+/// Two words of prose (`the foo bar`) fail the last test, which keeps comment text from reading as
+/// a declaration.
+fn declares(tokens: &[String], i: usize) -> bool {
+    let Some(prev) = i.checked_sub(1).and_then(|p| tokens.get(p)) else {
+        return false;
+    };
+    if matches!(prev.as_str(), "class" | "interface" | "enum" | "record") {
+        return true;
+    }
+    let typeish = prev == ">" || prev == "]"
+        || ["void", "int", "long", "double", "float", "boolean", "char", "byte", "short"].contains(&prev.as_str())
+        || (is_ident(prev) && !["return", "new", "throw", "else", "case", "assert", "yield"].contains(&prev.as_str()));
+    let follows = tokens.get(i + 1).is_some_and(|n| ["(", ";", "=", ",", ")", "{", ":", "["].contains(&n.as_str()));
+    typeish && follows
 }
 
 // ---- signatures -----------------------------------------------------------------------------
@@ -517,6 +541,13 @@ mod tests {
         assert_eq!(tool("int a = 1; return a;", "int count = 1; return count;"), Some("rename_symbol"));
         // Two different substitutions are not.
         assert_eq!(tool("int a = b;", "int c = d;"), None);
+        // The held-out false positives: a swap at a USE is not a rename of a declaration.
+        assert_eq!(tool("strategy = Wait.SPIN;", "strategy = Wait.BLOCK;"), None);
+        assert_eq!(tool("System.err.println(x);", "System.out.println(x);"), None);
+        assert_eq!(tool("m = new HashMap<>();", "m = new ConcurrentHashMap<>();"), None);
+        assert_eq!(tool("log(currentSlotId);", "log(placingSlotId);"), None);
+        // Prose: two words in a comment-like fragment are not a declaration.
+        assert_eq!(tool("the foo bar baz", "the foo qux baz"), None);
         // A change inside a string literal is a change of that literal, never a rename.
         assert_eq!(tool("log(\"x\");", "log(\"y\");"), None);
     }

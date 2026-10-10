@@ -299,6 +299,10 @@ fn guard(client: Client, payload: &str) -> Outcome {
                 crate::editgate::Declaration::Exception { tool, failure } => {
                     if let (Some(home), Some(session)) = (home_dir(), session_id_in(payload)) {
                         crate::editgate::open_exception(&home, &session, tool, &failure);
+                        // The ledger: the failure is on the record where the next session reads it.
+                        if let Some(dir) = studio_dir() {
+                            crate::observer::emit_signal(&dir, "edit-exception-declared", &format!("{tool}: {failure}"));
+                        }
                         // A reason of this shape is also authoring as far as every OTHER edit goes.
                         crate::editgate::open_window(&home, &session, &reason);
                     }

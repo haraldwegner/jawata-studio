@@ -4828,7 +4828,13 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
          NOT to use jawata; you are never stuck — the justified declaration always proceeds."
             .to_string(),
         String::new(),
-        "Editing a `.java` file by hand is blocked — use the tool:".to_string(),
+        "Editing a `.java` file by hand is blocked — use the tool. An edit that PERFORMS a \
+         refactoring a tool performs (an import, a visibility or parameter-list change, a \
+         rename, a deleted private member, an extracted range) is refused BY NAME, even \
+         inside an authoring window; if the tool FAILS on your case, declare the failure \
+         once — `jawata-author: <tool>: <what it did>` — and that declaration covers that one \
+         edit:"
+            .to_string(),
         "- Rename a symbol (updates ALL references) → `rename_symbol`".to_string(),
         "- Move a class / pull a member up or down → `move` / `move_in_hierarchy`".to_string(),
         "- Extract a method / variable / constant / superclass → `extract`".to_string(),
