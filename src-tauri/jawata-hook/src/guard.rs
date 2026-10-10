@@ -814,6 +814,11 @@ mod tests {
             // C4 audit: padding is how a path hides from the whitespace rule.
             "python3 -c \"open('src/Foo.java '.strip(),'w')\"",
             "python3 -c \"open(' src/Foo.java','w')\"",
+            // An open quote OUTSIDE a closed prose-looking literal: the literal around the
+            // path is balanced and has whitespace, but the command as a whole is not read
+            // the way it is written, so it is denied, not exempted. (Mutation-found: the
+            // global unclosed check stayed green until a case reached it.)
+            "python3 w.py 'x \"see Foo.java here\"",
         ] {
             assert!(denied(cmd), "a write to Java was let through as prose: {cmd}");
         }
