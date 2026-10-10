@@ -767,8 +767,12 @@ mod tests {
             "python3 -c \"open('/home/x/My Projects/Foo.java','w')\"",
             // one prose mention does not excuse a bare one beside it
             "python3 -c \"open('a.md','w').write('see Foo.java')\" Bar.java",
-            // an unclosed quote cannot be read, so it is not read as prose
-            "python3 -c \"open('Foo.java",
+            // an unclosed quote cannot be read, so it is not read as prose. The
+            // text inside has whitespace and starts like a sentence: it is
+            // refused ONLY because it never closes. (The first version of this
+            // case held no whitespace, so the no-whitespace rule refused it and
+            // a mutation deleting the unclosed check stayed green.)
+            "python3 -c \"x = 'see Foo.java",
             // a stray apostrophe in a comment must not swallow the real path
             "python3 - <<'PY'\n# don't\nopen('Foo.java','w')\nPY",
         ] {
