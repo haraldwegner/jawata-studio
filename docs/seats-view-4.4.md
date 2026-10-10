@@ -109,8 +109,13 @@ shadowing rule exists to make visible. One word reverses it.
 - **A change reaches the agents through the dashboard's own Deploy**, which the view requests after
   every successful write. A refused change (no such seat, an unknown client, an empty brain) writes
   nothing and says why.
-- **The view shows the brain as resolved**, with a marker that it is the user's. It does not show
-  what the shipped value was; *reset* is how a user gets it back.
+- **The view shows the brain as resolved** and does not mark it as the user's, nor show what the
+  shipped value was; *reset* is how a user gets it back. An earlier draft of this paragraph said
+  the view carried a marker. It did not: the row had a field for it that nothing read, which is
+  how the claim got written — the field is removed, and so is the sentence.
+- **Two blocks the UX census refused are not on the page**: a `/command` label per seat and a
+  "customised" tag. C11's clause asks for neither. Whether the view should show the typed command
+  is a small call that adds an element nobody requested, so it is left to the owner.
 
 ## Is a stance editable?
 

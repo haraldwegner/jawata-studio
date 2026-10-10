@@ -115,11 +115,6 @@ impl SeatSettings {
             .unwrap_or(true)
     }
 
-    /// Whether setting 3 is in force for this seat — the view marks the brain as the user's.
-    pub fn has_model_override(&self, seat_name: &str) -> bool {
-        self.seats.get(seat_name).is_some_and(|o| o.model.is_some())
-    }
-
     /// Setting 2, read. `None` means "every dialect this build knows" — the caller keeps its
     /// own list rather than this module holding a copy of it, which is the no-copy rule.
     pub fn clients(&self, seat_name: &str) -> Option<&[String]> {
@@ -242,8 +237,6 @@ pub struct ClientChoice {
 #[serde(rename_all = "camelCase")]
 pub struct SeatRow {
     pub name: String,
-    /// The slash command a person types. `None` for a driven seat, which has none.
-    pub command: Option<String>,
     pub purpose: String,
     pub fires: String,
     /// The cron, when the seat is scheduled. Shown beside `fires`, never instead of it.
@@ -253,7 +246,6 @@ pub struct SeatRow {
     pub gates: Vec<String>,
     /// The brain AS RESOLVED — the override already applied.
     pub model: String,
-    pub model_overridden: bool,
     pub enabled: bool,
     /// `None` = every client this build writes seat commands for.
     pub clients: Option<Vec<String>>,
@@ -295,14 +287,12 @@ pub fn seats_view(seats_dir: &Path, clients: Vec<ClientChoice>) -> SeatsView {
         .iter()
         .map(|seat| SeatRow {
             name: seat.name.clone(),
-            command: crate::conductor::command_for(&seat.name).map(|(cmd, _)| cmd.to_string()),
             purpose: seat.purpose.clone(),
             fires: seat.fires.clone(),
             schedule: seat.schedule.clone(),
             tools: seat.tools.clone(),
             gates: seat.gate_classes.iter().map(|g| gate_label(g).to_string()).collect(),
             model: seat.model.clone(),
-            model_overridden: settings.has_model_override(&seat.name),
             enabled: settings.is_enabled(&seat.name),
             clients: settings.clients(&seat.name).map(<[String]>::to_vec),
             customised: settings.is_customised(&seat.name),
@@ -591,14 +581,11 @@ mod tests {
         assert_eq!(view.seats.len(), crate::conductor::EMBEDDED_SEATS.len());
 
         let architect = view.seats.iter().find(|s| s.name == "architect").unwrap();
-        assert_eq!(architect.command.as_deref(), Some("refactor"));
         assert!(!architect.purpose.is_empty() && !architect.fires.is_empty());
         assert!(architect.schedule.is_some(), "the architect is scheduled daily");
         assert!(architect.enabled && architect.clients.is_none() && !architect.customised);
 
-        // A driven seat has no command, and says so rather than showing a blank command.
         let auditor = view.seats.iter().find(|s| s.name == "spec-auditor").unwrap();
-        assert_eq!(auditor.command, None);
         // Gates: a seat that declares none shows none (a real answer), one that does shows it.
         assert!(auditor.gates.is_empty());
         let docs = view.seats.iter().find(|s| s.name == "javadoc-writer").unwrap();
@@ -620,7 +607,7 @@ mod tests {
         assert!(!changed.enabled);
         assert_eq!(changed.clients, Some(vec!["cursor".to_string()]));
         assert_eq!(changed.model, "a-brain");
-        assert!(changed.model_overridden && changed.customised);
+        assert!(changed.customised);
 
         // Reset: back to the shipped row, the seat is still THERE (the file was re-seeded),
         // and no other seat was touched.

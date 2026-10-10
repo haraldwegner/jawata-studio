@@ -8,6 +8,9 @@
   //                                            -> the controls on each row
   // Nothing else is here. There is no explanatory paragraph: the UX seat's census asks which
   // sentence of the spec asked for each block, and a hint nobody requested has no answer.
+  // Two blocks that census REFUSED, and that were removed: a `/command` label and a
+  // "customised" tag. The clause asks for neither, and the Reset button - shown only when
+  // there is something to reset - already says the second.
   //
   // A change is written, then the dashboard's own Deploy is asked for — so a toggle is not a
   // control that does nothing until the user remembers to press something elsewhere.
@@ -97,10 +100,6 @@
       <article class="seat-row" class:off={!seat.enabled}>
         <header class="seat-head">
           <strong>{seat.name}</strong>
-          <span class="muted">{seat.command ? `/${seat.command}` : "driven"}</span>
-          {#if seat.customised}
-            <span class="tag">customised</span>
-          {/if}
           <label class="seat-on">
             <input
               checked={seat.enabled}
@@ -182,12 +181,6 @@
   }
   .seat-on {
     margin-left: auto;
-  }
-  .tag {
-    font-size: 0.75rem;
-    padding: 0 0.4rem;
-    border: 1px solid currentColor;
-    border-radius: 3px;
   }
   .seat-facts {
     display: grid;

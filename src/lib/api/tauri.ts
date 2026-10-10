@@ -826,8 +826,6 @@ export interface ClientChoice {
  * settings beside it; nothing here is a copy. */
 export interface SeatRow {
   name: string;
-  /** The slash command a person types. `null` for a driven seat, which has none. */
-  command: string | null;
   purpose: string;
   fires: string;
   /** The cron, when the seat is scheduled. */
@@ -837,7 +835,6 @@ export interface SeatRow {
   gates: string[];
   /** The brain as resolved, any override already applied. */
   model: string;
-  modelOverridden: boolean;
   enabled: boolean;
   /** `null` means every client seat commands are written for. */
   clients: string[] | null;
