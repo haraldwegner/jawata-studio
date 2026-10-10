@@ -872,6 +872,10 @@ impl ManagerService {
             .filter(|c| {
                 client_still_receives_seat_commands(c.id)
                     && derive_seat_commands_dir(c.id, "probe/config.json").is_some()
+                    // A client that reads another's seat directory is not an independent
+                    // choice: dropping a seat from the SOURCE removes it for both, and listing
+                    // the inheriting client alone would leave the seat in neither.
+                    && c.seats_inherited_from.is_empty()
             })
             .map(|c| crate::seat_settings::ClientChoice {
                 id: c.id.to_string(),
@@ -887,7 +891,16 @@ impl ManagerService {
     /// The seats view: every deployed seat with what it is for, when it fires, its tools,
     /// gates and brain, and the four settings. Reads files only.
     pub fn seats_view(&self) -> crate::seat_settings::SeatsView {
-        crate::seat_settings::seats_view(&self.seats_dir(), Self::seat_command_clients())
+        // Seats are materialized by a deploy, so on a fresh install - or before any client is
+        // selected - the directory is empty and the view would show a bare heading. The pass
+        // is idempotent and is the one a deploy runs.
+        let dir = self.seats_dir();
+        let materialized = crate::conductor::materialize_seats(&dir);
+        let mut view = crate::seat_settings::seats_view(&dir, Self::seat_command_clients());
+        if let Err(error) = materialized {
+            view.errors.push(error);
+        }
+        view
     }
 
     /// Change one setting of one seat and return the refreshed view. The change reaches the
@@ -2926,23 +2939,12 @@ impl ManagerService {
                             }
                         }
                     } else if let Some(commands_dir) = derive_seat_commands_dir(client, &path) {
-                        // A settings file that cannot be read stops the seat commands for this
-                        // deploy. Falling back to "no settings" would re-enable a seat the user
-                        // turned off; the loader has already reported the cause in `seat_errors`.
-                        if let Ok(settings) = crate::seat_settings::SeatSettings::load(&seats_dir) {
-                            match write_managed_seat_commands(
-                                client,
-                                &commands_dir,
-                                &seats,
-                                &settings,
-                                force,
-                            ) {
-                                Ok(changed) if !changed.is_empty() => {
-                                    changed_sections.push("seatCommands".into())
-                                }
-                                Ok(_) => {}
-                                Err(error) => errors.push(error),
+                        match deploy_seat_commands(client, &commands_dir, &seats_dir, &seats, force) {
+                            Ok(changed) if !changed.is_empty() => {
+                                changed_sections.push("seatCommands".into())
                             }
+                            Ok(_) => {}
+                            Err(error) => errors.push(error),
                         }
                         // Sprint 26 (D6), v3.3.1: the utility commands ride along.
                         // Named by UTILITY_MAP rather than here — this comment
@@ -4309,10 +4311,13 @@ fn client_still_receives_seat_commands(client: &str) -> bool {
 /// the first is the whole answer, and a partial directory would be reported by
 /// the write path rather than here.
 fn seat_dir_carries_managed_seats(client: &str, commands_dir: &Path) -> bool {
+    // ANY managed seat, not the first. This used to ask only COMMAND_MAP[0] on the strength of
+    // the files being "written and removed together"; per-seat settings broke that, and a
+    // directory with its first seat turned off read as empty - which made the client that
+    // inherits it write its own copies, studio#19's duplicate listing.
     seat_artifact_paths(client, commands_dir)
-        .first()
-        .map(|(_, path)| path.exists())
-        .unwrap_or(false)
+        .iter()
+        .any(|(_, path)| path.exists())
 }
 
 /// Sprint 28a, the four-client ruling: an UNSUPPORTED client is never written
@@ -4446,6 +4451,24 @@ fn write_managed_agents(agents_dir: &Path, force_rewrite: bool) -> Result<Vec<St
         return Ok(vec![display_path(&path)]);
     }
     Ok(Vec::new())
+}
+
+/// The deploy's seam for seat commands: reads the saved settings FROM DISK and writes.
+///
+/// It exists so that "each setting survives a redeploy" is a property of the code production
+/// runs rather than of a test that hands the writer a settings value it built itself. An
+/// unreadable settings file returns an error BEFORE anything is written or removed: treating it
+/// as "no settings" would re-enable a seat the user turned off.
+fn deploy_seat_commands(
+    client: &str,
+    commands_dir: &Path,
+    seats_dir: &Path,
+    seats: &[crate::runner::SeatDefinition],
+    force_rewrite: bool,
+) -> Result<Vec<String>, String> {
+    let settings = crate::seat_settings::SeatSettings::load(seats_dir)
+        .map_err(|e| format!("{client}: seat settings: {e}"))?;
+    write_managed_seat_commands(client, commands_dir, seats, &settings, force_rewrite)
 }
 
 /// Writes — and, for a seat the user turned off or a client they dropped, REMOVES — the
@@ -11359,6 +11382,63 @@ mod tests {
 
     // ===== C11: per-seat settings reach the deploy =====
 
+    /// The inheritance probe asked only the FIRST managed seat whether a client's directory
+    /// "carries seats". With per-seat settings the files are no longer written and removed
+    /// together, so turning that one seat off made the whole directory read as empty - and the
+    /// client that inherits it started writing its own copies, the duplicate listing of
+    /// studio#19.
+    #[test]
+    fn the_inheritance_probe_asks_whether_any_managed_seat_is_present() {
+        let (_seats_dir, seats) = loaded_seats("probe-any");
+        let dir = unique_tempdir("probe-any-cmds");
+        let mut settings = crate::seat_settings::SeatSettings::default();
+        write_managed_seat_commands("claude", &dir, &seats, &settings, false).unwrap();
+        assert!(seat_dir_carries_managed_seats("claude", &dir), "control: it carries them");
+
+        // Turn off the seat the probe used to look at, and only that one.
+        let (first, _, _) = crate::conductor::COMMAND_MAP[0];
+        settings.set_enabled(first, false);
+        write_managed_seat_commands("claude", &dir, &seats, &settings, false).unwrap();
+        assert!(!claude_seat_file(&dir, first).exists(), "the first seat's file is gone");
+        assert!(
+            seat_dir_carries_managed_seats("claude", &dir),
+            "but eight others are still there, and the directory still carries seats"
+        );
+    }
+
+    /// "Each surviving a redeploy" through the seam production uses: the deploy reads the
+    /// settings FROM DISK. The tests of settings 1 and 2 above hand a built settings value to
+    /// the writer, which cannot notice the deploy passing `default()` instead.
+    #[test]
+    fn the_deploy_seam_reads_the_saved_settings_from_disk() {
+        let (seats_dir, seats) = loaded_seats("seam");
+        let dir = unique_tempdir("seam-cmds");
+        deploy_seat_commands("claude", &dir, &seats_dir, &seats, false).unwrap();
+        let architect = claude_seat_file(&dir, "architect");
+        assert!(architect.exists(), "control: deployed with nothing set");
+
+        let mut settings = crate::seat_settings::SeatSettings::default();
+        settings.set_enabled("architect", false);
+        settings.save(&seats_dir).unwrap();
+        // A REDEPLOY: seats re-seeded from the embedded content, then the seam run again.
+        crate::conductor::materialize_seats(&seats_dir).unwrap();
+        deploy_seat_commands("claude", &dir, &seats_dir, &seats, false).unwrap();
+        assert!(!architect.exists(), "the saved setting survived the redeploy and was honoured");
+    }
+
+    /// An unreadable settings file stops the seat commands for that deploy and SAYS so. Falling
+    /// back to "no settings" would re-enable a seat the user turned off.
+    #[test]
+    fn an_unreadable_settings_file_stops_the_deploy_and_names_the_file() {
+        let (seats_dir, seats) = loaded_seats("seam-corrupt");
+        let dir = unique_tempdir("seam-corrupt-cmds");
+        fs::write(seats_dir.join(crate::seat_settings::SETTINGS_FILE), "{ not json").unwrap();
+        let err = deploy_seat_commands("claude", &dir, &seats_dir, &seats, false).unwrap_err();
+        assert!(err.contains(crate::seat_settings::SETTINGS_FILE), "{err}");
+        assert!(!claude_seat_file(&dir, "architect").exists(), "and nothing was written");
+    }
+
+
     /// The skill path a claude-layout client gets for one seat's command.
     fn claude_seat_file(commands_dir: &Path, seat: &str) -> PathBuf {
         let (cmd, _) = crate::conductor::command_for(seat).expect("a command-mapped seat");
@@ -11420,44 +11500,6 @@ mod tests {
 
         assert!(!claude_file.exists(), "claude is off the list: its command goes");
         assert!(cursor_file.exists(), "cursor is on the list: its command stays");
-    }
-
-    /// Setting 3, at the one place seats are loaded. Both halves: the override REACHES the
-    /// seat, and the seat FILE on disk is not touched — the second is what keeps the seat out
-    /// of `shadowed`, which is the reason the settings live in a sidecar at all.
-    #[test]
-    fn a_brain_override_reaches_the_loaded_seat_without_touching_its_file() {
-        let (seats_dir, seats) = loaded_seats("settings-brain");
-        let shipped = seats.iter().find(|s| s.name == "architect").unwrap().model.clone();
-        let on_disk_before = fs::read_to_string(seats_dir.join("architect.md")).unwrap();
-
-        let mut settings = crate::seat_settings::SeatSettings::default();
-        settings.set_model("architect", "a-brain-nobody-ships");
-        settings.save(&seats_dir).unwrap();
-
-        let (reloaded, errors) = crate::runner::load_seat_definitions(&seats_dir);
-        assert!(errors.is_empty(), "{errors:?}");
-        let architect = reloaded.iter().find(|s| s.name == "architect").unwrap();
-        assert_eq!(architect.model, "a-brain-nobody-ships");
-        assert_ne!(architect.model, shipped, "control: the override really changed something");
-        assert_eq!(
-            fs::read_to_string(seats_dir.join("architect.md")).unwrap(),
-            on_disk_before,
-            "applying a setting must not write the seat file"
-        );
-    }
-
-    /// A corrupt settings file must be LOUD. Treating it as 'no settings' would silently
-    /// re-enable a seat the user turned off — the case the loader's own doc names.
-    #[test]
-    fn a_corrupt_settings_file_is_reported_not_ignored() {
-        let (seats_dir, _) = loaded_seats("settings-corrupt");
-        fs::write(seats_dir.join(crate::seat_settings::SETTINGS_FILE), "{ not json").unwrap();
-        let (_, errors) = crate::runner::load_seat_definitions(&seats_dir);
-        assert!(
-            errors.iter().any(|(path, _)| path.ends_with(crate::seat_settings::SETTINGS_FILE)),
-            "the loader must name the settings file: {errors:?}"
-        );
     }
 
     /// THE WIRING GATE FOR v4.0.0's STOP JUDGE.

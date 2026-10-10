@@ -23,11 +23,15 @@
 //! seat's model even when the user had not changed it would be exactly that copy: ship a new
 //! default and the sidecar would quietly keep the old one.
 //!
-//! **ONE RESOLUTION POINT, AND EVERY READER GOES THROUGH IT.** The store's other lesson: a fix
-//! that changed the size an order was placed at left two later paths still sending the old
-//! total, so the placement fix alone did not hold. A seat's model is read at several sites in
-//! `runner.rs`; [`SeatSettings::apply`] is the one place an override is merged, and it is
-//! applied at LOAD so no reader downstream can see an unresolved seat.
+//! # Three settings, not four, and why
+//!
+//! C11 asks for on/off, clients, brain and reset-to-shipped. The BRAIN was built, reviewed, and
+//! removed in the same checkpoint: a seat's `model` has no production consumer in this app
+//! (the hosted-runner half that reads it is documented in `lib.rs` as having no production
+//! caller, the deployed commands deliberately render no `model:`, and the hire path in
+//! jawata-mcp reads the seat FILE, never this sidecar). A control whose edit is only echoed
+//! back in the same field is the defect the UX seat's census exists to refuse. It returns when
+//! a hire reads a resolved seat; until then it is declared unmet, not shipped inert.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -54,16 +58,13 @@ pub struct SeatOverride {
     /// distinct from `None` on purpose.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clients: Option<Vec<String>>,
-    /// Setting 3 — the brain. Merged into the seat's `model` by [`SeatSettings::apply`].
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
 }
 
 impl SeatOverride {
     /// Whether this override says anything at all. An override that says nothing is removed
     /// rather than stored, so the file never accumulates empty entries that read as settings.
     fn is_empty(&self) -> bool {
-        self.enabled.is_none() && self.clients.is_none() && self.model.is_none()
+        self.enabled.is_none() && self.clients.is_none()
     }
 }
 
@@ -139,19 +140,6 @@ impl SeatSettings {
         }
     }
 
-    /// THE ONE RESOLUTION POINT. Merges setting 3 into the seat's definition, in place, so a
-    /// reader downstream cannot obtain an unresolved seat. Returns whether anything changed,
-    /// which the deploy report uses to say a seat's brain is the user's rather than ours.
-    pub fn apply(&self, seat: &mut SeatDefinition) -> bool {
-        match self.seats.get(&seat.name).and_then(|o| o.model.as_ref()) {
-            Some(model) if *model != seat.model => {
-                seat.model = model.clone();
-                true
-            }
-            _ => false,
-        }
-    }
-
     /// Set setting 1.
     pub fn set_enabled(&mut self, seat_name: &str, enabled: bool) {
         self.entry(seat_name).enabled = Some(enabled);
@@ -161,11 +149,6 @@ impl SeatSettings {
     /// and must not collapse into "all clients", which is what `None` means.
     pub fn set_clients(&mut self, seat_name: &str, clients: Vec<String>) {
         self.entry(seat_name).clients = Some(clients);
-    }
-
-    /// Set setting 3.
-    pub fn set_model(&mut self, seat_name: &str, model: &str) {
-        self.entry(seat_name).model = Some(model.to_string());
     }
 
     /// SETTING 4 — reset to shipped, the settings half. Drops every override for this seat, so
@@ -202,7 +185,18 @@ impl SeatSettings {
 /// was edited — so destroying it without a copy would be the one path that loses work on
 /// purpose.
 pub fn reset_to_shipped(seats_dir: &Path, seat_name: &str) -> Result<(), String> {
-    let mut settings = SeatSettings::load(seats_dir)?;
+    // A reset is the remedy for a bad customisation, and a corrupt settings file is one. Failing
+    // on it would refuse the very fix the view offers for the condition it reports. Keep the
+    // unreadable content beside the file, then start from nothing.
+    let mut settings = match SeatSettings::load(seats_dir) {
+        Ok(settings) => settings,
+        Err(_) => {
+            let corrupt = seats_dir.join(SETTINGS_FILE);
+            fs::copy(&corrupt, seats_dir.join(format!("{SETTINGS_FILE}.pre-reset")))
+                .map_err(|e| format!("cannot keep the unreadable {}: {e}", corrupt.display()))?;
+            SeatSettings::default()
+        }
+    };
     settings.clear(seat_name);
     settings.save(seats_dir)?;
 
@@ -247,6 +241,9 @@ pub struct SeatRow {
     /// The brain AS RESOLVED — the override already applied.
     pub model: String,
     pub enabled: bool,
+    /// Whether this seat has a command a deploy writes. A driven seat has none, so turning it
+    /// off would remove nothing; the view offers the toggle only where it does something.
+    pub deployable: bool,
     /// `None` = every client this build writes seat commands for.
     pub clients: Option<Vec<String>>,
     pub customised: bool,
@@ -271,6 +268,29 @@ fn gate_label(class: &crate::runner::GateClass) -> &'static str {
     }
 }
 
+/// The shipped seat of this name, parsed from the content embedded in this build.
+fn shipped_seat(name: &str) -> Option<SeatDefinition> {
+    let file = format!("{name}.md");
+    let (_, body) = crate::conductor::EMBEDDED_SEATS.iter().find(|(f, _)| *f == file)?;
+    crate::runner::parse_seat_definition(body).ok()
+}
+
+fn or_shipped(value: &str, name: &str, field: fn(&SeatDefinition) -> &String) -> String {
+    if !value.trim().is_empty() {
+        return value.to_string();
+    }
+    shipped_seat(name).map(|s| field(&s).clone()).unwrap_or_default()
+}
+
+/// Whether the seat file on disk differs from the content shipped in this build.
+fn stance_edited(seats_dir: &Path, name: &str) -> bool {
+    let file = format!("{name}.md");
+    let Some((_, shipped)) = crate::conductor::EMBEDDED_SEATS.iter().find(|(f, _)| *f == file) else {
+        return false;
+    };
+    fs::read_to_string(seats_dir.join(&file)).map(|text| text != *shipped).unwrap_or(false)
+}
+
 /// Build the view from the seats directory. `clients` is passed in because which clients get
 /// seat commands is the deploy's knowledge, not this module's — holding a list here would be
 /// the copy this file's header rules out.
@@ -280,22 +300,34 @@ pub fn seats_view(seats_dir: &Path, clients: Vec<ClientChoice>) -> SeatsView {
         .iter()
         .map(|(path, error)| format!("{}: {error}", path.display()))
         .collect();
-    // Read for the per-seat flags. An unreadable file was already reported by the loader above,
-    // so it is not reported twice here; the rows simply show no overrides.
-    let settings = SeatSettings::load(seats_dir).unwrap_or_default();
+    // Read for the per-seat flags. An unreadable file is NAMED in the view's errors and the rows
+    // show no overrides; treating it as "no settings" silently would show a seat the user turned
+    // off as on.
+    let settings = match SeatSettings::load(seats_dir) {
+        Ok(settings) => settings,
+        Err(error) => {
+            errors.push(error);
+            SeatSettings::default()
+        }
+    };
     let rows = seats
         .iter()
         .map(|seat| SeatRow {
             name: seat.name.clone(),
-            purpose: seat.purpose.clone(),
-            fires: seat.fires.clone(),
+            // A user-edited seat keeps its old file and may carry neither key. Fall back to the
+            // SHIPPED seat's value rather than render a blank row.
+            purpose: or_shipped(&seat.purpose, &seat.name, |s| &s.purpose),
+            fires: or_shipped(&seat.fires, &seat.name, |s| &s.fires),
             schedule: seat.schedule.clone(),
             tools: seat.tools.clone(),
             gates: seat.gate_classes.iter().map(|g| gate_label(g).to_string()).collect(),
             model: seat.model.clone(),
             enabled: settings.is_enabled(&seat.name),
+            deployable: crate::conductor::command_for(&seat.name).is_some(),
             clients: settings.clients(&seat.name).map(<[String]>::to_vec),
-            customised: settings.is_customised(&seat.name),
+            // An override OR a hand-edited stance: Reset exists for both, and a row that only
+            // counted overrides left the edited stance with no way to reach it.
+            customised: settings.is_customised(&seat.name) || stance_edited(seats_dir, &seat.name),
         })
         .collect();
     errors.sort();
@@ -308,7 +340,6 @@ pub fn seats_view(seats_dir: &Path, clients: Vec<ClientChoice>) -> SeatsView {
 pub enum SeatChange {
     Enabled { value: bool },
     Clients { value: Vec<String> },
-    Model { value: String },
     /// Setting 4 — drop the overrides and take this build's seat.
     Reset,
 }
@@ -350,15 +381,6 @@ pub fn change_seat(
             settings.set_clients(seat_name, value);
             settings.save(seats_dir)
         }
-        SeatChange::Model { value } => {
-            let value = value.trim();
-            if value.is_empty() {
-                return Err("a brain cannot be empty — use reset to return to the shipped one".into());
-            }
-            let mut settings = SeatSettings::load(seats_dir)?;
-            settings.set_model(seat_name, value);
-            settings.save(seats_dir)
-        }
     }
 }
 
@@ -375,15 +397,6 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
-    }
-
-    fn a_seat(name: &str, model: &str) -> SeatDefinition {
-        let body = format!(
-            "---\nname: {name}\nmodel: {model}\nkind: text\ntools: []\ngates: []\n\
-             ttl_secs: 60\nmax_iterations: 1\ncost_budget_usd: 1.0\nmax_tool_steps: 10\n---\n\
-             A stance.\n"
-        );
-        crate::runner::parse_seat_definition(&body).unwrap()
     }
 
     #[test]
@@ -408,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn all_four_settings_survive_a_redeploy() {
+    fn the_settings_survive_a_redeploy() {
         // C11's clause, and the thing the whole design is for. A redeploy is
         // `materialize_seats`, which rewrites the seat FILES; the settings must be untouched
         // by it because it never writes their file.
@@ -419,7 +432,6 @@ mod tests {
         let mut settings = SeatSettings::load(&seats).unwrap();
         settings.set_enabled("profiler", false);
         settings.set_clients("architect", vec!["claude".to_string()]);
-        settings.set_model("cataloguer", "claude-haiku-4-5");
         settings.save(&seats).unwrap();
 
         // THE REDEPLOY.
@@ -432,30 +444,9 @@ mod tests {
             Some(["claude".to_string()].as_slice()),
             "setting 2 must survive"
         );
-        let mut seat = a_seat("cataloguer", "claude-sonnet-5");
-        assert!(after.apply(&mut seat), "setting 3 must survive and apply");
-        assert_eq!(seat.model, "claude-haiku-4-5");
         // setting 4 is the inverse and is tested below; what survives here is that a reset
         // has something to clear.
-        assert!(after.is_customised("cataloguer"));
-    }
-
-    #[test]
-    fn an_override_is_only_an_override() {
-        // The no-copy rule: a seat nobody set is untouched, and `apply` reports false rather
-        // than rewriting the model with an identical value.
-        let settings = SeatSettings::default();
-        let mut seat = a_seat("architect", "claude-sonnet-5");
-        assert!(!settings.apply(&mut seat));
-        assert_eq!(seat.model, "claude-sonnet-5");
-
-        let mut same = SeatSettings::default();
-        same.set_model("architect", "claude-sonnet-5");
-        let mut seat2 = a_seat("architect", "claude-sonnet-5");
-        assert!(
-            !same.apply(&mut seat2),
-            "an override equal to the shipped value changed nothing, and must say so"
-        );
+        assert!(after.is_customised("profiler"));
     }
 
     #[test]
@@ -497,7 +488,7 @@ mod tests {
         crate::conductor::materialize_seats(&seats).unwrap();
 
         let mut settings = SeatSettings::load(&seats).unwrap();
-        settings.set_model("profiler", "claude-sonnet-5");
+        settings.set_enabled("profiler", false);
         settings.save(&seats).unwrap();
         let edited = seats.join("profiler.md");
         fs::write(&edited, "---\nname: profiler\n---\nmy own words\n").unwrap();
@@ -600,13 +591,11 @@ mod tests {
 
         change_seat(&dir, &valid(), "debugger", SeatChange::Enabled { value: false }).unwrap();
         change_seat(&dir, &valid(), "debugger", SeatChange::Clients { value: vec!["cursor".into()] }).unwrap();
-        change_seat(&dir, &valid(), "debugger", SeatChange::Model { value: "a-brain".into() }).unwrap();
 
         let changed = seats_view(&dir, both_clients())
             .seats.into_iter().find(|s| s.name == "debugger").unwrap();
         assert!(!changed.enabled);
         assert_eq!(changed.clients, Some(vec!["cursor".to_string()]));
-        assert_eq!(changed.model, "a-brain");
         assert!(changed.customised);
 
         // Reset: back to the shipped row, the seat is still THERE (the file was re-seeded),
@@ -635,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_seat_client_or_empty_brain_is_refused_and_writes_nothing() {
+    fn an_unknown_seat_or_client_is_refused_and_writes_nothing() {
         let dir = seeded("view-refuse");
         let settings_file = dir.join(SETTINGS_FILE);
         assert!(!settings_file.exists(), "control: nothing written yet");
@@ -644,10 +633,8 @@ mod tests {
         assert!(ghost.unwrap_err().contains("no seat named"));
         let bad_client = change_seat(&dir, &valid(), "debugger", SeatChange::Clients { value: vec!["emacs".into()] });
         assert!(bad_client.unwrap_err().contains("emacs"));
-        let blank = change_seat(&dir, &valid(), "debugger", SeatChange::Model { value: "  ".into() });
-        assert!(blank.is_err());
 
-        assert!(!settings_file.exists(), "three refusals, and not one of them left a trace");
+        assert!(!settings_file.exists(), "two refusals, and neither left a trace");
     }
 
     #[test]
@@ -671,7 +658,6 @@ mod tests {
             sent(r#"{"setting":"clients","value":["claude"]}"#),
             SeatChange::Clients { value: vec!["claude".into()] }
         );
-        assert_eq!(sent(r#"{"setting":"model","value":"x"}"#), SeatChange::Model { value: "x".into() });
         assert_eq!(sent(r#"{"setting":"reset"}"#), SeatChange::Reset);
 
         let dir = seeded("view-wire");
@@ -681,9 +667,74 @@ mod tests {
         let row = &value["seats"][0];
         for key in [
             "name", "purpose", "fires", "schedule", "tools", "gates", "model", "enabled",
-            "clients", "customised",
+            "clients", "customised", "deployable",
         ] {
             assert!(row.get(key).is_some(), "the view reads `{key}` and the row does not carry it");
         }
+    }
+
+    #[test]
+    fn a_stance_the_user_edited_counts_as_customised_so_reset_is_reachable_for_it() {
+        // The Reset button is shown only for a customised row. Customisation used to mean
+        // "has a settings override", which left the case reset was DESIGNED for - a hand-edited
+        // stance - with no way to reach it.
+        let dir = seeded("view-edited-stance");
+        let file = dir.join("debugger.md");
+        let shipped = fs::read_to_string(&file).unwrap();
+        let untouched = seats_view(&dir, both_clients());
+        assert!(
+            !untouched.seats.iter().find(|s| s.name == "debugger").unwrap().customised,
+            "control: a seat nobody touched is not customised"
+        );
+
+        fs::write(&file, format!("{shipped}\nMY OWN EDIT\n")).unwrap();
+        let edited = seats_view(&dir, both_clients());
+        assert!(edited.seats.iter().find(|s| s.name == "debugger").unwrap().customised);
+    }
+
+    #[test]
+    fn reset_recovers_from_a_corrupt_settings_file_instead_of_failing_on_it() {
+        // A view that reports a corrupt settings file must also be able to FIX it. Reset used to
+        // load the file first and fail on it, so the one remedy the view offers was refused by
+        // exactly the condition it was shown for.
+        let dir = seeded("view-reset-corrupt");
+        fs::write(dir.join(SETTINGS_FILE), "{ not json").unwrap();
+
+        change_seat(&dir, &valid(), "debugger", SeatChange::Reset).unwrap();
+
+        assert!(SeatSettings::load(&dir).is_ok(), "the settings file is readable again");
+        assert!(
+            fs::read_to_string(dir.join(format!("{SETTINGS_FILE}.pre-reset"))).unwrap().contains("not json"),
+            "and the corrupt content was kept, not destroyed"
+        );
+    }
+
+    #[test]
+    fn a_seat_file_without_the_new_keys_still_shows_what_the_seat_is_for() {
+        // A user-edited (shadowed) seat keeps its old file and loads with empty purpose/fires.
+        // The row falls back to the SHIPPED seat's values rather than rendering blank.
+        let dir = seeded("view-fallback");
+        let file = dir.join("debugger.md");
+        let stripped: String = fs::read_to_string(&file)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.starts_with("purpose:") && !l.starts_with("fires:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&file, stripped + "\n").unwrap();
+
+        let row = seats_view(&dir, both_clients())
+            .seats.into_iter().find(|s| s.name == "debugger").unwrap();
+        assert!(!row.purpose.is_empty() && !row.fires.is_empty(), "{row:?}");
+    }
+
+    #[test]
+    fn only_a_seat_with_a_command_can_be_turned_off() {
+        // A driven seat writes no command file, so "off" would remove nothing. The row says so
+        // and the view offers the toggle only where it does something.
+        let dir = seeded("view-deployable");
+        let view = seats_view(&dir, both_clients());
+        assert!(view.seats.iter().find(|s| s.name == "architect").unwrap().deployable);
+        assert!(!view.seats.iter().find(|s| s.name == "spec-auditor").unwrap().deployable);
     }
 }

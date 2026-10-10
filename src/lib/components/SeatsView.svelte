@@ -5,12 +5,23 @@
   //   "every deployed seat listed with what it is for, when it fires, its tools, gates and
   //    model"                                  -> the rows
   //   "four settings changeable per seat (on/off, clients, brain, reset-to-shipped)"
-  //                                            -> the controls on each row
+  //                                            -> the controls on each row, EXCEPT the three
+  //                                               cases below, each declared rather than hidden
   // Nothing else is here. There is no explanatory paragraph: the UX seat's census asks which
   // sentence of the spec asked for each block, and a hint nobody requested has no answer.
   // Two blocks that census REFUSED, and that were removed: a `/command` label and a
   // "customised" tag. The clause asks for neither, and the Reset button - shown only when
   // there is something to reset - already says the second.
+  //
+  // Three controls the clause names are NOT all shown, and why:
+  //   brain   - shown as text. Nothing in this app consumes a seat's model (the hosted runner
+  //             has no production caller; the hire path reads the seat file), so an editable
+  //             field would echo the edit back and change nothing.
+  //   On      - only for a seat that has a command. A driven seat writes none; "off" removes
+  //             nothing.
+  //   Clients - only when there are two or more INDEPENDENT clients. Cursor reads Claude's seat
+  //             directory, so offering it beside Claude would let a seat be dropped from both
+  //             while the view showed Cursor ticked.
   //
   // A change is written, then the dashboard's own Deploy is asked for — so a toggle is not a
   // control that does nothing until the user remembers to press something elsewhere.
@@ -25,15 +36,10 @@
   let loadError = "";
   let actionError = "";
   let busy = false;
-  // The brain field is edited locally and committed on Enter or blur, so typing does not
-  // write a settings file per keystroke.
-  let draftModel: Record<string, string> = {};
-
   async function load() {
     try {
       view = await seatsView();
       loadError = "";
-      draftModel = Object.fromEntries(view.seats.map((s) => [s.name, s.model]));
     } catch (error) {
       loadError = String(error);
     }
@@ -45,12 +51,9 @@
     actionError = "";
     try {
       view = await seatChange(seat.name, change);
-      draftModel = Object.fromEntries(view.seats.map((s) => [s.name, s.model]));
       dispatch("changed");
     } catch (error) {
       actionError = `${seat.name}: ${String(error)}`;
-      // The refusal wrote nothing; put the field back to what is actually in force.
-      draftModel = Object.fromEntries((view?.seats ?? []).map((s) => [s.name, s.model]));
     } finally {
       busy = false;
     }
@@ -68,11 +71,6 @@
       ? all.filter((id) => id === clientId || current.includes(id))
       : current.filter((id) => id !== clientId);
     apply(seat, { setting: "clients", value: next });
-  }
-
-  function commitModel(seat: SeatRow) {
-    const wanted = (draftModel[seat.name] ?? "").trim();
-    if (wanted !== seat.model) apply(seat, { setting: "model", value: wanted });
   }
 
   onMount(load);
@@ -100,16 +98,18 @@
       <article class="seat-row" class:off={!seat.enabled}>
         <header class="seat-head">
           <strong>{seat.name}</strong>
-          <label class="seat-on">
-            <input
-              checked={seat.enabled}
-              disabled={disabled || busy}
-              on:change={(e) =>
-                apply(seat, { setting: "enabled", value: e.currentTarget.checked })}
-              type="checkbox"
-            />
-            On
-          </label>
+          {#if seat.deployable}
+            <label class="seat-on">
+              <input
+                checked={seat.enabled}
+                disabled={disabled || busy}
+                on:change={(e) =>
+                  apply(seat, { setting: "enabled", value: e.currentTarget.checked })}
+                type="checkbox"
+              />
+              On
+            </label>
+          {/if}
         </header>
 
         <p>{seat.purpose}</p>
@@ -123,29 +123,23 @@
           <dt>Gates</dt>
           <dd>{seat.gates.length > 0 ? seat.gates.join(", ") : "none"}</dd>
           <dt>Brain</dt>
-          <dd>
-            <input
-              bind:value={draftModel[seat.name]}
-              disabled={disabled || busy}
-              on:blur={() => commitModel(seat)}
-              on:keydown={(e) => e.key === "Enter" && commitModel(seat)}
-              type="text"
-            />
-          </dd>
-          <dt>Clients</dt>
-          <dd>
-            {#each view.clients as client (client.id)}
-              <label class="seat-client">
-                <input
-                  checked={onClient(seat, client.id)}
-                  disabled={disabled || busy}
-                  on:change={(e) => toggleClient(seat, client.id, e.currentTarget.checked)}
-                  type="checkbox"
-                />
-                {client.label}
-              </label>
-            {/each}
-          </dd>
+          <dd>{seat.model}</dd>
+          {#if seat.deployable && view.clients.length >= 2}
+            <dt>Clients</dt>
+            <dd>
+              {#each view.clients as client (client.id)}
+                <label class="seat-client">
+                  <input
+                    checked={onClient(seat, client.id)}
+                    disabled={disabled || busy}
+                    on:change={(e) => toggleClient(seat, client.id, e.currentTarget.checked)}
+                    type="checkbox"
+                  />
+                  {client.label}
+                </label>
+              {/each}
+            </dd>
+          {/if}
         </dl>
 
         {#if seat.customised}

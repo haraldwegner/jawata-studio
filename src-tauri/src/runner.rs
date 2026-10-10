@@ -2854,18 +2854,6 @@ pub fn load_seat_definitions(
             Err(e) => errors.push((path, e.to_string())),
         }
     }
-    // THE ONE PLACE a per-seat setting is merged into a seat (`SeatSettings::apply`), so no
-    // reader downstream — the deploy, the scheduler, a hire — can obtain an unresolved seat.
-    // A settings file that cannot be read is reported like a malformed seat, never skipped:
-    // 'no settings' is a different answer from 'settings I could not read'.
-    match crate::seat_settings::SeatSettings::load(seats_dir) {
-        Ok(settings) => {
-            for seat in &mut seats {
-                settings.apply(seat);
-            }
-        }
-        Err(e) => errors.push((seats_dir.join(crate::seat_settings::SETTINGS_FILE), e)),
-    }
     (seats, errors)
 }
 

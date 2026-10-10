@@ -833,9 +833,13 @@ export interface SeatRow {
   tools: string[];
   /** Gate classes beyond the always-on one. Empty is a real answer. */
   gates: string[];
-  /** The brain as resolved, any override already applied. */
+  /** The brain the seat file declares. Shown, not editable: nothing in this app consumes a
+   * seat's model yet, so an editable field would echo the edit back and change nothing. */
   model: string;
   enabled: boolean;
+  /** Whether the seat has a command a deploy writes. A driven seat has none: "off" would remove
+   * nothing, so the view offers the toggle only where it does something. */
+  deployable: boolean;
   /** `null` means every client seat commands are written for. */
   clients: string[] | null;
   customised: boolean;
@@ -852,7 +856,6 @@ export interface SeatsView {
 export type SeatChange =
   | { setting: "enabled"; value: boolean }
   | { setting: "clients"; value: string[] }
-  | { setting: "model"; value: string }
   | { setting: "reset" };
 
 /** Every deployed seat with its four settings. File reads only. */
