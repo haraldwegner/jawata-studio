@@ -736,6 +736,30 @@ mod tests {
         }
     }
 
+    /// D5's FOURTH GATE: a machine event the grant sets aside is RECORDED, not silently
+    /// dropped. If a wrapper ever stops matching, a broken guard and a working one must
+    /// not write the same log; the first characters of the line name the mismatch.
+    #[test]
+    fn a_machine_event_the_grant_ignores_leaves_a_line_in_the_log() {
+        let d = tmp();
+        note_prompt(&d, "s", "autocontinue", false);
+        let handback = "<agent-message from=\"a37f4f0b3e34fcf57\">\n[Subagent hand-back] done";
+        assert!(!note_prompt(&d, "s", handback, false));
+        let log = std::fs::read_to_string(d.join("outcomes.log")).expect("a signal was written");
+        let line = log
+            .lines()
+            .find(|l| l.contains("autonomy-harness-ignored"))
+            .expect("the ignore is named, not silent");
+        assert!(line.contains("[wrapper-text]"), "says which mark answered: {line}");
+        assert!(line.contains("<agent-message"), "carries the head of what it ignored: {line}");
+        // The control: his own typing writes NO such line, so the signal means something.
+        let d2 = tmp();
+        note_prompt(&d2, "s", "autocontinue", false);
+        note_prompt(&d2, "s", "status?", false);
+        let none = std::fs::read_to_string(d2.join("outcomes.log")).unwrap_or_default();
+        assert!(!none.contains("autonomy-harness-ignored"), "typing is not ignored: {none}");
+    }
+
     /// QUOTES MEAN MENTION — every line below is one of HIS real messages,
     /// which is the only corpus this rule may be judged against.
     ///

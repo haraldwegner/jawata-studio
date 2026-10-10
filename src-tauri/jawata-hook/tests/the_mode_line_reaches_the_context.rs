@@ -146,6 +146,28 @@ fn his_question_injects_conversation_mode() {
     );
 }
 
+/// The OFF line says "his typing clears the grant". That sentence must be TRUE of a typed
+/// slash command too, not only of prose — the line is asserted here against the rule the
+/// hook actually enforces, in both shapes a command can arrive in (S1).
+#[test]
+fn his_typed_command_injects_conversation_mode() {
+    for (tag, command) in [
+        ("cmd-raw", "/sprint plan.md"),
+        ("cmd-wrapped", "<command-name>/sprint</command-name>\n<command-args>plan.md</command-args>"),
+    ] {
+        let home = scratch(tag);
+        let _ = userprompt_says(&payload(tag, "work the plan and autocontinue"), &home);
+
+        let out = userprompt_says(&payload(tag, command), &home);
+
+        assert!(
+            out.contains("AUTOCONTINUE: OFF"),
+            "a command he typed is him at the keyboard: the line must say the grant is \
+             gone, as it does for prose. {command:?} -> {out}"
+        );
+    }
+}
+
 /// A wake-up is told the STANDING state, not a fabricated transition.
 ///
 /// Harness notifications arrive at this same hook. v3.17.3 made them unable to
