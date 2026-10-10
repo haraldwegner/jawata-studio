@@ -241,7 +241,7 @@ pub fn judge(command: &str) -> Verdict {
     // that built the gate; the pattern space cannot be enumerated, but the
     // common spellings can be, and every denial teaches the tool that should
     // have been called.
-    if let Some(writer) = write_route_in(command) {
+    if let Some(writer) = write_route_in(command).filter(|_| !only_prose_mentions_java(command)) {
         return Verdict::Deny {
             reason: format!(
                 "Shell-mediated WRITE to a .java file is blocked — `{writer}` edits text, \
@@ -252,12 +252,13 @@ pub fn judge(command: &str) -> Verdict {
                  inside a declared authoring window. If this genuinely is authoring no tool \
                  can do (new file content, fixtures), re-run with `{AUTHOR_DECLARATION} \
                  <narrow reason>` in the command; the declaration is logged and audited. \
-                 WRITING ONLY NON-JAVA FILES and this fired because the command MENTIONS a \
-                 .java path? That over-denial is deliberate (studio#11): whether an opaque \
-                 interpreter body writes the path it mentions is not decidable from the \
-                 command text, and the narrow version of this check reopened three bypasses. \
-                 Use the Edit/Write tool for the non-Java file, or declare \
-                 `{AUTHOR_DECLARATION} <reason>` — both proceed."
+                 WRITING ONLY NON-JAVA FILES and this fired anyway? A script is let through \
+                 when every `.java` in it sits inside a quoted sentence (a string with \
+                 whitespace, such as prose you are writing into a document). This one has a \
+                 `.java` that is a bare argument, a whole-string path, a quoted command, or a \
+                 string that could not be read, and whether such a script writes that path is \
+                 not decidable from the command text. Use the Edit/Write tool for the non-Java \
+                 file, or declare `{AUTHOR_DECLARATION} <reason>` — both proceed."
             ),
         };
     }
@@ -302,6 +303,14 @@ const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh"];
 /// spelling is the accepted cost, and the layers above (artifact watch, ledger)
 /// exist because no enumeration closes this space.
 fn write_route_in(command: &str) -> Option<&'static str> {
+    write_routes(command).into_iter().next()
+}
+
+/// EVERY write route the command takes, in order. [`write_route_in`] is the
+/// first; the prose exemption needs the whole list, because one interpreter
+/// beside a `cp` is not an interpreter-only command.
+fn write_routes(command: &str) -> Vec<&'static str> {
+    let mut routes: Vec<&'static str> = Vec::new();
     for segment in segments(command) {
         // NO per-segment .java requirement on the WRITE gate. v3.8.1 added one
         // to kill a false positive and paid in three false negatives: a path
@@ -323,7 +332,7 @@ fn write_route_in(command: &str) -> Option<&'static str> {
         for raw in segment.split_whitespace() {
             if after_redirect {
                 if raw.trim_matches(['"', '\'']).ends_with(".java") {
-                    return Some(">");
+                    routes.push(">");
                 }
                 after_redirect = false;
             }
@@ -331,7 +340,7 @@ fn write_route_in(command: &str) -> Option<&'static str> {
                 after_redirect = true;
             } else if let Some(target) = raw.strip_prefix(">>").or_else(|| raw.strip_prefix('>')) {
                 if target.trim_matches(['"', '\'']).ends_with(".java") {
-                    return Some(">");
+                    routes.push(">");
                 }
             }
         }
@@ -345,16 +354,19 @@ fn write_route_in(command: &str) -> Option<&'static str> {
         if let Some(first) = words.next() {
             let word = first.rsplit(['/', '\\']).next().unwrap_or(first);
             if let Some(tool) = WRITE_TOOLS.iter().find(|t| **t == word) {
-                return Some(tool);
+                routes.push(tool);
+                continue;
             }
             // A reader that was handed an in-place flag is a writer.
             if let Some(tool) = IN_PLACE_TOOLS.iter().find(|t| **t == word) {
                 if has_in_place_flag(segment, tool) {
-                    return Some(tool);
+                    routes.push(tool);
+                    continue;
                 }
             }
             if SHELLS.contains(&word) && segment.contains(" -c") {
-                return Some("sh -c");
+                routes.push("sh -c");
+                continue;
             }
             // `git apply` rewrites files. `git checkout HEAD~1 -- <path>` does
             // too and is NOT here — deliberately, since studio#5's C9 architect
@@ -366,13 +378,13 @@ fn write_route_in(command: &str) -> Option<&'static str> {
             if word == "git" {
                 if let Some(sub) = words.next() {
                     if sub == "apply" {
-                        return Some("git apply");
+                        routes.push("git apply");
                     }
                 }
             }
         }
     }
-    None
+    routes
 }
 
 /// Whether the command names Java sources. Deliberately narrow: `.java` as a
@@ -380,6 +392,106 @@ fn write_route_in(command: &str) -> Option<&'static str> {
 /// asked it to.
 fn mentions_java_source(command: &str) -> bool {
     command.contains(".java")
+}
+
+/// Interpreters whose only route to a write is the script they are handed — the
+/// only routes a prose mention can be innocent of. A `cp`, a `tee` or a
+/// redirection names its target as an argument, so a `.java` mention beside one
+/// is a path whatever it is quoted with.
+const INTERPRETER_ROUTES: &[&str] = &[
+    "python", "python3", "python2", "perl", "ruby", "node", "php", "sh -c",
+];
+
+/// D8e, studio#11 — whether a command's `.java` mentions are all PROSE and every
+/// write route it takes is an interpreter, so the write gate has nothing to deny.
+///
+/// WHY THE CUT IS HERE. The write gate takes whole-command scope on purpose: a
+/// path reaches a writer through a pipe, through a quoted separator, across a
+/// heredoc, and no segment-scoped rule sees it. What none of those bypasses is,
+/// is a SENTENCE: each is a bare token or a whole-literal path. So the question
+/// is not which segment holds the mention but what the mention is — a `.java`
+/// inside a quoted string with whitespace in it, written into a document, names
+/// a file the way prose does.
+///
+/// Every occurrence must satisfy all of: it is inside a quoted literal (the
+/// INNERMOST one, quotes of unlike kind nesting, so `"open('a.md').write('see
+/// Foo.java')"` is judged by the inner `'…'`); that literal closes; it contains
+/// whitespace; it does not begin like a path (`/`, `~`, `.`) or hold a
+/// backslash; and read as a shell command it takes no write route of its own,
+/// which is what stops `os.system('sed -i … Foo.java')` being called a sentence.
+///
+/// ERRORS GO TOWARD DENIAL. A stray apostrophe flips the parity of every quote
+/// after it; the result is that a bare path reads as bare and is denied, or that
+/// prose reads as bare and is denied. The one direction that matters — a path
+/// read as prose — needs a literal that holds whitespace, starts like prose, and
+/// is a path: a spaced relative path, which a Java source tree does not have.
+/// Accepted and stated. A goodwill failure that crafts the quoting is outside
+/// what a text predicate can stop and is what the audit ledger exists for.
+fn only_prose_mentions_java(command: &str) -> bool {
+    let routes = write_routes(command);
+    if routes.is_empty() || !routes.iter().all(|r| INTERPRETER_ROUTES.contains(r)) {
+        return false;
+    }
+    let frames = quote_frames(command);
+    let mut found = false;
+    for (at, _) in command.match_indices(".java") {
+        found = true;
+        // The innermost frame containing the mention: the one that opened last.
+        let Some(frame) = frames
+            .iter()
+            .filter(|f| f.open < at && f.close.map_or(true, |c| at < c))
+            .max_by_key(|f| f.open)
+        else {
+            return false;
+        };
+        let Some(close) = frame.close else {
+            return false;
+        };
+        let literal = &command[frame.open + 1..close];
+        let begins_like_a_path = literal.trim_start().starts_with(['/', '~', '.']);
+        if !literal.contains(char::is_whitespace)
+            || begins_like_a_path
+            || literal.contains('\\')
+            || !write_routes(literal).is_empty()
+        {
+            return false;
+        }
+    }
+    found
+}
+
+/// One quoted literal: where it opens, and where it closes if it does.
+struct QuoteFrame {
+    open: usize,
+    close: Option<usize>,
+}
+
+/// Every quoted literal in the text, with quotes of unlike kind nesting. A
+/// backslash escapes the next character. Deliberately not a shell parser: it
+/// reads the quotes of the shell and of the script inside it with one rule,
+/// because the command text does not say which language a given quote belongs
+/// to.
+fn quote_frames(command: &str) -> Vec<QuoteFrame> {
+    let mut done: Vec<QuoteFrame> = Vec::new();
+    let mut open: Vec<(char, usize)> = Vec::new();
+    let mut chars = command.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '\\' => {
+                chars.next();
+            }
+            '\'' | '"' => match open.last() {
+                Some(&(q, start)) if q == c => {
+                    open.pop();
+                    done.push(QuoteFrame { open: start, close: Some(i) });
+                }
+                _ => open.push((c, i)),
+            },
+            _ => {}
+        }
+    }
+    done.extend(open.into_iter().map(|(_, start)| QuoteFrame { open: start, close: None }));
+    done
 }
 
 /// Wrappers that precede the real command without being it.
@@ -551,7 +663,11 @@ mod tests {
             // the live bypass, verbatim
             "cd /home/harald/CursorProjects/jawata-mcp && sed -i 's/a/b/' \
              org.jawata.core/src/org/jawata/core/host/HostOS.java",
-            "cd repo && python3 -c \"print('rewrites Foo.java')\"",
+            // was `python3 -c "print('rewrites Foo.java')"`; a sentence inside a
+            // literal is prose since D8e (see the prose tests below), so this
+            // case now hands the path to the interpreter as an argument — the
+            // `&&` segmentation it exists to pin is unchanged.
+            "cd repo && python3 -c \"print('x')\" Foo.java",
             "cd repo && tee Foo.java",
             "cd a && cd b && perl -pi -e 's/x/y/' Foo.java",
             "cd repo || python3 write.py Foo.java",
@@ -604,25 +720,81 @@ mod tests {
         }
     }
 
-    /// studio#11's FIRST half, recorded as an accepted cost rather than fixed.
+    /// studio#11's FIRST half — D8e of Sprint 28g, the defect Harald signed.
     ///
-    /// The live false positive: a `python3` heredoc editing a **`.md` plan
-    /// file** was denied, because the command text happened to mention a
-    /// `.java` path. It shares its whole text signature with the bypass in
-    /// `a_path_reaching_the_writer_from_elsewhere_is_still_a_write` below — an
-    /// opaque interpreter body may or may not write the path it mentions, and
-    /// the command text does not say which. v3.8.1 tried per-segment scoping
-    /// and reopened three bypasses.
+    /// The live false positive: an interpreter script that wrote three `.md`
+    /// files and no Java was denied, because its text MENTIONED a `.java` path.
+    /// For three releases this was recorded as an accepted cost, on the ground
+    /// that an opaque interpreter body may or may not write the path it
+    /// mentions and v3.8.1's per-segment scoping reopened three bypasses.
     ///
-    /// So the residual stays, and what changed is HONESTY: the denial now names
-    /// both legitimate routes (the Edit/Write tool for the non-Java file, or a
-    /// declaration). Removing the residual is a shell-parser project, not a
-    /// calibration.
+    /// The cut that holds is not about SEGMENTS but about WHAT the mention is. A
+    /// `.java` that sits inside a quoted literal containing whitespace — a
+    /// sentence — names a file the way prose does; a `.java` that is a bare
+    /// token, or a whole-literal path, is an argument somebody can write to. The
+    /// three bypasses were all bare-token shapes and stay denied, below.
     #[test]
-    fn writing_a_markdown_file_from_an_interpreter_is_still_denied_and_says_why() {
-        let cmd = "python3 - <<'PY'\nopen('plan.md','a').write('see Foo.java')\nPY";
-        let verdict = judge(cmd);
-        match verdict {
+    fn a_script_that_writes_only_documents_and_mentions_java_in_prose_is_allowed() {
+        let cmd = "python3 - <<'PY'\n\
+                   open('plan.md','a').write('see Foo.java')\n\
+                   open('notes.md','w').write('The Bar.java call sites move in stage 2')\n\
+                   open('log.md','w').write(\"the Baz.java rename is deferred\")\n\
+                   PY";
+        assert!(
+            !denied(cmd),
+            "a script writing three documents was denied for the prose it carries: {:?}",
+            judge(cmd)
+        );
+        // The same, one line, with the shell's own quoting around Python's.
+        assert!(!denied("python3 -c \"open('a.md','w').write('see Foo.java')\""));
+        assert!(!denied("python3 -c 'open(\"a.md\",\"w\").write(\"see Foo.java\")'"));
+    }
+
+    /// The other half of the cut: every shape that stays a write. Each is a
+    /// shape the exemption could have swallowed by being too generous.
+    #[test]
+    fn a_java_that_is_an_argument_and_not_a_sentence_is_still_a_write() {
+        for cmd in [
+            // the path IS a whole literal
+            "python3 -c \"open('Foo.java','w').write('x')\"",
+            // a glob or a suffix built from a literal that is only the extension
+            "python3 -c \"import glob; glob.glob('**/*.java')\"",
+            "python3 -c \"name = 'Foo' + '.java'\"",
+            // a literal with whitespace that is a COMMAND the interpreter runs
+            "python3 -c \"import os; os.system('sed -i s/a/b/ Foo.java')\"",
+            "python3 -c \"import os; os.system('cp fixed.txt Foo.java')\"",
+            // a spaced absolute path is still a path
+            "python3 -c \"open('/home/x/My Projects/Foo.java','w')\"",
+            // one prose mention does not excuse a bare one beside it
+            "python3 -c \"open('a.md','w').write('see Foo.java')\" Bar.java",
+            // an unclosed quote cannot be read, so it is not read as prose
+            "python3 -c \"open('Foo.java",
+            // a stray apostrophe in a comment must not swallow the real path
+            "python3 - <<'PY'\n# don't\nopen('Foo.java','w')\nPY",
+        ] {
+            assert!(denied(cmd), "a write to Java was let through as prose: {cmd}");
+        }
+    }
+
+    /// A prose-only interpreter segment does not launder a NON-interpreter
+    /// writer in the same command: `cp` into a spaced path has no bare `.java`
+    /// token and a literal with whitespace, which is exactly the shape the
+    /// exemption accepts for an interpreter — so it must be refused by who the
+    /// writer is, not by how the mention is spelled.
+    #[test]
+    fn a_prose_exemption_does_not_launder_another_writer_in_the_command() {
+        assert!(denied(
+            "python3 -c \"open('a.md','w').write('see Foo.java')\" && cp x.txt \"my dir/Foo.java\""
+        ));
+        assert!(denied(
+            "python3 -c \"open('a.md','w').write('see Foo.java')\" && tee \"out dir/Bar.java\""
+        ));
+    }
+
+    /// The denial that remains still teaches the non-Java case and both routes.
+    #[test]
+    fn the_remaining_denial_still_names_the_non_java_case_and_its_routes() {
+        match judge("python3 write_plan.py plan.md Foo.java") {
             Verdict::Deny { reason } => {
                 assert!(
                     reason.contains("WRITING ONLY NON-JAVA FILES"),
@@ -633,7 +805,7 @@ mod tests {
                     "and the declaration that proceeds: {reason}"
                 );
             }
-            other => panic!("the over-denial is deliberate — narrowing it reopens bypasses: {other:?}"),
+            other => panic!("a bare path handed to an interpreter is a write: {other:?}"),
         }
     }
 
