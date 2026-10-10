@@ -14,6 +14,14 @@
 use jawata_hook::safety::Outcome;
 
 fn main() {
+    // The run bracket is a LONG command by design, so it is answered before the
+    // watchdog below is armed: that deadline exists for a hook event, and would
+    // kill a bracketed build at its first minute.
+    let all_args: Vec<String> = std::env::args().collect();
+    if jawata_hook::bracket::is_bracket_call(&all_args) {
+        std::process::exit(jawata_hook::bracket::main(&all_args[2..]));
+    }
+
     let argv0 = std::env::args().next().unwrap_or_default();
     let explain = std::env::args().any(|a| a == "--explain");
 

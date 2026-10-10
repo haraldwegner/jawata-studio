@@ -10,6 +10,7 @@
 //! `main.rs` stays a thin shell over [`run`].
 
 pub mod autonomy;
+pub mod bracket;
 pub mod config;
 pub mod cue;
 pub mod areamemo;

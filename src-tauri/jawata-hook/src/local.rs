@@ -407,11 +407,18 @@ pub fn judge_payload(text: &str) -> Verdict {
 // refused any more. The build tools that are long by what they are (maven,
 // cargo, vite, svelte-check) live there too, matched as the program, not as text.
 
-/// A multi-minute gate whose output is thrown away, or truncated through a
-/// filter. Either way the only route to a detail it printed is another run.
+/// A multi-minute gate run outside the bracket.
 ///
-/// Measured 2026-08-28: two avoidable full runs cost roughly twenty minutes.
-pub fn uncaptured_gate(command: &str) -> Option<Verdict> {
+/// Measured 2026-08-28: two avoidable full runs cost roughly twenty minutes, because
+/// a gate's output was thrown away or truncated through a filter, and the only route
+/// to a detail it printed was another run. The first answer was a text rule asking
+/// for a redirect; the second, a text rule asking for an absolute `cd`. Both asked the
+/// caller to WRITE the capture correctly. The bracket (`bracket.rs`) IS the capture:
+/// it cannot be invoked without an absolute directory, it keeps the output, and it
+/// leaves a summary. So a long run that is not bracketed is refused — a redirect
+/// alone no longer satisfies this, because it leaves the directory unsaid, which is
+/// the second failure and the quieter one.
+pub fn unbracketed_gate(command: &str) -> Option<Verdict> {
     // THE DECLARED WAY PAST, ported from `guard-gate-output.sh` (studio#41).
     //
     // This rule matches command TEXT, so it cannot tell a gate being INVOKED
@@ -434,6 +441,8 @@ pub fn uncaptured_gate(command: &str) -> Option<Verdict> {
         let here = base.clone();
         // `cd X ; ./gate` — the script is read from where it will actually run.
         base = crate::gatefile::dir_after(segment, &base);
+        // A bracket call is the answer, not the offence: its head is the hook
+        // binary, so what it runs is not judged as a bare invocation here.
         if !crate::gatefile::runs_long_gate(segment, &here) {
             continue;
         }
@@ -442,70 +451,26 @@ pub fn uncaptured_gate(command: &str) -> Option<Verdict> {
         {
             continue;
         }
-        // Captured? A redirect to a file, or tee. That is the whole requirement.
-        if segment.contains('>') || segment.split_whitespace().any(|w| w == "tee") {
-            continue;
-        }
-        let truncated = ["head", "tail", "sed", "awk", "cut", "wc"].iter().any(|f| {
-            segment
-                .split('|')
-                .skip(1)
-                .any(|piped| piped.split_whitespace().next() == Some(f))
-        });
-        let lead = if truncated {
-            "GATE OUTPUT TRUNCATED AND DISCARDED — capture it to a file instead. What the \
-             filter does not print is GONE, and the only way back is to run the gate again."
-        } else {
-            "GATE OUTPUT NOT CAPTURED — redirect it to a file. A multi-minute gate whose \
-             output is not kept costs a second run the moment any detail is wanted."
-        };
+        let how = std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "<this hook binary>".to_string());
         return Some(Verdict::Deny {
             reason: format!(
-                "{lead} Do this instead, so every later question is answerable from the file: \
-                 `<gate> > /tmp/out.txt 2>&1; echo \"exit=$?\"` then read the file. \
-                 head/tail/grep over the FILE are unrestricted — this refuses only producing \
-                 the output and discarding it in the same command."
+                "LONG RUN OUTSIDE THE BRACKET. A multi-minute gate whose output is not kept \
+                 costs a second run the moment any detail is wanted, and a run that does not \
+                 say WHERE it runs can pass about the wrong repository. Run it through the \
+                 bracket, which needs an absolute directory and keeps the output:\n\n    \
+                 {how} {sub} --cd <absolute dir> --out /tmp/<name>.txt -- <program> [args...]\n\n\
+                 It prints one line with the exit status, and writes the output to the file and \
+                 a summary to <name>.txt.summary (exit status, seconds, line count, last lines). \
+                 Read either as much as you like. A command that only MENTIONS a gate is not \
+                 refused; if this is one that does run it and must stay as written, add \
+                 `gate-output-ok: <why>` — the declaration is logged.",
+                sub = crate::bracket::SUBCOMMAND,
             ),
         });
     }
     None
-}
-
-/// A gate invoked by a path that does not fix the working directory.
-///
-/// Measured 2026-08-28, five times in one session the working directory was not
-/// what the command assumed. Four failed loudly. The fifth did not: the command
-/// landed in a neighbouring repository, ran ITS gate, and printed a real PASS
-/// about the wrong product — one step from being recorded as this product's
-/// result. An ABSOLUTE script path is caught too, and that is the point: an
-/// absolute path does not set the working directory either, and a suite invoked
-/// that way produced fourteen phantom failures, every one a fixture resolved
-/// from the wrong root.
-pub fn gate_without_absolute_cd(command: &str) -> Option<Verdict> {
-    let names_gate = command.contains("build/") && command.contains(".sh")
-        || command.contains("-f build/pom.xml")
-        || command.contains("-f ") && command.contains("build/pom.xml");
-    if !names_gate {
-        return None;
-    }
-    let has_absolute_cd = command
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .windows(2)
-        .any(|w| w[0] == "cd" && w[1].starts_with('/'));
-    if has_absolute_cd {
-        return None;
-    }
-    Some(Verdict::Deny {
-        reason: "RELATIVE GATE PATH WITH NO ABSOLUTE cd — say which repository you mean. A \
-                 workspace holds several projects and the shell's working directory is not \
-                 reliably where you left it, so a relative gate path runs whatever repository \
-                 the shell is in right now. The loud failure is a missing file; the quiet one \
-                 is finding a DIFFERENT project's gate of the same name, running it, and \
-                 passing — a true result about the wrong product. Prefix the command with an \
-                 absolute cd."
-            .to_string(),
-    })
 }
 
 #[cfg(test)]
@@ -828,47 +793,74 @@ mod tests {
     fn an_uncaptured_expensive_gate_is_denied() {
         let (dir, name) = a_declared_gate();
         let cmd = format!("cd {dir} && ./{name} 4");
-        assert!(uncaptured_gate(&cmd).is_some());
+        assert!(unbracketed_gate(&cmd).is_some());
     }
 
     #[test]
-    fn a_declared_exception_passes_an_uncaptured_gate() {
+    fn a_declared_exception_passes_an_unbracketed_gate() {
         // studio#41: the shell guard's escape hatch, and the reason it exists —
         // a text rule cannot tell an invocation from a mention.
         let (dir, name) = a_declared_gate();
         let cmd = format!("cd {dir} && ./{name} 4  # gate-output-ok: documenting the rule");
-        assert!(uncaptured_gate(&cmd).is_none(), "a declared exception is honoured");
+        assert!(unbracketed_gate(&cmd).is_none(), "a declared exception is honoured");
         // The control: the SAME command without the declaration is refused, so
         // the test cannot pass because the rule stopped firing altogether.
         assert!(
-            uncaptured_gate(&format!("cd {dir} && ./{name} 4")).is_some(),
+            unbracketed_gate(&format!("cd {dir} && ./{name} 4")).is_some(),
             "without the declaration the gate still refuses"
         );
     }
 
     #[test]
-    fn a_captured_gate_passes() {
+    fn a_redirect_alone_no_longer_satisfies_the_rule() {
+        // The redirect keeps the output and leaves the DIRECTORY unsaid, which is the
+        // second failure and the quieter one (a true PASS about the wrong product).
+        // The bracket needs both, so a redirected gate is still refused and the
+        // refusal teaches the bracket.
         let (dir, name) = a_declared_gate();
         let cmd = format!("cd {dir} && ./{name} 4 > /tmp/o.txt 2>&1");
-        assert!(uncaptured_gate(&cmd).is_none());
-        // The control: the same gate uncaptured is refused (above), so this is not
-        // the rule being off.
-        assert!(uncaptured_gate(&format!("cd {dir} && ./{name} 4")).is_some());
+        let Some(Verdict::Deny { reason }) = unbracketed_gate(&cmd) else {
+            panic!("a redirected but unbracketed gate must still be refused");
+        };
+        assert!(reason.contains("bracket") && reason.contains("--cd"), "{reason}");
     }
 
     #[test]
-    fn a_truncated_gate_is_denied_with_its_own_wording() {
+    fn a_truncated_gate_is_refused_too() {
         let (dir, name) = a_declared_gate();
-        let cmd = format!("cd {dir} && ./{name} 4 | tail -5");
-        let Some(Verdict::Deny { reason }) = uncaptured_gate(&cmd) else {
+        assert!(unbracketed_gate(&format!("cd {dir} && ./{name} 4 | tail -5")).is_some());
+    }
+
+    #[test]
+    fn a_bracketed_run_passes_whatever_it_runs() {
+        // The bracket's head is the hook binary, so the gate it wraps is not judged
+        // as a bare invocation. The control: the same gate bare is refused.
+        let (dir, name) = a_declared_gate();
+        let bracketed = format!(
+            "/home/u/.claude/jawata-studio/jawata-hook-guard bracket --cd {dir} --out /tmp/o.txt -- ./{name} 4"
+        );
+        assert!(unbracketed_gate(&bracketed).is_none());
+        assert!(unbracketed_gate(&format!("cd {dir} && ./{name} 4")).is_some());
+        for tool in ["mvn -q install", "cargo test --lib", "vite build", "svelte-check"] {
+            let cmd = format!("/h/jawata-hook-guard bracket --cd /repo --out /tmp/o.txt -- {tool}");
+            assert!(unbracketed_gate(&cmd).is_none(), "{cmd}");
+            assert!(unbracketed_gate(tool).is_some(), "the bare form is refused: {tool}");
+        }
+    }
+
+    #[test]
+    fn the_refusal_names_the_exact_binary_to_run() {
+        let Some(Verdict::Deny { reason }) = unbracketed_gate("mvn -q install") else {
             panic!("expected a denial");
         };
-        assert!(reason.contains("TRUNCATED"), "the two refusals read differently: {reason}");
+        let exe = std::env::current_exe().unwrap().display().to_string();
+        assert!(reason.contains(&exe), "it must print a command that runs: {reason}");
+        assert!(reason.contains("gate-output-ok:"), "and the declared way past: {reason}");
     }
 
     #[test]
     fn a_version_probe_is_exempt() {
-        assert!(uncaptured_gate("mvn --version").is_none());
+        assert!(unbracketed_gate("mvn --version").is_none());
     }
 
     /// The seven correct commands the old name list refused in one session, as the
@@ -892,13 +884,13 @@ mod tests {
             format!("wc -l {script}"),
         ] {
             assert!(
-                uncaptured_gate(&cmd).is_none(),
+                unbracketed_gate(&cmd).is_none(),
                 "a command that runs no gate was refused: {cmd}"
             );
         }
         // The control: RUNNING that same script is refused, so every pass above is
         // the rule reading position and not the rule being off.
-        assert!(uncaptured_gate(&format!("{script} 4")).is_some());
+        assert!(unbracketed_gate(&format!("{script} 4")).is_some());
     }
 
     /// The measure the list deletion exists for: nothing in what ships names one
@@ -933,22 +925,5 @@ mod tests {
             }
         }
         assert!(hits.is_empty(), "a build-script name ships in the binary: {hits:?}");
-    }
-
-    #[test]
-    fn a_relative_gate_path_needs_an_absolute_cd() {
-        let cmd = format!("./build/run-{}.sh 4 > /tmp/o.txt 2>&1", "suite");
-        assert!(gate_without_absolute_cd(&cmd).is_some());
-        let ok = format!("cd /home/u/repo && ./build/run-{}.sh 4 > /tmp/o.txt 2>&1", "suite");
-        assert!(gate_without_absolute_cd(&ok).is_none());
-    }
-
-    #[test]
-    fn an_absolute_script_path_still_needs_the_cd() {
-        // The first version of this rule caught only a relative `./build/...`,
-        // so an absolute script path satisfied it — and an absolute path does
-        // NOT set the working directory. That is the fourteen-phantom-failure
-        // case, and it must still be refused.
-        assert!(gate_without_absolute_cd("/home/u/repo/build/run-suite.sh 4 > /tmp/o.txt").is_some());
     }
 }

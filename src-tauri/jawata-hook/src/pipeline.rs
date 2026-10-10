@@ -351,19 +351,12 @@ fn guard(client: Client, payload: &str) -> Outcome {
     if let crate::guard::Verdict::Deny { reason } = crate::local::judge_payload(&scan) {
         return emit_permission(client, false, reason);
     }
-    // Ordered as the shell guards were: which repository, then whether the
-    // output survives. Naming the wrong repository makes the captured output
-    // worthless, so it is the earlier question.
-    for rule in [
-        crate::local::gate_without_absolute_cd(&command),
-        crate::local::uncaptured_gate(&command),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if let crate::guard::Verdict::Deny { reason } = rule {
-            return emit_permission(client, false, reason);
-        }
+    // One question where there were two. "Which repository" and "does the output
+    // survive" used to be separate text rules; the bracket cannot be invoked without
+    // an absolute directory, so the working-directory rule RETIRED with it instead of
+    // being policed beside it.
+    if let Some(crate::guard::Verdict::Deny { reason }) = crate::local::unbracketed_gate(&command) {
+        return emit_permission(client, false, reason);
     }
 
     let emission = match crate::guard::judge(&command) {
