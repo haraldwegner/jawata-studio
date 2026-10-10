@@ -10,16 +10,23 @@
 >
 > | C11 clause | State |
 > |---|---|
-> | every deployed seat listed with purpose, firing moment, tools, gates, model | **written** — 14 rows, every column read from the seat's own frontmatter |
+> | every deployed seat listed with purpose, firing moment, tools, gates, model | **built** — the seats view (studio `70c8154`); every column is read from the seat's own file |
 > | the stance-editability answer | **written** — editable, an edit wins over a redeploy, and it costs the seat its updates |
 > | the deployment side file by file, and what waits for 28h | **written** — and the answer to *what goes now* is **nothing new**, said plainly because the clause asks for it plainly |
 > | the run panel's place, present and filled at S16 | **written** |
-> | four per-seat settings, each surviving a redeploy | **UNMET, and not papered over** — none of the four exists in code; the section specifies them and names the design question that blocks the brain one |
-> | a named test proving one engine per workspace | **open as CODE.** Deliberately not written about here: a paragraph about a test would make a document look like a gate |
+> | four per-seat settings, each surviving a redeploy | **built** — studio `3a7be8f` and `70c8154`; six mutations, each reddening exactly the test aimed at it |
+> | a named test proving one engine per workspace | **met by a test that already existed** — `runtime_manager::tests::workspace_two_distinct_workspaces_have_independent_processes`, and it fails when the join ignores the workspace key (measured) |
 >
-> Two decisions this document raises and does not take: whether `ux` gets a typed command, and
-> whether a per-seat brain lives in the seat file (shadowing it) or in a sidecar. Both are the
-> architect seat's.
+> **Found while building this, and it belongs to Stage 7, not this one:** the `ux` seat that Stage 7
+> reported built did not parse (`kind: doc` — the parser accepts only `text` or `code`) and was
+> never listed in the embed registry, so it shipped in no binary and ran nowhere. Nothing caught
+> it because nothing loaded it. It is fixed (studio `3a7be8f`) and C7 should be read with that
+> in mind: its row said BUILT.
+>
+> Decisions this document raises and does not take: whether `ux` gets a typed command, and what the
+> clients setting should mean for a client that reads another client's directory (see the settings
+> section). Both are the architect seat's. The third it used to list — sidecar or shadowing for the
+> brain — was taken in the build and is recorded as taken.
 
 ## Seats — what each one is for, when it fires, its tools, gates and model
 
@@ -27,8 +34,14 @@
 none** — read off `conductor.rs`'s `COMMAND_MAP`, which is the only thing that decides it, and
 pinned by that file's own test asserting `command_for` answers `None` for the driven ones.
 
-Every column below is read from the seat's own frontmatter rather than described, so a seat whose
-model or tools change makes this table wrong in a way a reader can catch.
+Every column below is read from the seat's own file rather than described, so a seat whose model
+or tools change makes this table wrong in a way a reader can catch.
+
+**A correction to this document's own first version, which said that of every column when it was
+false of two.** *What it is for* and *when it fires* were prose written here; the seat files
+carried neither. They are now `purpose:` and `fires:` in each seat's frontmatter (studio
+`3a7be8f`), a test holds every shipped seat to declaring both, and the seats view reads them. The
+sentence is true now. It was not true when it was written.
 
 | Seat | Typed as | What it is for | When it fires | Model | Gates | Tools |
 |---|---|---|---|---|---|---|
@@ -61,35 +74,43 @@ view says it, so a reader comparing two rows would read an empty gate list as a 
 
 ## The four per-seat settings
 
-**NONE OF THE FOUR IS BUILT, and this section says so rather than describing them as if they
-were.** Searched `conductor.rs` and `runner.rs` for any of `enabled`, `reset_to_shipped`,
-`seat_settings`, `SeatSetting`: **zero hits.** There is no per-seat settings store anywhere in
-`src-tauri/src`. C11's clause — *"four settings changeable per seat, each surviving a redeploy"* —
-is **UNMET**, and a view that listed four toggles would be the clearest possible instance of the
-defect the UX seat exists to catch.
+**BUILT** (studio `3a7be8f`, `70c8154`). They live in `<config>/seats/.settings.json`, beside the
+seat files and **never written by the materialization pass**. That omission is the whole design:
+surviving a redeploy is a property of *where the settings live*, not a rule somebody has to
+remember.
 
-What they are, and what each would have to mean, so the work is specified rather than vague:
+| Setting | What it decides | How it reaches the agents | Proved by |
+|---|---|---|---|
+| **on / off** | whether the seat's command is written for any client | the deploy writer **removes** the command file of an off seat — it used to only write, so an off seat would have stayed in the client, listed and invokable, no longer refreshed | `a_seat_turned_off_loses_its_command_and_gets_it_back_when_turned_on`; mutation **B** (the removal branch deleted) reddens it |
+| **clients** | which client dialects the seat is written for | the same writer; a client dropped from a seat's list loses that client's command and no other's | `a_client_dropped_from_a_seats_list_loses_only_that_clients_command`; mutation **C** (the list ignored) |
+| **brain** | which model answers when the seat is hired | merged into the seat at the **one place seats are loaded**, so no later reader sees an unresolved seat; the seat file is not touched | `a_brain_override_reaches_the_loaded_seat_without_touching_its_file`; mutation **D** (never applied) |
+| **reset to shipped** | discard the user's customisation and take this build's | drops the overrides, backs the seat file up as `*.pre-reset`, and **re-seeds it at once** — without that the seat would vanish from the view until something else ran the materialization pass | `a_change_shows_in_the_view_and_a_reset_takes_it_back`, `a_reset_restores_a_stance_the_user_edited`; mutation **F** (no re-seed) |
 
-| Setting | What it decides | Why "surviving a redeploy" is the hard half |
-|---|---|---|
-| **on / off** | whether this seat deploys to a client at all | a deploy writes every seat it knows; an off seat must be *removed* from clients it was previously written to, or turning it off does nothing visible |
-| **clients** | which of the client dialects it is written for | `conductor.rs` already writes per dialect (`.claude/skills/…`, `.cursor/skills/…`); the setting narrows that list, so a removed client has the same removal problem as off |
-| **brain** | which CLI answers when this seat is hired | the seat FILE's frontmatter carries `model`, and the hire reads it from there — so this setting is a frontmatter edit, which makes it collide directly with the shadowing rule above: set the brain and the seat becomes shadowed, and stops tracking the product |
-| **reset to shipped** | discard the user's edits and take this build's content | the one setting the manifest already supports — it is `refreshed` forced, and the backup path `migrated` uses is the safety it needs |
+Two more mutations cover the decision itself: **A** (an off seat no longer beats a client list that
+would admit it) reddens `deploys_to_answers_settings_one_and_two_together`, and **E** (a typo'd seat
+name no longer refused) reddens `an_unknown_seat_client_or_empty_brain_is_refused_and_writes_nothing`.
 
-**The brain row is the one that needs a decision before any of this is built.** A per-seat brain
-setting and the shadowing rule are the same mechanism pointed two ways: writing the setting into
-the frontmatter marks the seat edited, so changing a brain through the view would silently stop
-that seat receiving product updates. Either the setting lives OUTSIDE the seat file — a sidecar the
-deploy merges, which keeps the stance unshadowed — or changing a brain is accepted as shadowing and
-the view says so at the moment of the change. **Not decided here; it is a design question and the
-architect seat's, not this document's.**
+**THE DESIGN QUESTION THIS SECTION USED TO RAISE IS TAKEN, and it is recorded as taken rather than
+quietly resolved.** The first version said a per-seat brain and the shadowing rule are one mechanism
+pointed two ways, and left *sidecar or disclosed shadowing* to the architect seat. The settings
+module was built as a **sidecar** — overrides only, never a copy of a shipped default — because the
+alternative costs the seat its updates the moment someone changes a brain, which is the defect the
+shadowing rule exists to make visible. One word reverses it.
 
-C16 is worth naming beside it: *changing a seat's brain is a settings change, not a product edit*
-is one of that checkpoint's met clauses, and it is met **by the seat file's frontmatter being the
-hire** — `SeatHire.read(markdown)` takes brain, model, tools and ceilings from it. So the hire path
-already treats a brain as settings. What is missing is a way to change it that does not cost the
-seat its updates.
+**WHAT THE VIEW DOES NOT SAY, and should be known:**
+
+- **The clients choice offers the clients seat commands are written for** — derived from the roster
+  and the same two predicates the deploy asks, not typed. Today that is Claude Code and Cursor.
+- **Where Cursor reads Claude's directory** (it inherits it when Claude's is present, measured), the
+  Claude entry governs both: dropping Cursor from a seat's list while Claude is still on it changes
+  nothing, because Cursor never wrote its own copy. That is a limit of the inheritance, not of the
+  setting, and the view does not explain it — a hint nobody asked for is the thing the UX seat
+  refuses. **Raised for the architect, not decided here.**
+- **A change reaches the agents through the dashboard's own Deploy**, which the view requests after
+  every successful write. A refused change (no such seat, an unknown client, an empty brain) writes
+  nothing and says why.
+- **The view shows the brain as resolved**, with a marker that it is the user's. It does not show
+  what the shipped value was; *reset* is how a user gets it back.
 
 ## Is a stance editable?
 
