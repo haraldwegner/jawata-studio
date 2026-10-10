@@ -322,7 +322,9 @@ mod tests {
         let req = Request {
             dir: d.clone(),
             out: out.clone(),
-            argv: args(&["sh", "-c", "echo one; echo two 1>&2; echo three; exit 3"]),
+            // "three" is PRINTED, never written in the command, so the tail assertion below
+            // cannot be satisfied by the command line the summary also repeats.
+            argv: args(&["sh", "-c", "echo one; echo two 1>&2; printf 'thr%s\\n' ee; exit 3"]),
         };
         let (summary, status) = execute(&req);
         assert_eq!(3, status, "the program's own status comes through");
@@ -331,14 +333,15 @@ mod tests {
         assert_eq!("one\ntwo\nthree\n", written, "stdout and stderr, in the order they happened");
         let rendered = summary.render();
         assert!(rendered.contains("exit=3") && rendered.contains("lines=3"), "{rendered}");
-        assert!(rendered.contains("three"), "the tail is in the summary: {rendered}");
+        assert_eq!(Some(&"three".to_string()), summary.tail.last(), "the tail is the output's own last line");
+        assert!(rendered.contains("\nthree\n"), "and it is in the rendered summary: {rendered}");
     }
 
     #[test]
     fn main_writes_the_summary_file_beside_the_output() {
         let d = scratch("main");
         let out = d.join("o.txt");
-        let a = args(&["--cd", &d.display().to_string(), "--out", &out.display().to_string(), "--", "sh", "-c", "echo hello"]);
+        let a = args(&["--cd", &d.display().to_string(), "--out", &out.display().to_string(), "--", "sh", "-c", "printf 'hel%s\\n' lo"]);
         assert_eq!(0, main(&a));
         let s = std::fs::read_to_string(summary_path(&out)).unwrap();
         assert!(s.contains("exit=0") && s.contains("hello"), "{s}");
