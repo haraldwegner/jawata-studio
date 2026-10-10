@@ -1357,18 +1357,26 @@ mod tests {
     /// existence, so that deleting one no longer passes the whole suite (the C7 audit found it
     /// would). It does not prove the seat WORKS - a stance cannot be tested for that - only that
     /// the clauses C7 depends on are still written down.
+    ///
+    /// It counts OCCURRENCES rather than testing presence. A first version asked only whether a
+    /// phrase appeared, and deleting the U-FOUR heading left it green because the body says the
+    /// same words again: a mutation that stays green had found that the lock was decoration.
+    /// Each minimum is the number of times the phrase is written today, so removing any one
+    /// occurrence fails; adding more is free.
     #[test]
     fn the_ux_seat_keeps_the_rules_that_justify_it() {
         let (_, body) = EMBEDDED_SEATS.iter().find(|(f, _)| *f == "ux.md").expect("ux.md is embedded");
-        let text = body.to_lowercase();
-        for (needle, why) in [
-            ("asked for by nothing", "U-THREE's finding phrase"),
-            ("approved itself", "U-FOUR: a plan-declared deviation reaches the human as a decision"),
-            ("the one seat exempt", "C7's clause 4: the exemption is declared in writing"),
-            ("never edit a component", "the seat proposes and never builds"),
-            ("census", "U-ONE: the count that can fail"),
+        let text = body.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ");
+        for (needle, minimum, why) in [
+            ("asked for by nothing", 1, "U-THREE's finding phrase"),
+            ("approved itself", 2, "U-FOUR: a plan-declared deviation reaches the human as a decision"),
+            ("owed to him as a decision", 1, "U-FOUR's consequence, not only its heading"),
+            ("the one seat exempt", 1, "C7's clause 4: the exemption is declared in writing"),
+            ("never edit a component", 1, "the seat proposes and never builds"),
+            ("census", 7, "U-ONE: the count that can fail"),
         ] {
-            assert!(text.contains(needle), "ux.md no longer says {needle:?} - {why}");
+            let found = text.matches(needle).count();
+            assert!(found >= minimum, "ux.md says {needle:?} {found} time(s), needs {minimum} - {why}");
         }
     }
 
