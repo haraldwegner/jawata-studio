@@ -359,7 +359,19 @@ fn guard(client: Client, payload: &str) -> Outcome {
         return emit_permission(client, false, reason);
     }
 
-    let emission = match crate::guard::judge(&command) {
+    let verdict = crate::guard::judge(&command);
+    // D35: every full-suite attempt leaves one line — what it was, whether it was let
+    // through, and the reason it declared — so the cadence can be READ afterwards
+    // instead of reconstructed from memory.
+    if let Some(runner) = crate::guard::full_suite_in(&command) {
+        let (kind, reason) = crate::guard::suite_declaration_in(&command);
+        let allowed = matches!(verdict, crate::guard::Verdict::Allow);
+        emit_gate_signal(
+            crate::cadence::SIGNAL,
+            &crate::cadence::detail(allowed, kind, &reason, &runner),
+        );
+    }
+    let emission = match verdict {
         crate::guard::Verdict::Allow => Emission::Permission {
             allowed: true,
             reason: String::new(),

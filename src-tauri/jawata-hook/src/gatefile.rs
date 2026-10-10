@@ -117,6 +117,29 @@ pub fn declared(script: &str, base: &Path) -> Option<GateKind> {
     None
 }
 
+/// A bracket call, seen through: the directory it runs in and the command it wraps.
+///
+/// The bracket must not become a way to hide a run from the rules that police WHAT is
+/// run. Its head is the hook binary, so without this a whole-suite run wrapped in it
+/// would pass the cadence gate unseen — the capture rule is satisfied by the bracket,
+/// and the cadence rule would never learn there was a suite inside. The directory is
+/// the bracket's own `--cd`, which is also where a relative script inside is read from.
+pub fn bracket_inner(segment: &str) -> Option<(PathBuf, String)> {
+    let words = command_words(segment);
+    let head = basename(words.first()?);
+    if !head.starts_with("jawata-hook") || words.get(1) != Some(&crate::bracket::SUBCOMMAND) {
+        return None;
+    }
+    let dir = words
+        .iter()
+        .position(|w| *w == "--cd")
+        .and_then(|i| words.get(i + 1))
+        .map(|d| PathBuf::from(d.trim_matches(['"', '\''])))?;
+    let split = words.iter().position(|w| *w == "--")?;
+    let inner = words[split + 1..].join(" ");
+    (!inner.is_empty()).then_some((dir, inner))
+}
+
 /// Whether the program a segment runs is a tool that is long by what it IS —
 /// the build tools themselves, not our scripts.
 fn is_long_tool(segment: &str) -> bool {
@@ -242,6 +265,19 @@ mod tests {
         assert_eq!(dir, moved);
         assert!(runs_long_gate(&format!("./{name}"), &moved));
         assert!(!runs_long_gate(&format!("./{name}"), &elsewhere), "same script, other directory");
+    }
+
+    #[test]
+    fn a_bracket_call_is_seen_through_to_what_it_runs() {
+        let (dir, inner) = bracket_inner(
+            "/h/.claude/jawata-hook-guard bracket --cd /repo --out /tmp/o.txt -- ./a.sh 4 --full",
+        )
+        .expect("a bracket call");
+        assert_eq!(PathBuf::from("/repo"), dir);
+        assert_eq!("./a.sh 4 --full", inner);
+        assert!(bracket_inner("./a.sh 4 --full").is_none());
+        assert!(bracket_inner("jawata-hook-guard bracket --cd /repo --out /o --").is_none(), "nothing wrapped");
+        assert!(bracket_inner("echo jawata-hook-guard bracket --cd /r -- x").is_none(), "named, not run");
     }
 
     #[test]

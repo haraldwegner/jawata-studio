@@ -11,6 +11,7 @@
 
 pub mod autonomy;
 pub mod bracket;
+pub mod cadence;
 pub mod config;
 pub mod cue;
 pub mod areamemo;

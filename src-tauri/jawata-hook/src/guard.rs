@@ -58,6 +58,22 @@ pub const AUTHOR_DECLARATION: &str = "jawata-author:";
 pub const CHECKPOINT_DECLARATION: &str = "checkpoint:";
 pub const RELEASE_DECLARATION: &str = "release:";
 
+/// The declaration a full-suite command carries, as `(kind, reason)`: `checkpoint` or
+/// `release`, and the words after the marker up to the end of the line, trimmed.
+/// `("none", "")` when it carries neither. The cadence measurement (D35) reads this
+/// off every full-suite attempt, so what a run was FOR is written down beside the
+/// fact that it ran.
+pub(crate) fn suite_declaration_in(command: &str) -> (&'static str, String) {
+    for (kind, marker) in [("checkpoint", CHECKPOINT_DECLARATION), ("release", RELEASE_DECLARATION)] {
+        if let Some(at) = command.find(marker) {
+            let rest = &command[at + marker.len()..];
+            let reason = rest.lines().next().unwrap_or("").trim();
+            return (kind, reason.chars().take(120).collect());
+        }
+    }
+    ("none", String::new())
+}
+
 /// Text-search tools whose use over Java sources is what we redirect.
 const TEXT_TOOLS: &[&str] = &["grep", "rg", "sed", "awk", "ack", "ag"];
 
@@ -126,11 +142,20 @@ const FULL_SUITE_FLAG: &str = "--full";
 /// a test phase with nothing narrowing it. `-DskipTests` is the common case that
 /// looks like a test command and runs none — a build before a suite is not the
 /// suite, and denying it would block the step that PRECEDES every legitimate run.
-fn full_suite_in(command: &str) -> Option<String> {
+pub(crate) fn full_suite_in(command: &str) -> Option<String> {
     let mut base = crate::gatefile::start_dir();
     for segment in segments(command) {
-        let here = base.clone();
+        let mut here = base.clone();
         base = crate::gatefile::dir_after(segment, &base);
+        // A bracketed run is still a run: judge what it WRAPS, from where it runs.
+        let wrapped = crate::gatefile::bracket_inner(segment);
+        let segment = match &wrapped {
+            Some((dir, inner)) => {
+                here = dir.clone();
+                inner.as_str()
+            }
+            None => segment,
+        };
         // COMMAND POSITION for both shapes, which is this file's standing
         // discipline and not a nuance: scanning every word made
         // `echo 'remember to run run-suite.sh'` a denial. Caught by this gate's
@@ -579,6 +604,22 @@ mod tests {
         // declaration is what the hook reads now, where it used to match a name.
         let (dir, name) = crate::gatefile::testkit::script_with("# jawata-gate: suite");
         format!("cd {} && ./{} 4{}", dir.display(), name, tail)
+    }
+
+    #[test]
+    fn the_bracket_does_not_hide_a_full_suite_from_the_cadence_gate() {
+        let (dir, name) = crate::gatefile::testkit::script_with("# jawata-gate: suite");
+        let wrap = |tail: &str| {
+            format!(
+                "/h/.claude/jawata-hook-guard bracket --cd {} --out /tmp/o.txt -- ./{} 4{}",
+                dir.display(),
+                name,
+                tail
+            )
+        };
+        assert!(denied(&wrap(" --full")), "a bracketed whole-suite run is still a whole-suite run");
+        assert!(!denied(&wrap(" --full  # checkpoint: C4")));
+        assert!(!denied(&wrap("")), "a selecting run is not the shape this gate is for");
     }
 
     #[test]
