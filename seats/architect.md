@@ -2,6 +2,8 @@
 name: architect
 model: claude-sonnet-5
 kind: code
+purpose: Architecture review and parity-gated refactoring proposals
+fires: the sprint's DESIGN step, and every checkpoint as a watch-diff
 # tier justification (judgment IS the product + the small-tier protocol-adherence weakness family (C11 marker slip, C12 fix-block); 1x/day cadence makes the cost negligible)
 effort: high
 schedule: "0 6 * * *"

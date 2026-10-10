@@ -2,6 +2,8 @@
 name: spec-auditor
 model: claude-sonnet-5
 kind: text
+purpose: The gate: refuses a spec that narrowed the raw
+fires: inside /sprint, after the editor, looping until sign-off
 # tier justification (POLICY, UNMEASURED: adversarial judgment work assigned the strong tier by rule, not by a measured table — no auditing-fixture probe exists yet)
 effort: high
 tools: []

@@ -2,6 +2,8 @@
 name: test-manager
 model: claude-haiku-4-5
 kind: code
+purpose: Decides which tests a change actually needs run
+fires: at a gate, in place of running everything
 # tier justification (every question this seat answers is MECHANICAL — the engine computes
 # reach, collision and mutation survival, and the seat's job is to drive the instrument and
 # report what it said. No judgement is wanted here; judgement is the PM's, and a seat that

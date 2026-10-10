@@ -2,6 +2,8 @@
 name: pm
 model: claude-sonnet-5
 kind: code
+purpose: Hires another seat: issues the brief, runs the gates, journals the result
+fires: when a seat's work needs a brain that is not this one
 # tier justification (the product is a JUDGEMENT — is this stage done, is this instruction
 # unambiguous, may this slice have another attempt — the same family as the architect's and
 # /main's, and wrong here costs a whole stage rather than one finding. No schedule: a human's

@@ -12,7 +12,7 @@ use std::path::Path;
 /// fails the build on a seat that exists on disk and is registered here).
 /// Materialized into `<config>/seats/` where absent; the materialized copy
 /// wins so a user-edited seat regenerates every channel on redeploy.
-pub const EMBEDDED_SEATS: [(&str, &str); 13] = [
+pub const EMBEDDED_SEATS: [(&str, &str); 14] = [
     ("architect.md", include_str!("../../seats/architect.md")),
     ("cataloguer.md", include_str!("../../seats/cataloguer.md")),
     ("debugger.md", include_str!("../../seats/debugger.md")),
@@ -26,6 +26,7 @@ pub const EMBEDDED_SEATS: [(&str, &str); 13] = [
     ("spec-editor.md", include_str!("../../seats/spec-editor.md")),
     ("test-manager.md", include_str!("../../seats/test-manager.md")),
     ("test-writer.md", include_str!("../../seats/test-writer.md")),
+    ("ux.md", include_str!("../../seats/ux.md")),
 ];
 
 /// seat name → (command name, one-line description). The command-bearing
@@ -1352,6 +1353,19 @@ mod tests {
     /// other ceiling is declared on all eleven seats; a step ceiling visible
     /// only as a constant in Rust is the one limit a reader of the seat file
     /// cannot see, and "it has a default" is how it would stay that way.
+    /// The seats view READS `purpose` and `fires` from the seat's own file. A shipped seat that
+    /// declares neither would render as a blank row, which looks like a seat with nothing to
+    /// say rather than a missing field — so the requirement is held here, on the shipped set.
+    #[test]
+    fn every_shipped_seat_declares_what_it_is_for_and_when_it_fires() {
+        for (file, body) in EMBEDDED_SEATS {
+            let seat = crate::runner::parse_seat_definition(body)
+                .unwrap_or_else(|e| panic!("{file} does not parse: {e}"));
+            assert!(!seat.purpose.trim().is_empty(), "{file} declares no 'purpose:'");
+            assert!(!seat.fires.trim().is_empty(), "{file} declares no 'fires:'");
+        }
+    }
+
     #[test]
     fn every_shipped_seat_declares_its_tool_step_ceiling_in_its_own_frontmatter() {
         for (file, body) in EMBEDDED_SEATS {

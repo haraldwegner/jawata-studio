@@ -2,6 +2,8 @@
 name: debugger
 model: claude-sonnet-5
 kind: code
+purpose: Recall, one discriminating probe, verify
+fires: the runtime reflex: a bug, a bad value, an NPE, instead of hand-adding log lines
 # tier justification (C12: haiku violated the verdict single-file protocol 2x (purity refused); sonnet clean + sharper probe)
 effort: high
 tools: [debug, experience, analyze, find_references]

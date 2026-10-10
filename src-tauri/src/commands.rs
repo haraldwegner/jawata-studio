@@ -455,3 +455,25 @@ pub fn field_set_silence(
         .manager_service
         .field_set_silence(&workspace, nudges, silenced)
 }
+
+// ===== Sprint 28g (D19 / D20): the seats view =====
+
+/// Everything the seats view renders. Sync on purpose — file reads only.
+#[tauri::command]
+pub fn seats_view(
+    state: State<'_, AppState>,
+) -> Result<crate::seat_settings::SeatsView, String> {
+    Ok(state.manager_service.seats_view())
+}
+
+/// Change ONE setting of ONE seat (on/off, clients, brain, or reset to shipped) and return the
+/// refreshed view. A seat that does not exist, a client the deploy does not write seat commands
+/// for, and an empty brain are refused with a message; nothing is written on a refusal.
+#[tauri::command]
+pub fn seat_change(
+    state: State<'_, AppState>,
+    seat: String,
+    change: crate::seat_settings::SeatChange,
+) -> Result<crate::seat_settings::SeatsView, String> {
+    state.manager_service.seat_change(&seat, change)
+}

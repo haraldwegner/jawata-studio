@@ -2,6 +2,8 @@
 name: javadoc-writer
 model: claude-haiku-4-5
 kind: code
+purpose: Documents undocumented public Java API from compiler facts
+fires: the DOC gate: public API a change touched, before that change is done
 # tier justification (C13: 21/22 items (95%), all gates green at 1/5 the cost; the detector re-finds the tail next run)
 effort: low
 tools: [inspect, analyze, compile_workspace, get_diagnostics]

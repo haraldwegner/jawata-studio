@@ -2,6 +2,8 @@
 name: report
 model: claude-sonnet-5
 kind: text
+purpose: Turns the local field recording into a bug report posted from the user's own account
+fires: when a failure shape has recurred and nobody has filed it
 # tier justification (the product is a PUBLIC post under the user's own name — the
 # sanitizer's judgement and the review text must be right the first time; invoked
 # by hand, so the cost is per-use and rare)

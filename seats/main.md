@@ -2,6 +2,8 @@
 name: main
 model: claude-sonnet-5
 kind: code
+purpose: Owns the workflow: declares the steps, drives them one at a time, and refuses a step whose gate did not run
+fires: whenever the work has more than one step
 # tier justification (the product is a JUDGEMENT about what the open step is and whether its
 # gate actually passed — the same family as the architect's, and wrong here costs a whole
 # session's work rather than one finding; no schedule, because a human's message is the

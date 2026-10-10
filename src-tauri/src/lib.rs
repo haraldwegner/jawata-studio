@@ -33,6 +33,7 @@ mod resident;
 #[allow(dead_code)]
 mod runner;
 mod runtime_manager;
+mod seat_settings;
 mod store_seed;
 mod studio_log;
 
@@ -943,6 +944,8 @@ pub fn run() {
             commands::field_status,
             commands::workspace_readability,
             commands::field_set_silence,
+            commands::seats_view,
+            commands::seat_change,
             commands::get_quit_prompt_context,
             commands::perform_quit_action,
         ])

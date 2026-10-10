@@ -863,6 +863,47 @@ impl ManagerService {
         self.build_dashboard(false)
     }
 
+    /// The clients seat commands are written for. DERIVED from the roster and the same two
+    /// predicates the deploy itself asks, never typed — a list here would be the copy of the
+    /// deploy's own decision that goes stale the first time a client is added.
+    fn seat_command_clients() -> Vec<crate::seat_settings::ClientChoice> {
+        crate::client_dialect::CLIENTS
+            .iter()
+            .filter(|c| {
+                client_still_receives_seat_commands(c.id)
+                    && derive_seat_commands_dir(c.id, "probe/config.json").is_some()
+            })
+            .map(|c| crate::seat_settings::ClientChoice {
+                id: c.id.to_string(),
+                label: c.label.to_string(),
+            })
+            .collect()
+    }
+
+    fn seats_dir(&self) -> PathBuf {
+        self.config_store.paths().config_dir.join("seats")
+    }
+
+    /// The seats view: every deployed seat with what it is for, when it fires, its tools,
+    /// gates and brain, and the four settings. Reads files only.
+    pub fn seats_view(&self) -> crate::seat_settings::SeatsView {
+        crate::seat_settings::seats_view(&self.seats_dir(), Self::seat_command_clients())
+    }
+
+    /// Change one setting of one seat and return the refreshed view. The change reaches the
+    /// agents' directories at the next deploy — which the view asks for, so a toggle is not a
+    /// control that does nothing until someone remembers to press something else.
+    pub fn seat_change(
+        &self,
+        seat: &str,
+        change: crate::seat_settings::SeatChange,
+    ) -> Result<crate::seat_settings::SeatsView, String> {
+        let valid: Vec<String> =
+            Self::seat_command_clients().into_iter().map(|c| c.id).collect();
+        crate::seat_settings::change_seat(&self.seats_dir(), &valid, seat, change)?;
+        Ok(self.seats_view())
+    }
+
     /// Deploys MCP configurations to configured AI agents.
     pub fn deploy_to_agents(
         &self,
@@ -2885,12 +2926,23 @@ impl ManagerService {
                             }
                         }
                     } else if let Some(commands_dir) = derive_seat_commands_dir(client, &path) {
-                        match write_managed_seat_commands(client, &commands_dir, &seats, force) {
-                            Ok(written) if !written.is_empty() => {
-                                changed_sections.push("seatCommands".into())
+                        // A settings file that cannot be read stops the seat commands for this
+                        // deploy. Falling back to "no settings" would re-enable a seat the user
+                        // turned off; the loader has already reported the cause in `seat_errors`.
+                        if let Ok(settings) = crate::seat_settings::SeatSettings::load(&seats_dir) {
+                            match write_managed_seat_commands(
+                                client,
+                                &commands_dir,
+                                &seats,
+                                &settings,
+                                force,
+                            ) {
+                                Ok(changed) if !changed.is_empty() => {
+                                    changed_sections.push("seatCommands".into())
+                                }
+                                Ok(_) => {}
+                                Err(error) => errors.push(error),
                             }
-                            Ok(_) => {}
-                            Err(error) => errors.push(error),
                         }
                         // Sprint 26 (D6), v3.3.1: the utility commands ride along.
                         // Named by UTILITY_MAP rather than here — this comment
@@ -4396,14 +4448,43 @@ fn write_managed_agents(agents_dir: &Path, force_rewrite: bool) -> Result<Vec<St
     Ok(Vec::new())
 }
 
+/// Writes — and, for a seat the user turned off or a client they dropped, REMOVES — the
+/// generated seat commands for one client. Returns every path it changed, in either
+/// direction, because the caller reports "something changed" and a removal is one.
+///
+/// Whether a seat reaches this client is `SeatSettings::deploys_to` and nothing else: this
+/// function does not combine the on/off and client settings itself. It used to only write,
+/// which made a turned-off seat a seat that merely stopped being refreshed — its file stayed
+/// in the client, listed and invokable, drifting from the product with no signal.
 fn write_managed_seat_commands(
     client: &str,
     commands_dir: &Path,
     seats: &[crate::runner::SeatDefinition],
+    settings: &crate::seat_settings::SeatSettings,
     force_rewrite: bool,
 ) -> Result<Vec<String>, String> {
-    let mut written = Vec::new();
+    let mut changed_paths = Vec::new();
     for seat in seats {
+        // A seat with no typed command has nothing to write OR remove.
+        let Some((cmd, _)) = crate::conductor::command_for(&seat.name) else { continue };
+        let path = if seat_layout_is_skill(client) {
+            commands_dir.join(cmd).join("SKILL.md")
+        } else {
+            commands_dir.join(format!("{cmd}.md"))
+        };
+
+        if !settings.deploys_to(&seat.name, client) {
+            if path.exists() {
+                fs::remove_file(&path)
+                    .map_err(|e| format!("{client}: cannot remove {}: {e}", path.display()))?;
+                if seat_layout_is_skill(client) {
+                    let _ = fs::remove_dir(commands_dir.join(cmd)); // only if empty
+                }
+                changed_paths.push(display_path(&path));
+            }
+            continue;
+        }
+
         let rendered = match client {
             "claude" => crate::conductor::render_claude_skill(seat),
             "cursor" => crate::conductor::render_cursor_command(seat),
@@ -4411,13 +4492,6 @@ fn write_managed_seat_commands(
             _ => None,
         };
         let Some(body) = rendered else { continue };
-        let (cmd, _) = crate::conductor::command_for(&seat.name)
-            .expect("rendered seats are command-mapped");
-        let path = if seat_layout_is_skill(client) {
-            commands_dir.join(cmd).join("SKILL.md")
-        } else {
-            commands_dir.join(format!("{cmd}.md"))
-        };
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("{client}: cannot create {}: {e}", parent.display()))?;
@@ -4428,10 +4502,10 @@ fn write_managed_seat_commands(
         if changed || force_rewrite {
             fs::write(&path, &body)
                 .map_err(|e| format!("{client}: cannot write {}: {e}", path.display()))?;
-            written.push(display_path(&path));
+            changed_paths.push(display_path(&path));
         }
     }
-    Ok(written)
+    Ok(changed_paths)
 }
 
 /// Delete-side counterpart: removes exactly the five artifacts and prunes
@@ -11283,6 +11357,109 @@ mod tests {
         (seats_dir, seats)
     }
 
+    // ===== C11: per-seat settings reach the deploy =====
+
+    /// The skill path a claude-layout client gets for one seat's command.
+    fn claude_seat_file(commands_dir: &Path, seat: &str) -> PathBuf {
+        let (cmd, _) = crate::conductor::command_for(seat).expect("a command-mapped seat");
+        commands_dir.join(cmd).join("SKILL.md")
+    }
+
+    /// Setting 1, end to end through the deploy writer. THE REMOVAL HALF IS THE POINT: this
+    /// writer used to write and nothing else, so a seat turned off would have stopped being
+    /// refreshed while its file stayed in the client for ever — still listed, still
+    /// invokable, and no longer tracking the product. Off must mean gone.
+    #[test]
+    fn a_seat_turned_off_loses_its_command_and_gets_it_back_when_turned_on() {
+        let (_seats_dir, seats) = loaded_seats("settings-onoff");
+        let dir = unique_tempdir("settings-onoff-cmds");
+        let mut settings = crate::seat_settings::SeatSettings::default();
+
+        write_managed_seat_commands("claude", &dir, &seats, &settings, false).unwrap();
+        let architect = claude_seat_file(&dir, "architect");
+        let debugger = claude_seat_file(&dir, "debugger");
+        assert!(architect.exists() && debugger.exists(), "control: both deploy by default");
+
+        settings.set_enabled("architect", false);
+        let changed = write_managed_seat_commands("claude", &dir, &seats, &settings, false).unwrap();
+        assert!(!architect.exists(), "a seat turned off must lose its command file");
+        assert!(debugger.exists(), "and turning one seat off must touch no other");
+        assert!(
+            changed.iter().any(|p| p.contains("refactor")),
+            "the removal is reported as a change, or the deploy says it did nothing: {changed:?}"
+        );
+
+        let again = write_managed_seat_commands("claude", &dir, &seats, &settings, false).unwrap();
+        assert!(again.is_empty(), "an already-off seat is not a change: {again:?}");
+
+        settings.set_enabled("architect", true);
+        write_managed_seat_commands("claude", &dir, &seats, &settings, false).unwrap();
+        assert!(architect.exists(), "turned back on, the command returns");
+    }
+
+    /// Setting 2: a client dropped from a seat's list loses that seat's command, and ONLY
+    /// that client does. Two clients so the assertion cannot be satisfied by a writer that
+    /// simply stopped writing.
+    #[test]
+    fn a_client_dropped_from_a_seats_list_loses_only_that_clients_command() {
+        let (_seats_dir, seats) = loaded_seats("settings-clients");
+        let claude_dir = unique_tempdir("settings-clients-claude");
+        let cursor_dir = unique_tempdir("settings-clients-cursor");
+        let mut settings = crate::seat_settings::SeatSettings::default();
+
+        write_managed_seat_commands("claude", &claude_dir, &seats, &settings, false).unwrap();
+        write_managed_seat_commands("cursor", &cursor_dir, &seats, &settings, false).unwrap();
+        let (cmd, _) = crate::conductor::command_for("architect").unwrap();
+        let claude_file = claude_dir.join(cmd).join("SKILL.md");
+        let cursor_file = cursor_dir.join(cmd).join("SKILL.md");
+        assert!(claude_file.exists() && cursor_file.exists(), "control: both clients have it");
+
+        settings.set_clients("architect", vec!["cursor".into()]);
+        write_managed_seat_commands("claude", &claude_dir, &seats, &settings, false).unwrap();
+        write_managed_seat_commands("cursor", &cursor_dir, &seats, &settings, false).unwrap();
+
+        assert!(!claude_file.exists(), "claude is off the list: its command goes");
+        assert!(cursor_file.exists(), "cursor is on the list: its command stays");
+    }
+
+    /// Setting 3, at the one place seats are loaded. Both halves: the override REACHES the
+    /// seat, and the seat FILE on disk is not touched — the second is what keeps the seat out
+    /// of `shadowed`, which is the reason the settings live in a sidecar at all.
+    #[test]
+    fn a_brain_override_reaches_the_loaded_seat_without_touching_its_file() {
+        let (seats_dir, seats) = loaded_seats("settings-brain");
+        let shipped = seats.iter().find(|s| s.name == "architect").unwrap().model.clone();
+        let on_disk_before = fs::read_to_string(seats_dir.join("architect.md")).unwrap();
+
+        let mut settings = crate::seat_settings::SeatSettings::default();
+        settings.set_model("architect", "a-brain-nobody-ships");
+        settings.save(&seats_dir).unwrap();
+
+        let (reloaded, errors) = crate::runner::load_seat_definitions(&seats_dir);
+        assert!(errors.is_empty(), "{errors:?}");
+        let architect = reloaded.iter().find(|s| s.name == "architect").unwrap();
+        assert_eq!(architect.model, "a-brain-nobody-ships");
+        assert_ne!(architect.model, shipped, "control: the override really changed something");
+        assert_eq!(
+            fs::read_to_string(seats_dir.join("architect.md")).unwrap(),
+            on_disk_before,
+            "applying a setting must not write the seat file"
+        );
+    }
+
+    /// A corrupt settings file must be LOUD. Treating it as 'no settings' would silently
+    /// re-enable a seat the user turned off — the case the loader's own doc names.
+    #[test]
+    fn a_corrupt_settings_file_is_reported_not_ignored() {
+        let (seats_dir, _) = loaded_seats("settings-corrupt");
+        fs::write(seats_dir.join(crate::seat_settings::SETTINGS_FILE), "{ not json").unwrap();
+        let (_, errors) = crate::runner::load_seat_definitions(&seats_dir);
+        assert!(
+            errors.iter().any(|(path, _)| path.ends_with(crate::seat_settings::SETTINGS_FILE)),
+            "the loader must name the settings file: {errors:?}"
+        );
+    }
+
     /// THE WIRING GATE FOR v4.0.0's STOP JUDGE.
     ///
     /// The gate blocks a stop and tells the agent to spawn the `autocontinue`
@@ -11360,7 +11537,7 @@ judge was never told to give"
             !seat_dir_carries_managed_seats("claude", &dir),
             "nothing is deployed yet"
         );
-        write_managed_seat_commands("claude", &dir, &seats, false).unwrap();
+        write_managed_seat_commands("claude", &dir, &seats, &crate::seat_settings::SeatSettings::default(), false).unwrap();
         assert!(seat_dir_carries_managed_seats("claude", &dir));
     }
 
@@ -11506,7 +11683,7 @@ judge was never told to give"
         let dir = derive_seat_commands_dir("cursor", &display_path(&cfg)).expect("cursor");
         assert_eq!(base.join("skills"), dir, "Cursor's own documented location");
 
-        write_managed_seat_commands("cursor", &dir, &seats, false).unwrap();
+        write_managed_seat_commands("cursor", &dir, &seats, &crate::seat_settings::SeatSettings::default(), false).unwrap();
         write_managed_utility_commands("cursor", &dir, false).unwrap();
         let skill = dir.join("cover").join("SKILL.md");
         assert!(skill.is_file(), "a skill is a folder with a SKILL.md: {}", skill.display());
@@ -11543,7 +11720,7 @@ judge was never told to give"
             // (the inventory). DERIVED from COMMAND_MAP — a hand-typed count
             // here is a second place a new seat has to be remembered, and
             // /report proved that is a place it gets forgotten.
-            let written = write_managed_seat_commands(client, &dir, &seats, false).unwrap();
+            let written = write_managed_seat_commands(client, &dir, &seats, &crate::seat_settings::SeatSettings::default(), false).unwrap();
             assert_eq!(
                 written.len(),
                 crate::conductor::COMMAND_MAP.len(),
@@ -11558,7 +11735,7 @@ judge was never told to give"
                 );
             }
             // Deploy twice: byte-stable at the DEPLOY layer — nothing written.
-            let written2 = write_managed_seat_commands(client, &dir, &seats, false).unwrap();
+            let written2 = write_managed_seat_commands(client, &dir, &seats, &crate::seat_settings::SeatSettings::default(), false).unwrap();
             assert!(written2.is_empty(), "{client}: second deploy must write nothing");
             // Delete: no trace.
             assert!(remove_managed_seat_commands(client, &dir).unwrap());
@@ -11583,7 +11760,7 @@ judge was never told to give"
             let cfg = base.join("config.json");
             fs::write(&cfg, "{}").unwrap();
             let dir = derive_seat_commands_dir(client, &display_path(&cfg)).unwrap();
-            write_managed_seat_commands(client, &dir, &seats, false).unwrap();
+            write_managed_seat_commands(client, &dir, &seats, &crate::seat_settings::SeatSettings::default(), false).unwrap();
             trees.push((client, dir));
         }
         // Edit the materialized seat (the config copy — the runtime source).
@@ -11595,7 +11772,7 @@ judge was never told to give"
         let (reloaded, errors) = crate::runner::load_seat_definitions(&seats_dir);
         assert!(errors.is_empty());
         for (client, dir) in &trees {
-            let written = write_managed_seat_commands(client, dir, &reloaded, false).unwrap();
+            let written = write_managed_seat_commands(client, dir, &reloaded, &crate::seat_settings::SeatSettings::default(), false).unwrap();
             assert_eq!(written.len(), 1, "{client}: exactly the edited seat rewrites");
             let (_, javadocs_path) = seat_artifact_paths(client, dir)
                 .into_iter()

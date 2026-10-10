@@ -2,6 +2,8 @@
 name: test-writer
 model: claude-haiku-4-5
 kind: code
+purpose: Writes gate-verified characterization tests for uncovered code
+fires: the COVERAGE gate: a change that added behaviour, before it is called done
 # tier justification (C13: full D5 chain green both probes (also C10 live) at 1/3 the cost)
 effort: low
 tools: [run_tests, find_quality_issue, inspect, compile_workspace]

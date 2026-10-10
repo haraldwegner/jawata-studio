@@ -399,6 +399,15 @@ pub struct SeatDefinition {
     pub ceilings: Ceilings,
     /// The stance prompt — the markdown body below the frontmatter.
     pub stance: String,
+    /// What this seat is FOR, in one sentence a person choosing between seats can read. Lives
+    /// in the seat's own frontmatter so the seats view reads it rather than carrying a copy.
+    /// Empty when the file declares none; a test requires every SHIPPED seat to declare one.
+    #[serde(default)]
+    pub purpose: String,
+    /// WHEN this seat fires — the moment, not the schedule (`schedule` is the cron). Same
+    /// rule as `purpose`: the seat file is the one place it is written.
+    #[serde(default)]
+    pub fires: String,
 }
 
 /// Parses a seat definition: a `---` … `---` frontmatter block of
@@ -420,6 +429,8 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     let mut ceilings = Ceilings::default();
     let mut body_start = false;
     let mut stance = String::new();
+    let mut purpose = String::new();
+    let mut fires = String::new();
     for line in lines {
         if body_start {
             stance.push_str(line);
@@ -445,6 +456,8 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
             "effort" => effort = Some(value.to_string()),
             "kind" => kind = Some(SeatKind::parse(value)?),
             "schedule" => schedule = Some(value.trim_matches('"').to_string()),
+            "purpose" => purpose = value.to_string(),
+            "fires" => fires = value.to_string(),
             "tools" => tools = parse_inline_list(value)?,
             "gates" => {
                 for entry in parse_inline_list(value)? {
@@ -518,6 +531,8 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
         gate_classes,
         ceilings,
         stance: stance_trimmed.to_string(),
+        purpose,
+        fires,
     })
 }
 
@@ -2838,6 +2853,18 @@ pub fn load_seat_definitions(
             },
             Err(e) => errors.push((path, e.to_string())),
         }
+    }
+    // THE ONE PLACE a per-seat setting is merged into a seat (`SeatSettings::apply`), so no
+    // reader downstream — the deploy, the scheduler, a hire — can obtain an unresolved seat.
+    // A settings file that cannot be read is reported like a malformed seat, never skipped:
+    // 'no settings' is a different answer from 'settings I could not read'.
+    match crate::seat_settings::SeatSettings::load(seats_dir) {
+        Ok(settings) => {
+            for seat in &mut seats {
+                settings.apply(seat);
+            }
+        }
+        Err(e) => errors.push((seats_dir.join(crate::seat_settings::SETTINGS_FILE), e)),
     }
     (seats, errors)
 }

@@ -2,6 +2,8 @@
 name: review
 model: claude-sonnet-5
 kind: text
+purpose: Shows what the store carries that nobody uses, and deletes only what the user names
+fires: on request
 # tier justification (the product is a REPAIR to the user's own knowledge store, and
 # since 28g it runs UNATTENDED on a schedule — each repair is a judgement about what an
 # entry actually applies to, made with nobody reading it first; a weekly cadence with a

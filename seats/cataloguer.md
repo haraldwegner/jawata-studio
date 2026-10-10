@@ -2,6 +2,8 @@
 name: cataloguer
 model: claude-sonnet-5
 kind: code
+purpose: Says what each member and each package is FOR, resumably
+fires: on a package nobody has described; resumes where it stopped
 # tier justification (the product is a JUDGEMENT repeated many times — "what is this
 # member FOR" is the whole content, and a summary that restates the signature is
 # refused by the store's own gate, so a cheaper tier spends the run on rejections)

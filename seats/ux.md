@@ -1,7 +1,9 @@
 ---
 name: ux
 model: claude-sonnet-5
-kind: doc
+kind: code
+purpose: Asks the question no gate asks: was what was added actually requested
+fires: on a diff that changes a view
 # tier justification (the product IS a judgement about whether a human would use a thing, which is
 # the same shape as the architect's; and it runs on a diff rather than on a schedule, so the cost
 # is bounded by how often a view changes)
