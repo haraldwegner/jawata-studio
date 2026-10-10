@@ -94,6 +94,20 @@ struct PayloadError {
 /// tool documents. Anything else that arrives as text is an answer.
 const ABSENCE_PREFIXES: &[&str] = &["No known knowledge", "No domain"];
 
+/// The engine's third way of saying it found nothing: *"NOTHING IS ANCHORED TO THIS CUE — the
+/// store holds no entry for it"*, followed by a similarity pile of nominees. It is NOT in
+/// [`ABSENCE_PREFIXES`] because it is not an absence everywhere: a prompt that names a symbol is
+/// working on something and may use the pile. Whether the pile is worth injecting is the
+/// caller's call, so this only recognises it. The wording is the producer's
+/// (`ExperienceRetrieval`, pinned on its own side by `RecallSaysTheAbsenceTest`); if it changes,
+/// this stops matching and the pile is injected again, which is noise and not harm.
+const UNANCHORED_MARKER: &str = "NOTHING IS ANCHORED";
+
+/// Whether a recall answer says nothing is anchored to the cue and offers only a pile.
+pub fn is_unanchored_pile(text: &str) -> bool {
+    text.trim_start().starts_with(UNANCHORED_MARKER)
+}
+
 /// Peel the envelope. Split out from the transport so the shape rules are
 /// testable without a server — the property that made the regex untestable was
 /// that it only ran inside a curl pipeline.

@@ -839,6 +839,18 @@ fn recall(
         }
         match store.ask(serde_json::json!({ "kind": "recall", "format": "text", key: cue })) {
             Ok(Answer::Text(text)) => {
+                // Sprint 28g D8e, second defect: candidates injected into conversational
+                // prompts that cannot use them. A prompt naming NO symbol has no work item to
+                // apply a similarity pile to, and when the engine says nothing is anchored the
+                // pile is all that is left - injected on every turn of a conversation, under a
+                // heading calling the rows candidates. Treated as an absence, so the next cue
+                // is tried and the run ends silent. A prompt that DOES name a symbol keeps it.
+                if role == Role::UserPrompt
+                    && symbols.is_empty()
+                    && crate::query::is_unanchored_pile(&text)
+                {
+                    continue;
+                }
                 return finish(
                     client,
                     role,
@@ -2327,6 +2339,72 @@ mod tests {
                 );
             }
             other => panic!("expected an emission: {other:?}"),
+        }
+    }
+
+    /// What the engine answers when nothing is ANCHORED to a cue: it says so in words, then offers
+    /// a similarity pile. The wording is the producer's (`ExperienceRetrieval`, pinned on its own
+    /// side by `RecallSaysTheAbsenceTest`).
+    const UNANCHORED_PILE: &str = "NOTHING IS ANCHORED TO THIS CUE — the store holds no entry for \
+        it. What follows are NOMINEES ranked by resemblance, not answers.\nIn a similar \
+        situation: [lesson] something that merely shares words";
+
+    /// D8e, the second defect: *"recalled candidates are injected into conversational prompts that
+    /// cannot use them"*. A prompt that names no symbol has no work item to apply a similarity
+    /// pile to, so injecting one — on every turn, under a heading calling the rows candidates —
+    /// is noise the reader learns to skip, and then skips the one that mattered.
+    #[test]
+    fn a_conversational_prompt_gets_no_similarity_pile() {
+        let store = ByKind { map: Ok(Answer::Nothing), recall: Ok(Answer::Text(UNANCHORED_PILE.into())) };
+        let out = run(
+            Role::UserPrompt,
+            &config("claude-code"),
+            r#"{"prompt":"the importer classifier regression"}"#,
+            &store,
+        );
+        assert!(
+            matches!(out, Outcome::Silent(_)),
+            "a symptom-only prompt with nothing anchored injects nothing: {out:?}"
+        );
+    }
+
+    /// The map is the ground, not a candidate, and it must survive the recall being a pile.
+    #[test]
+    fn the_map_still_rides_when_the_recall_is_only_a_pile() {
+        let store = ByKind {
+            map: Ok(Answer::Text("JAWATA MAP — what this code is\n  area: the store".into())),
+            recall: Ok(Answer::Text(UNANCHORED_PILE.into())),
+        };
+        let out = run(
+            Role::UserPrompt,
+            &config("claude-code"),
+            r#"{"prompt":"the importer classifier regression"}"#,
+            &store,
+        );
+        match out {
+            Outcome::Emitted(s) => {
+                assert!(s.contains("JAWATA MAP —"), "the map survives: {s}");
+                assert!(!s.contains("NOMINEES"), "and the pile does not ride beside it: {s}");
+            }
+            other => panic!("expected an emission carrying the map: {other:?}"),
+        }
+    }
+
+    /// The CONTROL for the two above, without which they could pass against a hook that
+    /// suppressed every unanchored answer: a prompt that names a symbol is working on
+    /// something, and nominees by resemblance may help it.
+    #[test]
+    fn a_prompt_naming_a_symbol_keeps_its_nominees_when_nothing_is_anchored() {
+        let store = ByKind { map: Ok(Answer::Nothing), recall: Ok(Answer::Text(UNANCHORED_PILE.into())) };
+        let out = run(
+            Role::UserPrompt,
+            &config("claude-code"),
+            r#"{"prompt":"why does ProjectImporter#isTestSourceRoot return null"}"#,
+            &store,
+        );
+        match out {
+            Outcome::Emitted(s) => assert!(s.contains("NOMINEES"), "{s}"),
+            other => panic!("a prompt naming a symbol keeps its nominees: {other:?}"),
         }
     }
 
