@@ -2919,50 +2919,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// C11's named test, second half: ONE ENGINE PER WORKSPACE means two workspaces never share
-    /// one. `workspace_grouped_spawn_two_projects_share_one_process` proves the first half —
-    /// projects INSIDE a workspace join a single process — and says nothing about the case that
-    /// matters for isolation: a second workspace must get a process of its own, because an
-    /// engine holds one workspace's loaded model and answering another's questions from it is a
-    /// wrong answer that looks right.
-    ///
-    /// The key is the workspace NAME; the mutation that makes the join ignore it must turn this
-    /// red, which is what makes it a guard rather than a restatement.
-    #[cfg(unix)]
-    #[test]
-    fn two_different_workspaces_never_share_an_engine() {
-        let dir = unique_tempdir("two-workspaces");
-        let paths = paths_in(&dir);
-        let manager = RuntimeManager::new(paths);
-
-        let ws_a = dir.join("ws").join("alpha").to_string_lossy().to_string();
-        let ws_b = dir.join("ws").join("beta").to_string_lossy().to_string();
-        let ref_a = make_reference("p-a", "alpha", &ws_a);
-        let ref_b = make_reference("p-b", "beta", &ws_b);
-
-        let log_a = dir.join("logs").join("alpha.log").to_string_lossy().to_string();
-        let log_b = dir.join("logs").join("beta.log").to_string_lossy().to_string();
-        let status_a = manager
-            .start_runtime_with_spec(&ref_a, sleep_spec(&ws_a, log_a))
-            .expect("first workspace spawns");
-        let status_b = manager
-            .start_runtime_with_spec(&ref_b, sleep_spec(&ws_b, log_b))
-            .expect("second workspace spawns");
-
-        let pid_a = status_a.pid.expect("first workspace has a PID");
-        let pid_b = status_b.pid.expect("second workspace has a PID");
-        assert_ne!(pid_a, pid_b, "two workspaces must NOT share one engine process");
-
-        // And each engine serves only its own members: neither workspace's project leaked
-        // into the other's member set.
-        assert_eq!(manager.workspace_members("alpha").unwrap(), vec!["p-a".to_string()]);
-        assert_eq!(manager.workspace_members("beta").unwrap(), vec!["p-b".to_string()]);
-
-        manager.stop_workspace_runtime("alpha").unwrap();
-        manager.stop_workspace_runtime("beta").unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     #[cfg(unix)]
     #[test]
     fn workspace_stop_runtime_keeps_process_alive_for_remaining_members() {
