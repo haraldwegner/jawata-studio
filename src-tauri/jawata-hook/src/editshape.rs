@@ -638,6 +638,36 @@ mod tests {
         assert_eq!(named, let_through_when_off, "the control: switched off, every one of them passes");
     }
 
+    /// THE HELD-OUT LOOK: edits the rules were never tuned on, listed for a human to judge. There
+    /// are no labels, so this asserts nothing — it is how derive-on-A/validate-on-B is done by
+    /// reading. Gated on `JAWATA_HELDOUT_EDITS`; writes `JAWATA_HELDOUT_REPORT`.
+    #[test]
+    fn edits_outside_the_census_listed_for_review() {
+        let Ok(path) = std::env::var("JAWATA_HELDOUT_EDITS") else {
+            eprintln!("held-out look: NOT RUN — JAWATA_HELDOUT_EDITS unset");
+            return;
+        };
+        let edits: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).expect("edits")).expect("json");
+        let mut out = String::new();
+        let (mut total, mut refused) = (0, 0);
+        let mut by_tool: std::collections::BTreeMap<&str, u32> = Default::default();
+        for e in edits.as_array().expect("array") {
+            total += 1;
+            let (old, new) = (e["old"].as_str().unwrap_or(""), e["new"].as_str().unwrap_or(""));
+            if let Some(shape) = classify(old, new) {
+                refused += 1;
+                *by_tool.entry(shape.tool).or_default() += 1;
+                let cut = |s: &str| s.chars().take(160).collect::<String>().replace('\n', "⏎");
+                out.push_str(&format!("#{} {} [{}]\n  OLD {}\n  NEW {}\n", e["n"], shape.name, e["file"].as_str().unwrap_or("").rsplit('/').next().unwrap_or(""), cut(old), cut(new)));
+            }
+        }
+        let head = format!("held-out: {refused} of {total} refused; by tool {by_tool:?}\n");
+        if let Ok(p) = std::env::var("JAWATA_HELDOUT_REPORT") {
+            let _ = std::fs::write(p, format!("{head}{out}"));
+        }
+        eprintln!("{head}");
+    }
+
     #[test]
     fn a_sibling_method_that_repeats_the_originals_lines_is_authoring_not_an_extraction() {
         let old = "    void a(Event e) {\n        Event ev = new Event();\n        ev.type = e.type;\n        ev.when = e.when;\n        dispatch(ev);\n    }\n";
