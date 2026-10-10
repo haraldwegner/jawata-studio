@@ -18,6 +18,7 @@ pub mod editgate;
 pub mod javawatch;
 pub mod emit;
 pub mod field;
+pub mod gatefile;
 pub mod guard;
 pub mod local;
 pub mod observer;

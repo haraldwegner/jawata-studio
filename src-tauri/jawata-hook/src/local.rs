@@ -401,25 +401,11 @@ pub fn judge_payload(text: &str) -> Verdict {
     Verdict::Allow
 }
 
-/// The expensive gates: anything here takes minutes, so its output is worth
-/// more than the transcript space it saves.
-const EXPENSIVE_GATES: &[&str] = &[
-    "run-suite.sh", "end-to-end-test.sh", "unwired-gate.sh", "abort-budget.sh",
-    "svelte-check",
-];
-
-fn mentions_expensive_gate(segment: &str) -> bool {
-    if EXPENSIVE_GATES.iter().any(|g| segment.contains(g)) {
-        return true;
-    }
-    let words: Vec<&str> = segment.split_whitespace().collect();
-    words.iter().any(|w| {
-        let bare = w.rsplit(['/', '\\']).next().unwrap_or(w);
-        bare == "mvn" || bare == "mvnw"
-    }) || segment.contains("cargo test")
-        || segment.contains("cargo build")
-        || segment.contains("vite build")
-}
+// The expensive gates are no longer a list in this file. A script says for itself
+// that it is one (see `gatefile`), and the hook reads that where the command
+// RUNS the script — which is why a command that merely names one is never
+// refused any more. The build tools that are long by what they are (maven,
+// cargo, vite, svelte-check) live there too, matched as the program, not as text.
 
 /// A multi-minute gate whose output is thrown away, or truncated through a
 /// filter. Either way the only route to a detail it printed is another run.
@@ -443,8 +429,12 @@ pub fn uncaptured_gate(command: &str) -> Option<Verdict> {
     if command.contains("gate-output-ok:") {
         return None;
     }
+    let mut base = crate::gatefile::start_dir();
     for segment in command.replace("&&", ";").split(';') {
-        if !mentions_expensive_gate(segment) {
+        let here = base.clone();
+        // `cd X ; ./gate` — the script is read from where it will actually run.
+        base = crate::gatefile::dir_after(segment, &base);
+        if !crate::gatefile::runs_long_gate(segment, &here) {
             continue;
         }
         if segment.contains("--version") || segment.contains("-version")
@@ -828,9 +818,16 @@ mod tests {
         assert!(!denied(judge_payload("ls /usr/lib/jvm && cat /etc/hosts")));
     }
 
+    /// A gate that declares itself in its own header, and the directory it sits in.
+    fn a_declared_gate() -> (String, String) {
+        let (dir, name) = crate::gatefile::testkit::script_with("# jawata-gate: long");
+        (dir.display().to_string(), name)
+    }
+
     #[test]
     fn an_uncaptured_expensive_gate_is_denied() {
-        let cmd = format!("cd /repo && ./build/run-{}.sh 4", "suite");
+        let (dir, name) = a_declared_gate();
+        let cmd = format!("cd {dir} && ./{name} 4");
         assert!(uncaptured_gate(&cmd).is_some());
     }
 
@@ -838,25 +835,31 @@ mod tests {
     fn a_declared_exception_passes_an_uncaptured_gate() {
         // studio#41: the shell guard's escape hatch, and the reason it exists —
         // a text rule cannot tell an invocation from a mention.
-        let cmd = "./build/run-suite.sh 4  # gate-output-ok: documenting the rule";
-        assert!(uncaptured_gate(cmd).is_none(), "a declared exception is honoured");
+        let (dir, name) = a_declared_gate();
+        let cmd = format!("cd {dir} && ./{name} 4  # gate-output-ok: documenting the rule");
+        assert!(uncaptured_gate(&cmd).is_none(), "a declared exception is honoured");
         // The control: the SAME command without the declaration is refused, so
         // the test cannot pass because the rule stopped firing altogether.
         assert!(
-            uncaptured_gate("./build/run-suite.sh 4").is_some(),
+            uncaptured_gate(&format!("cd {dir} && ./{name} 4")).is_some(),
             "without the declaration the gate still refuses"
         );
     }
 
     #[test]
     fn a_captured_gate_passes() {
-        let cmd = format!("cd /repo && ./build/run-{}.sh 4 > /tmp/o.txt 2>&1", "suite");
+        let (dir, name) = a_declared_gate();
+        let cmd = format!("cd {dir} && ./{name} 4 > /tmp/o.txt 2>&1");
         assert!(uncaptured_gate(&cmd).is_none());
+        // The control: the same gate uncaptured is refused (above), so this is not
+        // the rule being off.
+        assert!(uncaptured_gate(&format!("cd {dir} && ./{name} 4")).is_some());
     }
 
     #[test]
     fn a_truncated_gate_is_denied_with_its_own_wording() {
-        let cmd = format!("./build/run-{}.sh 4 | tail -5", "suite");
+        let (dir, name) = a_declared_gate();
+        let cmd = format!("cd {dir} && ./{name} 4 | tail -5");
         let Some(Verdict::Deny { reason }) = uncaptured_gate(&cmd) else {
             panic!("expected a denial");
         };
@@ -866,6 +869,70 @@ mod tests {
     #[test]
     fn a_version_probe_is_exempt() {
         assert!(uncaptured_gate("mvn --version").is_none());
+    }
+
+    /// The seven correct commands the old name list refused in one session, as the
+    /// SHAPES they were: the gate's name appearing as DATA in a command that runs
+    /// nothing long. The names themselves were never recorded anywhere a test can
+    /// open, so these are the shapes — reading the script, counting it in a binary,
+    /// documenting the rule, naming it in a message, a path in an `ls`.
+    #[test]
+    fn a_gate_named_as_data_is_not_a_gate_being_run() {
+        let (dir, name) = a_declared_gate();
+        let script = format!("{dir}/{name}");
+        for cmd in [
+            format!("sed -n 1,40p {script}"),
+            format!("grep -c gate {script}"),
+            format!("grep -rn {name} {dir}"),
+            format!("cat {script}"),
+            format!("ls -la {script}"),
+            format!("echo 'remember to run {name} at the checkpoint'"),
+            format!("git commit -m 'the guard refused {name} while documenting it'"),
+            format!("head -3 {script}"),
+            format!("wc -l {script}"),
+        ] {
+            assert!(
+                uncaptured_gate(&cmd).is_none(),
+                "a command that runs no gate was refused: {cmd}"
+            );
+        }
+        // The control: RUNNING that same script is refused, so every pass above is
+        // the rule reading position and not the rule being off.
+        assert!(uncaptured_gate(&format!("{script} 4")).is_some());
+    }
+
+    /// The measure the list deletion exists for: nothing in what ships names one
+    /// of our build scripts. A test cannot open the binary, so it opens the SOURCE
+    /// the binary is built from — every non-test line of every module — and
+    /// refuses the names. Comments are not compiled in, so they are not scanned.
+    #[test]
+    fn the_shipped_source_names_none_of_our_build_scripts() {
+        // Built from parts, so this file does not contain what it forbids.
+        let names: Vec<String> = ["run-", "end-to-end-", "unwired-", "abort-"]
+            .iter()
+            .zip(["suite.sh", "test.sh", "gate.sh", "budget.sh"])
+            .map(|(a, b)| format!("{a}{b}"))
+            .collect();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut hits = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            // Everything before the first test module is what compiles into the binary.
+            let shipped = text.split("#[cfg(test)]").next().unwrap_or(&text);
+            for (n, line) in shipped.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or(line);
+                for name in &names {
+                    if code.contains(name.as_str()) {
+                        hits.push(format!("{}:{}: {name}", path.display(), n + 1));
+                    }
+                }
+            }
+        }
+        assert!(hits.is_empty(), "a build-script name ships in the binary: {hits:?}");
     }
 
     #[test]

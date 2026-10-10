@@ -104,9 +104,10 @@ pub enum Verdict {
     Deny { reason: String },
 }
 
-/// Whole-test-suite runners, by the name in COMMAND POSITION. A project's own
-/// sharded runner is the expensive shape this gate is for.
-const SUITE_SCRIPTS: &[&str] = &["run-suite.sh", "run-suite", "run-tests.sh", "run-all-tests.sh"];
+// Whole-test-suite runners are no longer named here. A project's own sharded
+// runner declares itself in its header (`# jawata-gate: suite`, see `gatefile`),
+// and is recognised where the command RUNS it. A list of one team's script names
+// does not belong in a published binary, and went stale silently on a rename.
 
 /// Build tools whose bare test goals run EVERYTHING unless a filter narrows them.
 const BUILD_TOOLS: &[&str] = &["mvn", "mvnw", "./mvnw", "gradle", "gradlew", "./gradlew"];
@@ -125,8 +126,11 @@ const FULL_SUITE_FLAG: &str = "--full";
 /// a test phase with nothing narrowing it. `-DskipTests` is the common case that
 /// looks like a test command and runs none — a build before a suite is not the
 /// suite, and denying it would block the step that PRECEDES every legitimate run.
-fn full_suite_in(command: &str) -> Option<&'static str> {
+fn full_suite_in(command: &str) -> Option<String> {
+    let mut base = crate::gatefile::start_dir();
     for segment in segments(command) {
+        let here = base.clone();
+        base = crate::gatefile::dir_after(segment, &base);
         // COMMAND POSITION for both shapes, which is this file's standing
         // discipline and not a nuance: scanning every word made
         // `echo 'remember to run run-suite.sh'` a denial. Caught by this gate's
@@ -138,7 +142,7 @@ fn full_suite_in(command: &str) -> Option<&'static str> {
         });
         let Some(first) = words.next() else { continue };
         let head = first.rsplit(['/', '\\']).next().unwrap_or(first);
-        if let Some(script) = SUITE_SCRIPTS.iter().find(|s| **s == head) {
+        if let Some(script) = crate::gatefile::suite_script_run_by(segment, &here) {
             // A suite script now SELECTS by default: it runs only the tests the
             // coverage evidence says the change reaches, and `--full` is what
             // asks for everything. So `--full` is the expensive shape this gate
@@ -166,7 +170,7 @@ fn full_suite_in(command: &str) -> Option<&'static str> {
         });
         let narrowed = TEST_FILTERS.iter().any(|f| segment.contains(*f));
         if reaches_tests && !narrowed {
-            return Some(tool);
+            return Some(tool.to_string());
         }
     }
     None
@@ -571,7 +575,21 @@ mod tests {
     /// command text, a test fixture NAMING one is indistinguishable from running
     /// one. Found the moment these tests were first added, by being blocked.
     fn suite_cmd(tail: &str) -> String {
-        format!("./build/run-{}.sh 4{}", "suite", tail)
+        // A real script whose own header declares it the suite runner — that
+        // declaration is what the hook reads now, where it used to match a name.
+        let (dir, name) = crate::gatefile::testkit::script_with("# jawata-gate: suite");
+        format!("cd {} && ./{} 4{}", dir.display(), name, tail)
+    }
+
+    #[test]
+    fn a_script_that_does_not_declare_itself_the_suite_is_not_one() {
+        // The control for every denial above: same shape, same flag, no declaration.
+        let (dir, name) = crate::gatefile::testkit::script_with("# an ordinary script");
+        assert!(!denied(&format!("cd {} && ./{} 4 --full", dir.display(), name)));
+        // And a script that only declares itself LONG is held to the capture rule,
+        // not to the cadence rule — they are different promises.
+        let (dir, name) = crate::gatefile::testkit::script_with("# jawata-gate: long");
+        assert!(!denied(&format!("cd {} && ./{} 4 --full", dir.display(), name)));
     }
 
     #[test]
