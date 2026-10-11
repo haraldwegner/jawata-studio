@@ -77,6 +77,17 @@ if [ "$TYPES" -ne 0 ]; then
     exit 1
 fi
 
+echo
+echo "=== gate: every architect report carries its D4 section ==="
+# Sprint 28g Stage 6. Exit 2 is "nothing was checked", which is not a pass.
+"$ROOT/build/architect-d4-gate.sh"
+D4=$?
+if [ "$D4" -ne 0 ]; then
+    echo "FAILED: the D4 gate (exit $D4). A checkpoint report must say what it asked the"
+    echo "experience store and the pattern catalogue and what it selected, or that it selected none."
+    exit "$D4"
+fi
+
 # NOT RUN HERE, AND EACH FOR ITS OWN STATED REASON rather than by omission:
 #
 #   build/seam-gate.sh   — drives the REAL hook binary against the REAL published
