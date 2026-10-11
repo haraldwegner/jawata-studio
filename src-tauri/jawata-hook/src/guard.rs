@@ -200,22 +200,25 @@ pub(crate) fn full_suite_in(command: &str) -> Option<String> {
 /// merely mentions the word (`echo`, a commit message, a `grep`) is not one: a `java`
 /// invocation carrying a `-javaagent:` for a jacoco jar; the same flag smuggled in through
 /// `JAVA_TOOL_OPTIONS` / `MAVEN_OPTS` / `JAVA_OPTS`; and a `curl` / `wget` that fetches a
-/// jacoco jar. It recognises the JaCoCo agent and nothing else — another coverage agent is
-/// a different name, and widening this to "any `-javaagent`" would refuse profilers and
-/// APM agents that have nothing to do with coverage.
+/// jacoco jar; plus Maven invoked with a jacoco plugin goal. It recognises the JaCoCo agent
+/// and nothing else — another coverage agent is a different name, and widening this to "any
+/// `-javaagent`" would refuse profilers and APM agents that have nothing to do with coverage.
+///
+/// DECLARED GAPS, not oversights: this reads NAMES, so it does not stop coverage collected by
+/// hand. An agent path held in a variable defined in another segment (`-javaagent:$A`) needs
+/// data flow across segments, which no rule here has; a jar renamed so it no longer says
+/// "jacoco" is invisible to a name-based rule by construction. Read the rule as "the Sprint 8
+/// shape is refused", never as "coverage cannot be collected outside `run_tests`"; the state
+/// itself is not observable at the moment a shell command runs.
 pub(crate) fn coverage_agent_in(command: &str) -> Option<&'static str> {
     let mentions_jacoco = |w: &str| w.to_ascii_lowercase().contains("jacoco");
     for seg in crate::gatefile::segments(command, &crate::gatefile::start_dir()) {
         let segment = seg.text.as_str();
         // A `NAME=value` in front of the command: the option variables the JVM and Maven read.
-        for w in crate::gatefile::shell_words(segment) {
-            let Some((name, value)) = w.split_once('=') else { break };
-            if name.is_empty() || !name.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
-                break;
-            }
-            if ["JAVA_TOOL_OPTIONS", "MAVEN_OPTS", "JAVA_OPTS", "JDK_JAVA_OPTIONS"].contains(&name)
+        for (name, value) in crate::gatefile::command_assignments(segment) {
+            if ["JAVA_TOOL_OPTIONS", "MAVEN_OPTS", "JAVA_OPTS", "JDK_JAVA_OPTIONS"].contains(&name.as_str())
                 && value.contains("-javaagent:")
-                && mentions_jacoco(value)
+                && mentions_jacoco(&value)
             {
                 return Some("an agent attached through an environment variable");
             }
@@ -228,6 +231,10 @@ pub(crate) fn coverage_agent_in(command: &str) -> Option<&'static str> {
             && words.iter().any(|w| w.starts_with("-javaagent:") && mentions_jacoco(w))
         {
             return Some("a JaCoCo agent attached to a JVM");
+        }
+        // The Maven plugin's goal, named on the command line: `org.jacoco:jacoco-maven-plugin:prepare-agent`.
+        if ["mvn", "mvnw"].contains(&head) && words.iter().any(|w| mentions_jacoco(w)) {
+            return Some("the JaCoCo Maven plugin invoked by hand");
         }
         if ["curl", "wget"].contains(&head)
             && words.iter().any(|w| mentions_jacoco(w) && w.to_ascii_lowercase().contains(".jar"))
@@ -736,6 +743,8 @@ mod tests {
         assert!(denied("MAVEN_OPTS='-javaagent:/t/org.jacoco.agent-runtime.jar' mvn -q package"));
         assert!(denied("timeout 600 java -javaagent:/t/jacocoagent.jar -cp target/classes Main"));
         assert!(denied("wget -q -P lib https://example.org/jacoco/jacocoagent.jar"));
+        assert!(denied("mvn -q org.jacoco:jacoco-maven-plugin:prepare-agent test -Dtest=FooTest"));
+        assert!(denied("./mvnw org.jacoco:jacoco-maven-plugin:0.8.11:report"));
     }
 
     #[test]
@@ -751,6 +760,8 @@ mod tests {
         assert!(!denied("curl -s https://www.jacoco.org/jacoco/"));
         // And the plain JVM, with nothing attached.
         assert!(!denied("java -jar app.jar"));
+        // Maven without a jacoco goal is not this rule's business.
+        assert!(!denied("mvn -q compile"));
     }
 
     #[test]

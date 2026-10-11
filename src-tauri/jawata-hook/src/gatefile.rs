@@ -105,10 +105,12 @@ pub fn shell_words(s: &str) -> Vec<String> {
     words
 }
 
-/// The words of a segment past leading wrappers, their arguments and `NAME=value`
-/// assignments.
-pub fn command_words(segment: &str) -> Vec<String> {
+/// A segment split into the `NAME=value` assignments that precede its command and the
+/// words of the command itself, past leading wrappers and their arguments. ONE reading of
+/// "what comes before the command", asked by `command_words` and `command_assignments`.
+fn split_command(segment: &str) -> (Vec<(String, String)>, Vec<String>) {
     let all = shell_words(segment);
+    let mut assignments = Vec::new();
     let mut i = 0;
     while i < all.len() {
         let w = &all[i];
@@ -125,13 +127,31 @@ pub fn command_words(segment: &str) -> Vec<String> {
             }
             continue;
         }
-        if w.contains('=') && !w.starts_with('-') && !w.contains('/') {
-            i += 1;
-            continue;
+        // An assignment is decided by its NAME, not by the whole word: `FOO=/tmp/x cmd` is an
+        // assignment whose value is a path, and the old whole-word test read it as the command.
+        if let Some((name, value)) = w.split_once('=') {
+            if !name.is_empty() && !name.starts_with('-') && !name.contains('/') {
+                assignments.push((name.to_string(), value.to_string()));
+                i += 1;
+                continue;
+            }
         }
         break;
     }
-    all[i..].to_vec()
+    (assignments, all[i..].to_vec())
+}
+
+/// The words of a segment past leading wrappers, their arguments and `NAME=value`
+/// assignments.
+pub fn command_words(segment: &str) -> Vec<String> {
+    split_command(segment).1
+}
+
+/// The `NAME=value` assignments in front of a segment's command: the ones
+/// `command_words` skips, read by the same code so the two cannot disagree about where
+/// the command starts.
+pub fn command_assignments(segment: &str) -> Vec<(String, String)> {
+    split_command(segment).0
 }
 
 /// The script a segment RUNS, as written — `None` when it runs something that
@@ -434,6 +454,24 @@ pub(crate) mod testkit {
 mod tests {
     use super::testkit::script_with;
     use super::*;
+
+    #[test]
+    fn an_assignment_whose_value_is_a_path_is_still_an_assignment() {
+        // The whole-word test used to read `OPTS=-javaagent:/t/a.jar java -jar x` as a command
+        // called `OPTS=-javaagent:/t/a.jar`, so every rule asking "what does this run" was told
+        // the wrong thing whenever a value held a slash.
+        assert_eq!(command_words("OPTS=/t/a.jar java -jar x"), ["java", "-jar", "x"]);
+        assert_eq!(
+            command_assignments("A=1 OPTS=/t/a.jar java -jar x"),
+            [("A".to_string(), "1".to_string()), ("OPTS".to_string(), "/t/a.jar".to_string())]
+        );
+        // A path that merely contains an equals sign is a command, not an assignment.
+        assert_eq!(command_words("./dir=odd/run.sh go"), ["./dir=odd/run.sh", "go"]);
+        assert!(command_assignments("./dir=odd/run.sh go").is_empty());
+        // The two readers cannot disagree about where the command starts.
+        assert_eq!(command_assignments("timeout 5 X=1 sleep 1").len(), 1);
+        assert_eq!(command_words("timeout 5 X=1 sleep 1"), ["sleep", "1"]);
+    }
 
     #[test]
     fn a_script_declares_itself_in_its_header() {
