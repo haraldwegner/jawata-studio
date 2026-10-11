@@ -396,6 +396,13 @@ pub struct SeatDefinition {
     pub tools: Vec<String>,
     /// Gate classes beyond `Always` this seat's proposals must pass.
     pub gate_classes: Vec<GateClass>,
+    /// The seat declares, in its own frontmatter, that the gate rule does not apply to it
+    /// (`gate_exempt: true`). The default is false and a seat gains the exemption only by
+    /// saying so in writing: the generated command otherwise tells EVERY seat to run
+    /// `compile_workspace`, which contradicts a seat whose subject is not Java and whose own
+    /// stance declares itself exempt (C7-2).
+    #[serde(default)]
+    pub gate_exempt: bool,
     pub ceilings: Ceilings,
     /// The stance prompt — the markdown body below the frontmatter.
     pub stance: String,
@@ -426,6 +433,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     let mut schedule = None;
     let mut tools: Vec<String> = Vec::new();
     let mut gate_classes: Vec<GateClass> = Vec::new();
+    let mut gate_exempt = false;
     let mut ceilings = Ceilings::default();
     let mut body_start = false;
     let mut stance = String::new();
@@ -459,6 +467,13 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
             "purpose" => purpose = value.to_string(),
             "fires" => fires = value.to_string(),
             "tools" => tools = parse_inline_list(value)?,
+            "gate_exempt" => {
+                gate_exempt = match value {
+                    "true" => true,
+                    "false" => false,
+                    other => return Err(format!("gate_exempt '{other}': expected true or false")),
+                }
+            }
             "gates" => {
                 for entry in parse_inline_list(value)? {
                     let class = GateClass::parse(&entry)?;
@@ -529,6 +544,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
         schedule,
         tools,
         gate_classes,
+        gate_exempt,
         ceilings,
         stance: stance_trimmed.to_string(),
         purpose,

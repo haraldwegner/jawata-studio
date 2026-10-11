@@ -10,6 +10,7 @@ fires: on a diff that changes a view
 effort: high
 tools: [experience]
 gates: []
+gate_exempt: true
 ttl_secs: 600
 max_iterations: 1
 cost_budget_usd: 2.0

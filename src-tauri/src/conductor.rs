@@ -35,7 +35,7 @@ pub const EMBEDDED_SEATS: [(&str, &str); 14] = [
 /// every row renders into the deployed command list — both pinned, so the
 /// counts in the generated prose and in the deploy inventory are derived
 /// from this array rather than typed beside it.
-pub const COMMAND_MAP: [(&str, &str, &str); 9] = [
+pub const COMMAND_MAP: [(&str, &str, &str); 10] = [
     (
         "main",
         "main",
@@ -81,7 +81,15 @@ pub const COMMAND_MAP: [(&str, &str, &str); 9] = [
         "review",
         "Review what the knowledge store carries that nobody uses, and delete only what you name (jawata review seat)",
     ),
+    (
+        "ux",
+        "ux",
+        "Ask of a view what no gate asks: was what was added actually requested, who reads each block, what do they do next (jawata ux seat)",
+    ),
 ];
+
+/// The two seats that live inside `/sprint` and render no command of their own.
+pub const PIPELINE_SEATS: [&str; 2] = ["spec-editor", "spec-auditor"];
 
 pub fn command_for(seat_name: &str) -> Option<(&'static str, &'static str)> {
     COMMAND_MAP
@@ -305,6 +313,16 @@ fn instrument_discipline(seat: &SeatDefinition) -> String {
 /// Renders the seat's gate classes as named jawata-call bullet lines
 /// (indented under VERIFY).
 fn gate_call_lines(seat: &SeatDefinition) -> String {
+    if seat.gate_exempt {
+        // The seat's own frontmatter says the gate rule does not apply to it. Telling it to run
+        // `compile_workspace` anyway would contradict its stance, so it is told the truth: no
+        // jawata call gates it, and what stands in for one is a discipline a human checks.
+        return "   - none: this seat is EXEMPT from the gate rule, and its own stance says why.\n\
+                 No jawata call gates it. What stands in for a gate is a discipline the human\n\
+                 checks by reading the numbers the seat reports; a count that does not match is\n\
+                 reported as a failure, never as a caveat.\n"
+            .to_string();
+    }
     let mut lines = vec![
         "   - always: `compile_workspace` clean on the touched scope, and the\n\
          change stays inside the named scope (purity — nothing else touched).\n"
@@ -418,7 +436,7 @@ pub fn render_antigravity_workflow(seat: &SeatDefinition) -> Option<String> {
 /// language entry everywhere). One row per command-bearing seat — that is the
 /// rule the table is built on, and `phrase_table_covers_every_command` fails
 /// the build on a command that has no way in through plain words.
-pub const PHRASE_MAP: [(&str, &str); 9] = [
+pub const PHRASE_MAP: [(&str, &str); 10] = [
     ("\"work this end to end\" / \"drive this task\"", "main"),
     ("\"document this class\" / \"add javadocs\"", "javadocs"),
     ("\"what is this package for\" / \"describe this code\"", "catalogue"),
@@ -428,6 +446,7 @@ pub const PHRASE_MAP: [(&str, &str); 9] = [
     ("\"why is this slow\" / \"profile this\"", "profile"),
     ("\"report this to jawata\" / \"file a jawata bug\"", "report"),
     ("\"clean up my store\" / \"what is nobody using\"", "review"),
+    ("\"does the UI need this\" / \"review this view\"", "ux"),
 ];
 
 /// The phrase table as markdown rows: phrase → the seat stance to adopt.
@@ -650,8 +669,13 @@ pub fn render_antigravity_utility(command: &str, description: &str) -> String {
 /// whose only consumers were assertions, which is the shape this sprint
 /// exists to stop; scoping them to the test build says so in the type system
 /// instead of in a comment.
+///
+/// 2026-10-11: 30 -> 32, by exactly the two rows the ux seat adds (its command row and its
+/// firing row). The sentence that counted the seats wrongly (C7-3) was repaired without
+/// adding a line: the hired seats ride on the /sprint row. The next seat past this budget
+/// has to buy its lines by cutting some, or say why the number moves.
 #[cfg(test)]
-pub const CONDUCTOR_SECTION_BUDGET_UNIVERSAL: usize = 30;
+pub const CONDUCTOR_SECTION_BUDGET_UNIVERSAL: usize = 32;
 #[cfg(test)]
 pub const CONDUCTOR_SECTION_BUDGET_INTELLIJ: usize = 60;
 
@@ -669,13 +693,24 @@ pub fn render_conductor_section(seats: &[SeatDefinition], client: &str) -> Vec<S
     // now come from the arrays themselves, and a test pins that they do.
     let total = EMBEDDED_SEATS.len();
     let direct = COMMAND_MAP.len();
-    let pipeline = total.saturating_sub(direct);
+    let pipeline = PIPELINE_SEATS.len();
+    // The seats that have no typed command and are not the /sprint pair: the principal hires
+    // them. Derived from the embedded files, because the old sum (total minus direct) counted
+    // them as /sprint's and announced five where two live there (C7-3).
+    let hired: Vec<String> = EMBEDDED_SEATS
+        .iter()
+        .map(|(file, _)| file.trim_end_matches(".md").to_string())
+        .filter(|name| {
+            !COMMAND_MAP.iter().any(|(seat, _, _)| seat == name) && !PIPELINE_SEATS.contains(&name.as_str())
+        })
+        .collect();
     let mut lines = vec![
         "## The jawata seats — narrow engineering roles, gate-disciplined".to_string(),
         String::new(),
         format!(
             "jawata ships {total} SEATS. {direct} are direct roles; \
-             {pipeline} live in /sprint:"
+             {pipeline} live in /sprint; {} are hired by the principal and have no typed command:",
+            hired.len()
         ),
         String::new(),
     ];
@@ -684,9 +719,15 @@ pub fn render_conductor_section(seats: &[SeatDefinition], client: &str) -> Vec<S
             lines.push(format!("- {seat_name} (`/{command}`) — {desc}"));
         }
     }
-    lines.push(
-        "- spec-editor + spec-auditor — the /sprint two-seat artifact pipeline".to_string(),
-    );
+    lines.push(if hired.is_empty() {
+        "- spec-editor + spec-auditor — the /sprint two-seat artifact pipeline".to_string()
+    } else {
+        format!(
+            "- spec-editor + spec-auditor — the /sprint two-seat artifact pipeline; {} — hired \
+             by the principal, not typed",
+            hired.join(" + ")
+        )
+    });
     lines.extend([
         String::new(),
         "Involve the ARCHITECT seat unprompted when the ask is a vague \"clean \
@@ -728,6 +769,9 @@ pub fn render_conductor_section(seats: &[SeatDefinition], client: &str) -> Vec<S
             .to_string(),
         "- profiler (`/profile`) — at the runtime reflex: performance / a hotspot → \
          sample the JVM; do NOT hand-roll a stopwatch (the guard surfaces this)."
+            .to_string(),
+        "- ux (`/ux`) — at any diff that changes a view or screen, before it is called \
+         done: was what was added requested, who reads each block, what do they do next."
             .to_string(),
         String::new(),
     ]);
@@ -1509,6 +1553,68 @@ mod tests {
         // The /sprint pair renders NO command — a rule, not a roster entry.
         assert_eq!(command_for("spec-editor"), None);
         assert_eq!(command_for("spec-auditor"), None);
+    }
+
+    #[test]
+    fn the_ux_seat_is_typed_phrased_and_given_a_firing_point() {
+        // C7-1: the seat existed and nothing could employ it. Three ways in, each asserted
+        // where a person or an agent would meet it, not where it is declared.
+        let definitions = seats();
+        let ux = definitions.iter().find(|s| s.name == "ux").expect("the ux seat ships");
+        assert_eq!(command_for("ux").map(|(c, _)| c), Some("ux"), "a person can type it");
+        let skill = render_claude_skill(ux).expect("it renders a command like /refactor does");
+        assert!(skill.starts_with("---\nname: ux\n"), "{skill}");
+        let rendered = render_conductor_section(&definitions, "claude").join("\n");
+        assert!(rendered.contains("- ux (`/ux`)"), "the roster names it:\n{rendered}");
+        assert!(
+            rendered.contains("- ux (`/ux`) — at any diff that changes a view"),
+            "and the firing rule sends the agent to it at the moment a view changes:\n{rendered}"
+        );
+        assert!(
+            render_phrase_table(&definitions).contains("review this view"),
+            "and plain words reach it where there is no command channel"
+        );
+    }
+
+    #[test]
+    fn a_seat_that_declares_itself_exempt_is_not_told_to_run_the_compile_gate() {
+        // C7-2: the generated command handed EVERY seat `compile_workspace` as its always-gate,
+        // so the one seat whose file says it is exempt would have been contradicted by its own
+        // command the day it got one.
+        let definitions = seats();
+        let ux = definitions.iter().find(|s| s.name == "ux").unwrap();
+        let arch = definitions.iter().find(|s| s.name == "architect").unwrap();
+        assert!(ux.gate_exempt, "ux.md declares gate_exempt in its own frontmatter");
+        assert!(!arch.gate_exempt, "and the exemption is not the default");
+        let ux_skill = render_claude_skill(ux).unwrap();
+        assert!(ux_skill.contains("EXEMPT from the gate rule"), "{ux_skill}");
+        assert!(
+            !ux_skill.contains("always: `compile_workspace`"),
+            "an exempt seat is not told to run the Java gate:\n{ux_skill}"
+        );
+        assert!(
+            render_claude_skill(arch).unwrap().contains("always: `compile_workspace`"),
+            "every other seat still is"
+        );
+    }
+
+    #[test]
+    fn the_roster_sentence_counts_the_pipeline_pair_and_names_the_hired_seats() {
+        // C7-3: the sentence computed "total minus direct" and announced five seats living in
+        // /sprint while only two do; pm and test-manager are neither typed nor in the pipeline.
+        let definitions = seats();
+        let rendered = render_conductor_section(&definitions, "claude").join("\n");
+        assert!(
+            rendered.contains(&format!("{} live in /sprint", PIPELINE_SEATS.len())),
+            "{rendered}"
+        );
+        assert!(rendered.contains("2 live in /sprint; 2 are hired by the principal"), "{rendered}");
+        assert!(rendered.contains("pm + test-manager — hired by the principal, not typed"), "{rendered}");
+        assert_eq!(
+            COMMAND_MAP.len() + PIPELINE_SEATS.len() + 2,
+            EMBEDDED_SEATS.len(),
+            "every embedded seat is typed, in the pipeline, or hired — none uncounted"
+        );
     }
 
     #[test]
