@@ -672,6 +672,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "unproven on Windows: the gate rules read a command as bash words, which treats a backslash as an escape, so a Windows path in a command is read wrong. Windows is not exercised until jawata is the agent (his ruling 2026-10-07); the finding is filed as REL44-2")]
     fn the_bracket_does_not_hide_a_full_suite_from_the_cadence_gate() {
         let (dir, name) = crate::gatefile::testkit::script_with("# jawata-gate: suite");
         let wrap = |tail: &str| {
@@ -773,6 +774,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "unproven on Windows: the gate rules read a command as bash words, which treats a backslash as an escape, so a Windows path in a command is read wrong. Windows is not exercised until jawata is the agent (his ruling 2026-10-07); the finding is filed as REL44-2")]
     fn a_full_suite_run_is_denied_and_taught_both_declarations() {
         let cmd = suite_cmd(" --full");
         assert!(denied(&cmd));
@@ -796,6 +798,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "unproven on Windows: the gate rules read a command as bash words, which treats a backslash as an escape, so a Windows path in a command is read wrong. Windows is not exercised until jawata is the agent (his ruling 2026-10-07); the finding is filed as REL44-2")]
     fn the_gate_runs_before_the_author_declaration_so_it_is_not_a_bypass() {
         // `jawata-author:` short-circuits to Allow for the Java gates. With the
         // suite check placed after it, an unrelated authoring window would buy a

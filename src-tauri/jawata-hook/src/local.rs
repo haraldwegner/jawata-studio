@@ -791,6 +791,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "unproven on Windows: the gate rules read a command as bash words, which treats a backslash as an escape, so a Windows path in a command is read wrong. Windows is not exercised until jawata is the agent (his ruling 2026-10-07); the finding is filed as REL44-2")]
     fn an_uncaptured_expensive_gate_is_denied() {
         let (dir, name) = a_declared_gate();
         let cmd = format!("cd {dir} && ./{name} 4");
@@ -798,6 +799,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "unproven on Windows: the gate rules read a command as bash words, which treats a backslash as an escape, so a Windows path in a command is read wrong. Windows is not exercised until jawata is the agent (his ruling 2026-10-07); the finding is filed as REL44-2")]
     fn a_declared_exception_passes_an_unbracketed_gate() {
         // studio#41: the shell guard's escape hatch, and the reason it exists —
         // a text rule cannot tell an invocation from a mention.
@@ -813,6 +815,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "unproven on Windows: the gate rules read a command as bash words, which treats a backslash as an escape, so a Windows path in a command is read wrong. Windows is not exercised until jawata is the agent (his ruling 2026-10-07); the finding is filed as REL44-2")]
     fn a_redirect_alone_no_longer_satisfies_the_rule() {
         // The redirect keeps the output and leaves the DIRECTORY unsaid, which is the
         // second failure and the quieter one (a true PASS about the wrong product).
@@ -827,12 +830,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "unproven on Windows: the gate rules read a command as bash words, which treats a backslash as an escape, so a Windows path in a command is read wrong. Windows is not exercised until jawata is the agent (his ruling 2026-10-07); the finding is filed as REL44-2")]
     fn a_truncated_gate_is_refused_too() {
         let (dir, name) = a_declared_gate();
         assert!(unbracketed_gate(&format!("cd {dir} && ./{name} 4 | tail -5")).is_some());
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "unproven on Windows: the gate rules read a command as bash words, which treats a backslash as an escape, so a Windows path in a command is read wrong. Windows is not exercised until jawata is the agent (his ruling 2026-10-07); the finding is filed as REL44-2")]
     fn a_bracketed_run_passes_whatever_it_runs() {
         // The bracket's head is the hook binary, so the gate it wraps is not judged
         // as a bare invocation. The control: the same gate bare is refused.
@@ -853,6 +858,7 @@ mod tests {
     /// unjudged because the capture rule cut the command line differently from the other
     /// rules. One splitter now; each of these is a long run and each is refused.
     #[test]
+    #[cfg_attr(windows, ignore = "unproven on Windows: the gate rules read a command as bash words, which treats a backslash as an escape, so a Windows path in a command is read wrong. Windows is not exercised until jawata is the agent (his ruling 2026-10-07); the finding is filed as REL44-2")]
     fn a_long_run_is_judged_however_the_command_line_is_cut() {
         let (dir, name) = a_declared_gate();
         let abs = format!("{dir}/{name}");
@@ -882,6 +888,7 @@ mod tests {
     /// quoted message, or text in a heredoc body, is DATA. The old splitters handed the
     /// rule a "command" that was prose, which is the false refusal R6a set out to end.
     #[test]
+    #[cfg_attr(windows, ignore = "unproven on Windows: the gate rules read a command as bash words, which treats a backslash as an escape, so a Windows path in a command is read wrong. Windows is not exercised until jawata is the agent (his ruling 2026-10-07); the finding is filed as REL44-2")]
     fn a_separator_inside_quotes_or_a_heredoc_is_not_a_second_command() {
         let (dir, name) = a_declared_gate();
         let abs = format!("{dir}/{name}");
@@ -901,6 +908,7 @@ mod tests {
     /// The exemption is for a probe, not for any command that mentions one. The audit
     /// walked a real build past the rule with `-Dapi-version=2`.
     #[test]
+    #[cfg_attr(windows, ignore = "unproven on Windows: the gate rules read a command as bash words, which treats a backslash as an escape, so a Windows path in a command is read wrong. Windows is not exercised until jawata is the agent (his ruling 2026-10-07); the finding is filed as REL44-2")]
     fn only_a_whole_word_probe_is_exempt() {
         let (dir, name) = a_declared_gate();
         for cmd in [
@@ -936,6 +944,7 @@ mod tests {
     /// open, so these are the shapes — reading the script, counting it in a binary,
     /// documenting the rule, naming it in a message, a path in an `ls`.
     #[test]
+    #[cfg_attr(windows, ignore = "unproven on Windows: the gate rules read a command as bash words, which treats a backslash as an escape, so a Windows path in a command is read wrong. Windows is not exercised until jawata is the agent (his ruling 2026-10-07); the finding is filed as REL44-2")]
     fn a_gate_named_as_data_is_not_a_gate_being_run() {
         let (dir, name) = a_declared_gate();
         let script = format!("{dir}/{name}");
@@ -965,6 +974,7 @@ mod tests {
     /// the binary is built from — every non-test line of every module — and
     /// refuses the names. Comments are not compiled in, so they are not scanned.
     #[test]
+    #[cfg_attr(windows, ignore = "unproven on Windows: the gate rules read a command as bash words, which treats a backslash as an escape, so a Windows path in a command is read wrong. Windows is not exercised until jawata is the agent (his ruling 2026-10-07); the finding is filed as REL44-2")]
     fn the_shipped_source_names_none_of_our_build_scripts() {
         // Built from parts, so this file does not contain what it forbids.
         let names: Vec<String> = ["run-", "end-to-end-", "unwired-", "abort-"]

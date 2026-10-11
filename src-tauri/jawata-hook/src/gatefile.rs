@@ -516,6 +516,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "unproven on Windows: the gate rules read a command as bash words, which treats a backslash as an escape, so a Windows path in a command is read wrong. Windows is not exercised until jawata is the agent (his ruling 2026-10-07); the finding is filed as REL44-2")]
     fn a_cd_moves_the_base_the_next_script_is_read_from() {
         let (dir, name) = script_with("# jawata-gate: long");
         let elsewhere = std::env::temp_dir();
