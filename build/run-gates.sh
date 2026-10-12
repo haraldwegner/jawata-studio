@@ -28,6 +28,20 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# THE HOOK SIDECAR FIRST, as the release job does (REL44-1, caught in the act at the 4.4.1 gate).
+# tauri.conf.json declares externalBin ["binaries/jawata-hook"], and Tauri's build script copies
+# binaries/jawata-hook-<triple> into target/debug/ as `jawata-hook` — the very path the hook's
+# integration tests run (CARGO_BIN_EXE_jawata-hook). On this machine that file was a build from
+# 7 August: after any change that re-runs the build script (a version bump in tauri.conf.json),
+# the tests ran the August hook — 4,969,944 bytes against a current ~60 MB — and the one rule it
+# lacked failed. Building the sidecar from the current source first makes that copy current.
+echo "=== sidecar: the hook, built from this tree ==="
+if ! "$ROOT/build/build-hook-sidecar.sh"; then
+    echo "COULD NOT RUN: the hook sidecar did not build, and the suite would test whatever"
+    echo "stale copy src-tauri/binaries holds."
+    exit 2
+fi
+
 echo "=== suite: the Rust workspace ==="
 ( cd "$ROOT/src-tauri" && cargo test --workspace )
 SUITE=$?
