@@ -382,7 +382,17 @@ impl SeatKind {
 #[serde(rename_all = "camelCase")]
 pub struct SeatDefinition {
     pub name: String,
+    /// The model to ask the brain for. EMPTY when the seat names none, which means the agent
+    /// program's own default. Optional since 2026-10-12 (Harald: *"No fake model names!"*): the
+    /// shipped seats named `claude-sonnet-5` and `claude-haiku-4-5`, which no program on the
+    /// machine vouched for, so they name none until a name is read off the brain itself.
     pub model: String,
+    /// Which agent program a HIRE of this seat starts (`claude-code`, `cursor`, `codex`,
+    /// `copilot`). The engine's hire path reads the same key and defaults an absent one to
+    /// Claude Code; this parser used to refuse it as an unknown key, so a seat the engine could
+    /// hire was one studio could not load.
+    #[serde(default)]
+    pub brain: Option<String>,
     /// WHAT this seat reads — see [`SeatKind`]. Required; cross-checked against `tools`.
     pub kind: SeatKind,
     pub effort: Option<String>,
@@ -428,6 +438,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     }
     let mut name = None;
     let mut model = None;
+    let mut brain = None;
     let mut effort = None;
     let mut kind = None;
     let mut schedule = None;
@@ -461,6 +472,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
         match key {
             "name" => name = Some(value.to_string()),
             "model" => model = Some(value.to_string()),
+            "brain" => brain = Some(value.to_string()),
             "effort" => effort = Some(value.to_string()),
             "kind" => kind = Some(SeatKind::parse(value)?),
             "schedule" => schedule = Some(value.trim_matches('"').to_string()),
@@ -509,7 +521,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
         return Err("frontmatter block never closed with '---'".into());
     }
     let name = name.ok_or("seat definition needs 'name:'")?;
-    let model = model.ok_or("seat definition needs 'model:'")?;
+    let model = model.unwrap_or_default();
     // REQUIRED rather than defaulted: a default would answer for the author which kind of work
     // this seat does, which is the one thing the field is for.
     let kind = kind.ok_or(
@@ -539,6 +551,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     Ok(SeatDefinition {
         name,
         model,
+        brain,
         kind,
         effort,
         schedule,
@@ -3106,6 +3119,24 @@ You are the echo seat. You document what you are told to document.
                        ttl_secs: 60\nmax_iterations: 1\ncost_budget_usd: 0.1\n---\nbody\n";
         let err = parse_seat_definition(no_kind).unwrap_err();
         assert!(err.contains("kind"), "got: {err}");
+    }
+
+    #[test]
+    fn a_seat_without_a_model_loads_and_means_the_brains_own_default() {
+        let no_model = "---\nname: s\nkind: text\ntools: []\ngates: []\n---\nbody\n";
+        let seat = parse_seat_definition(no_model).expect("a missing model is not an error");
+        assert_eq!(seat.model, "", "empty means: ask the agent program for its own default");
+    }
+
+    /// Harald, 2026-10-12: *"No fake model names!"* The shipped seats named `claude-sonnet-5` and
+    /// `claude-haiku-4-5`, which no program on the machine vouched for. Until a name is read off
+    /// a brain itself, no shipped seat names one.
+    #[test]
+    fn no_shipped_seat_names_a_model_nobody_verified() {
+        for (file, body) in crate::conductor::EMBEDDED_SEATS.iter() {
+            let seat = parse_seat_definition(body).unwrap_or_else(|e| panic!("{file}: {e}"));
+            assert_eq!(seat.model, "", "{file} names model '{}'", seat.model);
+        }
     }
 
     #[test]

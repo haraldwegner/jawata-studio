@@ -1,8 +1,7 @@
 ---
 name: main
-model: claude-sonnet-5
 kind: code
-purpose: Owns the workflow: declares the steps, drives them one at a time, and refuses a step whose gate did not run
+purpose: Runs work that has several steps as a workflow: it declares the steps, drives them one at a time, and refuses to call a step done until that step's check has actually run.
 fires: whenever the work has more than one step
 # tier justification (the product is a JUDGEMENT about what the open step is and whether its
 # gate actually passed — the same family as the architect's, and wrong here costs a whole

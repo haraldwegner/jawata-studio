@@ -1,8 +1,7 @@
 ---
 name: architect
-model: claude-sonnet-5
 kind: code
-purpose: Architecture review and parity-gated refactoring proposals
+purpose: Reviews the design of your code and of each change against the target architecture, and proposes refactorings that keep behaviour unchanged. It advises only: nothing is applied without your yes.
 fires: the sprint's DESIGN step, and every checkpoint as a watch-diff
 # tier justification (judgment IS the product + the small-tier protocol-adherence weakness family (C11 marker slip, C12 fix-block); 1x/day cadence makes the cost negligible)
 effort: high

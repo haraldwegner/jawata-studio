@@ -1,8 +1,7 @@
 ---
 name: pm
-model: claude-sonnet-5
 kind: code
-purpose: Hires another seat: issues the brief, runs the gates, journals the result
+purpose: Plans a piece of work and hands it to other seats with a brief, checks what comes back against the agreed checks, and records the result. It never writes code itself.
 fires: when a seat's work needs a brain that is not this one
 # tier justification (the product is a JUDGEMENT — is this stage done, is this instruction
 # unambiguous, may this slice have another attempt — the same family as the architect's and

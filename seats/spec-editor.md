@@ -1,8 +1,7 @@
 ---
 name: spec-editor
-model: claude-sonnet-5
 kind: text
-purpose: Derives the clean spec from the raw working document
+purpose: Writes the clean sprint spec from the raw working notes, in plain language, for you to sign off. The spec auditor checks it against the notes first.
 fires: inside /sprint, before the audit
 # tier justification (POLICY, UNMEASURED: judgment/reader-fit work assigned the strong tier by rule, not by a measured table — no editing-fixture probe exists yet)
 effort: high

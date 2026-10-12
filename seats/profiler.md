@@ -1,8 +1,7 @@
 ---
 name: profiler
-model: claude-haiku-4-5
 kind: code
-purpose: Names hotspots as compiler-accurate symbols
+purpose: Measures a running Java program and names, method by method, where the time goes. It replaces timers added to the code.
 fires: the runtime reflex: performance or latency, instead of a hand-rolled stopwatch
 # tier justification (C12: symbol-named report + percentiles + proven/inferred clean on the small tier)
 effort: low

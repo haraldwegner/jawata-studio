@@ -466,6 +466,25 @@ pub fn seats_view(
     Ok(state.manager_service.seats_view())
 }
 
+/// Which of the named brains this machine has — installed, logged in, and the models the program
+/// lists where it can — asked of each agent program itself. Off the main thread: a status check
+/// can take seconds, and a sync command would freeze the whole window while it runs.
+#[tauri::command]
+pub async fn brains_status(ids: Vec<String>) -> Result<Vec<crate::brains::BrainStatus>, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::brains::brains_status(&ids))
+        .await
+        .map_err(|e| format!("brain check failed: {e}"))
+}
+
+/// One test run through a brain — it answers one word, in an empty folder — so a brain or model
+/// is chosen only once it answered. Off the main thread: a run takes seconds.
+#[tauri::command]
+pub async fn brain_probe(brain: String, model: Option<String>) -> Result<crate::brains::ProbeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::brains::probe(&brain, model.as_deref()))
+        .await
+        .map_err(|e| format!("test run failed: {e}"))?
+}
+
 /// Change ONE setting of ONE seat (on/off, clients, brain, or reset to shipped) and return the
 /// refreshed view. A seat that does not exist, a client the deploy does not write seat commands
 /// for, and an empty brain are refused with a message; nothing is written on a refusal.

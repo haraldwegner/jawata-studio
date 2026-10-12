@@ -1,8 +1,7 @@
 ---
 name: debugger
-model: claude-sonnet-5
 kind: code
-purpose: Recall, one discriminating probe, verify
+purpose: Diagnoses one reported bug: recalls what is already known about it, takes one measurement in the running program that tells the possible causes apart, and checks the fix. It replaces adding log lines to the code.
 fires: the runtime reflex: a bug, a bad value, an NPE, instead of hand-adding log lines
 # tier justification (C12: haiku violated the verdict single-file protocol 2x (purity refused); sonnet clean + sharper probe)
 effort: high

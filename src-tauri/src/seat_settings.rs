@@ -23,15 +23,16 @@
 //! seat's model even when the user had not changed it would be exactly that copy: ship a new
 //! default and the sidecar would quietly keep the old one.
 //!
-//! # Three settings, not four, and why
+//! # The brain is the fourth, and it reaches the hire through the seat FILE
 //!
-//! C11 asks for on/off, clients, brain and reset-to-shipped. The BRAIN was built, reviewed, and
-//! removed in the same checkpoint: a seat's `model` has no production consumer in this app
-//! (the hosted-runner half that reads it is documented in `lib.rs` as having no production
-//! caller, the deployed commands deliberately render no `model:`, and the hire path in
-//! jawata-mcp reads the seat FILE, never this sidecar). A control whose edit is only echoed
-//! back in the same field is the defect the UX seat's census exists to refuse. It returns when
-//! a hire reads a resolved seat; until then it is declared unmet, not shipped inert.
+//! C11 asks for on/off, clients, brain and reset-to-shipped. The brain was once built and removed
+//! because nothing consumed it: the hire path in jawata-mcp reads the seat FILE, never this
+//! sidecar. It is back (Harald, 2026-10-12: *"we do not want to deliver nonsense here"*), and the
+//! consumer is that same file: the choice is stored HERE like every other setting, and
+//! [`crate::conductor::materialize_seats`] writes it into the seat file as `brain:` / `model:`
+//! lines — as part of what THIS APP wrote, so the file still hashes as unedited, still receives
+//! stance updates, and a hire that reads it starts the chosen brain. Reset drops it with the rest.
+//! A choice is only stored after a test run through that brain answered (`brains::probe`).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -58,13 +59,21 @@ pub struct SeatOverride {
     /// distinct from `None` on purpose.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clients: Option<Vec<String>>,
+    /// Setting 3 — the brain a HIRE of this seat starts (`brains::HIRABLE`). `None` means the seat
+    /// file's own, which the engine defaults to Claude Code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brain: Option<String>,
+    /// The model asked of that brain. `None` means the brain's own default. Only ever a name the
+    /// brain answered a test run with — never one somebody typed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl SeatOverride {
     /// Whether this override says anything at all. An override that says nothing is removed
     /// rather than stored, so the file never accumulates empty entries that read as settings.
     fn is_empty(&self) -> bool {
-        self.enabled.is_none() && self.clients.is_none()
+        self.enabled.is_none() && self.clients.is_none() && self.brain.is_none()
     }
 }
 
@@ -151,6 +160,20 @@ impl SeatSettings {
         self.entry(seat_name).clients = Some(clients);
     }
 
+    /// Setting 3, read: the chosen brain and, if any, the model asked of it.
+    pub fn brain(&self, seat_name: &str) -> Option<(&str, Option<&str>)> {
+        let o = self.seats.get(seat_name)?;
+        o.brain.as_deref().map(|b| (b, o.model.as_deref()))
+    }
+
+    /// Set setting 3. The model goes with the brain it was tested on, so choosing a brain without
+    /// a model clears any model chosen for a previous brain.
+    pub fn set_brain(&mut self, seat_name: &str, brain: String, model: Option<String>) {
+        let entry = self.entry(seat_name);
+        entry.brain = Some(brain);
+        entry.model = model;
+    }
+
     /// SETTING 4 — reset to shipped, the settings half. Drops every override for this seat, so
     /// the seat file's own values govern again.
     ///
@@ -171,6 +194,35 @@ impl SeatSettings {
     fn entry(&mut self, seat_name: &str) -> &mut SeatOverride {
         self.seats.entry(seat_name.to_string()).or_default()
     }
+}
+
+/// The seat file as this app writes it: the shipped content, with the chosen brain and model in
+/// its frontmatter when the user chose one. Any `brain:` / `model:` lines the content already
+/// carries are replaced, so applying it twice changes nothing.
+pub fn seat_file_content(content: &str, brain: Option<(&str, Option<&str>)>) -> String {
+    let Some((brain, model)) = brain else {
+        return content.to_string();
+    };
+    let mut out = String::with_capacity(content.len() + 64);
+    let mut fences = 0;
+    for line in content.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            fences += 1;
+        }
+        let in_frontmatter = fences == 1 && trimmed != "---";
+        if in_frontmatter && (trimmed.starts_with("brain:") || trimmed.starts_with("model:")) {
+            continue;
+        }
+        out.push_str(line);
+        if in_frontmatter && trimmed.starts_with("name:") {
+            out.push_str(&format!("brain: {brain}\n"));
+            if let Some(model) = model {
+                out.push_str(&format!("model: {model}\n"));
+            }
+        }
+    }
+    out
 }
 
 /// SETTING 4, in full — discard the user's customisation of one seat and take this build's.
@@ -226,20 +278,36 @@ pub struct ClientChoice {
 
 /// One row of the seats view. Everything here is READ — from the seat's own file, from
 /// `COMMAND_MAP`, from the settings sidecar — and nothing is carried as a copy, so a seat
-/// whose model, tools or purpose change makes the row change with it.
+/// whose model or purpose change makes the row change with it.
+///
+/// ONLY WHAT A PERSON DECIDES WITH. Harald, 2026-10-12, on the 4.4.0 view: *"What could be
+/// interesting from human perspective in tools and gates? This is not at users discretion at
+/// all."* — so a seat's tool list, its gate classes and its schedule are not carried. They stay
+/// in the seat file, where the runner reads them; the view is for switching a seat on or off,
+/// knowing what it does and how to call it, and (once jawata drives the brains) choosing its
+/// brain.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SeatRow {
     pub name: String,
+    /// The command a person types, with its slash (`/refactor`), when the seat has one. His
+    /// words: *"The seats' name is not architect but "/refactor" and this info is mandatory"*.
+    pub command: Option<String>,
+    /// True for the seats that run inside `/sprint` rather than on a command of their own.
+    pub pipeline: bool,
     pub purpose: String,
     pub fires: String,
-    /// The cron, when the seat is scheduled. Shown beside `fires`, never instead of it.
-    pub schedule: Option<String>,
-    pub tools: Vec<String>,
-    /// Gate classes beyond the always-on one. Empty is a real answer, not a missing one.
-    pub gates: Vec<String>,
-    /// The brain AS RESOLVED — the override already applied.
-    pub model: String,
+    /// The agent program a HIRE of this seat starts — the seat file's `brain:` (which carries the
+    /// user's tested choice), or `claude-code`, the engine's default for a seat that names none.
+    /// The view asks that program whether it is installed and logged in rather than trusting
+    /// this string. Harald, 2026-10-12: *"No fake model names!"*
+    pub brain: String,
+    /// The model asked of that brain, when one was chosen — always a name a test run through the
+    /// brain answered with. `None` = the brain's own default.
+    pub model: Option<String>,
+    /// True for a seat a person calls by command or inside `/sprint`: typed, it runs on whichever
+    /// agent it is called from, and `brain` applies only when another seat hires it.
+    pub runs_in_agent: bool,
     pub enabled: bool,
     /// Whether this seat has a command a deploy writes. A driven seat has none, so turning it
     /// off would remove nothing; the view offers the toggle only where it does something.
@@ -256,16 +324,6 @@ pub struct SeatsView {
     pub clients: Vec<ClientChoice>,
     /// Malformed seat files and an unreadable settings file, named. Never swallowed.
     pub errors: Vec<String>,
-}
-
-fn gate_label(class: &crate::runner::GateClass) -> &'static str {
-    use crate::runner::GateClass;
-    match class {
-        GateClass::Always => "always",
-        GateClass::Behavior => "behavior",
-        GateClass::Tests => "tests",
-        GateClass::Docs => "docs",
-    }
 }
 
 /// The shipped seat of this name, parsed from the content embedded in this build.
@@ -314,14 +372,16 @@ pub fn seats_view(seats_dir: &Path, clients: Vec<ClientChoice>) -> SeatsView {
         .iter()
         .map(|seat| SeatRow {
             name: seat.name.clone(),
+            command: crate::conductor::command_for(&seat.name).map(|(command, _)| format!("/{command}")),
+            pipeline: crate::conductor::PIPELINE_SEATS.contains(&seat.name.as_str()),
             // A user-edited seat keeps its old file and may carry neither key. Fall back to the
             // SHIPPED seat's value rather than render a blank row.
             purpose: or_shipped(&seat.purpose, &seat.name, |s| &s.purpose),
             fires: or_shipped(&seat.fires, &seat.name, |s| &s.fires),
-            schedule: seat.schedule.clone(),
-            tools: seat.tools.clone(),
-            gates: seat.gate_classes.iter().map(|g| gate_label(g).to_string()).collect(),
-            model: seat.model.clone(),
+            brain: seat.brain.clone().unwrap_or_else(|| "claude-code".to_string()),
+            model: (!seat.model.is_empty()).then(|| seat.model.clone()),
+            runs_in_agent: crate::conductor::command_for(&seat.name).is_some()
+                || crate::conductor::PIPELINE_SEATS.contains(&seat.name.as_str()),
             enabled: settings.is_enabled(&seat.name),
             deployable: crate::conductor::command_for(&seat.name).is_some(),
             clients: settings.clients(&seat.name).map(<[String]>::to_vec),
@@ -340,6 +400,9 @@ pub fn seats_view(seats_dir: &Path, clients: Vec<ClientChoice>) -> SeatsView {
 pub enum SeatChange {
     Enabled { value: bool },
     Clients { value: Vec<String> },
+    /// Setting 3 — the brain a hire of this seat starts, and the model asked of it (`None` = the
+    /// brain's own default). The view sends this only after a test run through it answered.
+    Brain { brain: String, model: Option<String> },
     /// Setting 4 — drop the overrides and take this build's seat.
     Reset,
 }
@@ -380,6 +443,23 @@ pub fn change_seat(
             let mut settings = SeatSettings::load(seats_dir)?;
             settings.set_clients(seat_name, value);
             settings.save(seats_dir)
+        }
+        SeatChange::Brain { brain, model } => {
+            if !crate::brains::HIRABLE.contains(&brain.as_str()) {
+                return Err(format!(
+                    "'{brain}' is not a brain a hire can start (known: {})",
+                    crate::brains::HIRABLE.join(", ")
+                ));
+            }
+            if model.as_deref().is_some_and(|m| m.trim().is_empty()) {
+                return Err("an empty model name is not a model; leave it out for the default".into());
+            }
+            let mut settings = SeatSettings::load(seats_dir)?;
+            settings.set_brain(seat_name, brain, model);
+            settings.save(seats_dir)?;
+            // Write it into the seat file NOW: the file is what a hire reads, and a choice that
+            // waited for the next deploy would be shown as made while no hire could see it.
+            crate::conductor::materialize_seats(seats_dir).map(|_| ())
         }
     }
 }
@@ -564,6 +644,54 @@ mod tests {
         vec!["claude".into(), "cursor".into()]
     }
 
+    /// The brain choice reaches the one place a hire reads — the seat FILE — and does so as this
+    /// app's own writing, so the seat keeps receiving shipped updates; Reset takes it back out.
+    #[test]
+    fn a_chosen_brain_is_written_into_the_seat_file_the_hire_reads_and_reset_removes_it() {
+        let dir = seeded("brain-into-file");
+        change_seat(&dir, &valid(), "pm", SeatChange::Brain {
+            brain: "codex".into(),
+            model: None,
+        })
+        .unwrap();
+        let file = fs::read_to_string(dir.join("pm.md")).unwrap();
+        assert!(file.contains("\nbrain: codex\n"), "the hire reads this line: {file}");
+        assert!(!file.contains("\nmodel:"), "no model was chosen, so none is written");
+
+        let row = seats_view(&dir, both_clients()).seats.into_iter().find(|s| s.name == "pm").unwrap();
+        assert_eq!((row.brain.as_str(), row.model.as_deref()), ("codex", None));
+        assert!(row.customised, "a chosen brain is a customisation Reset can undo");
+
+        // A redeploy keeps it, and does NOT report the seat as edited by the user: the choice is
+        // part of what this app wrote, so shipped stance updates keep reaching the seat.
+        let again = crate::conductor::materialize_seats(&dir).unwrap();
+        assert!(!again.shadowed.contains(&"pm.md".to_string()), "{again:?}");
+        assert!(fs::read_to_string(dir.join("pm.md")).unwrap().contains("\nbrain: codex\n"));
+
+        // A model goes with the brain it was tested on.
+        change_seat(&dir, &valid(), "pm", SeatChange::Brain {
+            brain: "claude-code".into(),
+            model: Some("sonnet".into()),
+        })
+        .unwrap();
+        let file = fs::read_to_string(dir.join("pm.md")).unwrap();
+        assert!(file.contains("\nbrain: claude-code\nmodel: sonnet\n"), "{file}");
+        assert_eq!(file.matches("brain:").count(), 1, "replaced, not appended");
+
+        change_seat(&dir, &valid(), "pm", SeatChange::Reset).unwrap();
+        let file = fs::read_to_string(dir.join("pm.md")).unwrap();
+        assert!(!file.contains("brain:") && !file.contains("\nmodel:"), "reset takes this build's seat: {file}");
+    }
+
+    #[test]
+    fn a_brain_no_hire_can_start_is_refused_and_nothing_is_written() {
+        let dir = seeded("brain-refused");
+        let before = fs::read_to_string(dir.join("pm.md")).unwrap();
+        let refused = change_seat(&dir, &valid(), "pm", SeatChange::Brain { brain: "grok".into(), model: None });
+        assert!(refused.unwrap_err().contains("not a brain a hire can start"));
+        assert_eq!(fs::read_to_string(dir.join("pm.md")).unwrap(), before);
+    }
+
     #[test]
     fn the_view_has_one_row_per_shipped_seat_read_from_the_files() {
         let dir = seeded("view-rows");
@@ -573,14 +701,25 @@ mod tests {
 
         let architect = view.seats.iter().find(|s| s.name == "architect").unwrap();
         assert!(!architect.purpose.is_empty() && !architect.fires.is_empty());
-        assert!(architect.schedule.is_some(), "the architect is scheduled daily");
         assert!(architect.enabled && architect.clients.is_none() && !architect.customised);
 
+        // The command a person types is carried with its slash, read from COMMAND_MAP — the
+        // seat's NAME is not what anyone types.
+        assert_eq!(architect.command.as_deref(), Some("/refactor"));
+        assert!(!architect.pipeline);
+        // A /sprint seat has no command and says where it runs instead; a hired seat has neither.
         let auditor = view.seats.iter().find(|s| s.name == "spec-auditor").unwrap();
-        // Gates: a seat that declares none shows none (a real answer), one that does shows it.
-        assert!(auditor.gates.is_empty());
-        let docs = view.seats.iter().find(|s| s.name == "javadoc-writer").unwrap();
-        assert!(docs.gates.contains(&"docs".to_string()), "{:?}", docs.gates);
+        assert!(auditor.command.is_none() && auditor.pipeline);
+        let pm = view.seats.iter().find(|s| s.name == "pm").unwrap();
+        assert!(pm.command.is_none() && !pm.pipeline);
+
+        // A typed seat and a /sprint seat run on the caller's agent when called; every seat, when
+        // HIRED, starts the engine's default brain until the user chooses another. No shipped
+        // seat names a model.
+        assert!(architect.runs_in_agent && auditor.runs_in_agent && !pm.runs_in_agent);
+        assert_eq!(architect.brain, "claude-code");
+        assert_eq!(pm.brain, "claude-code");
+        assert!(architect.model.is_none() && pm.model.is_none());
     }
 
     #[test]
@@ -666,10 +805,14 @@ mod tests {
         assert!(value["clients"][0]["label"].is_string());
         let row = &value["seats"][0];
         for key in [
-            "name", "purpose", "fires", "schedule", "tools", "gates", "model", "enabled",
-            "clients", "customised", "deployable",
+            "name", "command", "pipeline", "purpose", "fires", "brain", "model", "runsInAgent",
+            "enabled", "clients", "customised", "deployable",
         ] {
             assert!(row.get(key).is_some(), "the view reads `{key}` and the row does not carry it");
+        }
+        // And what the view must NOT be handed, because no person decides anything with it.
+        for gone in ["tools", "gates", "schedule"] {
+            assert!(row.get(gone).is_none(), "the row still carries `{gone}`, which no one acts on");
         }
     }
 

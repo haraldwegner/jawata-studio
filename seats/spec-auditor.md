@@ -1,8 +1,7 @@
 ---
 name: spec-auditor
-model: claude-sonnet-5
 kind: text
-purpose: The gate: refuses a spec that narrowed the raw
+purpose: Checks a sprint spec against the raw working notes and refuses it when a requirement was dropped, narrowed or softened. It loops with the spec editor until it signs off, before you see the spec.
 fires: inside /sprint, after the editor, looping until sign-off
 # tier justification (POLICY, UNMEASURED: adversarial judgment work assigned the strong tier by rule, not by a measured table — no auditing-fixture probe exists yet)
 effort: high

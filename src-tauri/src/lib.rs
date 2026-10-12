@@ -1,4 +1,5 @@
 mod backups;
+mod brains;
 mod client_dialect;
 mod commands;
 mod config;
@@ -946,6 +947,8 @@ pub fn run() {
             commands::field_set_silence,
             commands::seats_view,
             commands::seat_change,
+            commands::brains_status,
+            commands::brain_probe,
             commands::get_quit_prompt_context,
             commands::perform_quit_action,
         ])

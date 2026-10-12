@@ -1,8 +1,7 @@
 ---
 name: report
-model: claude-sonnet-5
 kind: text
-purpose: Turns the local field recording into a bug report posted from the user's own account
+purpose: Turns failures jawata has recorded on this machine into a bug report you post from your own GitHub account. It only drafts: you read it and decide whether it is posted.
 fires: when a failure shape has recurred and nobody has filed it
 # tier justification (the product is a PUBLIC post under the user's own name — the
 # sanitizer's judgement and the review text must be right the first time; invoked

@@ -1,8 +1,7 @@
 ---
 name: test-writer
-model: claude-haiku-4-5
 kind: code
-purpose: Writes gate-verified characterization tests for uncovered code
+purpose: Writes tests that pin down how untested code behaves today, before a change that added behaviour is called done. It does not change the code under test.
 fires: the COVERAGE gate: a change that added behaviour, before it is called done
 # tier justification (C13: full D5 chain green both probes (also C10 live) at 1/3 the cost)
 effort: low

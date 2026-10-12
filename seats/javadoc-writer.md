@@ -1,8 +1,7 @@
 ---
 name: javadoc-writer
-model: claude-haiku-4-5
 kind: code
-purpose: Documents undocumented public Java API from compiler facts
+purpose: Documents public Java API that has no documentation, using only what the compiler confirms about it. Where the meaning cannot be told from the code it leaves a marked gap for you rather than guessing.
 fires: the DOC gate: public API a change touched, before that change is done
 # tier justification (C13: 21/22 items (95%), all gates green at 1/5 the cost; the detector re-finds the tail next run)
 effort: low

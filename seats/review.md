@@ -1,8 +1,7 @@
 ---
 name: review
-model: claude-sonnet-5
 kind: text
-purpose: Shows what the store carries that nobody uses, and deletes only what the user names
+purpose: Keeps your knowledge store healthy: it repairs the entries it can fix itself and shows you only what it cannot resolve. It deletes only the entries you name.
 fires: on request
 # tier justification (the product is a REPAIR to the user's own knowledge store, and
 # since 28g it runs UNATTENDED on a schedule — each repair is a judgement about what an

@@ -84,7 +84,7 @@ pub const COMMAND_MAP: [(&str, &str, &str); 10] = [
     (
         "ux",
         "ux",
-        "Ask of a view what no gate asks: was what was added actually requested, who reads each block, what do they do next (jawata ux seat)",
+        "Look at a screen as the person using it: can every part be reached, does each part help them decide or change something, and propose the lean view (jawata ux seat)",
     ),
 ];
 
@@ -161,9 +161,17 @@ pub fn materialize_seats(seats_dir: &Path) -> Result<SeatMaterialization, String
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
 
+    // The user's tested brain choice is written INTO the seat file, as part of what this app
+    // writes — the file is what a hire reads. An unreadable settings file stops the pass rather
+    // than writing seats without the choices it holds.
+    let settings = crate::seat_settings::SeatSettings::load(seats_dir)?;
+
     let mut report = SeatMaterialization::default();
-    for (file, body) in EMBEDDED_SEATS {
+    for (file, shipped) in EMBEDDED_SEATS {
         let path = seats_dir.join(file);
+        let choice = settings.brain(file.trim_end_matches(".md"));
+        let derived = crate::seat_settings::seat_file_content(shipped, choice);
+        let body: &str = &derived;
         let write_current = |report_bucket: &mut Vec<String>,
                              manifest: &mut std::collections::BTreeMap<String, String>|
          -> Result<(), String> {
@@ -185,7 +193,16 @@ pub fn materialize_seats(seats_dir: &Path) -> Result<SeatMaterialization, String
                 }
             }
             Some(_) => {
-                // User-edited: config wins, loudly.
+                // User-edited: config wins, loudly — but a brain the user CHOSE still reaches the
+                // file they edited, since otherwise the choice would show as made while every hire
+                // read their old lines. Their edits are kept; only the brain/model lines change.
+                if choice.is_some() {
+                    let with_choice = crate::seat_settings::seat_file_content(&existing, choice);
+                    if with_choice != existing {
+                        fs::write(&path, &with_choice)
+                            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+                    }
+                }
                 if existing != body {
                     report.shadowed.push(file.to_string());
                 }
@@ -771,7 +788,8 @@ pub fn render_conductor_section(seats: &[SeatDefinition], client: &str) -> Vec<S
          sample the JVM; do NOT hand-roll a stopwatch (the guard surfaces this)."
             .to_string(),
         "- ux (`/ux`) — at any diff that changes a view or screen, before it is called \
-         done: was what was added requested, who reads each block, what do they do next."
+         done: render it and check every part can be reached, then keep only what the person \
+         decides or changes config with, explained enough to act on."
             .to_string(),
         String::new(),
     ]);

@@ -826,16 +826,18 @@ export interface ClientChoice {
  * settings beside it; nothing here is a copy. */
 export interface SeatRow {
   name: string;
+  /** The command a person types, with its slash (`/refactor`); `null` for a seat without one. */
+  command: string | null;
+  /** True for the seats that run inside `/sprint` rather than on a command of their own. */
+  pipeline: boolean;
   purpose: string;
   fires: string;
-  /** The cron, when the seat is scheduled. */
-  schedule: string | null;
-  tools: string[];
-  /** Gate classes beyond the always-on one. Empty is a real answer. */
-  gates: string[];
-  /** The brain the seat file declares. Shown, not editable: nothing in this app consumes a
-   * seat's model yet, so an editable field would echo the edit back and change nothing. */
-  model: string;
+  /** The agent program a hire of this seat starts (`claude-code`, `codex`, `cursor`, `copilot`). */
+  brain: string;
+  /** The model asked of that brain — a name a test run answered with; `null` = its own default. */
+  model: string | null;
+  /** True for a seat a person calls by command or in `/sprint`: typed, it runs on their agent. */
+  runsInAgent: boolean;
   enabled: boolean;
   /** Whether the seat has a command a deploy writes. A driven seat has none: "off" would remove
    * nothing, so the view offers the toggle only where it does something. */
@@ -856,11 +858,60 @@ export interface SeatsView {
 export type SeatChange =
   | { setting: "enabled"; value: boolean }
   | { setting: "clients"; value: string[] }
+  /** Send only after `brainProbe` answered for this brain and model. */
+  | { setting: "brain"; brain: string; model: string | null }
   | { setting: "reset" };
+
+/** What one test run through a brain showed. */
+export interface ProbeResult {
+  brain: string;
+  model: string | null;
+  ok: boolean;
+  answer: string | null;
+  /** The models the run reported using, most expensive first; empty where the brain names none. */
+  modelsUsed: string[];
+  /** The cost the brain reported (Claude Code only); `null` where it reports none. */
+  costUsd: number | null;
+  seconds: number;
+  /** The brain's own words when the run failed. */
+  error: string | null;
+  loginCommand: string;
+}
+
+/** One test run: the brain answers one word in an empty folder. Billed to its logged-in account. */
+export function brainProbe(brain: string, model: string | null): Promise<ProbeResult> {
+  return invoke("brain_probe", { brain, model });
+}
+
 
 /** Every deployed seat with its four settings. File reads only. */
 export function seatsView(): Promise<SeatsView> {
   return invoke("seats_view");
+}
+
+/** One agent program as this machine has it now — read off the program itself. */
+export interface BrainStatus {
+  id: string;
+  label: string;
+  installed: boolean;
+  version: string | null;
+  login: "loggedIn" | "notLoggedIn" | "unknown";
+  /** The program's own words when it is not logged in, or why the check could not answer. */
+  reason: string | null;
+  /** What to type in a terminal to log in. */
+  loginCommand: string;
+  /** The models the program names for itself; `null` where it names none. */
+  models: string[] | null;
+  /** Whether a hire can start this brain at all. */
+  hirable: boolean;
+  /** Whether a hire passes this brain a model; the others choose their own. */
+  takesModel: boolean;
+}
+
+/** Asks each named agent program (every known one for an empty list) whether it is installed
+ * and logged in. Free: no session. */
+export function brainsStatus(ids: string[]): Promise<BrainStatus[]> {
+  return invoke("brains_status", { ids });
 }
 
 /** Change ONE setting of ONE seat; returns the refreshed view. A refusal (no such seat, a

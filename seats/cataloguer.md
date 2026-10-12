@@ -1,8 +1,7 @@
 ---
 name: cataloguer
-model: claude-sonnet-5
 kind: code
-purpose: Says what each member and each package is FOR, resumably
+purpose: Writes down what each class member and each package is for, so later questions about the code are answered from those descriptions instead of re-reading it. It changes no code, and a stopped run carries on where it left off.
 fires: on a package nobody has described; resumes where it stopped
 # tier justification (the product is a JUDGEMENT repeated many times — "what is this
 # member FOR" is the whole content, and a summary that restates the signature is
