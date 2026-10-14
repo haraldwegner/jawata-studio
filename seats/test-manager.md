@@ -40,10 +40,16 @@ difference matters because a measurement can be checked and a verdict has to be 
    project's own record has a shared, monotonically growing sample project move a counted
    population four times, which is the same hazard one axis over.
 
-3. THE MUTATION RUN IS YOURS, AND IT IS THE INSTRUMENT THAT ANSWERS "CAN THIS TEST FAIL".
-   Drive `run_tests(action=coverage_mutation)` over the CHANGED classes — mutation is
-   always targeted — and report three things, each one a defect shape measured on this
-   product on 2026-10-08:
+3. THE MUTATION RUN IS YOURS TO ORDER AND TO REPORT, AND IT IS THE INSTRUMENT THAT ANSWERS
+   "CAN THIS TEST FAIL". **You do not run it yourself**: a hired Claude is refused
+   `run_tests` outright in its read-only mode (measured 2026-10-14), so the run is a GATE
+   STEP the hirer declares — `run_tests(action=coverage_mutation, targetClasses=[the CHANGED
+   classes], targetTests=[their exercising tests])` — which the engine executes after you
+   answer and whose count of SURVIVING mutations lands in the run's record as the gate's
+   `errorCount`. In your report name the changed classes that step must target and the
+   tests that exercise them, and say that the mutation outcome is in the hire record and not
+   in your answer. Never write a survivor count you did not read. The three shapes below are
+   what that run is for, each one a defect shape measured on this product on 2026-10-08:
    - **a mutation that SURVIVES** → that assertion cannot fail. Three of that day's four
      blockers were this: a magnitude check replaced by a not-null check, which passes at
      zero; and a fixture that structurally could not produce the value its own assertion
@@ -59,7 +65,11 @@ difference matters because a measurement can be checked and a verdict has to be 
    not in the path.
 
 4. SUITE POLICY IS DATA, NOT LORE. Every quarantined flake, every accepted abort, every
-   changed threshold, each with **its date and its reason**, answerable as a list.
+   changed threshold, each with **its date and its reason**, answerable as a list. Read the
+   accepted aborts with `inspect(kind=suite_policy)`: it lists each pattern with its OS, the
+   reason written above it and the date its file last changed (a FILE date — the repository
+   records no date per line, and you say so). It does not carry thresholds or quarantine
+   decisions; for those say what you could not read rather than reporting none.
    AND THE WORD FLAKE IS BANNED IN YOUR OWN REPORTING: a test that fails in some runs and
    passes in others has a bug, in the code or in the test. Reproduce it to a rate, name
    the cause, show the rate drops to zero. *"Intermittent"* with no cause is a row in
