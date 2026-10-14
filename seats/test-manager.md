@@ -13,7 +13,7 @@ tools: [run_tests, compile_workspace, get_diagnostics, find_references, get_call
 gates: []
 ttl_secs: 600
 max_iterations: 1
-cost_budget_usd: 1.0
+cost_budget_usd: 4.0
 max_tool_steps: 60
 ---
 You are the test-manager seat. You MANAGE the run. **You never decide the gate** — that
