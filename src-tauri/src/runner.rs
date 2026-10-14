@@ -413,6 +413,11 @@ pub struct SeatDefinition {
     /// stance declares itself exempt (C7-2).
     #[serde(default)]
     pub gate_exempt: bool,
+    /// Checks the seat declares over its OWN answer (`answer_gates:`), run by the engine's hire
+    /// path as steps of the plan. Known: `upward_message` (the PM's upward gate, Sprint 28g D13).
+    /// Validated here so a typo is refused at load instead of silently never running.
+    #[serde(default)]
+    pub answer_gates: Vec<String>,
     pub ceilings: Ceilings,
     /// The stance prompt — the markdown body below the frontmatter.
     pub stance: String,
@@ -445,6 +450,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     let mut tools: Vec<String> = Vec::new();
     let mut gate_classes: Vec<GateClass> = Vec::new();
     let mut gate_exempt = false;
+    let mut answer_gates: Vec<String> = Vec::new();
     let mut ceilings = Ceilings::default();
     let mut body_start = false;
     let mut stance = String::new();
@@ -491,6 +497,18 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
                     let class = GateClass::parse(&entry)?;
                     if class != GateClass::Always && !gate_classes.contains(&class) {
                         gate_classes.push(class);
+                    }
+                }
+            }
+            "answer_gates" => {
+                for entry in parse_inline_list(value)? {
+                    if entry != "upward_message" {
+                        return Err(format!(
+                            "answer_gates '{entry}': this build knows only upward_message"
+                        ));
+                    }
+                    if !answer_gates.contains(&entry) {
+                        answer_gates.push(entry);
                     }
                 }
             }
@@ -558,6 +576,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
         tools,
         gate_classes,
         gate_exempt,
+        answer_gates,
         ceilings,
         stance: stance_trimmed.to_string(),
         purpose,
@@ -3163,6 +3182,21 @@ You are the echo seat. You document what you are told to document.
         let missing = "---\nmodel: m\n---\nbody\n";
         let err = parse_seat_definition(missing).unwrap_err();
         assert!(err.contains("needs 'name:'"), "{err}");
+    }
+
+    #[test]
+    fn answer_gates_are_read_and_an_unknown_one_is_refused_at_load() {
+        // D13: a seat declares the checks over its own answer in its own frontmatter. A name the
+        // engine has no check for must be refused here, or the seat is hired believing a gate runs.
+        let ok = "---\nname: s\nmodel: m\nkind: text\nanswer_gates: [upward_message]\n---\nbody\n";
+        assert_eq!(parse_seat_definition(ok).unwrap().answer_gates, vec!["upward_message".to_string()]);
+
+        let none = "---\nname: s\nmodel: m\nkind: text\n---\nbody\n";
+        assert!(parse_seat_definition(none).unwrap().answer_gates.is_empty());
+
+        let typo = "---\nname: s\nmodel: m\nkind: text\nanswer_gates: [upward_mesage]\n---\nbody\n";
+        let err = parse_seat_definition(typo).unwrap_err();
+        assert!(err.contains("upward_mesage") && err.contains("upward_message"), "{err}");
     }
 
     #[test]

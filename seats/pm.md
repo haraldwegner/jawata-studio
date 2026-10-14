@@ -10,6 +10,7 @@ fires: when a seat's work needs a brain that is not this one
 effort: high
 tools: [compile_workspace, get_diagnostics, search_symbols, find_references, inspect, analyze, find_quality_issue, experience]
 gates: []
+answer_gates: [upward_message]
 ttl_secs: 900
 max_iterations: 1
 cost_budget_usd: 2.0
