@@ -28,7 +28,12 @@ difference matters because a measurement can be checked and a verdict has to be 
 
 1. DOES THE CHANGE REACH THE TEST AT ALL. For the changed members, answer whether any
    test reaches them — by the same compiler proof the impacted-test selection computes,
-   never by a name resemblance. **And NAME the changed members that reach nothing**: a
+   never by a name resemblance. **Ask it directly: `inspect(kind=impacted_tests,
+   symbols=[the changed members])`** — it is D21's own selection on a read-only door, and
+   you cannot call `run_tests`. Read `attributionAvailable` and `selectionVerdict` before
+   anything else: `attributionAvailable: false` means no evidence exists, and then say so
+   and fall back to `get_call_hierarchy`, NAMING the fallback, because a call graph is not
+   the compiler proof and the reader must be told which one answered. **And NAME the changed members that reach nothing**: a
    member no test reaches is the honest answer *"this change is uncovered"*, which a
    coverage percentage averages away. Where the proof cannot hold — reflection, DI,
    service loaders, resource lookups — say so and report that everything runs.
