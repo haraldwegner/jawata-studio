@@ -602,25 +602,28 @@ pub fn run() {
                             show_main_window(app_handle);
                         }
                         "tray_start_all_services" => {
-                            let state = app_handle.state::<AppState>();
-                            let _ = state.manager_service.start_all_runtimes();
-                            refresh_tray_menu(app_handle);
+                            run_fleet_action_off_the_event_thread(
+                                app_handle,
+                                ManagerService::start_all_runtimes,
+                            );
                         }
                         "tray_reload_all_services" => {
                             // Sprint 14 (v0.14.0): sequenced stop+start
-                            // across every workspace. Blocks the menu
-                            // event for up to ~30 s while polling;
-                            // the periodic refresh ticker keeps the
-                            // bullets next to each workspace current
-                            // during the gap.
-                            let state = app_handle.state::<AppState>();
-                            let _ = state.manager_service.reload_all_runtimes();
-                            refresh_tray_menu(app_handle);
+                            // across every workspace. REL44-12: this used to
+                            // block the menu event for the whole stop, and the
+                            // start now waits for each import, so it runs on
+                            // its own thread; the periodic refresh ticker keeps
+                            // the bullets next to each workspace current.
+                            run_fleet_action_off_the_event_thread(
+                                app_handle,
+                                ManagerService::reload_all_runtimes,
+                            );
                         }
                         "tray_stop_all_services" => {
-                            let state = app_handle.state::<AppState>();
-                            let _ = state.manager_service.stop_all_runtimes();
-                            refresh_tray_menu(app_handle);
+                            run_fleet_action_off_the_event_thread(
+                                app_handle,
+                                ManagerService::stop_all_runtimes,
+                            );
                         }
                         "tray_autostart_on_boot" => {
                             // Sprint 14 (v0.14.0): toggle the persisted
@@ -1327,6 +1330,24 @@ fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
 ///
 /// The cached `LAST` value is the snapshot of `(workspace_name, phase)`
 /// pairs that drove the most recent successful menu swap.
+/// REL44-12: a fleet action from the tray runs on a thread of its own. The tray's menu event
+/// arrives on the UI thread, and a fleet start now WAITS for each workspace's import to finish
+/// before starting the next — minutes, not seconds. On the event thread that wait froze the
+/// tray and the window for its whole length; here the menu answers at once and the periodic
+/// refresh shows each workspace come up.
+fn run_fleet_action_off_the_event_thread<R: Runtime>(
+    app: &AppHandle<R>,
+    action: fn(&ManagerService) -> Result<manager_service::ManagerDashboard, String>,
+) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let _ = action(&handle.state::<AppState>().manager_service);
+        // studio#21: residents just changed state — ask the canary now.
+        request_canary_round();
+        refresh_tray_menu(&handle);
+    });
+}
+
 fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) {
     use std::sync::Mutex;
     // Sprint 14 (v0.14.0): cache key extended with `autostart_on_boot`
@@ -1853,5 +1874,94 @@ mod tray_icon_tests {
         let alphas: Vec<u8> = branded.rgba().iter().skip(3).step_by(4).copied().collect();
         let center = ((TRAY_ICON_SIZE / 2) * TRAY_ICON_SIZE + TRAY_ICON_SIZE / 2) as usize;
         assert_eq!(alphas[center], 255, "the branded disc stays opaque");
+    }
+}
+
+/// REL44-12: the rule two comments cited for months while the test they named did not exist.
+/// A fleet action that WAITS — a start that waits for each import, a reload that polls the stop —
+/// must never run on a thread a person is looking at. On the event thread the tray and the window
+/// froze for the whole wait; the fix is to put the wait elsewhere, and this test is what keeps it
+/// there, because nothing about a blocking call looks wrong where it is written.
+#[cfg(test)]
+mod ui_thread_tests {
+    /// The fleet methods that sleep or poll. A call to one of them from a synchronous command or
+    /// from inside the tray's menu handler is a call that blocks the thread the UI runs on.
+    const WAITING_FLEET_CALLS: [&str; 3] = [
+        "manager_service.start_all_runtimes(",
+        "manager_service.reload_all_runtimes(",
+        "manager_service.stop_all_runtimes(",
+    ];
+
+    /// The tray's menu handler as written, from `.on_menu_event(` to the `.build(app)?` that
+    /// closes it — the only region whose code runs on the tray's event thread.
+    fn tray_menu_handler() -> &'static str {
+        let source = include_str!("lib.rs");
+        let start = source.find(".on_menu_event(").expect("the tray has a menu handler");
+        let end = start
+            + source[start..]
+                .find(".build(app)?")
+                .expect("the menu handler is closed by the tray builder's .build(app)?");
+        &source[start..end]
+    }
+
+    /// Every Tauri command as (is it async, its body), in source order.
+    fn commands() -> Vec<(bool, String, &'static str)> {
+        let source = include_str!("commands.rs");
+        let mut out = Vec::new();
+        let marks: Vec<usize> = source.match_indices("#[tauri::command]").map(|(i, _)| i).collect();
+        for (n, &at) in marks.iter().enumerate() {
+            let end = marks.get(n + 1).copied().unwrap_or(source.len());
+            let block = &source[at..end];
+            let signature = block.lines().find(|l| l.contains("fn ")).unwrap_or("");
+            let name = signature
+                .split("fn ")
+                .nth(1)
+                .and_then(|rest| rest.split(['(', '<']).next())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            out.push((signature.contains("async fn"), name, block));
+        }
+        out
+    }
+
+    #[test]
+    fn ui_thread_is_not_a_sleeping_place() {
+        let handler = tray_menu_handler();
+        for call in WAITING_FLEET_CALLS {
+            assert!(
+                !handler.contains(call),
+                "the tray's menu handler calls `{call}` on the event thread — a fleet action waits \
+                 for minutes, so the tray and the window freeze for that long; run it through \
+                 run_fleet_action_off_the_event_thread"
+            );
+        }
+        let commands = commands();
+        assert!(commands.len() > 10, "the control: the command scan found the commands");
+        for (is_async, name, body) in &commands {
+            if *is_async {
+                continue;
+            }
+            for call in &WAITING_FLEET_CALLS[..2] {
+                assert!(
+                    !body.contains(call),
+                    "the command `{name}` is synchronous and calls `{call}` — a synchronous command \
+                     runs on the main thread, so the window freezes while the fleet waits; make it async"
+                );
+            }
+        }
+    }
+
+    /// The control that the scan can see a violation: the region it reads is the real handler
+    /// and the commands it reads include the two fleet commands, so a green run is not an
+    /// empty search.
+    #[test]
+    fn the_scan_reads_the_real_handler_and_the_real_commands() {
+        let handler = tray_menu_handler();
+        assert!(handler.contains("tray_start_all_services"));
+        assert!(handler.contains("tray_reload_all_services"));
+        let names: Vec<String> = commands().into_iter().map(|(_, name, _)| name).collect();
+        assert!(names.iter().any(|n| n == "start_all_runtimes"), "{names:?}");
+        assert!(names.iter().any(|n| n == "reload_all_runtimes"), "{names:?}");
     }
 }

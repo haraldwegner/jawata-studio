@@ -684,6 +684,28 @@ impl ManagerService {
     /// a `workspace_name` collapse into one spawn per workspace; the
     /// remaining projects "join" the running process via runtime_manager.
     pub fn start_all_runtimes(&self) -> Result<ManagerDashboard, String> {
+        let import_wait_cap = std::time::Duration::from_secs(
+            std::env::var("JAWATA_STUDIO_IMPORT_WAIT_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(IMPORT_WAIT_CAP_SECS),
+        );
+        let settings = self.config_store.get_settings();
+        let servers = self
+            .build_deploy_servers(&settings, &self.config_store.list_projects())
+            .0;
+        self.start_all_runtimes_waiting(&mut |before| {
+            self.wait_until_imported(before, &servers, import_wait_cap)
+        })
+    }
+
+    /// The fleet start with its wait handed in — `wait_for_import` is called with the first
+    /// project of the PREVIOUS workspace, before the next workspace is started (REL44-12). The
+    /// seam exists so a test can see the wait fire without a resident to wait for.
+    fn start_all_runtimes_waiting(
+        &self,
+        wait_for_import: &mut dyn FnMut(&ProjectRecord),
+    ) -> Result<ManagerDashboard, String> {
         let projects = self.config_store.list_projects();
         let mut errors = Vec::new();
 
@@ -721,17 +743,30 @@ impl ManagerService {
         // once. Neither alone is enough: staggering three expensive imports
         // still burns the cores in sequence, and three cheap ones starting
         // together still spike.
-        let stagger = std::time::Duration::from_millis(
-            std::env::var("JAWATA_STUDIO_START_STAGGER_MS")
-                .ok()
-                .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(10_000),
-        );
+        //
+        // REL44-12 (2026-10-15): the fixed ten-second gap spaced the SPAWNS and not the
+        // IMPORTS — measured four minutes after a tray restart, the three residents had averaged
+        // 178%, 367% and 266% CPU, about eight of twenty cores, and the machine stood still for
+        // five minutes. A cold import takes minutes, so ten seconds apart is still all at once.
+        // The next workspace now starts when the previous one's import has FINISHED, read off
+        // its own health_check (`project.loaded`), or when IMPORT_WAIT_CAP has passed — so at
+        // most one import runs at a time. `JAWATA_STUDIO_START_STAGGER_MS=0` still means "no
+        // spacing at all", for a caller that wants every workspace started at once.
+        let spacing_off = std::env::var("JAWATA_STUDIO_START_STAGGER_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            == Some(0);
         let mut spawned_workspaces: HashSet<String> = HashSet::new();
+        let mut previous: Option<ProjectRecord> = None;
         for project in projects {
             let first_of_its_workspace = spawned_workspaces.insert(project.workspace_name.clone());
-            if first_of_its_workspace && spawned_workspaces.len() > 1 && !stagger.is_zero() {
-                std::thread::sleep(stagger);
+            if first_of_its_workspace && !spacing_off {
+                if let Some(before) = previous.take() {
+                    wait_for_import(&before);
+                }
+            }
+            if first_of_its_workspace {
+                previous = Some(project.clone());
             }
             match self.resolve_launch_request(&project) {
                 Ok(launch_request) => {
@@ -751,6 +786,39 @@ impl ManagerService {
         }
 
         self.load_dashboard()
+    }
+
+    /// Block until the workspace `started` belongs to has finished importing, it has stopped or
+    /// failed, or `cap` has passed — whichever comes first. REL44-12: this is what keeps a fleet
+    /// start to one import at a time. Polls the resident's own `health_check` every two seconds;
+    /// a resident that is not answering yet is waited for, not treated as done.
+    fn wait_until_imported(
+        &self,
+        started: &ProjectRecord,
+        servers: &[ManagedDeployServer],
+        cap: std::time::Duration,
+    ) {
+        let Some(server) = servers.iter().find(|s| s.workspace_name == started.workspace_name)
+        else {
+            return; // nothing to ask: the workspace did not resolve, so it is not importing
+        };
+        let began = std::time::Instant::now();
+        loop {
+            let probe = if server.url.is_empty() || server.token.is_empty() {
+                Err("no endpoint".to_string())
+            } else {
+                call_tool_json(&server.url, &server.token, "health_check", serde_json::json!({}), 5)
+            };
+            let phase = self
+                .resolve_runtime_reference(started)
+                .ok()
+                .and_then(|reference| self.runtime_manager.get_runtime_status(&reference).ok())
+                .map(|status| status.phase);
+            if import_wait_over(&probe, phase.as_ref(), began.elapsed(), cap) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
     }
 
     /// Stops all currently running runtimes.
@@ -4546,6 +4614,39 @@ fn deploy_seat_commands(
     let settings = crate::seat_settings::SeatSettings::load(seats_dir)
         .map_err(|e| format!("{client}: seat settings: {e}"))?;
     write_managed_seat_commands(client, commands_dir, seats, &settings, force_rewrite)
+}
+
+/// The longest a fleet start waits for one workspace's import before starting the next anyway
+/// (REL44-12). Measured cold imports on the 230-project fleet ran three to five minutes; ten
+/// minutes is the point at which a stuck import must not hold the rest of the fleet hostage.
+const IMPORT_WAIT_CAP_SECS: u64 = 600;
+
+/// Whether a fleet start may move on to the next workspace — REL44-12's rule, pure so it is
+/// testable without a resident. Yes when the resident says its project is LOADED, when its
+/// process has stopped or failed (nothing is importing), or when the cap has passed. A probe that
+/// fails while the process is still up is a resident not answering YET, which is waited for.
+fn import_wait_over(
+    probe: &Result<serde_json::Value, String>,
+    phase: Option<&RuntimePhase>,
+    waited: std::time::Duration,
+    cap: std::time::Duration,
+) -> bool {
+    if waited >= cap {
+        return true;
+    }
+    if matches!(phase, Some(RuntimePhase::Stopped | RuntimePhase::Failed)) {
+        return true;
+    }
+    let Ok(body) = probe else {
+        return false;
+    };
+    // A load that FAILED is not importing either — waiting out the cap on it would hold the
+    // fleet for nothing.
+    body.pointer("/data/project/loaded")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+        || body.pointer("/data/project/status").and_then(serde_json::Value::as_str)
+            == Some("failed")
 }
 
 /// The deploy targets in the order a run must VISIT them (studio#19): a client that INHERITS its
@@ -11852,6 +11953,83 @@ judge was never told to give"
             crate::release_manager::ReleaseManager::new().expect("http clients"),
             crate::runtime_manager::RuntimeManager::new(paths),
         )
+    }
+
+    /// REL44-12: the wait ends when the import is DONE — loaded, or failed — or when the process
+    /// is gone, or at the cap. A resident that does not answer yet is still starting, and is
+    /// waited for: treating silence as done is what would put two imports back on top of each
+    /// other.
+    #[test]
+    fn an_import_wait_ends_on_loaded_failed_stopped_or_the_cap_and_never_on_silence() {
+        let cap = std::time::Duration::from_secs(600);
+        let early = std::time::Duration::from_secs(5);
+        let loading: Result<serde_json::Value, String> =
+            Ok(serde_json::json!({"data": {"project": {"status": "loading", "loaded": false}}}));
+        let loaded: Result<serde_json::Value, String> =
+            Ok(serde_json::json!({"data": {"project": {"status": "loaded", "loaded": true}}}));
+        let failed_load: Result<serde_json::Value, String> =
+            Ok(serde_json::json!({"data": {"project": {"status": "failed", "loaded": false}}}));
+        let silent: Result<serde_json::Value, String> = Err("connection refused".into());
+
+        assert!(!import_wait_over(&loading, Some(&RuntimePhase::Running), early, cap));
+        assert!(
+            !import_wait_over(&silent, Some(&RuntimePhase::Starting), early, cap),
+            "a resident that is not answering yet is still starting"
+        );
+        assert!(!import_wait_over(&silent, Some(&RuntimePhase::Running), early, cap));
+        assert!(import_wait_over(&loaded, Some(&RuntimePhase::Running), early, cap));
+        assert!(import_wait_over(&failed_load, Some(&RuntimePhase::Running), early, cap));
+        assert!(import_wait_over(&silent, Some(&RuntimePhase::Failed), early, cap));
+        assert!(import_wait_over(&silent, Some(&RuntimePhase::Stopped), early, cap));
+        assert!(import_wait_over(&loading, Some(&RuntimePhase::Running), cap, cap), "the cap ends it");
+    }
+
+    /// REL44-12's wiring: the fleet start waits for each workspace before starting the next —
+    /// once per workspace boundary, never for a project joining a workspace already started, and
+    /// never after the last one.
+    #[test]
+    fn the_fleet_start_waits_for_each_workspace_before_starting_the_next() {
+        let dir = unique_tempdir("fleet-wait");
+        let service = service_over(&dir);
+        // A jar that does NOT exist: every launch is refused before a process is spawned, while
+        // the loop still walks every workspace — so the test sees the waits and starts nothing.
+        let mut settings = service.config_store.get_settings();
+        settings.global_runtime_source = crate::config::RuntimeSource::LocalJar {
+            jar_path: display_path(&dir.join("absent.jar")),
+        };
+        service.config_store.write_settings(settings).unwrap();
+        for (name, workspace) in [
+            ("alpha", "first-ws"),
+            ("beta", "first-ws"),
+            ("gamma", "second-ws"),
+            ("delta", "third-ws"),
+        ] {
+            service
+                .add_project(crate::config::AddProjectInput {
+                    name: name.into(),
+                    project_path: dir.join(name).display().to_string(),
+                    workspace_name: workspace.into(),
+                })
+                .expect("a project");
+        }
+        let mut order: Vec<String> = Vec::new();
+        for project in service.config_store.list_projects() {
+            if !order.contains(&project.workspace_name) {
+                order.push(project.workspace_name);
+            }
+        }
+        assert_eq!(order.len(), 3, "the control: three workspaces");
+
+        let mut waited_for: Vec<String> = Vec::new();
+        let result = service
+            .start_all_runtimes_waiting(&mut |before| waited_for.push(before.workspace_name.clone()));
+
+        assert!(result.is_err(), "the control: no launch could succeed without a jar");
+        assert_eq!(
+            waited_for,
+            order[..2].to_vec(),
+            "one wait per workspace boundary, for the workspace started just before"
+        );
     }
 
     /// C11-4: a change in the Seats view runs the SEAT part of a deploy — it writes the seat

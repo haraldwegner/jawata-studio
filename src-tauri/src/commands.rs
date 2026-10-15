@@ -194,9 +194,14 @@ pub fn stop_all_runtimes(state: State<'_, AppState>) -> Result<ManagerDashboard,
     dashboard
 }
 
+/// REL44-12: async for the same reason as `start_all_runtimes` — a reload stops every workspace,
+/// polls until each has stopped, then runs the fleet start, which waits for each import. On the
+/// command thread all of that froze the window.
 #[tauri::command]
-pub fn reload_all_runtimes(state: State<'_, AppState>) -> Result<ManagerDashboard, String> {
-    state.manager_service.reload_all_runtimes()
+pub async fn reload_all_runtimes(state: State<'_, AppState>) -> Result<ManagerDashboard, String> {
+    let dashboard = state.manager_service.reload_all_runtimes();
+    crate::request_canary_round();   // studio#21
+    dashboard
 }
 
 #[tauri::command]
