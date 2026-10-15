@@ -752,10 +752,19 @@ impl ManagerService {
         // its own health_check (`project.loaded`), or when IMPORT_WAIT_CAP has passed — so at
         // most one import runs at a time. `JAWATA_STUDIO_START_STAGGER_MS=0` still means "no
         // spacing at all", for a caller that wants every workspace started at once.
-        let spacing_off = std::env::var("JAWATA_STUDIO_START_STAGGER_MS")
+        let stagger = std::env::var("JAWATA_STUDIO_START_STAGGER_MS")
             .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            == Some(0);
+            .and_then(|v| v.parse::<u64>().ok());
+        let spacing_off = stagger == Some(0);
+        if let Some(ms) = stagger.filter(|ms| *ms > 0) {
+            // A spacing set before REL44-12 is not silently dropped: the variable now reads only
+            // 0, and someone who set another value should learn it no longer does anything.
+            eprintln!(
+                "jawata-studio: JAWATA_STUDIO_START_STAGGER_MS={ms} is not read any more — the \
+                 next workspace starts when the previous one's import has finished; only 0 \
+                 (start them all at once) is read"
+            );
+        }
         let mut spawned_workspaces: HashSet<String> = HashSet::new();
         let mut previous: Option<ProjectRecord> = None;
         for project in projects {
@@ -11982,6 +11991,36 @@ judge was never told to give"
         assert!(import_wait_over(&silent, Some(&RuntimePhase::Failed), early, cap));
         assert!(import_wait_over(&silent, Some(&RuntimePhase::Stopped), early, cap));
         assert!(import_wait_over(&loading, Some(&RuntimePhase::Running), cap, cap), "the cap ends it");
+    }
+
+    /// REL44-12's contract with the engine: the rule above reads `/data/project/loaded` and
+    /// `/data/project/status`, and was only ever fed shapes written here. This feeds it the
+    /// engine's OWN answer — a 4.4.5 resident's health_check text, captured verbatim on
+    /// 2026-10-15 and trimmed of the workspace list only — through the same parse
+    /// `call_tool_json` applies. If the engine moved either field, the fleet would wait the full
+    /// cap at every workspace boundary, and only this test would say so.
+    #[test]
+    fn the_import_wait_reads_the_engines_own_health_check_answer() {
+        const LOADED_4_4_5: &str = r#"{"success":true,"data":{"status":"Ready","message":"JAWATA MCP Server is operational","version":"4.4.5","startedAt":"2026-10-15T10:22:58.531094486Z","uptime":"5 hours","project":{"status":"loaded","loaded":true,"message":"Project loaded successfully"},"java":{"version":"21.0.10","vendor":"Ubuntu"},"toolCount":44}}"#;
+        let cap = std::time::Duration::from_secs(600);
+        let early = std::time::Duration::from_secs(5);
+        let loaded: Result<serde_json::Value, String> =
+            serde_json::from_str(LOADED_4_4_5).map_err(|e| e.to_string());
+        assert!(
+            import_wait_over(&loaded, Some(&RuntimePhase::Running), early, cap),
+            "a resident reporting its project loaded ends the wait"
+        );
+        // The engine's LOADING state, in the engine's words: HealthCheckTool writes the state's
+        // name in lower case and loaded=false.
+        let loading: Result<serde_json::Value, String> = serde_json::from_str(
+            &LOADED_4_4_5
+                .replace(r#""status":"loaded","loaded":true"#, r#""status":"loading","loaded":false"#),
+        )
+        .map_err(|e| e.to_string());
+        assert!(
+            !import_wait_over(&loading, Some(&RuntimePhase::Running), early, cap),
+            "and one still loading does not"
+        );
     }
 
     /// REL44-12's wiring: the fleet start waits for each workspace before starting the next —
