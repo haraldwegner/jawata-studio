@@ -4438,7 +4438,7 @@ fn remove_legacy_seat_commands(client: &str, mcp_target_path: &str) -> bool {
     let mut removed = false;
     let names = crate::conductor::COMMAND_MAP
         .iter()
-        .map(|(_, cmd, _)| *cmd)
+        .map(|(_, cmd)| *cmd)
         .chain(crate::conductor::UTILITY_MAP.iter().map(|(cmd, _)| *cmd));
     for cmd in names {
         let path = legacy.join(format!("{cmd}.md"));
@@ -4474,7 +4474,7 @@ fn derive_seat_commands_dir(client: &str, mcp_target_path: &str) -> Option<PathB
 fn seat_artifact_paths(client: &str, commands_dir: &Path) -> Vec<(String, PathBuf)> {
     crate::conductor::COMMAND_MAP
         .iter()
-        .map(|(_, cmd, _)| {
+        .map(|(_, cmd)| {
             let path = if seat_layout_is_skill(client) {
                 commands_dir.join(cmd).join("SKILL.md")
             } else {
@@ -4616,7 +4616,7 @@ fn write_managed_seat_commands(
     let mut changed_paths = Vec::new();
     for seat in seats {
         // A seat with no typed command has nothing to write OR remove.
-        let Some((cmd, _)) = crate::conductor::command_for(&seat.name) else { continue };
+        let Some(cmd) = crate::conductor::command_for(&seat.name) else { continue };
         let path = if seat_layout_is_skill(client) {
             commands_dir.join(cmd).join("SKILL.md")
         } else {
@@ -11521,8 +11521,8 @@ mod tests {
     fn a_users_own_skill_under_a_seats_command_name_survives_the_seat_being_turned_off() {
         let (_seats_dir, seats) = loaded_seats("own-skill");
         let dir = unique_tempdir("own-skill-cmds");
-        let (theirs_seat, _, _) = crate::conductor::COMMAND_MAP[0];
-        let (ours_seat, _, _) = crate::conductor::COMMAND_MAP[1];
+        let (theirs_seat, _) = crate::conductor::COMMAND_MAP[0];
+        let (ours_seat, _) = crate::conductor::COMMAND_MAP[1];
         let mut settings = crate::seat_settings::SeatSettings::default();
         settings.set_enabled(theirs_seat, false);
         write_managed_seat_commands("claude", &dir, &seats, &settings, false).unwrap();
@@ -11584,7 +11584,7 @@ mod tests {
         assert!(seat_dir_carries_managed_seats("claude", &dir), "control: it carries them");
 
         // Turn off the seat the probe used to look at, and only that one.
-        let (first, _, _) = crate::conductor::COMMAND_MAP[0];
+        let (first, _) = crate::conductor::COMMAND_MAP[0];
         settings.set_enabled(first, false);
         write_managed_seat_commands("claude", &dir, &seats, &settings, false).unwrap();
         assert!(!claude_seat_file(&dir, first).exists(), "the first seat's file is gone");
@@ -11646,7 +11646,7 @@ mod tests {
 
     /// The skill path a claude-layout client gets for one seat's command.
     fn claude_seat_file(commands_dir: &Path, seat: &str) -> PathBuf {
-        let (cmd, _) = crate::conductor::command_for(seat).expect("a command-mapped seat");
+        let cmd = crate::conductor::command_for(seat).expect("a command-mapped seat");
         commands_dir.join(cmd).join("SKILL.md")
     }
 
@@ -11694,7 +11694,7 @@ mod tests {
 
         write_managed_seat_commands("claude", &claude_dir, &seats, &settings, false).unwrap();
         write_managed_seat_commands("cursor", &cursor_dir, &seats, &settings, false).unwrap();
-        let (cmd, _) = crate::conductor::command_for("architect").unwrap();
+        let cmd = crate::conductor::command_for("architect").unwrap();
         let claude_file = claude_dir.join(cmd).join("SKILL.md");
         let cursor_file = cursor_dir.join(cmd).join("SKILL.md");
         assert!(claude_file.exists() && cursor_file.exists(), "control: both clients have it");

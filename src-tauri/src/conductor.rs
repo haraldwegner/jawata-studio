@@ -29,73 +29,54 @@ pub const EMBEDDED_SEATS: [(&str, &str); 14] = [
     ("ux.md", include_str!("../../seats/ux.md")),
 ];
 
-/// seat name → (command name, one-line description). The command-bearing
-/// seats; spec-editor/spec-auditor live in /sprint and render NO command
-/// (pinned by test). Every row here must name a seat that is embedded, and
-/// every row renders into the deployed command list — both pinned, so the
-/// counts in the generated prose and in the deploy inventory are derived
-/// from this array rather than typed beside it.
-pub const COMMAND_MAP: [(&str, &str, &str); 10] = [
-    (
-        "main",
-        "main",
-        "Own the workflow: declare the steps, drive them one at a time, and refuse a step whose gate did not run (jawata main seat)",
-    ),
-    (
-        "cataloguer",
-        "catalogue",
-        "Describe what each member and each package is FOR, resumably (jawata cataloguer seat)",
-    ),
-    (
-        "javadoc-writer",
-        "javadocs",
-        "Document undocumented public Java API from compiler facts (jawata javadoc-writer seat)",
-    ),
-    (
-        "test-writer",
-        "cover",
-        "Write gate-verified characterization tests for uncovered code (jawata test-writer seat)",
-    ),
-    (
-        "architect",
-        "refactor",
-        "Architecture review and parity-gated refactoring proposals (jawata architect seat)",
-    ),
-    (
-        "debugger",
-        "debug",
-        "Disciplined debugging: recall, one discriminating probe, verify (jawata debugger seat)",
-    ),
-    (
-        "profiler",
-        "profile",
-        "Profile a JVM and name hotspots as compiler-accurate symbols (jawata profiler seat)",
-    ),
-    (
-        "report",
-        "report",
-        "Turn the local field recording into a bug report you post from your own GitHub account (jawata report seat)",
-    ),
-    (
-        "review",
-        "review",
-        "Review what the knowledge store carries that nobody uses, and delete only what you name (jawata review seat)",
-    ),
-    (
-        "ux",
-        "ux",
-        "Look at a screen as the person using it: can every part be reached, does each part help them decide or change something, and propose the lean view (jawata ux seat)",
-    ),
+/// seat name → command name. The command-bearing seats; spec-editor/spec-auditor live in
+/// /sprint and render NO command (pinned by test). Every row here must name a seat that is
+/// embedded, and every row renders into the deployed command list — both pinned, so the counts
+/// in the generated prose and in the deploy inventory are derived from this array rather than
+/// typed beside it.
+///
+/// C11-7: there is no DESCRIPTION column any more. The picker description and the roster line
+/// are the seat's own `purpose:` (see [`seat_description`]); a second copy here had drifted from
+/// the seat file for every seat, because the purposes were rewritten in plain language and these
+/// lines were not.
+pub const COMMAND_MAP: [(&str, &str); 10] = [
+    ("main", "main"),
+    ("cataloguer", "catalogue"),
+    ("javadoc-writer", "javadocs"),
+    ("test-writer", "cover"),
+    ("architect", "refactor"),
+    ("debugger", "debug"),
+    ("profiler", "profile"),
+    ("report", "report"),
+    ("review", "review"),
+    ("ux", "ux"),
 ];
 
 /// The two seats that live inside `/sprint` and render no command of their own.
 pub const PIPELINE_SEATS: [&str; 2] = ["spec-editor", "spec-auditor"];
 
-pub fn command_for(seat_name: &str) -> Option<(&'static str, &'static str)> {
+pub fn command_for(seat_name: &str) -> Option<&'static str> {
     COMMAND_MAP
         .iter()
-        .find(|(seat, _, _)| *seat == seat_name)
-        .map(|(_, cmd, desc)| (*cmd, *desc))
+        .find(|(seat, _)| *seat == seat_name)
+        .map(|(_, cmd)| *cmd)
+}
+
+/// What a seat is FOR, as one line for a command picker and the roster — the FIRST SENTENCE
+/// of the seat file's own `purpose:`, plus which seat it is.
+///
+/// C11-7: one source. The purpose is what the Seats view shows a person deciding on the
+/// switch; the picker and the roster now say the same thing because they read the same line.
+/// The first sentence only, because the roster is in every session's context and the picker
+/// is one line. Double quotes are escaped: the result sits inside a quoted YAML value.
+pub fn seat_description(seat: &SeatDefinition) -> String {
+    let purpose = seat.purpose.trim();
+    let first = match purpose.find(". ") {
+        Some(end) => &purpose[..=end],
+        None => purpose,
+    };
+    let lead = if first.is_empty() { String::new() } else { format!("{first} ") };
+    format!("{lead}(jawata {} seat)", seat.name).replace('"', "\\\"")
 }
 
 /// What one materialization pass did, per seat — surfaced into the deploy
@@ -382,7 +363,8 @@ fn gate_call_lines(seat: &SeatDefinition) -> String {
 /// (name, description) + the Lane-1 contract + the seat stance verbatim.
 /// `None` for seats without a command mapping.
 pub fn render_claude_skill(seat: &SeatDefinition) -> Option<String> {
-    let (command, description) = command_for(&seat.name)?;
+    let command = command_for(&seat.name)?;
+    let description = seat_description(seat);
     Some(format!(
         "---\nname: {command}\ndescription: \"{description}\"\n---\n\n\
          # /{command} — the jawata {name} seat\n\n\
@@ -415,7 +397,8 @@ pub fn render_claude_skill(seat: &SeatDefinition) -> Option<String> {
 /// The body is the same as the Claude skill's; only the frontmatter differs,
 /// which is why both are generated from `lane1_contract` and the same stance.
 pub fn render_cursor_command(seat: &SeatDefinition) -> Option<String> {
-    let (command, description) = command_for(&seat.name)?;
+    let command = command_for(&seat.name)?;
+    let description = seat_description(seat);
     Some(format!(
         "---\nname: {command}\ndescription: \"{description}\"\n\
          disable-model-invocation: true\n---\n\n\
@@ -435,7 +418,8 @@ pub fn render_cursor_command(seat: &SeatDefinition) -> Option<String> {
 /// the slash command; YAML frontmatter with `description` is required
 /// (verified against antigravity.google/docs/rules-workflows, 2026-07-18).
 pub fn render_antigravity_workflow(seat: &SeatDefinition) -> Option<String> {
-    let (command, description) = command_for(&seat.name)?;
+    let command = command_for(&seat.name)?;
+    let description = seat_description(seat);
     Some(format!(
         "---\ndescription: \"{description}\"\n---\n\n\
          # /{command} — the jawata {name} seat\n\n\
@@ -471,9 +455,10 @@ pub const PHRASE_MAP: [(&str, &str); 10] = [
 pub fn render_phrase_table(seats: &[SeatDefinition]) -> String {
     let mut out = String::from("| You say | Adopt the seat |\n|---|---|\n");
     for (phrase, command) in PHRASE_MAP {
-        if let Some((seat_name, _, desc)) = COMMAND_MAP.iter().find(|(_, c, _)| *c == command) {
+        if let Some((seat_name, _)) = COMMAND_MAP.iter().find(|(_, c)| *c == command) {
             // Only rows whose seat actually exists in the loaded set.
-            if seats.iter().any(|s| s.name == *seat_name) {
+            if let Some(seat) = seats.iter().find(|s| s.name == *seat_name) {
+                let desc = seat_description(seat);
                 out.push_str(&format!("| {phrase} | **{seat_name}** — {desc} |\n"));
             }
         }
@@ -719,7 +704,7 @@ pub fn render_conductor_section(seats: &[SeatDefinition], client: &str) -> Vec<S
         .iter()
         .map(|(file, _)| file.trim_end_matches(".md").to_string())
         .filter(|name| {
-            !COMMAND_MAP.iter().any(|(seat, _, _)| seat == name) && !PIPELINE_SEATS.contains(&name.as_str())
+            !COMMAND_MAP.iter().any(|(seat, _)| seat == name) && !PIPELINE_SEATS.contains(&name.as_str())
         })
         .collect();
     let mut lines = vec![
@@ -732,8 +717,9 @@ pub fn render_conductor_section(seats: &[SeatDefinition], client: &str) -> Vec<S
         ),
         String::new(),
     ];
-    for (seat_name, command, desc) in &COMMAND_MAP {
-        if seats.iter().any(|s| s.name == *seat_name) {
+    for (seat_name, command) in &COMMAND_MAP {
+        if let Some(seat) = seats.iter().find(|s| s.name == *seat_name) {
+            let desc = seat_description(seat);
             lines.push(format!("- {seat_name} (`/{command}`) — {desc}"));
         }
     }
@@ -1543,7 +1529,7 @@ mod tests {
 
         // A command may only name a seat that actually exists…
         let definitions = seats();
-        for (seat_name, command, _) in COMMAND_MAP {
+        for (seat_name, command) in COMMAND_MAP {
             assert!(
                 definitions.iter().any(|s| s.name == seat_name),
                 "/{command} maps to seat '{seat_name}', which is not an embedded seat"
@@ -1551,7 +1537,7 @@ mod tests {
         }
         // …and every command actually renders into the deployed list.
         let rendered = render_conductor_section(&definitions, "claude").join("\n");
-        for (seat_name, command, _) in COMMAND_MAP {
+        for (seat_name, command) in COMMAND_MAP {
             assert!(
                 rendered.contains(&format!("- {seat_name} (`/{command}`)")),
                 "/{command} is registered but renders into no client's command list:\n{rendered}"
@@ -1574,13 +1560,39 @@ mod tests {
         assert_eq!(command_for("spec-auditor"), None);
     }
 
+    /// C11-7: ONE source for what a seat is for. The command picker, the roster in the rule
+    /// block and the phrase table all carry the first sentence of the seat file's own `purpose:`
+    /// — the line the Seats view shows a person deciding on the switch.
+    #[test]
+    fn every_description_is_read_off_the_seats_own_purpose() {
+        let definitions = seats();
+        let roster = render_conductor_section(&definitions, "claude").join("\n");
+        let phrases = render_phrase_table(&definitions);
+        for (seat_name, command) in COMMAND_MAP {
+            let seat = definitions.iter().find(|s| s.name == seat_name).expect("embedded");
+            let purpose = seat.purpose.trim();
+            let first = purpose.split(". ").next().unwrap();
+            assert!(!first.is_empty(), "{seat_name} declares a purpose");
+            let skill = render_claude_skill(seat).unwrap();
+            let line = skill.lines().find(|l| l.starts_with("description:")).unwrap();
+            assert!(line.contains(first), "{seat_name}: the picker reads its purpose: {line}");
+            assert!(
+                roster.contains(&format!("- {seat_name} (`/{command}`) — {first}")),
+                "{seat_name}: the roster line is its purpose:\n{roster}"
+            );
+            if PHRASE_MAP.iter().any(|(_, c)| *c == command) {
+                assert!(phrases.contains(first), "{seat_name}: and so is its phrase row");
+            }
+        }
+    }
+
     #[test]
     fn the_ux_seat_is_typed_phrased_and_given_a_firing_point() {
         // C7-1: the seat existed and nothing could employ it. Three ways in, each asserted
         // where a person or an agent would meet it, not where it is declared.
         let definitions = seats();
         let ux = definitions.iter().find(|s| s.name == "ux").expect("the ux seat ships");
-        assert_eq!(command_for("ux").map(|(c, _)| c), Some("ux"), "a person can type it");
+        assert_eq!(command_for("ux"), Some("ux"), "a person can type it");
         let skill = render_claude_skill(ux).expect("it renders a command like /refactor does");
         assert!(skill.starts_with("---\nname: ux\n"), "{skill}");
         let rendered = render_conductor_section(&definitions, "claude").join("\n");
@@ -1908,8 +1920,8 @@ mod tests {
     #[test]
     fn phrase_table_covers_every_command() {
         let table = render_phrase_table(&seats());
-        for (_, command, _) in COMMAND_MAP {
-            let (seat_name, _, _) = COMMAND_MAP.iter().find(|(_, c, _)| *c == command).unwrap();
+        for (_, command) in COMMAND_MAP {
+            let (seat_name, _) = COMMAND_MAP.iter().find(|(_, c)| *c == command).unwrap();
             assert!(
                 table.contains(&format!("**{seat_name}**")),
                 "/{command}'s seat in the table:\n{table}"

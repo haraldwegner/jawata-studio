@@ -390,7 +390,7 @@ pub fn seats_view(seats_dir: &Path, clients: Vec<ClientChoice>) -> SeatsView {
         .iter()
         .map(|seat| SeatRow {
             name: seat.name.clone(),
-            command: crate::conductor::command_for(&seat.name).map(|(command, _)| format!("/{command}")),
+            command: crate::conductor::command_for(&seat.name).map(|command| format!("/{command}")),
             pipeline: crate::conductor::PIPELINE_SEATS.contains(&seat.name.as_str()),
             // A user-edited seat keeps its old file and may carry neither key. Fall back to the
             // SHIPPED seat's value rather than render a blank row.
