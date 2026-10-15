@@ -1598,7 +1598,7 @@ mod tray_icon_tests {
         let row = tray_verdict_row(Some(&words)).expect("a verdict gives the menu a row");
         assert_eq!(row, words.trim(), "the row IS the tooltip's sentence, not a second phrasing");
         assert!(row.contains("orb-strategy"), "it names the workspace: {row}");
-        assert!(row.contains("store not answering"), "and why it is amber: {row}");
+        assert!(row.contains("not accepting connections"), "and why it is amber: {row}");
         assert_eq!(tray_verdict_row(None), None, "no verdict yet, no row");
         assert_eq!(tray_verdict_row(Some("  ")), None, "and an empty sentence is not a row");
     }
@@ -1624,7 +1624,7 @@ mod tray_icon_tests {
             TrayRow::Item { id, label, enabled } => {
                 assert_eq!(id, "tray_verdict", "the verdict is the menu's first row: {rows:?}");
                 assert!(label.contains("orb-strategy"), "it names the workspace: {label}");
-                assert!(label.contains("store not answering"), "and why it is amber: {label}");
+                assert!(label.contains("not accepting connections"), "and why it is amber: {label}");
                 assert!(!enabled, "a statement, not a command");
             }
             other => panic!("the first row must be the verdict, got {other:?}"),

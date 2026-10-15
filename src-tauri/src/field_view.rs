@@ -809,6 +809,12 @@ pub struct CanaryResult {
 /// compiler layer is not part of.
 pub const CANARY_FIXTURE_TYPE: &str = "java.lang.String";
 
+/// What a probe's error begins with when the resident gave no HTTP ANSWER at all (connection
+/// refused, timed out, reset). The one place that builds such an error is `manager_service`'s HTTP
+/// call, and it builds it from this, so the tooltip can tell a silent resident from one that
+/// answered with a failure by the text alone and the two cannot drift apart.
+pub const TRANSPORT_FAILURE_PREFIX: &str = "request failed";
+
 /// The recall cue. Deliberately a cue nothing will match: an AUTHORITATIVE
 /// ABSENCE is a passing answer — what fails is a store that cannot answer at
 /// all. Asking something that must match would make the canary depend on the
@@ -1126,7 +1132,14 @@ pub fn canary_tooltip(
                 .iter()
                 .filter(|r| !r.green && !r.loading)
                 .map(|r| {
-                    let why = if !r.recall_ok {
+                    let why = if r.recall_detail.starts_with(TRANSPORT_FAILURE_PREFIX)
+                        && r.compiler_detail.starts_with(TRANSPORT_FAILURE_PREFIX)
+                    {
+                        // BOTH questions got no HTTP answer: the resident is not talking at all
+                        // (REL44-32, alive but deaf), which is not a store problem and is cured by
+                        // a restart rather than by looking at the store.
+                        "not accepting connections"
+                    } else if !r.recall_ok {
                         "store not answering"
                     } else if !r.workspace_readable {
                         "workspace not readable"
@@ -2887,6 +2900,37 @@ mod tests {
             !words.contains("orb"),
             "and does NOT name the healthy one - the tooltip is what is WRONG: {words}"
         );
+    }
+
+    #[test]
+    fn a_resident_that_answers_nothing_is_said_to_not_accept_connections() {
+        // REL44-32. A resident can be alive and DEAF: its HTTP listener is gone while the
+        // process lives on. Both canary questions then fail at the transport, and the words
+        // used to name only the store ("store not answering"), which sends a reader to the
+        // store when the whole resident is silent and the cure is a restart.
+        let deaf = judge_canary(
+            "javata-dev",
+            "http://127.0.0.1:1/mcp",
+            Err(format!("{TRANSPORT_FAILURE_PREFIX}: timed out")),
+            Err(format!("{TRANSPORT_FAILURE_PREFIX}: timed out")),
+            15_000,
+            0,
+        );
+        // The control: the store alone is silent while the compiler ANSWERED, which is a store
+        // problem and keeps its own words.
+        let store_only = judge_canary(
+            "patterns",
+            "http://127.0.0.1:1/mcp",
+            Err(format!("{TRANSPORT_FAILURE_PREFIX}: timed out")),
+            ok(serde_json::json!({"success": true})),
+            15_000,
+            0,
+        );
+
+        let words = canary_tooltip(CanaryHealth::Degraded, &vec![deaf, store_only], &[], 0);
+
+        assert!(words.contains("javata-dev: not accepting connections"), "{words}");
+        assert!(words.contains("patterns: store not answering"), "{words}");
     }
 
     #[test]

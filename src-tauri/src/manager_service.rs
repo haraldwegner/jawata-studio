@@ -7683,11 +7683,11 @@ fn call_resident_tool(
         .header("Content-Type", "application/json")
         .json(&payload)
         .send()
-        .map_err(|error| format!("request failed: {error}"))?;
+        .map_err(|error| format!("{}: {error}", crate::field_view::TRANSPORT_FAILURE_PREFIX))?;
     let status = response.status();
     let body = response
         .text()
-        .map_err(|error| format!("response read failed: {error}"))?;
+        .map_err(|error| format!("{}: {error}", crate::field_view::TRANSPORT_FAILURE_PREFIX))?;
     if !status.is_success() {
         return Err(format!("resident answered {status}: {body}"));
     }
