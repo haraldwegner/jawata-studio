@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "unproven on Windows: the gate rules read a command as bash words, which treats a backslash as an escape, so a Windows path in a command is read wrong. Windows is not exercised until jawata is the agent (his ruling 2026-10-07); the finding is filed as REL44-2")]
+    #[cfg_attr(windows, ignore = "unproven on Windows: since REL44-2 the word splitter keeps a Windows path as written (gatefile::tests::a_windows_path_keeps_its_separators, run on every platform), but these tests run end to end and have not run on a Windows machine since that fix; un-ignore them at the next Windows run")]
     fn it_cannot_be_invoked_without_an_absolute_directory() {
         let d = scratch("dir");
         let out = d.join("o.txt").display().to_string();
@@ -349,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "unproven on Windows: the gate rules read a command as bash words, which treats a backslash as an escape, so a Windows path in a command is read wrong. Windows is not exercised until jawata is the agent (his ruling 2026-10-07); the finding is filed as REL44-2")]
+    #[cfg_attr(windows, ignore = "unproven on Windows: since REL44-2 the word splitter keeps a Windows path as written (gatefile::tests::a_windows_path_keeps_its_separators, run on every platform), but these tests run end to end and have not run on a Windows machine since that fix; un-ignore them at the next Windows run")]
     fn it_runs_in_the_directory_it_was_given_and_nowhere_else() {
         let d = scratch("cwd");
         let out = d.join("o.txt");

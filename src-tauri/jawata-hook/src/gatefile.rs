@@ -63,21 +63,51 @@ fn basename(word: &str) -> &str {
     word.rsplit(['/', '\\']).next().unwrap_or(word)
 }
 
+/// Whether a backslash before `next` ESCAPES it — that is, whether the shell would read the
+/// pair as the one character. Outside quotes that is whitespace and the characters bash gives a
+/// meaning to; inside double quotes bash honours only `$`, backtick, `"`, `\` and a newline.
+///
+/// REL44-2: a backslash before ANY other character is kept as a backslash. The old rule
+/// escaped everything, which is bash's reading and not PowerShell's or cmd's, so on Windows a
+/// path such as `C:\Users\x` became `C:Usersx` and every rule reading a path from a command
+/// read the wrong one. The commands this hook judges come from bash (Claude Code, also on
+/// Windows through Git Bash) and from PowerShell (Cursor and Codex on Windows), and the hook is
+/// not told which; this rule reads both the same for everything a person writes on purpose.
+/// It differs from bash only on an escape that changes nothing — bash reads `\U` as `U`, which
+/// nobody writes — and that is exactly the place a Windows path puts its separators.
+fn backslash_escapes(next: char, in_double_quotes: bool) -> bool {
+    if in_double_quotes {
+        return matches!(next, '$' | '`' | '"' | '\\' | '\n');
+    }
+    next.is_whitespace()
+        || matches!(
+            next,
+            '\\' | '\'' | '"' | '$' | '`' | '|' | '&' | ';' | '<' | '>' | '(' | ')' | '*' | '?'
+                | '[' | ']' | '#' | '~' | '!' | '{' | '}'
+        )
+}
+
 /// Words of a command, quote-aware: whitespace separates outside quotes, the quotes
-/// themselves are removed, a backslash escapes the next character outside single quotes.
+/// themselves are removed, and a backslash outside single quotes escapes the next character
+/// when that character needs escaping (`backslash_escapes`); before any other character it is
+/// an ordinary character, so a Windows path keeps its separators.
 pub fn shell_words(s: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut cur = String::new();
     let mut has = false;
     let (mut single, mut double) = (false, false);
-    let mut chars = s.chars();
+    let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
             '\\' if !single => {
-                if let Some(n) = chars.next() {
-                    cur.push(n);
-                    has = true;
+                match chars.peek() {
+                    Some(&n) if backslash_escapes(n, double) => {
+                        cur.push(n);
+                        chars.next();
+                    }
+                    _ => cur.push('\\'),
                 }
+                has = true;
             }
             '\'' if !double => {
                 single = !single;
@@ -516,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "unproven on Windows: the gate rules read a command as bash words, which treats a backslash as an escape, so a Windows path in a command is read wrong. Windows is not exercised until jawata is the agent (his ruling 2026-10-07); the finding is filed as REL44-2")]
+    #[cfg_attr(windows, ignore = "unproven on Windows: since REL44-2 the word splitter keeps a Windows path as written (gatefile::tests::a_windows_path_keeps_its_separators, run on every platform), but these tests run end to end and have not run on a Windows machine since that fix; un-ignore them at the next Windows run")]
     fn a_cd_moves_the_base_the_next_script_is_read_from() {
         let (dir, name) = script_with("# jawata-gate: long");
         let elsewhere = std::env::temp_dir();
@@ -595,6 +625,33 @@ mod tests {
         assert_eq!(vec!["a b", "c"], shell_words("'a b' c"));
         assert_eq!(vec!["a b", "c"], shell_words("\"a b\" c"));
         assert_eq!(vec!["a b"], shell_words("a\\ b"));
+    }
+
+    /// REL44-2: a Windows path in a command keeps its separators, quoted or not — before, every
+    /// backslash was an escape and `C:\Users\x` was read as `C:Usersx`.
+    #[test]
+    fn a_windows_path_keeps_its_separators() {
+        assert_eq!(
+            vec!["cd", r"C:\Users\x\proj", "&&", "bash", r"build\run.sh"],
+            shell_words(r"cd C:\Users\x\proj && bash build\run.sh")
+        );
+        assert_eq!(
+            vec!["bash", r"C:\Program Files\x\run.sh"],
+            shell_words(r#"bash "C:\Program Files\x\run.sh""#)
+        );
+    }
+
+    /// The escapes a bash user writes on purpose still escape, so nothing a Linux or macOS
+    /// command meant changes with REL44-2's rule.
+    #[test]
+    fn the_escapes_bash_users_write_still_escape() {
+        assert_eq!(vec!["a b"], shell_words(r"a\ b"));
+        assert_eq!(vec![r#""q""#], shell_words(r#"\"q\""#));
+        assert_eq!(vec![r"\"], shell_words(r"\\"));
+        assert_eq!(vec![r#"a"b"#], shell_words(r#""a\"b""#));
+        assert_eq!(vec!["$HOME"], shell_words(r#""\$HOME""#));
+        assert_eq!(vec!["a;b"], shell_words(r"a\;b"));
+        assert_eq!(vec![r"\n"], shell_words(r"'\n'"), "a single-quoted backslash is literal");
     }
 
     #[test]
