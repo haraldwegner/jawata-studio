@@ -197,12 +197,19 @@ impl SeatSettings {
 }
 
 /// The seat file as this app writes it: the shipped content, with the chosen brain and model in
-/// its frontmatter when the user chose one. Any `brain:` / `model:` lines the content already
-/// carries are replaced, so applying it twice changes nothing.
-pub fn seat_file_content(content: &str, brain: Option<(&str, Option<&str>)>) -> String {
-    let Some((brain, model)) = brain else {
-        return content.to_string();
-    };
+/// its frontmatter when the user chose one, and `enabled: false` when the user switched the seat
+/// off. Any `brain:` / `model:` lines are replaced only when a brain was chosen (otherwise they are
+/// the file's own); an `enabled:` line is ALWAYS this app's, so it is always replaced. Applying it
+/// twice changes nothing.
+///
+/// C11-6: the off switch lived only in the settings sidecar, which the deploy reads and nothing
+/// else does — the scheduler and the engine's hire read the seat FILE. Written here, the one file
+/// every reader opens says the seat is off.
+pub fn seat_file_content(
+    content: &str,
+    brain: Option<(&str, Option<&str>)>,
+    enabled: bool,
+) -> String {
     let mut out = String::with_capacity(content.len() + 64);
     let mut fences = 0;
     for line in content.split_inclusive('\n') {
@@ -211,14 +218,25 @@ pub fn seat_file_content(content: &str, brain: Option<(&str, Option<&str>)>) -> 
             fences += 1;
         }
         let in_frontmatter = fences == 1 && trimmed != "---";
-        if in_frontmatter && (trimmed.starts_with("brain:") || trimmed.starts_with("model:")) {
+        if in_frontmatter && trimmed.starts_with("enabled:") {
+            continue;
+        }
+        if in_frontmatter
+            && brain.is_some()
+            && (trimmed.starts_with("brain:") || trimmed.starts_with("model:"))
+        {
             continue;
         }
         out.push_str(line);
         if in_frontmatter && trimmed.starts_with("name:") {
-            out.push_str(&format!("brain: {brain}\n"));
-            if let Some(model) = model {
-                out.push_str(&format!("model: {model}\n"));
+            if let Some((brain, model)) = brain {
+                out.push_str(&format!("brain: {brain}\n"));
+                if let Some(model) = model {
+                    out.push_str(&format!("model: {model}\n"));
+                }
+            }
+            if !enabled {
+                out.push_str("enabled: false\n");
             }
         }
     }
@@ -431,7 +449,11 @@ pub fn change_seat(
         SeatChange::Enabled { value } => {
             let mut settings = SeatSettings::load(seats_dir)?;
             settings.set_enabled(seat_name, value);
-            settings.save(seats_dir)
+            settings.save(seats_dir)?;
+            // C11-6: into the seat file NOW, for the same reason as the brain below — the file is
+            // what the scheduler and a hire read, and an off switch that waited for the next
+            // deploy would show the seat as off while a hire could still start it.
+            crate::conductor::materialize_seats(seats_dir).map(|_| ())
         }
         SeatChange::Clients { value } => {
             if let Some(unknown) = value.iter().find(|c| !valid_clients.contains(c)) {
@@ -642,6 +664,27 @@ mod tests {
 
     fn valid() -> Vec<String> {
         vec!["claude".into(), "cursor".into()]
+    }
+
+    /// C11-6: switching a seat OFF reaches the seat FILE at once — the file the scheduler and the
+    /// engine's hire read — as this app's own writing, so the seat still receives shipped updates;
+    /// switching it back on takes the line out.
+    #[test]
+    fn switching_a_seat_off_writes_it_into_the_seat_file_every_reader_opens() {
+        let dir = seeded("off-into-file");
+        change_seat(&dir, &valid(), "pm", SeatChange::Enabled { value: false }).unwrap();
+        let file = fs::read_to_string(dir.join("pm.md")).unwrap();
+        assert!(file.contains("\nenabled: false\n"), "the off switch is in the file: {file}");
+        let (seats, errors) = crate::runner::load_seat_definitions(&dir);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(!seats.iter().find(|s| s.name == "pm").unwrap().enabled, "and a reader sees it");
+
+        let again = crate::conductor::materialize_seats(&dir).unwrap();
+        assert!(!again.shadowed.contains(&"pm.md".to_string()), "still this app's writing: {again:?}");
+
+        change_seat(&dir, &valid(), "pm", SeatChange::Enabled { value: true }).unwrap();
+        let file = fs::read_to_string(dir.join("pm.md")).unwrap();
+        assert!(!file.contains("enabled:"), "on again: the line is gone, not flipped: {file}");
     }
 
     /// The brain choice reaches the one place a hire reads — the seat FILE — and does so as this

@@ -170,7 +170,8 @@ pub fn materialize_seats(seats_dir: &Path) -> Result<SeatMaterialization, String
     for (file, shipped) in EMBEDDED_SEATS {
         let path = seats_dir.join(file);
         let choice = settings.brain(file.trim_end_matches(".md"));
-        let derived = crate::seat_settings::seat_file_content(shipped, choice);
+        let enabled = settings.is_enabled(file.trim_end_matches(".md"));
+        let derived = crate::seat_settings::seat_file_content(shipped, choice, enabled);
         let body: &str = &derived;
         let write_current = |report_bucket: &mut Vec<String>,
                              manifest: &mut std::collections::BTreeMap<String, String>|
@@ -193,15 +194,15 @@ pub fn materialize_seats(seats_dir: &Path) -> Result<SeatMaterialization, String
                 }
             }
             Some(_) => {
-                // User-edited: config wins, loudly — but a brain the user CHOSE still reaches the
-                // file they edited, since otherwise the choice would show as made while every hire
-                // read their old lines. Their edits are kept; only the brain/model lines change.
-                if choice.is_some() {
-                    let with_choice = crate::seat_settings::seat_file_content(&existing, choice);
-                    if with_choice != existing {
-                        fs::write(&path, &with_choice)
-                            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-                    }
+                // User-edited: config wins, loudly — but a brain the user CHOSE, and the off
+                // switch, still reach the file they edited, since otherwise the choice would show
+                // as made while every hire read their old lines. Their edits are kept; only the
+                // brain/model lines (when chosen) and the enabled line change.
+                let with_choice =
+                    crate::seat_settings::seat_file_content(&existing, choice, enabled);
+                if with_choice != existing {
+                    fs::write(&path, &with_choice)
+                        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
                 }
                 if existing != body {
                     report.shadowed.push(file.to_string());

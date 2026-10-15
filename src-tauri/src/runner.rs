@@ -430,6 +430,18 @@ pub struct SeatDefinition {
     /// rule as `purpose`: the seat file is the one place it is written.
     #[serde(default)]
     pub fires: String,
+    /// Whether the seat is ON. Default true; only `enabled: false` in the seat FILE turns it
+    /// off, and that line is written by this app when the user switches the seat off
+    /// (`seat_settings::seat_file_content`). C11-6: the settings sidecar was consulted by the
+    /// deploy alone, so the scheduler and the engine's hire — both of which read the seat file —
+    /// went on treating an off seat as on. Carrying it in the file makes every reader see it.
+    #[serde(default = "seat_enabled_by_default")]
+    pub enabled: bool,
+}
+
+/// A seat nobody switched off is on.
+fn seat_enabled_by_default() -> bool {
+    true
 }
 
 /// Parses a seat definition: a `---` … `---` frontmatter block of
@@ -450,6 +462,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     let mut tools: Vec<String> = Vec::new();
     let mut gate_classes: Vec<GateClass> = Vec::new();
     let mut gate_exempt = false;
+    let mut enabled = true;
     let mut answer_gates: Vec<String> = Vec::new();
     let mut ceilings = Ceilings::default();
     let mut body_start = false;
@@ -490,6 +503,13 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
                     "true" => true,
                     "false" => false,
                     other => return Err(format!("gate_exempt '{other}': expected true or false")),
+                }
+            }
+            "enabled" => {
+                enabled = match value {
+                    "true" => true,
+                    "false" => false,
+                    other => return Err(format!("enabled '{other}': expected true or false")),
                 }
             }
             "gates" => {
@@ -576,6 +596,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
         tools,
         gate_classes,
         gate_exempt,
+        enabled,
         answer_gates,
         ceilings,
         stance: stance_trimmed.to_string(),
@@ -2928,6 +2949,9 @@ pub fn due_seats<'a>(
 ) -> Vec<&'a SeatDefinition> {
     seats
         .iter()
+        // C11-6: an OFF seat is not due, whatever its schedule says — the seat file carries
+        // the off line, so this reader sees what the deploy sees.
+        .filter(|seat| seat.enabled)
         .filter(|seat| {
             seat.schedule
                 .as_deref()
@@ -4131,6 +4155,27 @@ You are the echo seat. You document what you are told to document.
         assert!(err.contains("STORE sync failed"), "loud, never silent: {err}");
         let on_disk = fs::read_to_string(&journal).unwrap();
         assert!(on_disk.contains("declined"), "the local label still landed");
+    }
+
+    /// C11-6: a seat whose file says it is OFF is never due, whatever its schedule — and the
+    /// file's `enabled:` line is read strictly, so a typo is refused rather than read as on.
+    #[test]
+    fn an_off_seat_is_never_due_and_its_switch_is_read_strictly() {
+        let text = |enabled: &str| {
+            format!(
+                "---\nname: nightly\nmodel: m\nkind: text\n{enabled}schedule: \"0 6 * * *\"\n---\nstance\n"
+            )
+        };
+        let off = parse_seat_definition(&text("enabled: false\n")).unwrap();
+        let on = parse_seat_definition(&text("")).unwrap();
+        assert!(!off.enabled, "enabled: false reads as off");
+        assert!(on.enabled, "no line reads as on — a seat nobody switched off is on");
+        assert!(due_seats(&[off], 0, 6, 1, 1, 0).is_empty(), "off: not due at its own minute");
+        assert_eq!(due_seats(&[on], 0, 6, 1, 1, 0).len(), 1, "control: on, it is due");
+        assert!(
+            parse_seat_definition(&text("enabled: no\n")).is_err(),
+            "a switch that is neither true nor false is refused, not guessed"
+        );
     }
 
     #[test]
