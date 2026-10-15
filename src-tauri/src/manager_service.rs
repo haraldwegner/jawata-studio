@@ -16063,6 +16063,36 @@ judge was never told to give"
         }
     }
 
+    /// C9a-1: the help hand-kept a count of the engine's tools ("45 tools") that had drifted from the
+    /// 44 the engine publishes. No code needs that number and none can generate it from this repo
+    /// (the studio's CI has no engine checkout), so the help states none, and this keeps it so: a
+    /// digit directly before the word "tools" is a hand-kept count waiting to go stale. The live
+    /// count is one step away (Settings, Exposed Services, Test Services), which the help names.
+    #[test]
+    fn the_help_keeps_no_count_of_the_engines_tools() {
+        let help_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../src/assets/help.md");
+        let help = std::fs::read_to_string(&help_path).unwrap_or_else(|error| {
+            panic!("cannot read {}: {error} — this assertion did NOT run", help_path.display())
+        });
+        let counted: Vec<String> = help
+            .match_indices("tools")
+            .filter(|(at, _)| {
+                help[..*at]
+                    .trim_end_matches(|c: char| c == ' ' || c == '*')
+                    .ends_with(|c: char| c.is_ascii_digit())
+            })
+            .map(|(at, _)| {
+                let from = help[..at].rfind('\n').map_or(0, |n| n + 1);
+                help[from..at + 5].chars().rev().take(40).collect::<Vec<_>>().into_iter().rev().collect()
+            })
+            .collect();
+        assert!(
+            counted.is_empty(),
+            "help.md states a count of tools, which goes stale: {counted:?}"
+        );
+    }
+
     /// REL44-18: the help told a user to "revert with `undo_refactoring`", a tool the engine retired
     /// when undo became a verb of `refactoring`. Loose like the test above — it pins which undo the
     /// help names, not the sentence around it.

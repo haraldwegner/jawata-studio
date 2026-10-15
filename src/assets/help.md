@@ -31,7 +31,7 @@ A **workspace** is a named group of Java projects loaded into one JAWATA process
 - **One workspace per cohesive task.** A bundle/multi-module application (e.g. an Eclipse RCP product with 12 OSGi bundles), a monorepo, or a single project that you want isolated — each gets its own workspace.
 - **Live updates.** Add or remove a project from a workspace and the running JAWATA picks it up within ~1 second through a `workspace.json` file watcher. No MCP-client restart, no agent-session reload.
 - **No ports.** Workspaces are identified by name. There is no port range, no per-project port allocation, no port conflicts.
-- **Tool budget.** Each workspace contributes **45 tools** toward whatever cap your agent applies, so two active workspaces is already 90 before the client's own tools are counted. Cursor rejects past **40**; an IDE-hosted agent may arrive with dozens of its own. If tools go missing, this is the first thing to suspect.
+- **Tool budget.** Each workspace contributes **a few dozen tools** toward whatever cap your agent applies (the exact number is on **Settings → Exposed Services → Test Services**), so every additional active workspace adds that many again before the client's own tools are counted. Cursor rejects past **40**; an IDE-hosted agent may arrive with dozens of its own. If tools go missing, this is the first thing to suspect.
 
 ---
 
@@ -117,7 +117,7 @@ Each of these opens a **target picker**: tick the clients you want for that run 
 
 ### How JAWATA works — a compiler-grounded loop, not a bag of tools
 
-JAWATA is one **Java vertical over your whole workspace**, not a per-project add-on sitting beside ten per-language shims. Its 45 tools are **parametric front doors** — a `kind`/`action` parameter folds what would otherwise be a hundred narrow tools into a handful, which is what keeps a multi-workspace setup inside a client's tool cap at all. But the point isn't the list; it's the **loop the tools compose into**:
+JAWATA is one **Java vertical over your whole workspace**, not a per-project add-on sitting beside ten per-language shims. Its tools are **parametric front doors** — a `kind`/`action` parameter folds what would otherwise be a hundred narrow tools into a handful, which is what keeps a multi-workspace setup inside a client's tool cap at all. But the point isn't the list; it's the **loop the tools compose into**:
 
 - **Detect** — `find_quality_issue` / `find_modernization` surface Fowler smells, SOLID and Kerievsky violations, and modernization candidates — all compiler-resolved, so no regex false positives.
 - **Goal** — `refactor_to_pattern` names the target state: a design pattern to move *toward* (state / command / template method / visitor / compose method) or *away from* (inline singleton).
