@@ -426,6 +426,33 @@ enum RuntimeProcess {
     Adopted { pid: u32, port: u16, token: String },
 }
 
+/// The status record's detail for a workspace runtime that exited without the manager stopping it.
+///
+/// Status 70 is the engine's own watchdog (REL44-32): its HTTP listener stopped answering while the
+/// process lived, and it exits by design instead of staying deaf. That reason is worth saying,
+/// because a bare "status 70" leaves it to be guessed. Every other status keeps the wording it has
+/// always had. `respawning` is the join-and-start path's phrasing ("; respawning."); the read-only
+/// status read reports the death without claiming a respawn.
+fn unexpected_exit_detail(code: Option<i32>, respawning: bool) -> String {
+    if code == Some(70) {
+        return format!(
+            "Workspace runtime exited because its HTTP listener stopped answering (status 70, by \
+             design: a resident that cannot be reached exits instead of staying deaf){}",
+            if respawning { "; respawning." } else { "." }
+        );
+    }
+    let prefix = if respawning { "Previous workspace runtime" } else { "Workspace runtime" };
+    let tail = if respawning { "; respawning." } else { "." };
+    if code == Some(0) {
+        format!("{prefix} exited unexpectedly (status 0){tail}")
+    } else {
+        format!(
+            "{prefix} exited unexpectedly with status {}{tail}",
+            code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".into())
+        )
+    }
+}
+
 impl RuntimeProcess {
     fn id(&self) -> u32 {
         match self {
@@ -1435,14 +1462,7 @@ impl RuntimeManager {
             // captured exit code. Pre-v0.14.0 wrote Stopped here; the tray
             // glyph stayed gray on external kill instead of going red ✗.
             let exit_code = code;
-            let detail = if code == Some(0) {
-                "Previous workspace runtime exited unexpectedly (status 0); respawning.".into()
-            } else {
-                format!(
-                    "Previous workspace runtime exited unexpectedly with status {}; respawning.",
-                    code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".into())
-                )
-            };
+            let detail = unexpected_exit_detail(code, true);
             handles.remove(&reference.workspace_name);
             drop(handles);
 
@@ -1517,14 +1537,7 @@ impl RuntimeManager {
             // persist a Failed snapshot here too so the dashboard / tray
             // reflect the death without waiting for an explicit start.
             let exit_code = code;
-            let detail = if code == Some(0) {
-                "Workspace runtime exited unexpectedly (status 0).".into()
-            } else {
-                format!(
-                    "Workspace runtime exited unexpectedly with status {}.",
-                    code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".into())
-                )
-            };
+            let detail = unexpected_exit_detail(code, false);
             let failed = RuntimeStatusRecord {
                 project_id: reference.project_id.clone(),
                 phase: RuntimePhase::Failed,
@@ -3073,6 +3086,36 @@ mod tests {
     // ============================================================
     // Sprint 14 (v0.14.0, bugs.md #2): process-death → Failed (was Stopped)
     // ============================================================
+
+    /// REL44-32. The engine's watchdog exits with status 70 when its HTTP listener stops answering
+    /// (a resident measured alive for ten hours and deaf). Reading "exited unexpectedly with
+    /// status 70" off the tray would leave the reason to be guessed, so status 70 says what it
+    /// means. Every OTHER status keeps the exact wording it always had.
+    #[test]
+    fn a_resident_that_exited_deaf_says_so_and_every_other_exit_keeps_its_wording() {
+        let deaf = unexpected_exit_detail(Some(70), true);
+        assert!(deaf.contains("listener stopped answering"), "{deaf}");
+        assert!(deaf.contains("status 70"), "{deaf}");
+        assert!(deaf.ends_with("respawning."), "{deaf}");
+        assert!(unexpected_exit_detail(Some(70), false).contains("listener stopped answering"));
+
+        assert_eq!(
+            unexpected_exit_detail(Some(0), true),
+            "Previous workspace runtime exited unexpectedly (status 0); respawning."
+        );
+        assert_eq!(
+            unexpected_exit_detail(Some(1), true),
+            "Previous workspace runtime exited unexpectedly with status 1; respawning."
+        );
+        assert_eq!(
+            unexpected_exit_detail(None, false),
+            "Workspace runtime exited unexpectedly with status unknown."
+        );
+        assert_eq!(
+            unexpected_exit_detail(Some(0), false),
+            "Workspace runtime exited unexpectedly (status 0)."
+        );
+    }
 
     /// Spawn a command that exits immediately with code 1. The next
     /// status read must observe Failed with exit_code Some(1) — not
