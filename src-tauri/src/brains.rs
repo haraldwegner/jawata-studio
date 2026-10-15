@@ -510,6 +510,24 @@ mod tests {
         assert_eq!(reason.as_deref(), Some("Not logged in"));
     }
 
+    /// S16-39. This list is a COPY of what jawata-mcp's dialects answer through
+    /// `BrainDialect#writeContainment()`, and nothing derives one from the other across the two
+    /// repositories, so both sides pin the same fact. The engine's side is
+    /// `TheBrainsHeldOnlyByAnInstructionAreTheOnesStudioListsTest`; if its answer changes on
+    /// purpose, this value, the Seats view's label and the opt-in written into the seat file change
+    /// with it.
+    #[test]
+    fn the_brains_held_only_by_an_instruction_are_the_ones_the_engine_answers_for() {
+        assert_eq!(
+            HELD_BY_AN_INSTRUCTION,
+            ["cursor"],
+            "jawata-mcp's TheBrainsHeldOnlyByAnInstructionAreTheOnesStudioListsTest pins the engine's side"
+        );
+        for brain in HELD_BY_AN_INSTRUCTION {
+            assert!(HIRABLE.contains(&brain), "{brain} is listed as held by an instruction but cannot be hired");
+        }
+    }
+
     #[test]
     fn cursors_refusal_is_a_failed_login_with_its_own_words() {
         let measured = "Error: Authentication required. Run 'agent login', pass --api-key/--auth-token, \
