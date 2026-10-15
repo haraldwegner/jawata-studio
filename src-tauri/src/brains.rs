@@ -526,6 +526,13 @@ mod tests {
         for brain in HELD_BY_AN_INSTRUCTION {
             assert!(HIRABLE.contains(&brain), "{brain} is listed as held by an instruction but cannot be hired");
         }
+        // The engine's side iterates exactly these four names; a fifth hirable brain, or a changed
+        // one, must reach that test's list too, or its answer is never asked for.
+        assert_eq!(
+            HIRABLE,
+            ["claude-code", "codex", "cursor", "copilot"],
+            "jawata-mcp's TheBrainsHeldOnlyByAnInstructionAreTheOnesStudioListsTest asks the engine about these four"
+        );
     }
 
     #[test]
