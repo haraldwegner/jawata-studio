@@ -961,18 +961,7 @@ impl ManagerService {
                 None => target.enabled_by_settings,
             }
         };
-        // studio#19: a client that INHERITS its seat files must be visited
-        // AFTER the client it inherits them from, or the probe reads a
-        // directory that has not been written yet and answers "absent" on
-        // every first deploy. Stable, so the roster's display order survives
-        // for every client the ordering does not constrain.
-        let mut order: Vec<&DeployClientTarget> = clients.iter().collect();
-        order.sort_by_key(|t| {
-            let inherits = crate::client_dialect::client(t.id)
-                .map(|c| !c.seats_inherited_from.is_empty())
-                .unwrap_or(false);
-            u8::from(inherits)
-        });
+        let order = in_seat_dependency_order(&clients);
 
         for target in order {
             let is_selected = selected(target);
@@ -1018,19 +1007,7 @@ impl ManagerService {
             // against a promise nothing kept and the machine ended with no seat
             // files at all. That is the invisible absence the conditional
             // exists to prevent, arriving through the conditional.
-            let inherits_seat_commands = crate::client_dialect::client(target.id)
-                .map(|row| {
-                    row.inherits_seat_commands(|source| {
-                        clients
-                            .iter()
-                            .find(|c| c.id == source)
-                            .and_then(|t| t.target_path.as_deref())
-                            .and_then(|path| derive_seat_commands_dir(source, path))
-                            .map(|dir| seat_dir_carries_managed_seats(source, &dir))
-                            .unwrap_or(false)
-                    })
-                })
-                .unwrap_or(false);
+            let inherits_seat_commands = inherits_seat_commands_now(&clients, target);
 
             let result = self.deploy_to_client(
                 target.id,
@@ -1112,6 +1089,75 @@ impl ManagerService {
             mode: input.mode,
             ok,
             detail,
+            duration_ms: started_at.elapsed().as_millis(),
+            clients: results,
+        };
+        self.append_deploy_log(&result);
+        Ok(result)
+    }
+
+    /// The SEAT part of a deploy and nothing else — C11-4.
+    ///
+    /// What the Seats view runs after a change: materialize the seats and write (or remove) each
+    /// client's generated commands, through the same [`Self::deploy_seat_section`] a full deploy
+    /// calls, visiting clients in the same order and asking the same inheritance probe. It does NOT
+    /// rewrite any MCP configuration, rule block or hook, and it does not start a store load — a
+    /// full deploy did all of that on every seat toggle, to refresh one command file.
+    pub fn deploy_seats(&self) -> Result<DeployToAgentsResult, String> {
+        let started_at = Instant::now();
+        let settings = self.config_store.get_settings();
+        crate::backups::set_backups_root(&settings.data_root);
+        let clients = self.deploy_targets_for_settings(&settings);
+        let mode = DeployMode::Deploy;
+
+        let mut results = Vec::new();
+        for target in in_seat_dependency_order(&clients) {
+            if !target.enabled_by_settings || skipped_as_unsupported(target.id, &mode) {
+                continue;
+            }
+            let Some(path) = target.target_path.clone().and_then(normalize_optional_path) else {
+                continue;
+            };
+            let inherited = inherits_seat_commands_now(&clients, target);
+            let mut changed_sections = Vec::new();
+            let mut errors = Vec::new();
+            self.deploy_seat_section(
+                target.id,
+                &path,
+                &mode,
+                inherited,
+                &mut changed_sections,
+                &mut errors,
+            );
+            let failed = !errors.is_empty();
+            results.push(DeployClientResult {
+                client: target.id.to_string(),
+                target_path: path,
+                status: if failed { DeployClientStatus::Failed } else { DeployClientStatus::Success },
+                message: if failed {
+                    "Seat commands failed.".into()
+                } else {
+                    "Seat commands deployed.".into()
+                },
+                backup_path: None,
+                changed_sections,
+                validation_errors: errors,
+                preview_content: None,
+            });
+        }
+        let display_order: Vec<&str> = clients.iter().map(|t| t.id).collect();
+        results.sort_by_key(|r| {
+            display_order.iter().position(|id| *id == r.client).unwrap_or(usize::MAX)
+        });
+        let ok = results.iter().all(|r| !matches!(r.status, DeployClientStatus::Failed));
+        let result = DeployToAgentsResult {
+            mode,
+            ok,
+            detail: if ok {
+                "Seat commands deployed.".to_string()
+            } else {
+                "Seat commands deployed with failures.".to_string()
+            },
             duration_ms: started_at.elapsed().as_millis(),
             clients: results,
         };
@@ -2867,114 +2913,17 @@ impl ManagerService {
             changed_sections.push("rules".into());
         }
 
-        // Sprint 25a D1: the generated seat commands ride the same lifecycle.
-        // Seats are materialized-if-absent into <config>/seats/ (config wins —
-        // a user-edited seat regenerates every channel); parse errors are LOUD
-        // in the deploy result, never silently skipped.
-        {
-            let seats_dir = self.config_store.paths().config_dir.join("seats");
-            match crate::conductor::materialize_seats(&seats_dir) {
-                Err(error) => errors.push(format!("{client}: seat materialization: {error}")),
-                Ok(seat_report) => {
-                    // v3.7.7 (the seat-staleness bug, ruled major): what the
-                    // materialization DID is part of the deploy result —
-                    // refreshed seeds, pre-manifest migrations (backed up
-                    // beside the file), and user edits shadowing this build's
-                    // content are each named, never silent.
-                    if !seat_report.refreshed.is_empty() {
-                        changed_sections
-                            .push(format!("seatsRefreshed: {}", seat_report.refreshed.join(", ")));
-                    }
-                    if !seat_report.migrated.is_empty() {
-                        changed_sections.push(format!(
-                            "seatsMigrated (old copy kept as *.pre-refresh): {}",
-                            seat_report.migrated.join(", ")
-                        ));
-                    }
-                    if !seat_report.shadowed.is_empty() {
-                        changed_sections.push(format!(
-                            "seatsShadowedByYourEdits (this build ships a newer {}; your version stays)",
-                            seat_report.shadowed.join(", ")
-                        ));
-                    }
-                    let (seats, seat_errors) = crate::runner::load_seat_definitions(&seats_dir);
-                    for (seat_path, error) in &seat_errors {
-                        errors.push(format!(
-                            "{client}: seat definition {}: {error}",
-                            seat_path.display()
-                        ));
-                    }
-                    let force = matches!(mode, DeployMode::Regenerate);
-                    // Sprint 28a (D1): Antigravity is UNSUPPORTED — its
-                    // command-line tool has no mechanism to connect jawata at
-                    // all, so the workflow files we used to write for it steer
-                    // an agent toward tools it can never call. Stop writing
-                    // them, and REMOVE any a previous version left behind.
-                    //
-                    // `derive_seat_commands_dir` still answers for antigravity
-                    // on purpose: dropping the mapping would strand the
-                    // existing files forever, with nothing left that knows
-                    // where they are. Same shape as `remove_legacy_rule_sibling`.
-                    // studio#44: whichever branch follows, the files at the
-                    // RETIRED location are stale — a deploy that writes the new
-                    // ones and leaves the old ones is the duplicate-listing
-                    // defect of studio#19, one directory over.
-                    if remove_legacy_seat_commands(client, &path) {
-                        changed_sections.push("seatCommands".into());
-                    }
-                    if !client_still_receives_seat_commands(client) || seat_commands_inherited {
-                        if let Some(commands_dir) = derive_seat_commands_dir(client, &path) {
-                            // Utility commands first: `remove_managed_seat_commands`
-                            // prunes `.agent/workflows` when it empties, and a
-                            // pruned dir would strand the utility files inside it.
-                            match remove_managed_utility_commands(client, &commands_dir) {
-                                Ok(true) => changed_sections.push("utilityCommands".into()),
-                                Ok(false) => {}
-                                Err(error) => errors.push(error),
-                            }
-                            match remove_managed_seat_commands(client, &commands_dir) {
-                                Ok(true) => changed_sections.push("seatCommands".into()),
-                                Ok(false) => {}
-                                Err(error) => errors.push(error),
-                            }
-                        }
-                    } else if let Some(commands_dir) = derive_seat_commands_dir(client, &path) {
-                        match deploy_seat_commands(client, &commands_dir, &seats_dir, &seats, force) {
-                            Ok(changed) if !changed.is_empty() => {
-                                changed_sections.push("seatCommands".into())
-                            }
-                            Ok(_) => {}
-                            Err(error) => errors.push(error),
-                        }
-                        // Sprint 26 (D6), v3.3.1: the utility commands ride along.
-                        // Named by UTILITY_MAP rather than here — this comment
-                        // listed two of them by name and 28g's /setup made it
-                        // stale, which is the hand-written-list-beside-a-list
-                        // shape this file has already paid for.
-                        match write_managed_utility_commands(client, &commands_dir, force) {
-                            Ok(written) if !written.is_empty() => {
-                                changed_sections.push("utilityCommands".into())
-                            }
-                            Ok(_) => {}
-                            Err(error) => errors.push(error),
-                        }
-                        // v4.0.0: the stop judge. Deployed with the commands
-                        // because the gate that demands it ships in the same
-                        // release — a Rule B block naming a subagent the client
-                        // does not have would be a gate that can only refuse.
-                        if let Some(agents_dir) = derive_agents_dir(client, &path) {
-                            match write_managed_agents(&agents_dir, force) {
-                                Ok(written) if !written.is_empty() => {
-                                    changed_sections.push("agents".into())
-                                }
-                                Ok(_) => {}
-                                Err(error) => errors.push(error),
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Sprint 25a D1: the generated seat commands ride the same lifecycle — and since
+        // C11-4 they are ONE method, which the seats-only deploy calls too, so a seat change
+        // no longer rewrites every client's MCP configuration to refresh a command file.
+        self.deploy_seat_section(
+            client,
+            &path,
+            mode,
+            seat_commands_inherited,
+            &mut changed_sections,
+            &mut errors,
+        );
 
         // Sprint 28 (D-SHIM), v3.7.3: hook_config.json + the role binaries land
         // FIRST — before any settings writer runs. Every writer below resolves
@@ -3293,6 +3242,133 @@ impl ManagerService {
                 changed_sections,
                 validation_errors: errors,
                 preview_content: None,
+            }
+        }
+    }
+
+    /// The seat-commands section of a client deploy: materialize the seats, then write — or, for a
+    /// client that inherits another's directory or no longer receives commands, remove — the
+    /// generated seat and utility commands and the stop judge. Reports into the caller's
+    /// lists, as every section of [`Self::deploy_to_client`] does.
+    ///
+    /// C11-4: extracted so [`Self::deploy_seats`] runs exactly this and nothing else. Before it,
+    /// every seat toggle in the Seats view asked for a FULL deploy — rewriting every client's
+    /// MCP configuration and, with auto-seed on, starting a store load on every resident — to
+    /// refresh one command file.
+    fn deploy_seat_section(
+        &self,
+        client: &str,
+        path: &str,
+        mode: &DeployMode,
+        seat_commands_inherited: bool,
+        changed_sections: &mut Vec<String>,
+        errors: &mut Vec<String>,
+    ) {
+        // Seats are materialized-if-absent into <config>/seats/ (config wins —
+        // a user-edited seat regenerates every channel); parse errors are LOUD
+        // in the deploy result, never silently skipped.
+        {
+            let seats_dir = self.config_store.paths().config_dir.join("seats");
+            match crate::conductor::materialize_seats(&seats_dir) {
+                Err(error) => errors.push(format!("{client}: seat materialization: {error}")),
+                Ok(seat_report) => {
+                    // v3.7.7 (the seat-staleness bug, ruled major): what the
+                    // materialization DID is part of the deploy result —
+                    // refreshed seeds, pre-manifest migrations (backed up
+                    // beside the file), and user edits shadowing this build's
+                    // content are each named, never silent.
+                    if !seat_report.refreshed.is_empty() {
+                        changed_sections
+                            .push(format!("seatsRefreshed: {}", seat_report.refreshed.join(", ")));
+                    }
+                    if !seat_report.migrated.is_empty() {
+                        changed_sections.push(format!(
+                            "seatsMigrated (old copy kept as *.pre-refresh): {}",
+                            seat_report.migrated.join(", ")
+                        ));
+                    }
+                    if !seat_report.shadowed.is_empty() {
+                        changed_sections.push(format!(
+                            "seatsShadowedByYourEdits (this build ships a newer {}; your version stays)",
+                            seat_report.shadowed.join(", ")
+                        ));
+                    }
+                    let (seats, seat_errors) = crate::runner::load_seat_definitions(&seats_dir);
+                    for (seat_path, error) in &seat_errors {
+                        errors.push(format!(
+                            "{client}: seat definition {}: {error}",
+                            seat_path.display()
+                        ));
+                    }
+                    let force = matches!(mode, DeployMode::Regenerate);
+                    // Sprint 28a (D1): Antigravity is UNSUPPORTED — its
+                    // command-line tool has no mechanism to connect jawata at
+                    // all, so the workflow files we used to write for it steer
+                    // an agent toward tools it can never call. Stop writing
+                    // them, and REMOVE any a previous version left behind.
+                    //
+                    // `derive_seat_commands_dir` still answers for antigravity
+                    // on purpose: dropping the mapping would strand the
+                    // existing files forever, with nothing left that knows
+                    // where they are. Same shape as `remove_legacy_rule_sibling`.
+                    // studio#44: whichever branch follows, the files at the
+                    // RETIRED location are stale — a deploy that writes the new
+                    // ones and leaves the old ones is the duplicate-listing
+                    // defect of studio#19, one directory over.
+                    if remove_legacy_seat_commands(client, &path) {
+                        changed_sections.push("seatCommands".into());
+                    }
+                    if !client_still_receives_seat_commands(client) || seat_commands_inherited {
+                        if let Some(commands_dir) = derive_seat_commands_dir(client, &path) {
+                            // Utility commands first: `remove_managed_seat_commands`
+                            // prunes `.agent/workflows` when it empties, and a
+                            // pruned dir would strand the utility files inside it.
+                            match remove_managed_utility_commands(client, &commands_dir) {
+                                Ok(true) => changed_sections.push("utilityCommands".into()),
+                                Ok(false) => {}
+                                Err(error) => errors.push(error),
+                            }
+                            match remove_managed_seat_commands(client, &commands_dir) {
+                                Ok(true) => changed_sections.push("seatCommands".into()),
+                                Ok(false) => {}
+                                Err(error) => errors.push(error),
+                            }
+                        }
+                    } else if let Some(commands_dir) = derive_seat_commands_dir(client, &path) {
+                        match deploy_seat_commands(client, &commands_dir, &seats_dir, &seats, force) {
+                            Ok(changed) if !changed.is_empty() => {
+                                changed_sections.push("seatCommands".into())
+                            }
+                            Ok(_) => {}
+                            Err(error) => errors.push(error),
+                        }
+                        // Sprint 26 (D6), v3.3.1: the utility commands ride along.
+                        // Named by UTILITY_MAP rather than here — this comment
+                        // listed two of them by name and 28g's /setup made it
+                        // stale, which is the hand-written-list-beside-a-list
+                        // shape this file has already paid for.
+                        match write_managed_utility_commands(client, &commands_dir, force) {
+                            Ok(written) if !written.is_empty() => {
+                                changed_sections.push("utilityCommands".into())
+                            }
+                            Ok(_) => {}
+                            Err(error) => errors.push(error),
+                        }
+                        // v4.0.0: the stop judge. Deployed with the commands
+                        // because the gate that demands it ships in the same
+                        // release — a Rule B block naming a subagent the client
+                        // does not have would be a gate that can only refuse.
+                        if let Some(agents_dir) = derive_agents_dir(client, &path) {
+                            match write_managed_agents(&agents_dir, force) {
+                                Ok(written) if !written.is_empty() => {
+                                    changed_sections.push("agents".into())
+                                }
+                                Ok(_) => {}
+                                Err(error) => errors.push(error),
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -4469,6 +4545,42 @@ fn deploy_seat_commands(
     let settings = crate::seat_settings::SeatSettings::load(seats_dir)
         .map_err(|e| format!("{client}: seat settings: {e}"))?;
     write_managed_seat_commands(client, commands_dir, seats, &settings, force_rewrite)
+}
+
+/// The deploy targets in the order a run must VISIT them (studio#19): a client that INHERITS its
+/// seat files after the client it inherits them from, or the probe reads a directory that has
+/// not been written yet and answers "absent" on every first deploy. Stable, so the roster's
+/// display order survives for every client the ordering does not constrain. One function, for
+/// the full deploy and the seats-only deploy alike (C11-4).
+fn in_seat_dependency_order(clients: &[DeployClientTarget]) -> Vec<&DeployClientTarget> {
+    let mut order: Vec<&DeployClientTarget> = clients.iter().collect();
+    order.sort_by_key(|t| {
+        let inherits = crate::client_dialect::client(t.id)
+            .map(|c| !c.seats_inherited_from.is_empty())
+            .unwrap_or(false);
+        u8::from(inherits)
+    });
+    order
+}
+
+/// Whether `target` reads another client's seat directory that carries managed seats RIGHT NOW
+/// (studio#19). OBSERVED, not predicted: a source written earlier in the same run has already
+/// written its directory, so this answers for that case too — a prediction from the source being
+/// selected was wrong exactly when the source's own write failed.
+fn inherits_seat_commands_now(clients: &[DeployClientTarget], target: &DeployClientTarget) -> bool {
+    crate::client_dialect::client(target.id)
+        .map(|row| {
+            row.inherits_seat_commands(|source| {
+                clients
+                    .iter()
+                    .find(|c| c.id == source)
+                    .and_then(|t| t.target_path.as_deref())
+                    .and_then(|path| derive_seat_commands_dir(source, path))
+                    .map(|dir| seat_dir_carries_managed_seats(source, &dir))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// The provenance line every command this app renders carries — seats and utilities alike.
@@ -11739,6 +11851,53 @@ judge was never told to give"
             crate::release_manager::ReleaseManager::new().expect("http clients"),
             crate::runtime_manager::RuntimeManager::new(paths),
         )
+    }
+
+    /// C11-4: a change in the Seats view runs the SEAT part of a deploy — it writes the seat
+    /// commands and leaves every client's MCP configuration exactly as it was. Before, every
+    /// toggle asked for a full deploy, which rewrote that configuration for every client.
+    #[test]
+    fn a_seats_only_deploy_writes_the_commands_and_no_mcp_configuration() {
+        let dir = unique_tempdir("seats-only");
+        let service = service_over(&dir);
+        // A RESOLVABLE workspace, so a full deploy would really write the MCP config — without
+        // one it stops at validation and writes nothing, and this test could not tell the two
+        // paths apart. Same seam as the silence test below: a local jar and one project.
+        let jar = dir.join("jawata.jar");
+        fs::write(&jar, b"not really a jar").unwrap();
+        let mut settings = service.config_store.get_settings();
+        settings.global_runtime_source = crate::config::RuntimeSource::LocalJar {
+            jar_path: display_path(&jar),
+        };
+        settings.deploy_targets.claude = true;
+        service.config_store.write_settings(settings.clone()).unwrap();
+        service
+            .add_project(crate::config::AddProjectInput {
+                name: "alpha".into(),
+                project_path: dir.join("alpha").display().to_string(),
+                workspace_name: "alpha-ws".into(),
+            })
+            .expect("a workspace to deploy");
+        let settings = service.config_store.get_settings();
+        let targets = service.deploy_targets_for_settings(&settings);
+        let claude = targets.iter().find(|t| t.id == "claude").expect("claude is a target");
+        assert!(claude.enabled_by_settings, "control: the settings deploy to claude");
+        let mcp_path = claude.target_path.clone().expect("a claude config path");
+        fs::create_dir_all(Path::new(&mcp_path).parent().unwrap()).unwrap();
+        let sentinel = "{\"sentinel\": \"a config a seat toggle must not touch\"}\n";
+        fs::write(&mcp_path, sentinel).unwrap();
+
+        let result = service.deploy_seats().expect("the seats deploy answers");
+
+        assert_eq!(fs::read_to_string(&mcp_path).unwrap(), sentinel, "the MCP config is untouched");
+        let commands = derive_seat_commands_dir("claude", &mcp_path).expect("claude has commands");
+        assert!(claude_seat_file(&commands, "architect").exists(), "the seat commands were written");
+        let row = result.clients.iter().find(|r| r.client == "claude").expect("claude reported");
+        assert!(
+            row.changed_sections.iter().all(|s| s != "mcpConfig" && s != "rules"),
+            "and it reports no MCP or rule section: {:?}",
+            row.changed_sections
+        );
     }
 
     /// studio#22's wiring, which studio#45 was filed because nothing could see.

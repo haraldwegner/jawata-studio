@@ -939,6 +939,7 @@ pub fn run() {
             commands::clean_generated_data,
             commands::probe_services,
             commands::deploy_to_agents,
+            commands::deploy_seats,
             commands::knowledge_status,
             commands::resolution_status,
             commands::experience_verb,

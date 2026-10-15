@@ -547,6 +547,11 @@ export function deployToAgents(input: DeployToAgentsInput): Promise<DeployToAgen
   return invoke("deploy_to_agents", { input });
 }
 
+/** Deploys the seat commands only — what a change in the Seats view needs (C11-4). */
+export function deploySeats(): Promise<DeployToAgentsResult> {
+  return invoke("deploy_seats");
+}
+
 /** Retrieves context for the quit prompt. */
 export function getQuitPromptContext(): Promise<QuitPromptContext> {
   return invoke("get_quit_prompt_context");

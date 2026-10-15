@@ -6,6 +6,7 @@ import {
   cleanLogs,
   cleanWorkspaces,
   deployToAgents as deployToAgentsApi,
+  deploySeats as deploySeatsApi,
   deleteAllProjects,
   deleteProject,
   downloadOrUpdateJawata,
@@ -371,6 +372,32 @@ export function createAppStore() {
     }
   }
 
+  /** The seat part of a deploy only (C11-4): a Seats view change refreshes the command files and
+   * nothing else, reported through the same summary a full deploy uses. */
+  async function deploySeats() {
+    update((state) => ({
+      ...state,
+      deployBusy: true,
+      deployError: undefined,
+      lastDeployResult: undefined
+    }));
+    try {
+      const result = await deploySeatsApi();
+      update((state) => ({
+        ...state,
+        deployBusy: false,
+        deployError: undefined,
+        lastDeployResult: result
+      }));
+    } catch (error) {
+      update((state) => ({
+        ...state,
+        deployBusy: false,
+        deployError: normalizeError(error)
+      }));
+    }
+  }
+
   async function deleteProjectEntry(projectId: string) {
     update((state) => ({ ...state, isBusy: true, error: undefined }));
     try {
@@ -714,6 +741,7 @@ export function createAppStore() {
     clearCleanupSummary,
     probeServices,
     deployToAgents,
+    deploySeats,
     clearServiceProbeError,
     clearDeployError
   };

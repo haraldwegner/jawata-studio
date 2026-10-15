@@ -701,12 +701,13 @@
       <FieldView disabled={$appStore.isBusy} />
     </section>
   {:else if currentView === 'seats'}
-    <!-- Sprint 28g (D19/D20): the seats view. A change is written by the view, then the
-         dashboard's own Deploy is requested so it reaches the agents' directories. -->
+    <!-- Sprint 28g (D19/D20): the seats view. A change is written by the view, then the SEAT
+         part of a deploy runs so it reaches the agents' directories — not a full deploy, which
+         rewrote every client's MCP configuration and started a store load per toggle (C11-4). -->
     <section class="dashboard-main">
       <SeatsView
         disabled={$appStore.isBusy || $appStore.deployBusy}
-        on:changed={() => appStore.deployToAgents("deploy")}
+        on:changed={() => appStore.deploySeats()}
       />
     </section>
   {:else if currentView === 'help'}

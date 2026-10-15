@@ -15,8 +15,9 @@
   //
   // On is offered only where it does something (a seat with a command); Clients only when two
   // INDEPENDENT clients exist — Cursor reads Claude's seat directory, so offering both would let
-  // a seat vanish from both while Cursor read ticked. A change is written and the dashboard's
-  // own Deploy runs at once, so a toggle never waits on a second button somewhere else.
+  // a seat vanish from both while Cursor read ticked. A change is written and the seat part of a
+  // deploy runs at once, so a toggle never waits on a second button somewhere else (C11-4: only
+  // the seat commands, not every client's MCP configuration).
   import { createEventDispatcher, onMount } from "svelte";
   import {
     brainProbe,

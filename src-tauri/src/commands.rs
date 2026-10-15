@@ -360,6 +360,13 @@ pub fn deploy_to_agents(
     state.manager_service.deploy_to_agents(input)
 }
 
+/// The seat part of a deploy only (C11-4) — what the Seats view runs after a change, so a toggle
+/// does not rewrite every client's MCP configuration or start a store load.
+#[tauri::command]
+pub fn deploy_seats(state: State<'_, AppState>) -> Result<DeployToAgentsResult, String> {
+    state.manager_service.deploy_seats()
+}
+
 #[tauri::command]
 pub fn get_quit_prompt_context(state: State<'_, AppState>) -> Result<QuitPromptContext, String> {
     Ok(QuitPromptContext {
