@@ -27,6 +27,16 @@ fn main() {
         std::process::exit(jawata_hook::cadence::main(&all_args[2..]));
     }
 
+    // REL44-1: which build this binary IS. The integration tests ask it first, because once a
+    // stale sidecar copied over target/debug/jawata-hook made a whole run drive an older hook
+    // without anything noticing — the one test whose rule the old binary lacked failed, and
+    // every other test passed against the wrong program. No stdin, no store, no deadline.
+    if all_args.get(1).map(String::as_str) == Some("--version") {
+        use std::io::Write;
+        let _ = writeln!(std::io::stdout(), "{}", env!("CARGO_PKG_VERSION"));
+        std::process::exit(0);
+    }
+
     let argv0 = std::env::args().next().unwrap_or_default();
     let explain = std::env::args().any(|a| a == "--explain");
 
