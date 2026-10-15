@@ -3219,6 +3219,27 @@ You are the echo seat. You document what you are told to document.
             "no brain means claude-code, which ignores a script too");
     }
 
+    /// S10-2: a shipped seat's cost ceiling must cover what its own brief was MEASURED to cost.
+    /// The test manager shipped with 1.0; a real hire of it was stopped at 2.36 before writing
+    /// its report, and the same hire with room ended on its own at 3.065 with the full report
+    /// (2026-10-14). A ceiling below the measured cost makes the seat unable to finish, which
+    /// reads as the seat failing rather than as the number being wrong.
+    #[test]
+    fn the_test_managers_cost_ceiling_covers_the_run_it_was_measured_to_cost() {
+        const MEASURED_FULL_RUN_USD: f64 = 3.065;
+        let (_, body) = crate::conductor::EMBEDDED_SEATS
+            .iter()
+            .find(|(file, _)| file.ends_with("test-manager.md"))
+            .expect("the test manager ships");
+        let seat = parse_seat_definition(body).expect("it parses");
+        assert!(
+            seat.ceilings.cost_budget_usd >= MEASURED_FULL_RUN_USD,
+            "the shipped ceiling {} is below the {} a full run of its brief was measured to cost",
+            seat.ceilings.cost_budget_usd,
+            MEASURED_FULL_RUN_USD
+        );
+    }
+
     /// Harald, 2026-10-12: *"No fake model names!"* The shipped seats named `claude-sonnet-5` and
     /// `claude-haiku-4-5`, which no program on the machine vouched for. Until a name is read off
     /// a brain itself, no shipped seat names one.
