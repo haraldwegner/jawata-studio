@@ -193,7 +193,27 @@ pub fn script_run_by(segment: &str) -> Option<String> {
         if words.iter().skip(1).any(|w| w == "-c") {
             return None;
         }
-        return words.iter().skip(1).find(|w| !w.starts_with('-')).cloned();
+        // `bash -n script` PARSES the script and runs nothing (POSIX noexec, as is `-o noexec`),
+        // so it is a syntax check of a gate, not a run of one; refusing it as an uncaptured long
+        // run made the parse check of an edited gate script impossible without a declaration.
+        // Only the shell's OWN flags count — those before the script; `bash run.sh -n 4` passes
+        // `-n` to the script, which still runs.
+        let mut rest = words.iter().skip(1).peekable();
+        while let Some(flag) = rest.next_if(|w| w.starts_with('-')) {
+            if flag.starts_with("--") {
+                continue;
+            }
+            let letters = &flag[1..];
+            if letters.contains('n') {
+                return None;
+            }
+            // `-o NAME` (also clustered, `-euo pipefail`): the next word is the option's name,
+            // not the script — so it is consumed here, and `noexec` among them is a parse only.
+            if letters.ends_with('o') && rest.next().is_some_and(|name| name == "noexec") {
+                return None;
+            }
+        }
+        return rest.next().cloned();
     }
     if head.contains('/') || head.ends_with(".sh") {
         return Some(head.clone());
@@ -543,6 +563,21 @@ mod tests {
         assert_eq!(None, script_run_by("sed -n 1,5p ./a/b.sh"), "a script named as an argument is not run");
         assert_eq!(None, script_run_by("grep -c gate ./a/b.sh"));
         assert_eq!(None, script_run_by("echo ./a/b.sh"));
+    }
+
+    /// `bash -n` parses a script and runs nothing, so a syntax check of an edited gate is not a
+    /// run of it — the hook refused exactly that on 2026-10-15 as an uncaptured long run.
+    #[test]
+    fn a_shell_told_not_to_execute_runs_no_script() {
+        assert_eq!(None, script_run_by("bash -n ./a/b.sh"));
+        assert_eq!(None, script_run_by("bash -xn ./a/b.sh"), "noexec inside a cluster");
+        assert_eq!(None, script_run_by("bash -o noexec ./a/b.sh"));
+        // The flag belongs to the SHELL only before the script; after it, it is the script's own.
+        assert_eq!(Some("./a/b.sh".into()), script_run_by("bash ./a/b.sh -n 4"));
+        // An option's name is not the script it runs.
+        assert_eq!(Some("./a/b.sh".into()), script_run_by("bash -o pipefail ./a/b.sh"));
+        assert_eq!(Some("./a/b.sh".into()), script_run_by("bash -euo pipefail ./a/b.sh"));
+        assert_eq!(Some("./a/b.sh".into()), script_run_by("bash --norc ./a/b.sh"));
     }
 
     #[test]
