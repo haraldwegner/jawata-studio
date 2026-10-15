@@ -99,7 +99,9 @@
   function brainOptions(seat: SeatRow): BrainOption[] {
     const options: BrainOption[] = [];
     for (const b of brains.filter((x) => x.hirable && x.installed)) {
-      const note = loginNote(b);
+      // Choosing a brain whose writes are held only by an instruction to the model is the seat's
+      // word that it may run that way (the engine refuses the hire otherwise), so say it here.
+      const note = loginNote(b) + (b.writesHeldByInstruction ? " (writes held only by an instruction)" : "");
       options.push({
         value: `${b.id}|`,
         label: `${b.label} — ${b.takesModel ? "its default model" : "chooses its own model"}${note}`,

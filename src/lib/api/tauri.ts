@@ -911,6 +911,8 @@ export interface BrainStatus {
   hirable: boolean;
   /** Whether a hire passes this brain a model; the others choose their own. */
   takesModel: boolean;
+  /** Whether this brain's writes are held only by an instruction to the model, not by a mechanism. */
+  writesHeldByInstruction: boolean;
 }
 
 /** Asks each named agent program (every known one for an empty list) whether it is installed

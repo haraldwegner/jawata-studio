@@ -223,7 +223,9 @@ pub fn seat_file_content(
         }
         if in_frontmatter
             && brain.is_some()
-            && (trimmed.starts_with("brain:") || trimmed.starts_with("model:"))
+            && (trimmed.starts_with("brain:")
+                || trimmed.starts_with("model:")
+                || trimmed.starts_with("accepts_uncontained_writes:"))
         {
             continue;
         }
@@ -231,6 +233,11 @@ pub fn seat_file_content(
         if in_frontmatter && trimmed.starts_with("name:") {
             if let Some((brain, model)) = brain {
                 out.push_str(&format!("brain: {brain}\n"));
+                // S16-37: the engine refuses a hire on a brain held only by an instruction unless
+                // the seat says it accepts that. Choosing the brain here is that word.
+                if crate::brains::HELD_BY_AN_INSTRUCTION.contains(&brain) {
+                    out.push_str("accepts_uncontained_writes: true\n");
+                }
                 if let Some(model) = model {
                     out.push_str(&format!("model: {model}\n"));
                 }
@@ -724,6 +731,50 @@ mod tests {
         change_seat(&dir, &valid(), "pm", SeatChange::Reset).unwrap();
         let file = fs::read_to_string(dir.join("pm.md")).unwrap();
         assert!(!file.contains("brain:") && !file.contains("\nmodel:"), "reset takes this build's seat: {file}");
+    }
+
+    /// S16-37. The engine refuses a hire on a brain whose writes are held only by an instruction
+    /// (cursor) unless the seat's file says `accepts_uncontained_writes: true`. Choosing that brain
+    /// in this view IS the user's word, so the line is written with it — and only with it: a stale
+    /// opt-in must not outlive the choice that gave it.
+    #[test]
+    fn choosing_a_brain_held_only_by_an_instruction_writes_the_opt_in_the_hire_checks() {
+        let dir = seeded("brain-opt-in");
+        change_seat(&dir, &valid(), "pm", SeatChange::Brain { brain: "cursor".into(), model: None })
+            .unwrap();
+        let file = fs::read_to_string(dir.join("pm.md")).unwrap();
+        assert!(
+            file.contains("\nbrain: cursor\naccepts_uncontained_writes: true\n"),
+            "the hire reads this line, beside the brain it belongs to: {file}"
+        );
+
+        // A redeploy keeps it exactly once.
+        crate::conductor::materialize_seats(&dir).unwrap();
+        let file = fs::read_to_string(dir.join("pm.md")).unwrap();
+        assert_eq!(file.matches("accepts_uncontained_writes:").count(), 1, "{file}");
+
+        // Switching to a brain a mechanism contains removes it again.
+        change_seat(&dir, &valid(), "pm", SeatChange::Brain { brain: "codex".into(), model: None })
+            .unwrap();
+        let file = fs::read_to_string(dir.join("pm.md")).unwrap();
+        assert!(file.contains("\nbrain: codex\n"), "{file}");
+        assert!(!file.contains("accepts_uncontained_writes"), "no stale opt-in: {file}");
+    }
+
+    /// The strip matters on the path that starts from an EXISTING file (an edited seat whose
+    /// brain is being changed), where a line left by an earlier choice is really there.
+    #[test]
+    fn choosing_a_brain_replaces_an_existing_opt_in_instead_of_keeping_or_doubling_it() {
+        let existing = "---\nname: pm\nbrain: cursor\naccepts_uncontained_writes: true\ntools: []\n---\nbody\n";
+
+        let to_codex = seat_file_content(existing, Some(("codex", None)), true);
+        assert!(!to_codex.contains("accepts_uncontained_writes"), "stale opt-in kept: {to_codex}");
+        assert!(to_codex.contains("\nbrain: codex\n"), "{to_codex}");
+
+        let to_cursor = seat_file_content(existing, Some(("cursor", None)), true);
+        assert_eq!(to_cursor.matches("accepts_uncontained_writes:").count(), 1, "doubled: {to_cursor}");
+        assert_eq!(seat_file_content(&to_cursor, Some(("cursor", None)), true), to_cursor,
+            "applying it twice changes nothing");
     }
 
     #[test]

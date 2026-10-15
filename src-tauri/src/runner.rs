@@ -444,6 +444,12 @@ pub struct SeatDefinition {
     /// went on treating an off seat as on. Carrying it in the file makes every reader see it.
     #[serde(default = "seat_enabled_by_default")]
     pub enabled: bool,
+    /// The seat's own word that it may be hired on a brain whose writes are held only by an
+    /// instruction to the model (S16-37). The engine's hire reads the same key and REFUSES such a
+    /// brain without it; this parser used to refuse the key itself as unknown, so a seat the view
+    /// had just written for Cursor was one studio could no longer load.
+    #[serde(default)]
+    pub accepts_uncontained_writes: bool,
 }
 
 /// A seat nobody switched off is on.
@@ -471,6 +477,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     let mut gate_classes: Vec<GateClass> = Vec::new();
     let mut gate_exempt = false;
     let mut enabled = true;
+    let mut accepts_uncontained_writes = false;
     let mut answer_gates: Vec<String> = Vec::new();
     let mut ceilings = Ceilings::default();
     let mut body_start = false;
@@ -519,6 +526,17 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
                     "true" => true,
                     "false" => false,
                     other => return Err(format!("enabled '{other}': expected true or false")),
+                }
+            }
+            "accepts_uncontained_writes" => {
+                accepts_uncontained_writes = match value {
+                    "true" => true,
+                    "false" => false,
+                    other => {
+                        return Err(format!(
+                            "accepts_uncontained_writes '{other}': expected true or false"
+                        ))
+                    }
                 }
             }
             "gates" => {
@@ -624,6 +642,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
         gate_classes,
         gate_exempt,
         enabled,
+        accepts_uncontained_writes,
         answer_gates,
         ceilings,
         stance: stance_trimmed.to_string(),

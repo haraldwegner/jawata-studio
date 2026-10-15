@@ -53,6 +53,9 @@ pub struct BrainStatus {
     pub hirable: bool,
     /// Whether a hire passes this brain a model (`TAKES_MODEL`); the others choose their own.
     pub takes_model: bool,
+    /// Whether this brain's writes are held only by an instruction to the model
+    /// (`HELD_BY_AN_INSTRUCTION`), so a seat choosing it runs with that bound and no other.
+    pub writes_held_by_instruction: bool,
 }
 
 struct Spec {
@@ -79,6 +82,13 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
 /// as a seat's brain: offering one the hire cannot start (Grok, today) would be a choice that
 /// fails every hire.
 pub const HIRABLE: [&str; 4] = ["claude-code", "codex", "cursor", "copilot"];
+
+/// The hirable brains whose WRITES are held only by an instruction to the model, not by a
+/// mechanism — jawata-mcp's `WriteContainment` answers INSTRUCTION for them (S16, the architect's
+/// F1). The engine refuses a hire on one unless the seat's file says `accepts_uncontained_writes:
+/// true`; choosing one in the Seats view is the user's word, so the view writes that line with the
+/// brain (`seat_settings::seat_file_content`) and says so beside the choice.
+pub const HELD_BY_AN_INSTRUCTION: [&str; 1] = ["cursor"];
 
 /// The hirable brains a seat's model reaches: the engine passes `--model` to these two only
 /// (Copilot routes its own model, Codex's is set in its own config).
@@ -236,6 +246,7 @@ fn check(spec: &Spec) -> BrainStatus {
         models: None,
         hirable: HIRABLE.contains(&spec.id),
         takes_model: TAKES_MODEL.contains(&spec.id),
+        writes_held_by_instruction: HELD_BY_AN_INSTRUCTION.contains(&spec.id),
     };
     let Some((_, version)) = run(spec.program, &["--version"]) else {
         status.reason = Some(format!("`{}` is not installed on this machine.", spec.program));
