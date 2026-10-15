@@ -16024,6 +16024,26 @@ judge was never told to give"
         }
     }
 
+    /// REL44-18: the help told a user to "revert with `undo_refactoring`", a tool the engine retired
+    /// when undo became a verb of `refactoring`. Loose like the test above — it pins which undo the
+    /// help names, not the sentence around it.
+    #[test]
+    fn the_help_names_the_undo_that_exists() {
+        let help_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../src/assets/help.md");
+        let help = std::fs::read_to_string(&help_path).unwrap_or_else(|error| {
+            panic!("cannot read {}: {error} — this assertion did NOT run", help_path.display())
+        });
+        assert!(
+            !help.contains("undo_refactoring"),
+            "help.md names undo_refactoring, which the engine no longer publishes"
+        );
+        assert!(
+            help.contains("refactoring(action=undo"),
+            "help.md must name the undo a user can actually call: refactoring(action=undo, …)"
+        );
+    }
+
     #[test]
     fn sending_a_settings_key_instead_of_an_id_is_refused_by_name() {
         // The refusal existed; it just said "unknown id", which sent the reader

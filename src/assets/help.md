@@ -128,7 +128,7 @@ Two supporting ideas ship with that loop:
 - **Reuse over reinvent.** When an agent needs a near-duplicate class, letting the **compiler** derive it — `generate(kind=copy_class)` then `extract(kind=superclass)` — is cheaper and safer than the model re-authoring the code by hand. The tools exist so the agent writes *less* code, not more.
 - **Health-gated honesty.** The deployed rule block (and, on Claude Code, a `PreToolUse` hook) instructs the agent: on Java work, when JAWATA is unreachable, **ask — don't silently fall back to grep**. When the service is up, text search over `.java` is redirected to JAWATA's compiler-accurate tools. Non-Java work is untouched.
 
-Every mutating tool applies its change directly and returns `{ filesModified, diff, undoChangeId }` — verify with `compile_workspace`, revert with `undo_refactoring`, or pass `auto_apply: false` to stage a preview-then-commit. Detect tools carry MCP `readOnlyHint`, so a restricted client mode (e.g. Cursor Ask) can analyze without write permission.
+Every mutating tool applies its change directly and returns `{ filesModified, diff, undoChangeId }` — verify with `compile_workspace`, revert with `refactoring(action=undo, undoChangeId=…)`, or pass `auto_apply: false` to stage a preview-then-commit. Detect tools carry MCP `readOnlyHint`, so a restricted client mode (e.g. Cursor Ask) can analyze without write permission.
 
 ### The tool surface (live — not enumerated here)
 
