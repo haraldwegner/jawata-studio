@@ -393,6 +393,13 @@ pub struct SeatDefinition {
     /// hire was one studio could not load.
     #[serde(default)]
     pub brain: Option<String>,
+    /// The executable a `brain: script` seat runs (S16-6) — the engine's escape hatch for a CLI
+    /// with no dialect of its own. Read here under the engine's own two rules, so one file never
+    /// gets two answers: a script brain must name one, and no other brain may carry one (the
+    /// other brains would ignore it, and an ignored line lets its writer believe they chose
+    /// what runs).
+    #[serde(default)]
+    pub script: Option<String>,
     /// WHAT this seat reads — see [`SeatKind`]. Required; cross-checked against `tools`.
     pub kind: SeatKind,
     pub effort: Option<String>,
@@ -456,6 +463,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     let mut name = None;
     let mut model = None;
     let mut brain = None;
+    let mut script: Option<String> = None;
     let mut effort = None;
     let mut kind = None;
     let mut schedule = None;
@@ -492,6 +500,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
             "name" => name = Some(value.to_string()),
             "model" => model = Some(value.to_string()),
             "brain" => brain = Some(value.to_string()),
+            "script" => script = Some(value.to_string()).filter(|s| !s.is_empty()),
             "effort" => effort = Some(value.to_string()),
             "kind" => kind = Some(SeatKind::parse(value)?),
             "schedule" => schedule = Some(value.trim_matches('"').to_string()),
@@ -586,10 +595,28 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     if stance_trimmed.is_empty() {
         return Err("seat definition needs a stance body below the frontmatter".into());
     }
+    // S16-6: the engine's two rules for the script brain, read the same here.
+    let is_script = brain.as_deref().map(str::trim) == Some("script");
+    if is_script && script.is_none() {
+        return Err(format!(
+            "seat '{name}' declares brain 'script' and no 'script:' line naming the executable \
+             to run, so there is nothing to start"
+        ));
+    }
+    if !is_script {
+        if let Some(path) = &script {
+            return Err(format!(
+                "seat '{name}' declares script '{path}' on brain '{}', which would ignore it — \
+                 set brain: script to run it, or remove the line",
+                brain.as_deref().unwrap_or("claude-code")
+            ));
+        }
+    }
     Ok(SeatDefinition {
         name,
         model,
         brain,
+        script,
         kind,
         effort,
         schedule,
@@ -3169,6 +3196,27 @@ You are the echo seat. You document what you are told to document.
         let no_model = "---\nname: s\nkind: text\ntools: []\ngates: []\n---\nbody\n";
         let seat = parse_seat_definition(no_model).expect("a missing model is not an error");
         assert_eq!(seat.model, "", "empty means: ask the agent program for its own default");
+    }
+
+    /// S16-6: a seat the engine can hire through the script escape hatch is one studio loads —
+    /// the boundary this parser broke once already for `brain:` itself — and the engine's two
+    /// refusals hold here too, so one file never gets two answers.
+    #[test]
+    fn a_script_seat_loads_and_its_two_mismatches_are_refused_as_the_engine_refuses_them() {
+        let head = "---\nname: s\nkind: text\ntools: []\ngates: []\n";
+        let seat = parse_seat_definition(&format!("{head}brain: script\nscript: /opt/x.sh\n---\nbody\n"))
+            .expect("a script seat loads");
+        assert_eq!(seat.script.as_deref(), Some("/opt/x.sh"));
+
+        let nothing_to_run = parse_seat_definition(&format!("{head}brain: script\n---\nbody\n"));
+        assert!(nothing_to_run.unwrap_err().contains("script:"));
+
+        let ignored = parse_seat_definition(&format!("{head}brain: codex\nscript: /opt/x.sh\n---\nbody\n"));
+        assert!(ignored.unwrap_err().contains("codex"));
+        let ignored_by_default =
+            parse_seat_definition(&format!("{head}script: /opt/x.sh\n---\nbody\n"));
+        assert!(ignored_by_default.unwrap_err().contains("claude-code"),
+            "no brain means claude-code, which ignores a script too");
     }
 
     /// Harald, 2026-10-12: *"No fake model names!"* The shipped seats named `claude-sonnet-5` and
