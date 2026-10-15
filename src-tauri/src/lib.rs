@@ -1075,16 +1075,49 @@ fn run_canary_round<R: Runtime>(app: &AppHandle<R>) -> field_view::CanaryHealth 
     health
 }
 
-/// Swap the tray icon when — and only when — the verdict changed. Every swap is
-/// a D-Bus message the shell re-renders, and the tray menu ticker already
-/// taught this file what a per-second swap looks like to a user.
+/// How long an UNCHANGED verdict may go without its icon being sent again.
+///
+/// REL44-10, measured on 4.4.5 (2026-10-15): a sent icon is not a shown icon. The Ubuntu
+/// AppIndicator shell reads the PNG the tray library writes AFTER the call that wrote it has
+/// returned Ok, and it failed to — "Impossible to read image info … Failed to recognize image
+/// format", 28 such lines in 36 hours — so the panel kept the old amber while the studio held
+/// green, and nothing ever sent the icon again because the verdict did not move. The newest file
+/// on disk decoded to the green disc while the user looked at amber.
+///
+/// So an unchanged verdict is re-sent once a minute. The readability tick calls the applier
+/// every five seconds, which is why this is an interval and not "every call": every send writes
+/// a new file for the shell to read, and twelve a minute would buy nothing a single one does
+/// not.
+const TRAY_REASSERT_MILLIS: u64 = 60_000;
+
+/// Whether the icon must be sent now, given what was last sent and when.
+///
+/// Pure so the rule the fix rests on is testable without a tray: a CHANGED verdict is sent at
+/// once, and an unchanged one is sent again once [`TRAY_REASSERT_MILLIS`] has passed — because
+/// the only evidence that a send was shown is the shell's, and the studio cannot read it.
+fn tray_icon_paint_due(
+    last: Option<(field_view::CanaryHealth, u64)>,
+    health: field_view::CanaryHealth,
+    now_millis: u64,
+) -> bool {
+    match last {
+        None => true,
+        Some((sent, _)) if sent != health => true,
+        Some((_, sent_at)) => now_millis.saturating_sub(sent_at) >= TRAY_REASSERT_MILLIS,
+    }
+}
+
+/// Swap the tray icon when the verdict changed, and send an unchanged one again once
+/// [`TRAY_REASSERT_MILLIS`] has passed. Every swap is a D-Bus message the shell re-renders,
+/// and the tray menu ticker already taught this file what a per-second swap looks like to a
+/// user — which is why the re-send is an interval rather than every call.
 fn apply_canary_health_to_tray<R: Runtime>(
     app: &AppHandle<R>,
     health: field_view::CanaryHealth,
     tooltip: &str,
 ) {
     use std::sync::Mutex;
-    static LAST: Mutex<Option<field_view::CanaryHealth>> = Mutex::new(None);
+    static LAST: Mutex<Option<(field_view::CanaryHealth, u64)>> = Mutex::new(None);
     static LAST_TOOLTIP: Mutex<Option<String>> = Mutex::new(None);
 
     // studio#48: THE TOOLTIP IS TRACKED SEPARATELY FROM THE VERDICT, because its text
@@ -1097,6 +1130,11 @@ fn apply_canary_health_to_tray<R: Runtime>(
         last.as_deref() != Some(tooltip)
     };
     if tooltip_changed {
+        // REL44-11: the same words go into the menu, which every platform renders — the tooltip
+        // is not shown at all by the Ubuntu/Pop!_OS AppIndicator shell. Stored before the
+        // tooltip is attempted, so a platform that refuses tooltips still gets the words.
+        *TRAY_VERDICT_WORDS.lock().unwrap() = Some(tooltip.to_string());
+        refresh_tray_menu(app);
         if let Some(tray) = app.tray_by_id(TRAY_ICON_ID) {
             if let Err(e) = tray.set_tooltip(Some(tooltip)) {
                 // Not fatal and deliberately not an early return: the COLOUR is the
@@ -1109,11 +1147,9 @@ fn apply_canary_health_to_tray<R: Runtime>(
         }
     }
 
-    {
-        let last = LAST.lock().unwrap();
-        if *last == Some(health) {
-            return;
-        }
+    let now = field_view::now_millis();
+    if !tray_icon_paint_due(*LAST.lock().unwrap(), health, now) {
+        return;
     }
     if let Some(tray) = app.tray_by_id(TRAY_ICON_ID) {
         let icon = build_tray_icon_for(selected_tray_icon_variant(), health);
@@ -1125,7 +1161,7 @@ fn apply_canary_health_to_tray<R: Runtime>(
         eprintln!("jawata-studio: tray_by_id({TRAY_ICON_ID}) returned None");
         return;
     }
-    *LAST.lock().unwrap() = Some(health);
+    *LAST.lock().unwrap() = Some((health, now));
 }
 
 fn emit_quit_prompt_event(app_handle: &tauri::AppHandle, source: &str) {
@@ -1158,6 +1194,8 @@ fn phase_glyph(phase: &RuntimePhase) -> &'static str {
 /// of workspaces.
 ///
 /// Menu shape:
+///   jawata — 3 of 3 residents healthy   (disabled; the verdict in words, REL44-11)
+///   ─────
 ///   Open dashboard            (raises the full manager window)
 ///   ─────
 ///   Workspaces                (disabled header — only when ≥1 workspace)
@@ -1171,6 +1209,39 @@ fn phase_glyph(phase: &RuntimePhase) -> &'static str {
 ///
 /// Per-workspace items have id `tray_workspace_toggle:<workspace_name>`;
 /// the tray's `on_menu_event` handler parses the suffix and toggles.
+/// The tray's verdict IN WORDS, as the menu's own first row.
+///
+/// REL44-11 (Harald, 2026-10-15: "No tooltip on ubuntu / PopOs"). studio#48 made the tooltip the
+/// channel that says WHICH workspace and WHY when the disc turns amber, and the Ubuntu/Pop!_OS
+/// AppIndicator shell shows no tooltip at all — so on his platform an amber tray could not say
+/// anything, and the menu's dots are the PROCESS phase, not the health. The menu is the one
+/// surface every platform renders, so the same sentence is carried there.
+static TRAY_VERDICT_WORDS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The label of the verdict row, or none before the first verdict exists.
+///
+/// Pure so the menu's rule is testable without a tray: the row is exactly the tooltip's words,
+/// never a summary of them, because a second phrasing is a second thing that can drift.
+fn tray_verdict_row(words: Option<&str>) -> Option<String> {
+    words
+        .map(str::trim)
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+}
+
+/// What decides whether the menu must be rebuilt: the workspaces' phases, the autostart
+/// checkmark, and — since REL44-11 — the verdict words, so a change in WHY the tray is amber
+/// reaches the menu and is not held back by an unchanged workspace list.
+type TrayMenuKey = (Vec<(String, RuntimePhase)>, bool, Option<String>);
+
+fn tray_menu_key(
+    workspaces: Vec<(String, RuntimePhase)>,
+    autostart_on_boot: bool,
+    words: Option<&str>,
+) -> TrayMenuKey {
+    (workspaces, autostart_on_boot, tray_verdict_row(words))
+}
+
 fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     use tauri::menu::MenuItemBuilder;
 
@@ -1189,7 +1260,16 @@ fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .get_settings()
         .autostart_on_boot;
 
-    let mut builder = MenuBuilder::new(app)
+    let mut builder = MenuBuilder::new(app);
+    let words = TRAY_VERDICT_WORDS.lock().unwrap().clone();
+    if let Some(row) = tray_verdict_row(words.as_deref()) {
+        let verdict = MenuItemBuilder::new(row)
+            .id("tray_verdict")
+            .enabled(false)
+            .build(app)?;
+        builder = builder.item(&verdict).separator();
+    }
+    let mut builder = builder
         .text("tray_open_dashboard", "Open dashboard")
         .separator();
 
@@ -1253,8 +1333,7 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) {
     // saves through update_settings) forces a rebuild — otherwise the
     // periodic refresh would see the workspace snapshot unchanged and
     // skip the swap, leaving the checkmark stale.
-    type CacheKey = (Vec<(String, RuntimePhase)>, bool);
-    static LAST: Mutex<Option<CacheKey>> = Mutex::new(None);
+    static LAST: Mutex<Option<TrayMenuKey>> = Mutex::new(None);
 
     let workspace_snapshot: Vec<(String, RuntimePhase)> = app
         .state::<AppState>()
@@ -1268,7 +1347,8 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) {
         .manager_service
         .get_settings()
         .autostart_on_boot;
-    let snapshot: CacheKey = (workspace_snapshot, autostart_on_boot);
+    let words = TRAY_VERDICT_WORDS.lock().unwrap().clone();
+    let snapshot = tray_menu_key(workspace_snapshot, autostart_on_boot, words.as_deref());
 
     {
         let last = LAST.lock().unwrap();
@@ -1317,6 +1397,85 @@ mod tray_icon_tests {
     }
 
     use super::*;
+
+    /// REL44-10: a verdict that does not move is SENT AGAIN, because a send the shell failed to
+    /// show is invisible to the studio. Before the fix the applier sent only on a change, so on
+    /// 4.4.5 a green verdict whose one send the AppIndicator shell could not read left the panel
+    /// amber for good.
+    #[test]
+    fn an_unchanged_verdict_is_sent_again_once_the_interval_passes() {
+        use field_view::CanaryHealth::Green;
+        let sent_at = 1_000_000;
+        assert!(
+            tray_icon_paint_due(Some((Green, sent_at)), Green, sent_at + TRAY_REASSERT_MILLIS),
+            "green sent a minute ago is sent again — the only evidence it was SHOWN is the shell's"
+        );
+        assert!(
+            tray_icon_paint_due(Some((Green, sent_at)), Green, sent_at + 10 * TRAY_REASSERT_MILLIS),
+            "and an hour later still: the re-send is not a one-off"
+        );
+    }
+
+    /// REL44-11: on Linux the tooltip is never shown, so the menu carries the verdict's words —
+    /// the SAME sentence, naming the workspace and the reason, and nothing before the first
+    /// verdict exists.
+    #[test]
+    fn the_menu_carries_the_verdict_words_a_linux_tray_cannot_show() {
+        let degraded = field_view::judge_canary(
+            "orb-strategy",
+            "http://127.0.0.1:65000/mcp",
+            Err("request failed: connection refused".into()),
+            Err("request failed: connection refused".into()),
+            0,
+            0,
+        );
+        let board = vec![degraded];
+        let health = field_view::canary_health(&board, 0);
+        let words = field_view::canary_tooltip(health, &board, &[], 0);
+
+        let row = tray_verdict_row(Some(&words)).expect("a verdict gives the menu a row");
+        assert_eq!(row, words.trim(), "the row IS the tooltip's sentence, not a second phrasing");
+        assert!(row.contains("orb-strategy"), "it names the workspace: {row}");
+        assert!(row.contains("store not answering"), "and why it is amber: {row}");
+        assert_eq!(tray_verdict_row(None), None, "no verdict yet, no row");
+        assert_eq!(tray_verdict_row(Some("  ")), None, "and an empty sentence is not a row");
+    }
+
+    /// REL44-11's other half: a change in the WORDS alone must rebuild the menu — the workspace
+    /// list does not move when a second workspace breaks while the tray is already amber.
+    #[test]
+    fn a_change_in_the_words_alone_changes_the_menu_key() {
+        let workspaces = vec![("patterns".to_string(), RuntimePhase::Running)];
+        let healthy = tray_menu_key(workspaces.clone(), true, Some("jawata — 1 of 1 residents healthy"));
+        let broken = tray_menu_key(workspaces.clone(), true, Some("jawata — patterns: store not answering"));
+        assert_ne!(healthy, broken, "new words must not be held back by an unchanged workspace list");
+        assert_eq!(
+            healthy,
+            tray_menu_key(workspaces, true, Some("jawata — 1 of 1 residents healthy")),
+            "and the same words and list are the same key, so a steady state does not flicker"
+        );
+    }
+
+    /// The control: the five-second readability tick must NOT turn into a send every five
+    /// seconds, and a change must not wait for the interval.
+    #[test]
+    fn a_change_is_sent_at_once_and_a_repeat_inside_the_interval_is_not() {
+        use field_view::CanaryHealth::{Degraded, Green};
+        let sent_at = 1_000_000;
+        assert!(tray_icon_paint_due(None, Green, sent_at), "nothing sent yet: send");
+        assert!(
+            tray_icon_paint_due(Some((Degraded, sent_at)), Green, sent_at + 1),
+            "a changed verdict is sent at once, not a minute later"
+        );
+        assert!(
+            !tray_icon_paint_due(Some((Green, sent_at)), Green, sent_at + 5_000),
+            "the same verdict five seconds later is not sent again — that is the tick"
+        );
+        assert!(
+            !tray_icon_paint_due(Some((Green, sent_at)), Green, sent_at + TRAY_REASSERT_MILLIS - 1),
+            "nor one millisecond before the interval"
+        );
+    }
 
     /// Sprint 28 (v3.6.3): the tray icon is the BRANDED, FULL-COLOUR mark on every
     /// platform — macOS included — and is handed to the tray with no template flag.
