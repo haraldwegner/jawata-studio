@@ -4442,7 +4442,8 @@ fn remove_legacy_seat_commands(client: &str, mcp_target_path: &str) -> bool {
         .chain(crate::conductor::UTILITY_MAP.iter().map(|(cmd, _)| *cmd));
     for cmd in names {
         let path = legacy.join(format!("{cmd}.md"));
-        if path.exists() && fs::remove_file(&path).is_ok() {
+        // C11-10: only a file this app wrote — a user's own command of the same name stays.
+        if path.exists() && is_studio_generated(&path) && fs::remove_file(&path).is_ok() {
             removed = true;
         }
     }
@@ -11968,11 +11969,15 @@ judge was never told to give"
         // What a previous version left behind, in the retired location.
         let legacy = base.join("commands");
         fs::create_dir_all(&legacy).unwrap();
-        fs::write(legacy.join("cover.md"), "old flat command").unwrap();
-        fs::write(legacy.join("memorize.md"), "old flat utility").unwrap();
+        // What this app wrote there carried its provenance line, as every render has since C1.
+        fs::write(legacy.join("cover.md"), format!("old flat command\n> {GENERATED_MARKER}\n")).unwrap();
+        fs::write(legacy.join("memorize.md"), format!("old flat utility\n> {GENERATED_MARKER}\n")).unwrap();
         // A file that is NOT ours shares the directory and must survive: the
         // cleanup removes the names it wrote, never the folder's contents.
         fs::write(legacy.join("my-own-note.md"), "the user's").unwrap();
+        // And one that is not ours but has OUR name — C11-10's case at the retired location:
+        // a user's own /debug survives, because it does not carry the provenance line.
+        fs::write(legacy.join("debug.md"), "the user's own debug command").unwrap();
 
         let dir = derive_seat_commands_dir("cursor", &display_path(&cfg)).expect("cursor");
         assert_eq!(base.join("skills"), dir, "Cursor's own documented location");
@@ -11993,6 +11998,10 @@ judge was never told to give"
         assert!(
             legacy.join("my-own-note.md").is_file(),
             "a file jawata never wrote is not ours to delete"
+        );
+        assert!(
+            legacy.join("debug.md").is_file(),
+            "nor one under our command's name that jawata did not write"
         );
         // Idempotent: a second deploy finds nothing left to retire.
         assert!(!remove_legacy_seat_commands("cursor", &display_path(&cfg)));
