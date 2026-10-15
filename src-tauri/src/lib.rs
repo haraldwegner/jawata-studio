@@ -1111,6 +1111,65 @@ fn tray_icon_paint_due(
     }
 }
 
+/// One send of the tray icon. `Ok` means the platform ACCEPTED the send — never that the shell
+/// SHOWED it, which is the gap REL44-10 is about: the AppIndicator shell read the icon file after
+/// the call had returned Ok, and failed to.
+trait IconSink {
+    fn send(&self, health: field_view::CanaryHealth) -> Result<(), String>;
+}
+
+/// What the applier remembers between calls: the verdict it last sent, and when.
+///
+/// REL44-10: the decide-send-record sequence lives here rather than inline in the applier, so a
+/// test can drive it through a fake tray. With the rule tested alone, a send-only-on-change check
+/// kept in the applier would have passed every test while the panel stayed amber for good.
+struct TrayIconPainter {
+    last: Option<(field_view::CanaryHealth, u64)>,
+}
+
+impl TrayIconPainter {
+    const fn new() -> Self {
+        Self { last: None }
+    }
+
+    /// Send `health` when [`tray_icon_paint_due`] says so, and remember it only when the send
+    /// was accepted — so a refused send is tried again on the next call, and an accepted one is
+    /// repeated once the interval passes. Answers whether a send was accepted.
+    fn paint(
+        &mut self,
+        health: field_view::CanaryHealth,
+        now_millis: u64,
+        sink: &dyn IconSink,
+    ) -> bool {
+        if !tray_icon_paint_due(self.last, health, now_millis) {
+            return false;
+        }
+        if let Err(e) = sink.send(health) {
+            eprintln!("jawata-studio: {e}");
+            return false;
+        }
+        self.last = Some((health, now_millis));
+        true
+    }
+}
+
+/// The live tray as an [`IconSink`].
+struct AppTraySink<'a, R: Runtime> {
+    app: &'a AppHandle<R>,
+}
+
+impl<R: Runtime> IconSink for AppTraySink<'_, R> {
+    fn send(&self, health: field_view::CanaryHealth) -> Result<(), String> {
+        let tray = self
+            .app
+            .tray_by_id(TRAY_ICON_ID)
+            .ok_or_else(|| format!("tray_by_id({TRAY_ICON_ID}) returned None"))?;
+        let icon = build_tray_icon_for(selected_tray_icon_variant(), health);
+        tray.set_icon(Some(icon))
+            .map_err(|e| format!("tray.set_icon failed: {e}"))
+    }
+}
+
 /// Swap the tray icon when the verdict changed, and send an unchanged one again once
 /// [`TRAY_REASSERT_MILLIS`] has passed. Every swap is a D-Bus message the shell re-renders,
 /// and the tray menu ticker already taught this file what a per-second swap looks like to a
@@ -1121,7 +1180,7 @@ fn apply_canary_health_to_tray<R: Runtime>(
     tooltip: &str,
 ) {
     use std::sync::Mutex;
-    static LAST: Mutex<Option<(field_view::CanaryHealth, u64)>> = Mutex::new(None);
+    static PAINTER: Mutex<TrayIconPainter> = Mutex::new(TrayIconPainter::new());
     static LAST_TOOLTIP: Mutex<Option<String>> = Mutex::new(None);
 
     // studio#48: THE TOOLTIP IS TRACKED SEPARATELY FROM THE VERDICT, because its text
@@ -1151,21 +1210,10 @@ fn apply_canary_health_to_tray<R: Runtime>(
         }
     }
 
-    let now = field_view::now_millis();
-    if !tray_icon_paint_due(*LAST.lock().unwrap(), health, now) {
-        return;
-    }
-    if let Some(tray) = app.tray_by_id(TRAY_ICON_ID) {
-        let icon = build_tray_icon_for(selected_tray_icon_variant(), health);
-        if let Err(e) = tray.set_icon(Some(icon)) {
-            eprintln!("jawata-studio: tray.set_icon failed: {e}");
-            return;
-        }
-    } else {
-        eprintln!("jawata-studio: tray_by_id({TRAY_ICON_ID}) returned None");
-        return;
-    }
-    *LAST.lock().unwrap() = Some((health, now));
+    PAINTER
+        .lock()
+        .unwrap()
+        .paint(health, field_view::now_millis(), &AppTraySink { app });
 }
 
 fn emit_quit_prompt_event(app_handle: &tauri::AppHandle, source: &str) {
@@ -1246,13 +1294,74 @@ fn tray_menu_key(
     (workspaces, autostart_on_boot, tray_verdict_row(words))
 }
 
-fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
-    use tauri::menu::MenuItemBuilder;
+/// One row of the tray menu, before any platform builds it.
+#[derive(Debug, Clone, PartialEq)]
+enum TrayRow {
+    Item { id: String, label: String, enabled: bool },
+    Check { id: String, label: String, checked: bool },
+    Separator,
+}
 
-    let summaries = app
+/// The tray menu's rows, decided without a tray.
+///
+/// REL44-11: what the menu SAYS is decided here, so a test reads the rows a platform would show.
+/// When the verdict row was decided inside the builder, its tests could only reach the helper
+/// that names it, and dropping the row from the menu passed every one of them.
+fn tray_menu_rows(
+    words: Option<&str>,
+    workspaces: &[(String, RuntimePhase)],
+    autostart_on_boot: bool,
+) -> Vec<TrayRow> {
+    let item = |id: &str, label: &str, enabled: bool| TrayRow::Item {
+        id: id.to_string(),
+        label: label.to_string(),
+        enabled,
+    };
+    let mut rows = Vec::new();
+    if let Some(row) = tray_verdict_row(words) {
+        rows.push(item("tray_verdict", &row, false));
+        rows.push(TrayRow::Separator);
+    }
+    rows.push(item("tray_open_dashboard", "Open dashboard", true));
+    rows.push(TrayRow::Separator);
+    if !workspaces.is_empty() {
+        rows.push(item("tray_workspaces_header", "Workspaces", false));
+        for (name, phase) in workspaces {
+            rows.push(item(
+                &format!("tray_workspace_toggle:{name}"),
+                &format!("  {}  {}", phase_glyph(phase), name),
+                true,
+            ));
+        }
+        rows.push(TrayRow::Separator);
+    }
+    rows.push(item("tray_start_all_services", "Start all services", true));
+    rows.push(item("tray_reload_all_services", "Reload all services", true));
+    rows.push(item("tray_stop_all_services", "Stop all services", true));
+    rows.push(TrayRow::Separator);
+    // Sprint 14 (v0.14.0): tray-side autostart toggle. A check item surfaces a native checkmark
+    // on most platforms; GNOME-via-AppIndicator strips per-item icons but still honours the menu
+    // protocol's checked state, so the toggle stays legible.
+    rows.push(TrayRow::Check {
+        id: "tray_autostart_on_boot".to_string(),
+        label: "Autostart on boot".to_string(),
+        checked: autostart_on_boot,
+    });
+    rows.push(TrayRow::Separator);
+    rows.push(item("tray_quit", "Quit", true));
+    rows
+}
+
+fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    use tauri::menu::{CheckMenuItemBuilder, MenuItemBuilder};
+
+    let workspaces: Vec<(String, RuntimePhase)> = app
         .state::<AppState>()
         .manager_service
-        .workspace_status_summary();
+        .workspace_status_summary()
+        .into_iter()
+        .map(|s| (s.workspace_name, s.phase))
+        .collect();
 
     // Sprint 14 (v0.14.0): pulled out separately because the tray-side
     // toggle for "Autostart on boot" needs its CURRENT value to render
@@ -1263,61 +1372,23 @@ fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .manager_service
         .get_settings()
         .autostart_on_boot;
+    let words = TRAY_VERDICT_WORDS.lock().unwrap().clone();
 
     let mut builder = MenuBuilder::new(app);
-    let words = TRAY_VERDICT_WORDS.lock().unwrap().clone();
-    if let Some(row) = tray_verdict_row(words.as_deref()) {
-        let verdict = MenuItemBuilder::new(row)
-            .id("tray_verdict")
-            .enabled(false)
-            .build(app)?;
-        builder = builder.item(&verdict).separator();
+    for row in tray_menu_rows(words.as_deref(), &workspaces, autostart_on_boot) {
+        builder = match row {
+            TrayRow::Item { id, label, enabled } => {
+                let item = MenuItemBuilder::new(label).id(id).enabled(enabled).build(app)?;
+                builder.item(&item)
+            }
+            TrayRow::Check { id, label, checked } => {
+                let item = CheckMenuItemBuilder::with_id(id, label).checked(checked).build(app)?;
+                builder.item(&item)
+            }
+            TrayRow::Separator => builder.separator(),
+        };
     }
-    let mut builder = builder
-        .text("tray_open_dashboard", "Open dashboard")
-        .separator();
-
-    if !summaries.is_empty() {
-        let header = MenuItemBuilder::new("Workspaces")
-            .id("tray_workspaces_header")
-            .enabled(false)
-            .build(app)?;
-        builder = builder.item(&header);
-
-        for summary in &summaries {
-            let label = format!(
-                "  {}  {}",
-                phase_glyph(&summary.phase),
-                summary.workspace_name
-            );
-            let id = format!("tray_workspace_toggle:{}", summary.workspace_name);
-            builder = builder.text(id, label);
-        }
-
-        builder = builder.separator();
-    }
-
-    // Sprint 14 (v0.14.0): tray-side autostart toggle. CheckMenuItemBuilder
-    // surfaces a native checkmark on most platforms; GNOME-via-AppIndicator
-    // strips per-item icons but still honours the menu protocol's checked
-    // state, so the toggle stays legible.
-    use tauri::menu::CheckMenuItemBuilder;
-    let autostart_item = CheckMenuItemBuilder::with_id(
-        "tray_autostart_on_boot",
-        "Autostart on boot",
-    )
-    .checked(autostart_on_boot)
-    .build(app)?;
-
-    builder
-        .text("tray_start_all_services", "Start all services")
-        .text("tray_reload_all_services", "Reload all services")
-        .text("tray_stop_all_services", "Stop all services")
-        .separator()
-        .item(&autostart_item)
-        .separator()
-        .text("tray_quit", "Quit")
-        .build()
+    builder.build()
 }
 
 /// Rebuild the tray menu and swap it onto the live tray icon — but only
@@ -1438,6 +1509,75 @@ mod tray_icon_tests {
         );
     }
 
+    /// A shell that accepts every send and silently fails to show the first `drops` of them —
+    /// the 4.4.5 AppIndicator shell, which logged "Failed to recognize image format" for a file
+    /// the studio had already been told was set. `shown` is what the user sees.
+    struct DroppingShell {
+        drops: usize,
+        sends: std::cell::Cell<usize>,
+        shown: std::cell::Cell<field_view::CanaryHealth>,
+    }
+
+    impl IconSink for DroppingShell {
+        fn send(&self, health: field_view::CanaryHealth) -> Result<(), String> {
+            self.sends.set(self.sends.get() + 1);
+            if self.sends.get() > self.drops {
+                self.shown.set(health);
+            }
+            Ok(())
+        }
+    }
+
+    /// REL44-10, the test the finding named: a tray whose first send of the new verdict is
+    /// silently dropped still ends on that verdict. The panel shows amber, the studio's verdict
+    /// turns green, and the applier is called on the five-second readability tick for two
+    /// minutes. Before the fix the one accepted send was the last one, and the panel stayed
+    /// amber however long the studio held green.
+    #[test]
+    fn a_tray_that_drops_the_first_send_still_ends_on_the_current_verdict() {
+        use field_view::CanaryHealth::{Degraded, Green};
+        let shell = DroppingShell {
+            drops: 1,
+            sends: std::cell::Cell::new(0),
+            shown: std::cell::Cell::new(Degraded),
+        };
+        let mut painter = TrayIconPainter::new();
+        for tick in 0..=24u64 {
+            painter.paint(Green, 1_000_000 + tick * 5_000, &shell);
+        }
+        assert_eq!(
+            shell.shown.get(),
+            Green,
+            "the panel must end on the studio's verdict, not on the send the shell dropped \
+             ({} sends in two minutes)",
+            shell.sends.get()
+        );
+        assert!(
+            shell.sends.get() <= 3,
+            "and the five-second tick must not become a send every five seconds: {} sends",
+            shell.sends.get()
+        );
+    }
+
+    /// A send the platform REFUSED is not remembered as sent, so the next tick tries again at
+    /// once instead of waiting out the interval — the behaviour the applier had before REL44-10,
+    /// kept when the decision moved into the painter.
+    #[test]
+    fn a_refused_send_is_tried_again_on_the_next_tick() {
+        use field_view::CanaryHealth::Green;
+        struct RefusesOnce(std::cell::Cell<usize>);
+        impl IconSink for RefusesOnce {
+            fn send(&self, _: field_view::CanaryHealth) -> Result<(), String> {
+                self.0.set(self.0.get() + 1);
+                if self.0.get() == 1 { Err("tray.set_icon failed: test".into()) } else { Ok(()) }
+            }
+        }
+        let sink = RefusesOnce(std::cell::Cell::new(0));
+        let mut painter = TrayIconPainter::new();
+        assert!(!painter.paint(Green, 1_000_000, &sink), "the refused send reports false");
+        assert!(painter.paint(Green, 1_005_000, &sink), "and the next tick sends again");
+    }
+
     /// REL44-11: on Linux the tooltip is never shown, so the menu carries the verdict's words —
     /// the SAME sentence, naming the workspace and the reason, and nothing before the first
     /// verdict exists.
@@ -1461,6 +1601,40 @@ mod tray_icon_tests {
         assert!(row.contains("store not answering"), "and why it is amber: {row}");
         assert_eq!(tray_verdict_row(None), None, "no verdict yet, no row");
         assert_eq!(tray_verdict_row(Some("  ")), None, "and an empty sentence is not a row");
+    }
+
+    /// REL44-11, the test the finding named: for a Degraded board the menu a platform builds
+    /// carries the verdict's words, as its first row, disabled, naming the workspace and why.
+    #[test]
+    fn the_menu_of_a_degraded_board_names_the_workspace_and_why() {
+        let degraded = field_view::judge_canary(
+            "orb-strategy",
+            "http://127.0.0.1:65000/mcp",
+            Err("request failed: connection refused".into()),
+            Err("request failed: connection refused".into()),
+            0,
+            0,
+        );
+        let board = vec![degraded];
+        let words = field_view::canary_tooltip(field_view::canary_health(&board, 0), &board, &[], 0);
+        let workspaces = vec![("orb-strategy".to_string(), RuntimePhase::Running)];
+
+        let rows = tray_menu_rows(Some(&words), &workspaces, false);
+        match &rows[0] {
+            TrayRow::Item { id, label, enabled } => {
+                assert_eq!(id, "tray_verdict", "the verdict is the menu's first row: {rows:?}");
+                assert!(label.contains("orb-strategy"), "it names the workspace: {label}");
+                assert!(label.contains("store not answering"), "and why it is amber: {label}");
+                assert!(!enabled, "a statement, not a command");
+            }
+            other => panic!("the first row must be the verdict, got {other:?}"),
+        }
+        assert!(
+            !tray_menu_rows(None, &workspaces, false)
+                .iter()
+                .any(|r| matches!(r, TrayRow::Item { id, .. } if id == "tray_verdict")),
+            "and before any verdict exists there is no verdict row"
+        );
     }
 
     /// REL44-11's other half: a change in the WORDS alone must rebuild the menu — the workspace
