@@ -14015,6 +14015,37 @@ judge was never told to give"
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// REL44-17: every file that states this product's version states the SAME one. The 4.3.4,
+    /// 4.4.0 and 4.4.1 bumps each touched four files and skipped the hook crate, so the hook has
+    /// written "v4.3.3" into its own log lines on every install since — and a version in a log is
+    /// what a reader trusts to say which program wrote it.
+    #[test]
+    fn every_version_file_states_the_studios_version() {
+        let studio = env!("CARGO_PKG_VERSION");
+        let toml_version = |text: &str| {
+            text.lines()
+                .find(|l| l.starts_with("version"))
+                .and_then(|l| l.split('"').nth(1))
+                .map(str::to_string)
+        };
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json parses");
+        let package: serde_json::Value =
+            serde_json::from_str(include_str!("../../package.json")).expect("package.json parses");
+        let found = [
+            ("tauri.conf.json", conf["version"].as_str().map(str::to_string)),
+            ("package.json", package["version"].as_str().map(str::to_string)),
+            ("jawata-hook/Cargo.toml", toml_version(include_str!("../jawata-hook/Cargo.toml"))),
+        ];
+        for (file, version) in found {
+            assert_eq!(
+                version.as_deref(),
+                Some(studio),
+                "{file} states {version:?} where the studio crate is {studio} — a bump skipped it"
+            );
+        }
+    }
+
     #[test]
     fn the_resolver_looks_for_the_name_tauri_conf_actually_ships() {
         // C7 audit F3. The previous version of this test was a TAUTOLOGY: it
