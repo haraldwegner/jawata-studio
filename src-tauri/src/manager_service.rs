@@ -5039,17 +5039,17 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
             .to_string(),
         String::new(),
         "- Find a symbol by name → `search_symbols` (not grep)".to_string(),
-        "- Who calls / uses this → `find_references` / `find_method_references` / \
-         `get_call_hierarchy_incoming` (not grep)"
+        "- Who calls / uses this → `find_references` / `get_call_hierarchy` (direction=incoming) \
+         (not grep)"
             .to_string(),
-        "- Type shape, members, hierarchy, supertypes → `analyze_type` / `get_type_members` \
-         / `get_type_hierarchy`"
+        "- Type shape, members, hierarchy, supertypes → `inspect` (kind=type_members / \
+         type_hierarchy) / `analyze` (kind=type)"
             .to_string(),
         "- Jump to a definition → `go_to_definition`".to_string(),
         "- Errors / does it compile → `compile_workspace` + `get_diagnostics`".to_string(),
-        "- Change code structurally → the refactoring tools (`rename_symbol`, \
-         `extract_method`, `inline_method`, `pull_up`, `change_method_signature`, …). Do \
-         NOT hand-edit a rename/move/extract."
+        "- Change code structurally → the refactoring tools (`rename_symbol`, `extract`, \
+         `inline`, `hierarchy`, `change_method_signature`, …). Do NOT hand-edit a \
+         rename/move/extract."
             .to_string(),
         String::new(),
         "Shell text search is a FALLBACK only — when JAWATA is unavailable, or for \
@@ -5099,7 +5099,7 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
         "2. Apply ONE refactoring via a JAWATA tool (it returns a diff + `undoChangeId`)."
             .to_string(),
         "3. Re-check: `compile_workspace` + run the tests again.".to_string(),
-        "4. Green → keep going. Red → `undo_refactoring` and rethink. One step at a time."
+        "4. Green → keep going. Red → `refactoring(action=undo)` and rethink. One step at a time."
             .to_string(),
         String::new(),
         // v2.5.1 (Cursor parity, interim): the experience store is the CROSS-CLIENT
@@ -10580,7 +10580,7 @@ mod tests {
         // Routing-table section: names the key tools + the grep-fallback rule.
         assert!(block.contains("search_symbols"), "names search_symbols");
         assert!(block.contains("find_references"), "names find_references");
-        assert!(block.contains("analyze_type"), "names analyze_type");
+        assert!(block.contains("`inspect`"), "names inspect for type shape and hierarchy");
         assert!(block.contains("rename_symbol"), "names a refactoring tool");
         assert!(
             block.contains("grep") && block.to_lowercase().contains("fallback"),
@@ -10589,7 +10589,7 @@ mod tests {
 
         // TDD-refactor loop: the verify + undo discipline.
         assert!(block.contains("compile_workspace"), "mentions compile_workspace");
-        assert!(block.contains("undo_refactoring"), "mentions undo on red");
+        assert!(block.contains("refactoring(action=undo)"), "mentions undo on red");
 
         // Contract preserved: markers + managed-id list still render.
         assert!(block.starts_with("<!-- jawata-studio:cursor:start -->"));
@@ -16111,6 +16111,50 @@ judge was never told to give"
             help.contains("refactoring(action=undo"),
             "help.md must name the undo a user can actually call: refactoring(action=undo, …)"
         );
+    }
+
+    /// REL44-18's class, on the surface that matters most: the rule block is deployed into every
+    /// client's guidance, so a retired tool named there is an instruction to call something that does
+    /// not exist, repeated in every project and every session. It told agents to call ten of them
+    /// until 2026-10-16, when running the published 4.4.6 answered each with "Tool not found".
+    ///
+    /// A NEGATIVE pin, because the studio repository holds no authoritative list of the engine's tools
+    /// (and its CI has no engine checkout to read one from); the names below were each measured as
+    /// not found on the published 4.4.6 Linux build. A tool retired later is not caught by this and
+    /// is the engine's `retiredNames()` to answer for.
+    #[test]
+    fn the_rule_block_names_no_tool_the_engine_has_retired() {
+        const RETIRED: [&str; 16] = [
+            "analyze_type",
+            "get_type_members",
+            "get_type_hierarchy",
+            "get_call_hierarchy_incoming",
+            "find_method_references",
+            "extract_method",
+            "inline_method",
+            "pull_up",
+            "move_class",
+            "undo_refactoring",
+            "apply_refactoring",
+            "inspect_refactoring",
+            "get_symbol_info",
+            "get_type_at_position",
+            "list_projects",
+            "add_project",
+        ];
+        for client in ["claude", "cursor"] {
+            let servers = vec![url_server("jawata-ws-a", 8800, "tok", false)];
+            let block = build_rule_block(client, &servers);
+            let named: Vec<&str> = RETIRED
+                .iter()
+                .copied()
+                .filter(|name| block.contains(&format!("`{name}`")))
+                .collect();
+            assert!(
+                named.is_empty(),
+                "the {client} rule block tells an agent to call tools the engine retired: {named:?}"
+            );
+        }
     }
 
     #[test]
