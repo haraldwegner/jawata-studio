@@ -206,6 +206,17 @@ pub enum DeployClientStatus {
     Failed,
 }
 
+/// The file, beside the runtime state, that names the studio version which last refreshed the
+/// deployed client configs after an update (REL44-36).
+const RULES_REFRESHED_BY_FILE: &str = "rules-refreshed-by-version";
+
+/// Whether the launch-time refresh is due: when no version was recorded (a first launch, or one
+/// whose refresh never succeeded) or the recorded one is not this studio's. Stated on its own so
+/// the rule is tested without a deploy.
+pub(crate) fn update_refresh_due(recorded: Option<&str>, current: &str) -> bool {
+    recorded.map(str::trim) != Some(current)
+}
+
 /// Render one deploy run as log lines: a summary line, then one line per client.
 ///
 /// Sprint 28 (v3.6.1). Split from the file write so the CONTENT is unit-tested
@@ -2579,7 +2590,12 @@ impl ManagerService {
     /// adds / renames / deletes without a manual Deploy click. Clients that
     /// were never deployed to are left untouched. Best-effort by design:
     /// failures are logged and never block the workspace mutation itself.
-    fn refresh_deployed_configs(&self) {
+    ///
+    /// Answers whether the refresh DID what it set out to: `true` when nothing needed
+    /// refreshing or every client was refreshed, `false` on any failure. The workspace
+    /// mutations ignore it; the launch-time refresh after an update reads it, because it must
+    /// not record the update as handled when it was not.
+    fn refresh_deployed_configs(&self) -> bool {
         let settings = self.config_store.get_settings();
         let deployed: Vec<String> = self
             .deploy_targets_for_settings(&settings)
@@ -2595,21 +2611,56 @@ impl ManagerService {
             .map(|target| target.id.to_string())
             .collect();
         if deployed.is_empty() {
-            return;
+            return true;
         }
         match self.deploy_to_agents(DeployToAgentsInput {
             mode: DeployMode::Deploy,
             target_clients: Some(deployed),
         }) {
-            Ok(result) if result.ok => {}
-            Ok(result) => eprintln!(
-                "[jawata-studio] auto-refresh of deployed configs completed \
-                 with failures: {}",
-                result.detail
-            ),
-            Err(error) => eprintln!(
-                "[jawata-studio] auto-refresh of deployed configs failed: {error}"
-            ),
+            Ok(result) if result.ok => true,
+            Ok(result) => {
+                eprintln!(
+                    "[jawata-studio] auto-refresh of deployed configs completed \
+                     with failures: {}",
+                    result.detail
+                );
+                false
+            }
+            Err(error) => {
+                eprintln!("[jawata-studio] auto-refresh of deployed configs failed: {error}");
+                false
+            }
+        }
+    }
+
+    /// REL44-36 — an UPDATE changes the text the studio deploys into every client's rules file,
+    /// and nothing deployed it again: `refresh_deployed_configs` runs only when a workspace is
+    /// added, removed or renamed. So a user who updated and changed nothing kept the old block —
+    /// including, until 4.4.3, one that told agents to call ten tools the engine had retired.
+    ///
+    /// Once per studio version: the version that last refreshed is kept beside the runtime state,
+    /// and it is recorded ONLY when the refresh succeeded, so a failed one is retried at the next
+    /// launch instead of being counted as done. Clients that were never deployed to are left
+    /// alone, exactly as in the workspace case.
+    pub fn refresh_deployed_configs_after_update(&self) {
+        let marker = self.config_store.paths().state_dir.join(RULES_REFRESHED_BY_FILE);
+        let current = env!("CARGO_PKG_VERSION");
+        let recorded = std::fs::read_to_string(&marker).ok();
+        if !update_refresh_due(recorded.as_deref(), current) {
+            return;
+        }
+        if !self.refresh_deployed_configs() {
+            return;
+        }
+        if let Some(parent) = marker.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(error) = std::fs::write(&marker, current) {
+            eprintln!(
+                "[jawata-studio] could not record that {current} refreshed the deployed configs \
+                 ({}): {error}; the next launch will refresh them again",
+                marker.display()
+            );
         }
     }
 
@@ -5074,7 +5125,7 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
          edit:"
             .to_string(),
         "- Rename a symbol (updates ALL references) → `rename_symbol`".to_string(),
-        "- Move a class / pull a member up or down → `move` / `move_in_hierarchy`".to_string(),
+        "- Move a class / pull a member up or down → `move` / `hierarchy`".to_string(),
         "- Extract a method / variable / constant / superclass → `extract`".to_string(),
         "- Duplicate a class → `generate(kind=copy_class)` then `extract(kind=superclass)`"
             .to_string(),
@@ -6564,7 +6615,7 @@ case "$tool_name" in
     {{
       [ -n "$reflex_hint" ] && echo "$reflex_hint"
       echo "USE A JAWATA REFACTOR TOOL — hand-editing $edit_path (a .java file) is blocked."
-      echo "Rename → rename_symbol (updates ALL references). Move → move / move_in_hierarchy."
+      echo "Rename → rename_symbol (updates ALL references). Move → move / hierarchy."
       echo "Extract method/variable/constant/superclass → extract. Duplicate a class → generate(kind=copy_class)."
       echo "Any structural change → refactoring(action=plan) then apply_plan (parity-gated, reversible)."
       echo "Only adding a print/log to observe a value at runtime? Don't edit source — attach with debug and set a probe: probe_set kind=logpoint (also field_watch / method_trace) streams values while the program keeps running."
@@ -16124,7 +16175,8 @@ judge was never told to give"
     /// is the engine's `retiredNames()` to answer for.
     #[test]
     fn the_rule_block_names_no_tool_the_engine_has_retired() {
-        const RETIRED: [&str; 16] = [
+        const RETIRED: [&str; 17] = [
+            "move_in_hierarchy",
             "analyze_type",
             "get_type_members",
             "get_type_hierarchy",
@@ -16155,6 +16207,58 @@ judge was never told to give"
                 "the {client} rule block tells an agent to call tools the engine retired: {named:?}"
             );
         }
+
+        // The same names in the shell guard the studio deploys, where they are plain words and
+        // not backticked: its blocked-edit message named `move_in_hierarchy` until the
+        // architect's review of this very run found it. A whole-word match, so `extract` inside
+        // `extract_method` and the reverse are not confused.
+        let guard = build_guard_script("http://127.0.0.1:8800/health");
+        let word_char = |c: char| c.is_alphanumeric() || c == '_';
+        let in_guard: Vec<&str> = RETIRED
+            .iter()
+            .copied()
+            .filter(|name| {
+                guard.match_indices(*name).any(|(at, _)| {
+                    let before = guard[..at].chars().next_back();
+                    let after = guard[at + name.len()..].chars().next();
+                    !before.map_or(false, word_char) && !after.map_or(false, word_char)
+                })
+            })
+            .collect();
+        assert!(
+            in_guard.is_empty(),
+            "the deployed guard script's message tells an agent to call tools the engine retired: {in_guard:?}"
+        );
+    }
+
+    /// REL44-36's reach: the rule block is rewritten into a client's rules file only by a deploy,
+    /// and nothing deployed after an update. The due-rule, stated on its own.
+    #[test]
+    fn an_update_refreshes_the_deployed_configs_once_per_version() {
+        assert!(update_refresh_due(None, "4.4.3"), "nothing recorded: a first launch, or a refresh that never succeeded");
+        assert!(update_refresh_due(Some(""), "4.4.3"), "an empty marker records nothing");
+        assert!(update_refresh_due(Some("4.4.2"), "4.4.3"), "an update is exactly the case");
+        assert!(!update_refresh_due(Some("4.4.3"), "4.4.3"), "this version already refreshed them");
+        assert!(
+            !update_refresh_due(Some("4.4.3\n"), "4.4.3"),
+            "a trailing newline in the marker is not a different version"
+        );
+    }
+
+    /// The rule alone proves nothing if the launch never asks. The function is public API of the
+    /// service, so only a reader of the setup code can say whether it is CALLED — this pins that
+    /// the launch calls it, which is the half the due-rule test cannot see.
+    #[test]
+    fn the_launch_refreshes_the_deployed_configs_after_an_update() {
+        let lib_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs");
+        let lib = std::fs::read_to_string(&lib_path).unwrap_or_else(|error| {
+            panic!("cannot read {}: {error} - this assertion did NOT run", lib_path.display())
+        });
+        assert!(
+            lib.contains(".refresh_deployed_configs_after_update()"),
+            "lib.rs setup no longer calls refresh_deployed_configs_after_update, so an update \
+             leaves every deployed rules file as it was"
+        );
     }
 
     #[test]

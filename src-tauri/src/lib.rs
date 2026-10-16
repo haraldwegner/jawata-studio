@@ -811,6 +811,21 @@ pub fn run() {
                 };
             }
 
+            // REL44-36: an update changes the text deployed into every client's rules file,
+            // and a user who then changed no workspace kept the old text (it was rewritten
+            // only when a workspace was added, removed or renamed). Once per studio version,
+            // and deferred like the restore below so the window and tray register first.
+            {
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    app_handle
+                        .state::<AppState>()
+                        .manager_service
+                        .refresh_deployed_configs_after_update();
+                });
+            }
+
             // v0.14.1 (bugs.md #7, redesign 2026-06-04): if
             // autostart_on_boot is set, restore the workspaces that
             // were running at last shutdown. "Running at last shutdown"
