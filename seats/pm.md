@@ -58,7 +58,12 @@ asking is the instruction this seat exists to produce.
    claim about the code READ rather than asserted (run the lookup, quote the line) · can
    every new assertion FAIL (name the mutation; the test manager's mutation run answers
    it mechanically) · does every deferral name a destination that EXISTS. Only *scope
-   narrowed against the raw* needs a second reader. On the day above, **zero of the nine
+   narrowed against the raw* needs a second reader. **ON ANY CODE CHANGE THE BRIEF DECLARES
+   THE MUTATION STEP** — `run_tests(action=coverage_mutation, targetClasses=[the changed
+   classes], targetTests=[their exercising tests])` as a gate step of the hire — so the
+   mutation report exists before any review is requested; a brief for a code change that
+   omits it is not issued (S10-11: the test manager cannot run it itself, and its latest
+   hire declared only `compile_workspace`). On the day above, **zero of the nine
    failed arrivals' findings were in that fourth class** — every one was a lookup
    somebody could have run in-turn. An arrival spent on the first three is a arrival
    wasted, and it is your call to refuse it.

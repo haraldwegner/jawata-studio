@@ -16352,6 +16352,25 @@ judge was never told to give"
         }
     }
 
+    /// S10-11 and S10-10, found by the fresh audit of Stage 10 (round 2): the spec says the mutation report
+    /// exists before any review, and nothing made a hirer declare the step, so the PM's seat text now does; and
+    /// the test manager's rule asked for an abort signal the engine does not produce, so it now says what the
+    /// instrument shows. A pin on the text, because the text is the enforcement for a hired seat.
+    #[test]
+    fn the_pm_declares_the_mutation_step_and_the_test_manager_claims_no_signal_the_engine_lacks() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let pm = std::fs::read_to_string(root.join("seats/pm.md")).expect("seats/pm.md");
+        let tm = std::fs::read_to_string(root.join("seats/test-manager.md")).expect("seats/test-manager.md");
+        assert!(
+            pm.contains("ON ANY CODE CHANGE THE BRIEF DECLARES") && pm.contains("action=coverage_mutation"),
+            "the PM seat must tell the PM to declare the mutation step on every code change"
+        );
+        assert!(
+            tm.contains("THE\n     ENGINE DOES NOT CLASSIFY THIS SHAPE") && tm.contains("S10-10"),
+            "the test manager's rule 3 must say that the engine does not classify an abort conversion"
+        );
+    }
+
     /// REL44-36's reach: the rule block is rewritten into a client's rules file only by a deploy,
     /// and nothing deployed after an update. The due-rule, stated on its own.
     #[test]

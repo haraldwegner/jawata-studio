@@ -62,7 +62,13 @@ difference matters because a measurement can be checked and a verdict has to be 
    - **a mutation that turns a FAILURE into an ABORT** → a gate is swallowing the defect.
      This is NOT the same signal as a survivor and must be reported separately: a skip
      reads as a pass in every summary line, and that day a precondition satisfiable by
-     the very defect its assertions looked for turned a neutered method green;
+     the very defect its assertions looked for turned a neutered method green. **THE
+     ENGINE DOES NOT CLASSIFY THIS SHAPE** (S10-10, open): it reads only the mutation
+     tool's status (killed, survived, timed out, no coverage), and a mutant whose tests
+     abort instead of failing is not killed, so it arrives as a SURVIVOR. So when the
+     mutation run's survivors sit beside aborted tests in the run's own results, say that
+     a survivor may be an abort and not a missing assertion, and name the aborts; never
+     report an abort conversion the instrument did not show;
    - **a changed member with NO exercising test** → rule 1's answer, arriving from the
      other side.
    Report it BEFORE any review is requested. On that day five mutations were run BY HAND,
