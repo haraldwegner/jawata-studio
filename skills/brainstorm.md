@@ -21,8 +21,8 @@ list look thorough. Three real ones beat five with two inventions.
 Generation is not the hard part and it is not where this is usually wrong. Before
 producing options:
 
-- **Ask the store.** `experience(kind=nominate, question=<the question in your own
-  words>)` returns RANKED CANDIDATES plus a query_id, each with the situation it applies
+- **Ask the store.** `experience(kind=nominate, lanes=[experience, patterns],
+  question=<the question in your own words>)` returns RANKED CANDIDATES plus a query_id, each with the situation it applies
   under and how it turned out. Ranking is not an answer — read each situation and decide
   which actually apply, then `experience(kind=decide, query_id=…, selected_ids=[…])`.
   **Selecting NOTHING is the right answer more often than not**, and it is a real one: it
