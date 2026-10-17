@@ -10,6 +10,10 @@
 //! | a typed message | `experience` | what was learned; small enough to ask every time |
 //! | a tool call naming a `Type#member` | `experience`, `code` | the lessons about it, and what it is FOR |
 //! | the recall gate | `experience`, `domain` | records anchored at exactly that member; a job row there is a description and would gate every call |
+//! | after a compaction | `transcript` | what he said last, so a compaction forgets nothing (Sprint 28g S21) |
+//!
+//! The discussion is asked on three occasions only (after a compaction, before something is
+//! attributed to him, on demand) and never on a typed message or a tool call.
 //!
 //! The code lane answers *"do we already have something that does this?"* and is asked by job. It is
 //! never used to read code — the compiler tools do that — so a typed message does not ask it.
@@ -25,6 +29,9 @@ pub const TOOL_CALL: &[&str] = &["experience", "code"];
 
 /// The recall gate: records anchored at exactly the member, lessons and contracts.
 pub const RECALL_GATE: &[&str] = &["experience", "domain"];
+
+/// After a compaction: the discussion, and nothing else.
+pub const AFTER_COMPACTION: &[&str] = &["transcript"];
 
 /// The `lanes` argument of a request, as the engine reads it.
 pub fn argument(lanes: &[&str]) -> Value {
@@ -44,13 +51,22 @@ mod tests {
 
     #[test]
     fn every_occasion_names_at_least_one_lane_the_engine_knows() {
-        let known = ["experience", "patterns", "domain", "code", "rules"];
-        for occasion in [TYPED_MESSAGE, TOOL_CALL, RECALL_GATE] {
+        let known = ["experience", "patterns", "domain", "code", "rules", "transcript"];
+        for occasion in [TYPED_MESSAGE, TOOL_CALL, RECALL_GATE, AFTER_COMPACTION] {
             assert!(!occasion.is_empty(), "an empty list is a call the engine refuses");
             for lane in occasion {
                 assert!(known.contains(lane), "{lane} is not a lane the engine has");
             }
         }
+    }
+
+    /// The discussion is never part of an occasion that fires on every message or every tool call.
+    #[test]
+    fn the_discussion_is_asked_on_no_ordinary_occasion() {
+        for occasion in [TYPED_MESSAGE, TOOL_CALL, RECALL_GATE] {
+            assert!(!occasion.contains(&"transcript"));
+        }
+        assert_eq!(vec!["transcript"], AFTER_COMPACTION);
     }
 
     #[test]

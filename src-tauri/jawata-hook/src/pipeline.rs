@@ -93,7 +93,21 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
         // resident is down, and a guard that asked and failed open would leak
         // exactly the calls it exists to deny.
         Role::Guard => guard(client, payload),
-        Role::Primer => primer(client, config, store),
+        // Sprint 28g S21 — a session that starts AFTER A COMPACTION also gets the discussion back:
+        // every window the transcript still holds is stored, and the last things he said ride on
+        // top of the primer. Any other start asks the engine nothing extra.
+        Role::Primer => {
+            let base = primer(client, config, store);
+            match crate::transcript::after_compaction(client, payload, store) {
+                None => base,
+                Some(thread) => match base {
+                    Outcome::Emitted(rendered) => {
+                        Outcome::Emitted(prepend_context(client, &rendered, &thread))
+                    }
+                    Outcome::Silent(_) => emit_body(client, Role::Primer, thread),
+                },
+            }
+        }
         // Stage 4: the recall gate runs BEFORE the ordinary injection, and only
         // on ToolRecall — a tool call about a symbol is the one event where the
         // store's answer can be checked against the call's own subject. In
@@ -180,11 +194,25 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
         // never given its input.
         Role::Stop => {
             let autonomy = crate::pipeline::session_autonomy(payload);
-            stop_gate(client, payload, autonomy, store)
+            let decided = stop_gate(client, payload, autonomy, store);
+            // Sprint 28g S21 — the discussion lane, after the gate has decided and whatever it
+            // decided: the window that just ended is stored, and a stop that is not already being
+            // held checks the words it attributes to him. A capture changes nothing the gate said.
+            crate::transcript::capture_current(client, payload, store);
+            match decided {
+                Outcome::Emitted(_) => decided,
+                other => crate::transcript::name_back(client, payload, store).unwrap_or(other),
+            }
         }
         // Sprint 28b D8: the ported observer arm (outcome capture, slip trail,
         // edit feed) — no longer the stub that read as a dead channel.
-        Role::Observer => crate::observer::observe(client, payload, Some(config)),
+        Role::Observer => {
+            let observed = crate::observer::observe(client, payload, Some(config));
+            // Sprint 28g S21 — small dated steps while work goes on: at most one capture in two
+            // minutes per session, so a long unattended stretch is never one unsaved block.
+            crate::transcript::capture_on_cadence(client, payload, store);
+            observed
+        }
     }
 }
 
@@ -2018,7 +2046,7 @@ pub const TRANSCRIPT_TAIL_BYTES: u64 = 1_048_576;
 
 /// Read at most `max` bytes from the END of a file, starting at a line
 /// boundary so the first record is never half a line.
-fn read_tail(path: &str, max: u64) -> std::io::Result<String> {
+pub(crate) fn read_tail(path: &str, max: u64) -> std::io::Result<String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path)?;
     let len = f.metadata()?.len();
@@ -2863,7 +2891,7 @@ mod tests {
             review_rounds: 0,
             already_bounced: false,
             bounces: 0,
-            turn: Turn { final_text: "summary".into(), launches: vec![], carried: vec![], instruction_open: false, refusals_emitted: 0, judge_verdict: None, judge_call_ids: vec![], human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, changed_java_files: vec![], worked_since_push: false, answered_substantially: false },
+            turn: Turn { final_text: "summary".into(), launches: vec![], carried: vec![], instruction_open: false, refusals_emitted: 0, judge_verdict: None, judge_call_ids: vec![], human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, changed_java_files: vec![], worked_since_push: false, answered_substantially: false, capture: Default::default(), closed: vec![] },
             autonomy: Autonomy::Granted,
             substrate: None,
             reseed_bounces: 0, jobs_missing: None, job_bounces: 0,

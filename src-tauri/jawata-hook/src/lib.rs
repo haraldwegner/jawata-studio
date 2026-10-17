@@ -36,6 +36,7 @@ pub mod safety;
 pub mod silence;
 pub mod stop;
 pub mod surface;
+pub mod transcript;
 
 use safety::{Outcome, SilenceReason};
 

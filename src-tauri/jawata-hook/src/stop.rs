@@ -461,6 +461,125 @@ impl ToolUse {
     }
 }
 
+/// One tool call as the discussion lane keeps it: the tool, its key argument, ok or failed. Never
+/// the tool's output, which is the bulk of a transcript and no part of the discussion.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CapturedTool {
+    /// The client's id for the call, to match its result to it.
+    pub id: Option<String>,
+    pub name: String,
+    /// The argument that says what the call was about, one line, clipped.
+    pub arg: String,
+    pub failed: bool,
+}
+
+impl CapturedTool {
+    /// The one line the lane stores for this call.
+    pub fn line(&self) -> String {
+        let outcome = if self.failed { "failed" } else { "ok" };
+        if self.arg.is_empty() {
+            format!("{} {}", self.name, outcome)
+        } else {
+            format!("{} {} {}", self.name, self.arg, outcome)
+        }
+    }
+}
+
+/// What one window of the transcript holds for the discussion lane (Sprint 28g S21).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WindowCapture {
+    /// The client's own id for the record that opened the window. Stable across reads of the same
+    /// window, which is what lets a second capture complete the first. `None` when the read began
+    /// in the middle of a window, whose opening is not in the tail.
+    pub key: Option<String>,
+    /// When that record was written, as the client wrote it.
+    pub opened_at: Option<String>,
+    /// What he typed to open the window; empty for a window a notification opened.
+    pub his: String,
+    /// Every text the agent said to him inside the window, in order.
+    pub agent: Vec<String>,
+    pub tools: Vec<CapturedTool>,
+}
+
+/// Cap on closed windows kept by one read: a catch-up after a compaction needs the recent
+/// discussion, and a tail read holds at most a megabyte of it.
+const MAX_CLOSED_WINDOWS: usize = 400;
+
+/// Longest key argument kept for a tool line.
+const TOOL_ARG_CHARS: usize = 120;
+
+impl WindowCapture {
+    /// A window opened by the record `v`, with `his` as what it carries of his.
+    fn opened_by(v: &serde_json::Value, his: String) -> Self {
+        WindowCapture {
+            key: v.get("uuid").and_then(|u| u.as_str()).map(str::to_string),
+            opened_at: v.get("timestamp").and_then(|t| t.as_str()).map(str::to_string),
+            his,
+            ..WindowCapture::default()
+        }
+    }
+
+    /// Nothing was said and nothing was run.
+    pub fn is_empty(&self) -> bool {
+        self.his.trim().is_empty() && self.agent.is_empty() && self.tools.is_empty()
+    }
+
+    /// The agent's words to him, joined.
+    pub fn agent_text(&self) -> String {
+        self.agent.join("\n\n")
+    }
+
+    /// One line per tool call.
+    pub fn tool_lines(&self) -> Vec<String> {
+        self.tools.iter().map(CapturedTool::line).collect()
+    }
+}
+
+/// The key argument of a tool call: the field that says what it was about, on one line.
+fn key_argument(input: Option<&serde_json::Value>) -> String {
+    let Some(input) = input else { return String::new() };
+    for field in ["file_path", "command", "pattern", "query", "path", "url", "description", "prompt"] {
+        if let Some(s) = input.get(field).and_then(|v| v.as_str()) {
+            let one_line: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+            return one_line.chars().take(TOOL_ARG_CHARS).collect();
+        }
+    }
+    String::new()
+}
+
+/// A tool result that says it failed marks the call it answers.
+fn mark_failed_tools(capture: &mut WindowCapture, v: &serde_json::Value) {
+    let Some(blocks) = v.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array())
+    else {
+        return;
+    };
+    for b in blocks {
+        if b.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+            continue;
+        }
+        if !b.get("is_error").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+            continue;
+        }
+        let Some(id) = b.get("tool_use_id").and_then(|i| i.as_str()) else { continue };
+        if let Some(t) = capture.tools.iter_mut().find(|t| t.id.as_deref() == Some(id)) {
+            t.failed = true;
+        }
+    }
+}
+
+/// Close the window `turn` holds into its history and hand the history on, for the record that
+/// is about to open a new window.
+fn history_through(turn: &mut Turn) -> Vec<WindowCapture> {
+    let mut closed = std::mem::take(&mut turn.closed);
+    if !turn.capture.is_empty() {
+        closed.push(std::mem::take(&mut turn.capture));
+    }
+    if closed.len() > MAX_CLOSED_WINDOWS {
+        closed.drain(..closed.len() - MAX_CLOSED_WINDOWS);
+    }
+    closed
+}
+
 /// The last assistant turn, as read from the transcript.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Turn {
@@ -511,6 +630,15 @@ pub struct Turn {
     /// in the pipeline count spawns PER WINDOW and must not see a carried
     /// launch as a fresh one.
     pub carried: Vec<ToolUse>,
+    /// Sprint 28g S21 — what THIS window holds for the discussion lane: his words, the agent's
+    /// words to him, and one line per tool call. Filled by the same walk that fills everything
+    /// else here, because a second parser of the client's transcript is exactly what the
+    /// architecture refuses.
+    pub capture: WindowCapture,
+    /// The windows this walk has already closed, oldest first, bounded. The catch-up taken after
+    /// a compaction stores every one of them; the stop and the cadence capture need only
+    /// [`Turn::capture`].
+    pub closed: Vec<WindowCapture>,
     /// Whether the judge has given an instruction that no work has followed.
     ///
     /// THE IDLE VALVE'S EXEMPTION MUST OUTLIVE THE PUSH (the architect's F2 on
@@ -1685,6 +1813,8 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                 // degraded-rule tests went red at once, which is the shadowing
                 // announcing itself. Both jobs, one arm.
                 turn.degraded_consumed += degraded_stamps_in(&v);
+                // A failed call is marked on its line; the output itself is never kept.
+                mark_failed_tools(&mut turn.capture, &v);
                 // THE HARNESS'S ANSWER TO A LAUNCH (v4.1.3). "Async agent
                 // launched successfully" and "Command running in background
                 // with ID:" are the client's own sentences for a launch it will
@@ -1734,7 +1864,11 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                 // An open instruction survives a wake-up too: a job finishing
                 // does not discharge what the judge asked for.
                 let open = turn.instruction_open;
+                let closed = history_through(&mut turn);
                 turn = Turn::default();
+                turn.closed = closed;
+                // A notification opens a window he did not speak in: nothing of his.
+                turn.capture = WindowCapture::opened_by(&v, String::new());
                 turn.sidechain = is_sidechain(&v);
                 turn.carried = carry;
                 turn.instruction_open = open;
@@ -1752,7 +1886,10 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                 // writes the marker, so the agent cannot fake it and cannot
                 // suppress it.
                 let carry = pending_carry(&turn);
+                let closed = history_through(&mut turn);
                 turn = Turn::default();
+                turn.closed = closed;
+                turn.capture = WindowCapture::opened_by(&v, user_text(&v));
                 turn.interrupted = true;
                 turn.human_window = true;
                 turn.sidechain = is_sidechain(&v);
@@ -1766,7 +1903,10 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                 // A job he did not wait for is still running when he types; it
                 // will still wake the session, so it is still pending.
                 let carry = pending_carry(&turn);
+                let closed = history_through(&mut turn);
                 turn = Turn::default();
+                turn.closed = closed;
+                turn.capture = WindowCapture::opened_by(&v, user_text(&v));
                 turn.human_window = true;
                 turn.sidechain = is_sidechain(&v);
                 turn.carried = carry;
@@ -1828,6 +1968,10 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                         Some("text") => {
                             if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
                                 turn.final_text = t.to_string();
+                                // A subagent's words are not the agent's words to him.
+                                if !is_sidechain(&v) && !t.trim().is_empty() {
+                                    turn.capture.agent.push(t.to_string());
+                                }
                                 // ORDER IS THE SIGNAL, and this is the only place
                                 // it can be read: the reader walks the window
                                 // forward, so "a substantial answer came first"
@@ -1877,6 +2021,14 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                                 .unwrap_or_default()
                                 .to_string();
                             let input = b.get("input");
+                            if !is_sidechain(&v) {
+                                turn.capture.tools.push(CapturedTool {
+                                    id: b.get("id").and_then(|i| i.as_str()).map(str::to_string),
+                                    name: name.clone(),
+                                    arg: key_argument(input),
+                                    failed: false,
+                                });
+                            }
                             // Read from the call's own `file_path`, because a
                             // tool NAME cannot carry this: writing a story and
                             // editing a sprint doc are the same tool. WHICH of
@@ -3063,7 +3215,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
             // Mirrors reality rather than defaulting: a turn carrying tool calls
             // HAS worked. A helper that always said `false` would let a test pass
             // against a fixture that could not occur.
-            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, carried: vec![], instruction_open: false, refusals_emitted: 0, judge_verdict: None, judge_call_ids: vec![], human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, changed_java_files: vec![], answered_substantially: false },
+            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, carried: vec![], instruction_open: false, refusals_emitted: 0, judge_verdict: None, judge_call_ids: vec![], human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, changed_java_files: vec![], answered_substantially: false, capture: WindowCapture::default(), closed: vec![] },
             autonomy,
             substrate: None,
             reseed_bounces: 0, jobs_missing: None, job_bounces: 0,
