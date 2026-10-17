@@ -16378,10 +16378,10 @@ judge was never told to give"
             pm.contains("ON ANY CODE CHANGE THE BRIEF DECLARES") && pm.contains("action=coverage_mutation"),
             "the PM seat must tell the PM to declare the mutation step on every code change"
         );
-        // S10-10: the engine now classifies the shape (the mutation answer's `abortConverted`), so rule 3
+        // S10-10: the engine now classifies the shape (the mutation answer's `abortConversions` rows), so rule 3
         // names that field and no longer tells the seat to infer an abort from survivors beside aborted tests.
         assert!(
-            tm.contains("summary.abortConverted") && tm.contains("`abortConverted` rows"),
+            tm.contains("summary.abortConverted") && tm.contains("`abortConversions` rows"),
             "the test manager's rule 3 must name the field the engine reports an abort conversion in"
         );
         assert!(
@@ -16429,6 +16429,24 @@ judge was never told to give"
         assert!(carried >= 12, "the worker declares only {carried} of the engine's code-changing tools: {worker:?}");
         for needed in ["rename_symbol", "extract", "change_method_signature", "compile_workspace"] {
             assert!(worker.iter().any(|t| t == needed), "the worker lacks {needed}");
+        }
+    }
+
+    /// The instruction block the engine scores (engine `Instructions`: `INSTRUCTION <n>`, `TOOL:`, `ARGUMENTS:`) is
+    /// produced by prose in these two seat files and read by three regexes there. An edit to the prose that changed a
+    /// label would make the PM's score read as an honest absence, so the labels are held here, from the producer's side.
+    #[test]
+    fn the_instruction_block_the_pm_and_chief_engineer_prescribe_is_the_one_the_engine_parses() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        for seat in ["pm", "chief-engineer"] {
+            let text = std::fs::read_to_string(root.join(format!("seats/{seat}.md"))).expect("seat file");
+            let lines: Vec<&str> = text.lines().map(str::trim).collect();
+            let at = lines
+                .iter()
+                .position(|l| *l == "INSTRUCTION <n>")
+                .unwrap_or_else(|| panic!("{seat}.md no longer prescribes the line `INSTRUCTION <n>` the engine parses"));
+            assert!(lines[at + 1].starts_with("TOOL: "), "{seat}.md: the line after the header must be `TOOL: ...`, got {:?}", lines[at + 1]);
+            assert!(lines[at + 2].starts_with("ARGUMENTS: "), "{seat}.md: then `ARGUMENTS: ...`, got {:?}", lines[at + 2]);
         }
     }
 

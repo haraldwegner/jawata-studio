@@ -65,7 +65,7 @@ difference matters because a measurement can be checked and a verdict has to be 
      the very defect its assertions looked for turned a neutered method green. **THE
      ENGINE CLASSIFIES THIS SHAPE ITSELF** (S10-10): a test that passed before a
      mutation and ABORTED under it is reported in the mutation answer as
-     `summary.abortConverted` and as `abortConverted` rows, each naming the symbol, the line
+     `summary.abortConverted` and as `abortConversions` rows, each naming the symbol, the line
      and the aborting test, and it is NOT in `survived` (the mutation tool alone would
      count an abort as a pass, so it would have arrived as a survivor). It is the first
      test to reject the mutation that is named, so another test may also have failed it.

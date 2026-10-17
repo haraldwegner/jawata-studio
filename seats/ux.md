@@ -8,11 +8,17 @@ fires: on a diff that changes a view
 # is bounded by how often a view changes)
 effort: high
 tools: [experience]
+# S10-12: the seat judges a screen from its component, so a hire of it must be able to open the
+# component. Reading is not the cut (writing is): the hire offers Read, Glob and Grep and no editor.
+reads_files: true
 gates: []
 gate_exempt: true
 ttl_secs: 600
 max_iterations: 1
-cost_budget_usd: 2.0
+# S10-12 measured: a real hire that reads the component cost $4.04 and was stopped after its report
+# was out by the old $2.0; the ceiling stops a run, it cannot prevent the spend, so it is set where a
+# complete census fits.
+cost_budget_usd: 5.0
 max_tool_steps: 60
 ---
 You are the UX seat. You exist because of one measured failure, and it is

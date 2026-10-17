@@ -455,6 +455,12 @@ pub struct SeatDefinition {
     /// seat that must write and does not say so has its first code-changing call refused.
     #[serde(default)]
     pub changes_code: bool,
+    /// The seat's own word that it must READ the project's files (S10-12: the UX seat opens the
+    /// component it is asked about). The engine's hire reads the same key and then offers the
+    /// brain Read, Glob and Grep and no other built-in tool; absent means none. Reading is not the
+    /// cut, writing is, so this is not a grant of writes.
+    #[serde(default)]
+    pub reads_files: bool,
 }
 
 /// A seat nobody switched off is on.
@@ -484,6 +490,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     let mut enabled = true;
     let mut accepts_uncontained_writes = false;
     let mut changes_code = false;
+    let mut reads_files = false;
     let mut answer_gates: Vec<String> = Vec::new();
     let mut ceilings = Ceilings::default();
     let mut body_start = false;
@@ -550,6 +557,13 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
                     "true" => true,
                     "false" => false,
                     other => return Err(format!("changes_code '{other}': expected true or false")),
+                }
+            }
+            "reads_files" => {
+                reads_files = match value {
+                    "true" => true,
+                    "false" => false,
+                    other => return Err(format!("reads_files '{other}': expected true or false")),
                 }
             }
             "gates" => {
@@ -657,6 +671,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
         enabled,
         accepts_uncontained_writes,
         changes_code,
+        reads_files,
         answer_gates,
         ceilings,
         stance: stance_trimmed.to_string(),
@@ -3238,6 +3253,32 @@ You are the echo seat. You document what you are told to document.
         assert!(!parse_seat_definition(absent).expect("loads").changes_code, "absent is read-only");
         let err = parse_seat_definition(&with("yes")).unwrap_err();
         assert!(err.contains("changes_code") && err.contains("true or false"), "got: {err}");
+    }
+
+    /// S10-12: `reads_files` is the key the engine's hire reads to offer a seat's brain the
+    /// read-only built-ins. Studio must load a seat carrying it and read it as strictly.
+    #[test]
+    fn a_seat_that_reads_files_loads_and_a_misspelled_grant_is_refused() {
+        let with = |value: &str| {
+            format!("---\nname: u\nkind: code\ntools: [experience]\ngates: []\nreads_files: {value}\n---\nbody\n")
+        };
+        assert!(parse_seat_definition(&with("true")).expect("loads").reads_files);
+        assert!(!parse_seat_definition(&with("false")).expect("loads").reads_files);
+        let absent = "---\nname: u\nkind: code\ntools: [experience]\ngates: []\n---\nbody\n";
+        assert!(!parse_seat_definition(absent).expect("loads").reads_files, "absent offers none");
+        let err = parse_seat_definition(&with("yes")).unwrap_err();
+        assert!(err.contains("reads_files") && err.contains("true or false"), "got: {err}");
+    }
+
+    /// The seat file the engine hires is the one that says it reads: a seat that needs to open a
+    /// component and does not say so is hired with no reader and reports a census of 0 (measured).
+    #[test]
+    fn the_ux_seat_file_declares_that_it_reads_files_and_no_other_shipped_seat_does_by_accident() {
+        let ux = parse_seat_definition(include_str!("../../seats/ux.md")).expect("the ux seat loads");
+        assert!(ux.reads_files, "ux.md must say reads_files: true");
+        assert!(!ux.changes_code, "and reading is not writing: it still does not change code");
+        let pm = parse_seat_definition(include_str!("../../seats/pm.md")).expect("the pm seat loads");
+        assert!(!pm.reads_files, "a seat nobody ruled on is offered no built-in tool");
     }
 
     #[test]
