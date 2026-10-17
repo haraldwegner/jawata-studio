@@ -16357,7 +16357,7 @@ judge was never told to give"
     /// the test manager's rule asked for an abort signal the engine does not produce, so it now says what the
     /// instrument shows. A pin on the text, because the text is the enforcement for a hired seat.
     #[test]
-    fn the_pm_declares_the_mutation_step_and_the_test_manager_claims_no_signal_the_engine_lacks() {
+    fn the_pm_declares_the_mutation_step_and_the_test_manager_names_the_signal_the_engine_produces() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let pm = std::fs::read_to_string(root.join("seats/pm.md")).expect("seats/pm.md");
         let tm = std::fs::read_to_string(root.join("seats/test-manager.md")).expect("seats/test-manager.md");
@@ -16365,9 +16365,15 @@ judge was never told to give"
             pm.contains("ON ANY CODE CHANGE THE BRIEF DECLARES") && pm.contains("action=coverage_mutation"),
             "the PM seat must tell the PM to declare the mutation step on every code change"
         );
+        // S10-10: the engine now classifies the shape (the mutation answer's `abortConverted`), so rule 3
+        // names that field and no longer tells the seat to infer an abort from survivors beside aborted tests.
         assert!(
-            tm.contains("THE\n     ENGINE DOES NOT CLASSIFY THIS SHAPE") && tm.contains("S10-10"),
-            "the test manager's rule 3 must say that the engine does not classify an abort conversion"
+            tm.contains("summary.abortConverted") && tm.contains("`abortConverted` rows"),
+            "the test manager's rule 3 must name the field the engine reports an abort conversion in"
+        );
+        assert!(
+            !tm.contains("ENGINE DOES NOT CLASSIFY THIS SHAPE"),
+            "rule 3 still says the engine lacks a signal it now produces"
         );
     }
 
@@ -16390,6 +16396,20 @@ judge was never told to give"
             let tools = tools_of(seat);
             let writing: Vec<&String> = tools.iter().filter(|t| changing.contains(t)).collect();
             assert!(writing.is_empty(), "{seat} is a non-writing seat and declares {writing:?}");
+        }
+        // The hire path is read-only unless the seat's own file says `changes_code: true` (engine SeatHire), so
+        // the worker must say it or its first rename is refused, and no other seat may.
+        let file_of = |name: &str| -> &'static str {
+            crate::conductor::EMBEDDED_SEATS
+                .iter()
+                .find(|(file, _)| file.trim_end_matches(".md") == name)
+                .map(|(_, body)| *body)
+                .unwrap_or_else(|| panic!("{name} is not an embedded seat"))
+        };
+        let declares = |name: &str| file_of(name).lines().any(|line| line.trim() == "changes_code: true");
+        assert!(declares("worker"), "the worker's file must say changes_code: true, or every hire of it runs read-only");
+        for seat in ["pm", "architect", "ux", "chief-engineer", "test-manager"] {
+            assert!(!declares(seat), "{seat} is a non-writing seat and declares changes_code: true");
         }
         let worker = tools_of("worker");
         let carried = changing.iter().filter(|t| worker.contains(t)).count();

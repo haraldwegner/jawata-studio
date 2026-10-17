@@ -50,8 +50,8 @@ difference matters because a measurement can be checked and a verdict has to be 
    `run_tests` outright in its read-only mode (measured 2026-10-14), so the run is a GATE
    STEP the hirer declares — `run_tests(action=coverage_mutation, targetClasses=[the CHANGED
    classes], targetTests=[their exercising tests])` — which the engine executes after you
-   answer and whose count of SURVIVING mutations lands in the run's record as the gate's
-   `errorCount`. In your report name the changed classes that step must target and the
+   answer and whose count of SURVIVING and ABORT-CONVERTED mutations lands in the run's
+   record as the gate's `errorCount`. In your report name the changed classes that step must target and the
    tests that exercise them, and say that the mutation outcome is in the hire record and not
    in your answer. Never write a survivor count you did not read. The three shapes below are
    what that run is for, each one a defect shape measured on this product on 2026-10-08:
@@ -63,12 +63,14 @@ difference matters because a measurement can be checked and a verdict has to be 
      This is NOT the same signal as a survivor and must be reported separately: a skip
      reads as a pass in every summary line, and that day a precondition satisfiable by
      the very defect its assertions looked for turned a neutered method green. **THE
-     ENGINE DOES NOT CLASSIFY THIS SHAPE** (S10-10, open): it reads only the mutation
-     tool's status (killed, survived, timed out, no coverage), and a mutant whose tests
-     abort instead of failing is not killed, so it arrives as a SURVIVOR. So when the
-     mutation run's survivors sit beside aborted tests in the run's own results, say that
-     a survivor may be an abort and not a missing assertion, and name the aborts; never
-     report an abort conversion the instrument did not show;
+     ENGINE CLASSIFIES THIS SHAPE ITSELF** (S10-10): a test that passed before a
+     mutation and ABORTED under it is reported in the mutation answer as
+     `summary.abortConverted` and as `abortConverted` rows, each naming the symbol, the line
+     and the aborting test, and it is NOT in `survived` (the mutation tool alone would
+     count an abort as a pass, so it would have arrived as a survivor). It is the first
+     test to reject the mutation that is named, so another test may also have failed it.
+     Report the rows as they are: never name an abort conversion the instrument did not
+     show, and never fold one into the survivors;
    - **a changed member with NO exercising test** → rule 1's answer, arriving from the
      other side.
    Report it BEFORE any review is requested. On that day five mutations were run BY HAND,

@@ -450,6 +450,11 @@ pub struct SeatDefinition {
     /// had just written for Cursor was one studio could no longer load.
     #[serde(default)]
     pub accepts_uncontained_writes: bool,
+    /// The seat's own word that its job is to CHANGE CODE, through the engine's tools (S10-8: the
+    /// worker). The engine's hire reads the same key: absent means the hire runs read-only, so a
+    /// seat that must write and does not say so has its first code-changing call refused.
+    #[serde(default)]
+    pub changes_code: bool,
 }
 
 /// A seat nobody switched off is on.
@@ -478,6 +483,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     let mut gate_exempt = false;
     let mut enabled = true;
     let mut accepts_uncontained_writes = false;
+    let mut changes_code = false;
     let mut answer_gates: Vec<String> = Vec::new();
     let mut ceilings = Ceilings::default();
     let mut body_start = false;
@@ -537,6 +543,13 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
                             "accepts_uncontained_writes '{other}': expected true or false"
                         ))
                     }
+                }
+            }
+            "changes_code" => {
+                changes_code = match value {
+                    "true" => true,
+                    "false" => false,
+                    other => return Err(format!("changes_code '{other}': expected true or false")),
                 }
             }
             "gates" => {
@@ -643,6 +656,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
         gate_exempt,
         enabled,
         accepts_uncontained_writes,
+        changes_code,
         answer_gates,
         ceilings,
         stance: stance_trimmed.to_string(),
@@ -3208,6 +3222,22 @@ You are the echo seat. You document what you are told to document.
                        ttl_secs: 60\nmax_iterations: 1\ncost_budget_usd: 0.1\n---\nbody\n";
         let err = parse_seat_definition(no_kind).unwrap_err();
         assert!(err.contains("kind"), "got: {err}");
+    }
+
+    /// S10-8: `changes_code` is the key the engine's hire reads to decide whether a seat is hired
+    /// read-only. This parser must load a seat carrying it (it refused the key as unknown, so the
+    /// worker did not load at all) and read it as strictly as the engine does.
+    #[test]
+    fn a_seat_that_changes_code_loads_and_a_misspelled_grant_of_writes_is_refused() {
+        let with = |value: &str| {
+            format!("---\nname: w\nkind: code\ntools: [rename_symbol]\ngates: []\nchanges_code: {value}\n---\nbody\n")
+        };
+        assert!(parse_seat_definition(&with("true")).expect("loads").changes_code);
+        assert!(!parse_seat_definition(&with("false")).expect("loads").changes_code);
+        let absent = "---\nname: w\nkind: code\ntools: [rename_symbol]\ngates: []\n---\nbody\n";
+        assert!(!parse_seat_definition(absent).expect("loads").changes_code, "absent is read-only");
+        let err = parse_seat_definition(&with("yes")).unwrap_err();
+        assert!(err.contains("changes_code") && err.contains("true or false"), "got: {err}");
     }
 
     #[test]
