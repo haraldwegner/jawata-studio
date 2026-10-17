@@ -12,9 +12,10 @@ use std::path::Path;
 /// fails the build on a seat that exists on disk and is registered here).
 /// Materialized into `<config>/seats/` where absent; the materialized copy
 /// wins so a user-edited seat regenerates every channel on redeploy.
-pub const EMBEDDED_SEATS: [(&str, &str); 14] = [
+pub const EMBEDDED_SEATS: [(&str, &str); 16] = [
     ("architect.md", include_str!("../../seats/architect.md")),
     ("cataloguer.md", include_str!("../../seats/cataloguer.md")),
+    ("chief-engineer.md", include_str!("../../seats/chief-engineer.md")),
     ("debugger.md", include_str!("../../seats/debugger.md")),
     ("javadoc-writer.md", include_str!("../../seats/javadoc-writer.md")),
     ("main.md", include_str!("../../seats/main.md")),
@@ -27,6 +28,7 @@ pub const EMBEDDED_SEATS: [(&str, &str); 14] = [
     ("test-manager.md", include_str!("../../seats/test-manager.md")),
     ("test-writer.md", include_str!("../../seats/test-writer.md")),
     ("ux.md", include_str!("../../seats/ux.md")),
+    ("worker.md", include_str!("../../seats/worker.md")),
 ];
 
 /// seat name → command name. The command-bearing seats; spec-editor/spec-auditor live in
@@ -1639,10 +1641,13 @@ mod tests {
             rendered.contains(&format!("{} live in /sprint", PIPELINE_SEATS.len())),
             "{rendered}"
         );
-        assert!(rendered.contains("2 live in /sprint; 2 are hired by the principal"), "{rendered}");
-        assert!(rendered.contains("pm + test-manager — hired by the principal, not typed"), "{rendered}");
+        assert!(rendered.contains("2 live in /sprint; 4 are hired by the principal"), "{rendered}");
+        assert!(
+            rendered.contains("chief-engineer + pm + test-manager + worker — hired by the principal, not typed"),
+            "{rendered}"
+        );
         assert_eq!(
-            COMMAND_MAP.len() + PIPELINE_SEATS.len() + 2,
+            COMMAND_MAP.len() + PIPELINE_SEATS.len() + 4,
             EMBEDDED_SEATS.len(),
             "every embedded seat is typed, in the pipeline, or hired — none uncounted"
         );

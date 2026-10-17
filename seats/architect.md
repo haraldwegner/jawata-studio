@@ -6,7 +6,10 @@ fires: the sprint's DESIGN step, and every checkpoint as a watch-diff
 # tier justification (judgment IS the product + the small-tier protocol-adherence weakness family (C11 marker slip, C12 fix-block); 1x/day cadence makes the cost negligible)
 effort: high
 schedule: "0 6 * * *"
-tools: [find_quality_issue, find_references, inspect, analyze, compile_workspace, experience, refactoring]
+# D13 (the 2026-10-11 amendment): the architect performs no operation the engine classifies as changing code. `refactoring` is flagged,
+# because its apply and undo actions change code, so it is not declared here; the architect NAMES the plan kind and target and the
+# chief engineer turns that into an instruction. Found by the test that reads this list against the engine's own flag (S10-8).
+tools: [find_quality_issue, find_references, inspect, analyze, compile_workspace, experience]
 gates: []
 ttl_secs: 600
 max_iterations: 1

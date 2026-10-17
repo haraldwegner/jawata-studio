@@ -16371,6 +16371,34 @@ judge was never told to give"
         );
     }
 
+    /// D13 and the worker (the 2026-10-11 amendment of the sprint spec, S10-8): the PM, the architect, the UX seat,
+    /// the chief engineer and the test manager perform no operation the engine classifies as changing code, and the
+    /// worker is the seat that does. Judged from the seat files' own tool lists against the engine's flag in the
+    /// vendored surface, so a tool added to a non-writing seat, or a worker stripped of its tools, fails here.
+    #[test]
+    fn the_non_writing_seats_carry_no_code_changing_tool_and_the_worker_carries_them() {
+        let changing = engine_changing_tools();
+        assert!(changing.len() >= 10, "{} tools flagged", changing.len());
+        let tools_of = |name: &str| -> Vec<String> {
+            let (_, body) = crate::conductor::EMBEDDED_SEATS
+                .iter()
+                .find(|(file, _)| file.trim_end_matches(".md") == name)
+                .unwrap_or_else(|| panic!("{name} is not an embedded seat"));
+            crate::runner::parse_seat_definition(body).expect("parses").tools
+        };
+        for seat in ["pm", "architect", "ux", "chief-engineer", "test-manager"] {
+            let tools = tools_of(seat);
+            let writing: Vec<&String> = tools.iter().filter(|t| changing.contains(t)).collect();
+            assert!(writing.is_empty(), "{seat} is a non-writing seat and declares {writing:?}");
+        }
+        let worker = tools_of("worker");
+        let carried = changing.iter().filter(|t| worker.contains(t)).count();
+        assert!(carried >= 12, "the worker declares only {carried} of the engine's code-changing tools: {worker:?}");
+        for needed in ["rename_symbol", "extract", "change_method_signature", "compile_workspace"] {
+            assert!(worker.iter().any(|t| t == needed), "the worker lacks {needed}");
+        }
+    }
+
     /// REL44-36's reach: the rule block is rewritten into a client's rules file only by a deploy,
     /// and nothing deployed after an update. The due-rule, stated on its own.
     #[test]

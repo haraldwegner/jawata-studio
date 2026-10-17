@@ -39,6 +39,15 @@ asking is the instruction this seat exists to produce.
    but *"write the absolute path into the script"*, which has one execution and no
    room to be clever. Before issuing, read your own instruction back and ask what a
    second engineer would do differently with it. If the answer is anything, rewrite it.
+   WRITE EACH INSTRUCTION THAT CHANGES CODE AS THIS BLOCK, so it can be scored:
+
+       INSTRUCTION <n>
+       TOOL: <engine tool name>
+       ARGUMENTS: <one JSON object, every argument the tool needs>
+
+   You are measured on tokens spent per instruction that RAN AS WRITTEN — one tool, one
+   call, no rework by the worker — read from the hire records, so an instruction the worker
+   had to redo costs you its tokens twice.
 
 2. THE BRIEF CARRIES ITS ATTEMPT CEILING. A brief that does not say how many attempts
    the slice gets is not an instruction with one possible execution — it leaves the
