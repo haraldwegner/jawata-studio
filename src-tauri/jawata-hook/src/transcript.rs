@@ -5,7 +5,7 @@
 //!
 //! | Moment | Role that fires it | What happens |
 //! |---|---|---|
-//! | a turn ends | stop | the window just ended is stored |
+//! | a turn ends | stop | every window since the last one stored is stored, because a turn can be split into several windows by a notification or a nudge |
 //! | work goes on | observer, at most once every two minutes | the window so far is stored: small dated steps, so a long unattended stretch is never one unsaved block |
 //! | a session restarts after a compaction | primer | every window still readable is stored, then the last things he said come back into the new context |
 //! | a message attributes words to him | stop | each quoted sentence is looked up among his words; one not found is named back, once |
@@ -112,22 +112,75 @@ fn append_window(
     })
 }
 
-/// Store the window the transcript ends in. Fired when a turn ends.
+/// Store what the transcript holds that was not stored last time: every window since the last one
+/// stored, and the window it ends in. Fired when a turn ends.
+///
+/// A turn is not always one window. A background job finishing, or the client's own nudge to an
+/// answer that had no visible output, opens a new window in the middle of what he would call one
+/// turn, and the first window then holds the tool calls and the second holds the answer. Storing
+/// only the last window loses the first for good, so the stamp of the last window stored (a file
+/// per session) says where to resume.
 pub fn capture_current(client: Client, payload: &str, store: &dyn Store) {
-    capture_current_in(signal_dir().as_deref(), client, payload, store);
+    let Some(state) = state_dir() else { return };
+    capture_current_in(&state, signal_dir().as_deref(), client, payload, store);
 }
 
-fn capture_current_in(signals: Option<&Path>, client: Client, payload: &str, store: &dyn Store) {
+/// How many already-closed windows are stored when the stamp does not say where to resume.
+const WINDOWS_WITHOUT_A_STAMP: usize = 8;
+
+fn stamp_file(dir: &Path, session: &str) -> PathBuf {
+    dir.join(format!("{}.last", pipeline::sanitize_session(session)))
+}
+
+/// The windows still to store, oldest first: from the one the stamp names (it may have grown since)
+/// to the end; with no stamp, or one that has scrolled out of the tail, the last few.
+fn unsaved<'a>(turn: &'a stop::Turn, last: Option<&str>) -> Vec<&'a WindowCapture> {
+    let all: Vec<&WindowCapture> = turn
+        .closed
+        .iter()
+        .chain(std::iter::once(&turn.capture))
+        .filter(|w| w.key.is_some())
+        .collect();
+    if let Some(key) = last {
+        if let Some(i) = all.iter().rposition(|w| w.key.as_deref() == Some(key)) {
+            return all[i..].to_vec();
+        }
+    }
+    let from = all.len().saturating_sub(WINDOWS_WITHOUT_A_STAMP);
+    all[from..].to_vec()
+}
+
+fn capture_current_in(
+    state: &Path,
+    signals: Option<&Path>,
+    client: Client,
+    payload: &str,
+    store: &dyn Store,
+) {
     let Some((session, text)) = transcript_of(payload) else { return };
     let Ok(turn) = stop::read_turn(&text) else { return };
-    match append_window(store, &session, client, "turn", &turn.capture) {
-        Some(Err(e)) => record(signals, "transcript-capture-failed", &format!("turn|{e}")),
-        Some(Ok(outcome)) => {
-            if outcome == "disabled" {
-                record(signals, "transcript-capture-off", "the lane is switched off on this deployment");
+    let last = std::fs::read_to_string(stamp_file(state, &session)).ok();
+    let mut resume_at: Option<String> = None;
+    for window in unsaved(&turn, last.as_deref().map(str::trim)) {
+        match append_window(store, &session, client, "turn", window) {
+            Some(Err(e)) => {
+                // Not advanced past a window the engine could not take: the next capture retries it.
+                record(signals, "transcript-capture-failed", &format!("turn|{e}"));
+                return;
             }
+            Some(Ok(outcome)) => {
+                if outcome == "disabled" {
+                    record(signals, "transcript-capture-off", "the lane is switched off on this deployment");
+                    return;
+                }
+                resume_at = window.key.clone();
+            }
+            None => {}
         }
-        None => {}
+    }
+    if let Some(key) = resume_at {
+        let _ = std::fs::create_dir_all(state);
+        let _ = std::fs::write(stamp_file(state, &session), key);
     }
 }
 
@@ -456,23 +509,57 @@ mod tests {
     // ---- capture ---------------------------------------------------------------------------
 
     #[test]
-    fn a_turn_end_stores_the_window_through_the_engine_once() {
+    fn a_turn_end_stores_every_unsaved_window_and_then_only_from_the_last_one_stored() {
         let dir = scratch("capture");
         let path = transcript_file(&dir, "Understood.");
+        let state = scratch("capture-state");
         let store = Stub::quiet();
-        capture_current_in(None, Client::ClaudeCode, &payload(&path, json!({})), &store);
+        capture_current_in(&state, None, Client::ClaudeCode, &payload(&path, json!({})), &store);
+
+        {
+            let seen = store.seen.borrow();
+            assert_eq!(2, seen.len(), "with no stamp, the windows the tail holds are stored: {seen:?}");
+            let r = &seen[1];
+            assert_eq!("transcript_append", r["kind"]);
+            assert_eq!("s-1", r["session"]);
+            assert_eq!("u2", r["key"]);
+            assert_eq!("claude-code", r["client"]);
+            assert_eq!("turn", r["capture"]);
+            assert_eq!("no size cap, just compression", r["his"]);
+            assert_eq!("Understood.", r["agent"]);
+            assert_eq!("2026-10-17T09:05:00Z", r["ts"]);
+        }
+        store.seen.borrow_mut().clear();
+        capture_current_in(&state, None, Client::ClaudeCode, &payload(&path, json!({})), &store);
+        let again = store.seen.borrow();
+        assert_eq!(1, again.len(), "the second capture resumes at the last window stored: {again:?}");
+        assert_eq!("u2", again[0]["key"], "which may have grown, so it is sent again");
+    }
+
+    /// The incident behind the stamp: a notification or a nudge opens a window in the middle of one
+    /// turn, the tool calls are in the first, the answer in the second, and a capture of the last
+    /// window alone lost the tool calls for good.
+    #[test]
+    fn a_turn_split_by_a_nudge_keeps_the_tool_calls_of_its_first_window() {
+        let dir = scratch("split");
+        let lines = [
+            json!({"type": "user", "uuid": "u1", "timestamp": "2026-10-17T09:00:00Z",
+                   "message": {"role": "user", "content": "read the only text file and say yes or no"}}),
+            json!({"type": "assistant", "uuid": "a1", "message": {"content": [
+                {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "/x/zq7marker.txt"}}]}}),
+            json!({"type": "user", "uuid": "n1", "timestamp": "2026-10-17T09:00:30Z",
+                   "message": {"role": "user", "content": "[Your previous response had no visible output. Please answer.]"}}),
+            json!({"type": "assistant", "uuid": "a2", "message": {"content": [{"type": "text", "text": "Yes."}]}}),
+        ];
+        let path = dir.join("split.jsonl");
+        std::fs::write(&path, lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).unwrap();
+        let store = Stub::quiet();
+        capture_current_in(&scratch("split-state"), None, Client::ClaudeCode,
+            &payload(&path.to_string_lossy(), json!({})), &store);
 
         let seen = store.seen.borrow();
-        assert_eq!(1, seen.len());
-        let r = &seen[0];
-        assert_eq!("transcript_append", r["kind"]);
-        assert_eq!("s-1", r["session"]);
-        assert_eq!("u2", r["key"]);
-        assert_eq!("claude-code", r["client"]);
-        assert_eq!("turn", r["capture"]);
-        assert_eq!("no size cap, just compression", r["his"]);
-        assert_eq!("Understood.", r["agent"]);
-        assert_eq!("2026-10-17T09:05:00Z", r["ts"]);
+        assert!(seen.iter().any(|r| r["tools"].to_string().contains("zq7marker")),
+            "the Read in the first window reached the engine: {seen:?}");
     }
 
     #[test]

@@ -194,11 +194,11 @@ fn the_stop_role_stores_the_window_that_just_ended() {
     run_as("stop", &home, &resident.url, &payload(&path, json!({"stop_hook_active": false})));
 
     let appends = resident.requests_of("transcript_append");
-    assert_eq!(1, appends.len(), "PROOF OF LIFE: the real stop binary stored the window: {:?}", resident.kinds());
-    assert_eq!("u2", appends[0]["key"], "keyed by the record that opened the window");
-    assert_eq!("no size cap, just compression", appends[0]["his"]);
-    assert_eq!("Understood.", appends[0]["agent"]);
-    assert_eq!("turn", appends[0]["capture"]);
+    assert_eq!(2, appends.len(), "PROOF OF LIFE: the real stop binary stored both windows: {:?}", resident.kinds());
+    assert_eq!("u2", appends[1]["key"], "keyed by the record that opened the window");
+    assert_eq!("no size cap, just compression", appends[1]["his"]);
+    assert_eq!("Understood.", appends[1]["agent"]);
+    assert_eq!("turn", appends[1]["capture"]);
 }
 
 #[test]
@@ -223,8 +223,8 @@ fn the_observer_role_stores_the_window_once_in_a_gap_not_on_every_tool_call() {
     for _ in 0..4 {
         run_as("observer", &home, &resident.url, &call);
     }
-    assert_eq!(1, resident.requests_of("transcript_append").len(),
-        "four tool calls inside one gap store the window once: {:?}", resident.kinds());
+    assert_eq!(2, resident.requests_of("transcript_append").len(),
+        "four tool calls inside one gap capture once, and that capture stores the two windows: {:?}", resident.kinds());
 }
 
 #[test]
