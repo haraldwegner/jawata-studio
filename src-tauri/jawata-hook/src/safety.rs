@@ -209,6 +209,26 @@ fn describe_panic(payload: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
+static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Of the total deadline, what is left for the answer to be rendered and printed once every
+/// optional job has stopped.
+pub const ANSWER_RESERVE: Duration = Duration::from_millis(1_000);
+
+/// When this process began, anchored by the first call. The watchdog's four seconds run from
+/// here, so an optional job that wants to know how long it may take asks for the time left on
+/// THIS clock and not for a share of its own.
+pub fn started_at() -> std::time::Instant {
+    *STARTED.get_or_init(std::time::Instant::now)
+}
+
+/// The last moment a job that is not the answer may still be waiting on anything: the total
+/// deadline less [`ANSWER_RESERVE`]. The time the gate itself has already spent is included,
+/// because the clock is the process's and not the job's.
+pub fn optional_work_ends() -> std::time::Instant {
+    started_at() + TOTAL_DEADLINE - ANSWER_RESERVE
+}
+
 /// Arm the watchdog: whatever the main thread is doing when the deadline
 /// passes, the process exits 0.
 ///
@@ -240,6 +260,7 @@ pub fn arm_watchdog(deadline: Duration) {
 /// the claim it "corrected", one write_all of one line, had become true. The
 /// churn is itself the evidence that the machinery never belonged on this path.
 pub fn arm_watchdog_recording(deadline: Duration, role: String) {
+    started_at(); // the clock every optional job is held to starts with the watchdog
     std::thread::spawn(move || {
         std::thread::sleep(deadline);
         // Record BEFORE exiting. A timeout that reports nothing is

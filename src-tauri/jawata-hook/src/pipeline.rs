@@ -30,6 +30,18 @@ pub trait Store {
     /// silently never fires against it — the hollow-shape failure this codebase
     /// has already paid for once.
     fn ask_value(&self, arguments: serde_json::Value) -> Result<serde_json::Value, QueryError>;
+
+    /// [`Store::ask_value`] that will not wait longer than `within`, for a job that is not the
+    /// answer (a record, a check) and must leave the hook time to print what it has decided.
+    /// The default asks without the limit, which is right for a store that answers at once.
+    fn ask_value_within(
+        &self,
+        arguments: serde_json::Value,
+        within: std::time::Duration,
+    ) -> Result<serde_json::Value, QueryError> {
+        let _ = within;
+        self.ask_value(arguments)
+    }
 }
 
 /// The real one.
@@ -44,6 +56,17 @@ impl Store for LiveStore {
     fn ask_value(&self, mut arguments: serde_json::Value) -> Result<serde_json::Value, QueryError> {
         with_budget(&mut arguments, self.0.timeout);
         query::ask_value(&self.0, arguments)
+    }
+
+    fn ask_value_within(
+        &self,
+        mut arguments: serde_json::Value,
+        within: std::time::Duration,
+    ) -> Result<serde_json::Value, QueryError> {
+        let mut endpoint = self.0.clone();
+        endpoint.timeout = endpoint.timeout.min(within);
+        with_budget(&mut arguments, endpoint.timeout);
+        query::ask_value(&endpoint, arguments)
     }
 }
 

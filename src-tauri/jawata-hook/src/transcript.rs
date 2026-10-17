@@ -38,16 +38,32 @@ const MIN_QUOTE_WORDS: usize = 5;
 /// A quote longer than this is a pasted passage, not a quotation.
 const MAX_QUOTE_CHARS: usize = 400;
 
-/// Spent on checking attributions before the stop gate answers regardless. The hook as a whole is
-/// killed silently at four seconds, and the decision it has already reached is printed last, so
-/// every record job here is held to a share of that and leaves the rest for the answer.
+/// The most a check of attributions takes of the hook's time. The hook as a whole is killed
+/// silently at four seconds and the decision it has already reached is printed last, so every
+/// record job here is held to a share of that AND to [`crate::safety::optional_work_ends`], the
+/// process-wide moment after which only the answer may still run.
 const CHECK_BUDGET: std::time::Duration = std::time::Duration::from_millis(1200);
 
-/// Spent on storing windows when a turn ends, before the answer is printed.
+/// The most storing the windows of a turn takes, before the answer is printed.
 const TURN_CAPTURE_BUDGET: std::time::Duration = std::time::Duration::from_millis(1200);
 
-/// Spent on storing windows after a compaction, before the thread is asked for and handed back.
+/// The most storing windows after a compaction takes, before the thread is asked for.
 const COMPACTION_CAPTURE_BUDGET: std::time::Duration = std::time::Duration::from_millis(2000);
+
+/// Less than this left, and an ask is not made: it could not be answered in time.
+const SMALLEST_ASK: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// The moment a job given `share` must have stopped: its own share from now, and never later than
+/// the moment the whole hook's optional work ends.
+fn ends_by(share: std::time::Duration) -> std::time::Instant {
+    (std::time::Instant::now() + share).min(crate::safety::optional_work_ends())
+}
+
+/// What is left before `until`, or `None` when too little is left to make an ask.
+fn left_before(until: std::time::Instant) -> Option<std::time::Duration> {
+    let left = until.saturating_duration_since(std::time::Instant::now());
+    (left >= SMALLEST_ASK).then_some(left)
+}
 
 /// The furthest back a read goes to find where a window opened. A window can be longer than the
 /// tail a hook normally reads (a long run of tool calls is megabytes), and a window whose opening
@@ -96,7 +112,12 @@ fn transcript_of(payload: &str) -> Option<(String, String)> {
 /// The turn read from the transcript, reading further back until `wants` is satisfied: the tail
 /// first, then four times as much, up to [`REACH_LIMIT_BYTES`] or the whole file. Reading the tail
 /// alone loses a window that opened before it, silently and for good.
-fn turn_reaching(payload: &str, wants: &dyn Fn(&stop::Turn) -> bool) -> Option<(String, stop::Turn)> {
+fn turn_reaching(
+    payload: &str,
+    wants: &dyn Fn(&stop::Turn) -> bool,
+    limit: u64,
+    until: std::time::Instant,
+) -> Option<(String, stop::Turn)> {
     let v: Value = serde_json::from_str(payload).ok()?;
     let path = v.get("transcript_path").and_then(Value::as_str)?;
     let session = pipeline::session_id_in(payload)?;
@@ -105,10 +126,10 @@ fn turn_reaching(payload: &str, wants: &dyn Fn(&stop::Turn) -> bool) -> Option<(
     loop {
         let text = pipeline::read_tail(path, size).ok()?;
         let turn = stop::read_turn(&text).ok()?;
-        if wants(&turn) || size >= file_len || size >= REACH_LIMIT_BYTES {
+        if wants(&turn) || size >= file_len || size >= limit || std::time::Instant::now() >= until {
             return Some((session, turn));
         }
-        size = size.saturating_mul(4).min(REACH_LIMIT_BYTES);
+        size = size.saturating_mul(4).min(limit);
     }
 }
 
@@ -120,6 +141,7 @@ fn append_window(
     client: Client,
     kind: &str,
     window: &WindowCapture,
+    within: std::time::Duration,
 ) -> Option<Result<String, String>> {
     let key = window.key.as_deref()?;
     if window.is_empty() {
@@ -138,7 +160,7 @@ fn append_window(
     if let Some(ts) = window.opened_at.as_deref() {
         request["ts"] = json!(ts);
     }
-    Some(match store.ask_value(request) {
+    Some(match store.ask_value_within(request, within) {
         Ok(v) => Ok(v.get("appended").and_then(Value::as_str).unwrap_or("?").to_string()),
         Err(e) => Err(format!("{e:?}")),
     })
@@ -148,7 +170,10 @@ fn append_window(
 struct Capture {
     kind: &'static str,
     without_stamp: usize,
-    budget: std::time::Duration,
+    /// The moment this capture must have stopped, whatever is left to store.
+    until: std::time::Instant,
+    /// The furthest back, in bytes, it will read to find where a window opened.
+    reach: u64,
 }
 
 /// Store what the transcript holds that was not stored last time: every window since the last one
@@ -196,12 +221,32 @@ fn capture_current_in(
     payload: &str,
     store: &dyn Store,
 ) {
-    let how = Capture { kind: "turn", without_stamp: WINDOWS_WITHOUT_A_STAMP, budget: TURN_CAPTURE_BUDGET };
+    let how = Capture {
+        kind: "turn",
+        without_stamp: WINDOWS_WITHOUT_A_STAMP,
+        until: ends_by(TURN_CAPTURE_BUDGET),
+        reach: REACH_LIMIT_BYTES,
+    };
     store_unsaved(state, signals, client, payload, store, &how);
 }
 
-/// Store the windows not yet stored, oldest first, and return how many the engine took. Stops at the
-/// time budget: the stamp stays at the last window stored, so the next capture resumes where this
+/// Say so when what was read does not reach where the work has to start: the window being stored
+/// opened before anything the read could cover, or the window the stamp names has scrolled out of
+/// it. Either leaves history unstored, and a silence there would read as nothing to store.
+fn reach_signals(signals: Option<&Path>, turn: &stop::Turn, last: Option<&str>, kind: &str) {
+    if turn.capture.key.is_none() {
+        record(signals, "transcript-window-out-of-reach", &format!("{kind}|the window opened before the furthest point read"));
+    }
+    if let Some(k) = last {
+        let held = turn.closed.iter().chain(std::iter::once(&turn.capture)).any(|w| w.key.as_deref() == Some(k));
+        if !held {
+            record(signals, "transcript-stamp-out-of-reach", &format!("{kind}|the last window stored is not in what was read"));
+        }
+    }
+}
+
+/// Store the windows not yet stored, oldest first, and return how many the engine took. Stops at
+/// `how.until`, and no ask is given longer than what is left: the stamp stays at the last window stored, so the next capture resumes where this
 /// one stopped and no window is ever skipped over.
 fn store_unsaved(
     state: &Path,
@@ -211,7 +256,6 @@ fn store_unsaved(
     store: &dyn Store,
     how: &Capture,
 ) -> usize {
-    let started = std::time::Instant::now();
     let Some(session) = pipeline::session_id_in(payload) else { return 0 };
     let last = std::fs::read_to_string(stamp_file(state, &session)).ok().map(|k| k.trim().to_string());
     let reached = |t: &stop::Turn| {
@@ -223,15 +267,16 @@ fn store_unsaved(
             None => t.closed.len() >= how.without_stamp,
         }
     };
-    let Some((_, turn)) = turn_reaching(payload, &reached) else { return 0 };
+    let Some((_, turn)) = turn_reaching(payload, &reached, how.reach, how.until) else { return 0 };
+    reach_signals(signals, &turn, last.as_deref(), how.kind);
     let mut resume_at: Option<String> = None;
     let mut stored = 0usize;
     for window in unsaved(&turn, last.as_deref(), how.without_stamp) {
-        if started.elapsed() > how.budget {
+        let Some(within) = left_before(how.until) else {
             record(signals, "transcript-capture-slow", &format!("{}|stored={stored}", how.kind));
             break;
-        }
-        match append_window(store, &session, client, how.kind, window) {
+        };
+        match append_window(store, &session, client, how.kind, window, within) {
             Some(Err(e)) => {
                 // Not advanced past a window the engine could not take: the next capture retries it.
                 record(signals, "transcript-capture-failed", &format!("{}|{e}", how.kind));
@@ -318,7 +363,8 @@ fn after_compaction_in(
     let how = Capture {
         kind: "compaction",
         without_stamp: stop::MAX_CLOSED_WINDOWS,
-        budget: COMPACTION_CAPTURE_BUDGET,
+        until: ends_by(COMPACTION_CAPTURE_BUDGET),
+        reach: REACH_LIMIT_BYTES,
     };
     let stored = store_unsaved(state, signals, client, payload, store, &how);
     record(signals, "transcript-compaction-catchup", &format!("windows={stored}"));
@@ -417,7 +463,7 @@ fn flatten(q: &str) -> String {
 /// `None` when nothing needs naming, when the lane could not check (off, not installed, engine
 /// down), or when this stop is already a retry.
 pub fn name_back(client: Client, payload: &str, store: &dyn Store) -> Option<crate::safety::Outcome> {
-    name_back_in(&state_dir()?, signal_dir().as_deref(), client, payload, store)
+    name_back_in(&state_dir()?, signal_dir().as_deref(), client, payload, store, ends_by(CHECK_BUDGET))
 }
 
 fn name_back_in(
@@ -426,6 +472,7 @@ fn name_back_in(
     client: Client,
     payload: &str,
     store: &dyn Store,
+    until: std::time::Instant,
 ) -> Option<crate::safety::Outcome> {
     let v: Value = serde_json::from_str(payload).ok()?;
     if v.get("stop_hook_active").and_then(Value::as_bool).unwrap_or(false) {
@@ -437,16 +484,14 @@ fn name_back_in(
     let already: Vec<String> = std::fs::read_to_string(named_file(dir, &session))
         .map(|t| t.lines().map(str::to_string).collect())
         .unwrap_or_default();
-    let started = std::time::Instant::now();
     let mut unfounded: Vec<String> = Vec::new();
     for quote in attributed_quotes(&turn.final_text) {
-        if started.elapsed() > CHECK_BUDGET {
-            break;
-        }
+        let Some(within) = left_before(until) else { break };
         if already.contains(&flatten(&quote)) {
             continue;
         }
-        let Ok(answer) = store.ask_value(json!({"kind": "transcript_verify", "quote": quote}))
+        let Ok(answer) =
+            store.ask_value_within(json!({"kind": "transcript_verify", "quote": quote}), within)
         else {
             continue;
         };
@@ -512,6 +557,11 @@ mod tests {
                 _ => Ok(json!({"appended": "stored"})),
             }
         }
+    }
+
+    /// A deadline far enough away that a test of something else never meets it.
+    fn soon() -> std::time::Instant {
+        std::time::Instant::now() + std::time::Duration::from_secs(30)
     }
 
     fn scratch(name: &str) -> PathBuf {
@@ -752,14 +802,24 @@ mod tests {
         let path = dir.join("slow.jsonl");
         std::fs::write(&path, lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).unwrap();
         let state = scratch("slow-state");
-        let how = Capture { kind: "turn", without_stamp: 8, budget: std::time::Duration::from_millis(200) };
+        let how = Capture {
+            kind: "turn",
+            without_stamp: 8,
+            until: std::time::Instant::now() + std::time::Duration::from_millis(400),
+            reach: REACH_LIMIT_BYTES,
+        };
         let p = payload(&path.to_string_lossy(), json!({}));
 
         let first = Slow(RefCell::new(vec![]));
         let n1 = store_unsaved(&state, None, Client::ClaudeCode, &p, &first, &how);
         assert!(n1 >= 1 && n1 < 6, "stopped before the end: {n1}");
         let second = Slow(RefCell::new(vec![]));
-        let how2 = Capture { kind: "turn", without_stamp: 8, budget: std::time::Duration::from_secs(5) };
+        let how2 = Capture {
+            kind: "turn",
+            without_stamp: 8,
+            until: std::time::Instant::now() + std::time::Duration::from_secs(5),
+            reach: REACH_LIMIT_BYTES,
+        };
         store_unsaved(&state, None, Client::ClaudeCode, &p, &second, &how2);
         let mut all: Vec<String> = first.0.borrow().clone();
         all.extend(second.0.borrow().iter().cloned());
@@ -782,6 +842,104 @@ mod tests {
         let appends: Vec<&Value> = seen.iter().filter(|r| r["kind"] == "transcript_append").collect();
         assert_eq!(1, appends.len(), "only the window the stamp names, which may have grown: {seen:?}");
         assert_eq!("u2", appends[0]["key"]);
+    }
+
+    // ---- the second audit: one clock for every optional job -----------------------------------
+
+    /// A store that remembers how long it was told it could take.
+    struct Limited(RefCell<Vec<std::time::Duration>>);
+    impl Store for Limited {
+        fn ask(&self, _: Value) -> Result<Answer, QueryError> {
+            Ok(Answer::Nothing)
+        }
+        fn ask_value(&self, _: Value) -> Result<Value, QueryError> {
+            Ok(json!({"appended": "stored", "checked": true, "found": true}))
+        }
+        fn ask_value_within(&self, a: Value, within: std::time::Duration) -> Result<Value, QueryError> {
+            self.0.borrow_mut().push(within);
+            self.ask_value(a)
+        }
+    }
+
+    #[test]
+    fn an_ask_is_never_given_more_time_than_is_left_before_the_deadline() {
+        let dir = scratch("within");
+        let path = transcript_file(&dir, "Understood.");
+        let store = Limited(RefCell::new(vec![]));
+        let how = Capture {
+            kind: "turn",
+            without_stamp: 8,
+            until: std::time::Instant::now() + std::time::Duration::from_millis(600),
+            reach: REACH_LIMIT_BYTES,
+        };
+        store_unsaved(&scratch("within-state"), None, Client::ClaudeCode, &payload(&path, json!({})), &store, &how);
+        let told = store.0.borrow();
+        assert!(!told.is_empty(), "the windows were stored through the limited ask");
+        assert!(told.iter().all(|d| *d <= std::time::Duration::from_millis(600)),
+            "no ask is told it may take longer than what was left: {told:?}");
+    }
+
+    #[test]
+    fn the_check_of_attributions_stops_at_its_deadline_and_asks_no_more() {
+        struct Slow(RefCell<usize>);
+        impl Store for Slow {
+            fn ask(&self, _: Value) -> Result<Answer, QueryError> {
+                Ok(Answer::Nothing)
+            }
+            fn ask_value(&self, _: Value) -> Result<Value, QueryError> {
+                std::thread::sleep(std::time::Duration::from_millis(120));
+                *self.0.borrow_mut() += 1;
+                Ok(json!({"checked": true, "found": true}))
+            }
+        }
+        let dir = scratch("checkdeadline");
+        let quotes = (1..=6)
+            .map(|i| format!("He said \"quote number {i} about the lighthouse ledger rule\" there."))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let path = transcript_file(&dir, &quotes);
+        let store = Slow(RefCell::new(0));
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(400);
+        name_back_in(&scratch("checkdeadline-state"), None, Client::ClaudeCode,
+            &payload(&path, json!({"stop_hook_active": false})), &store, until);
+        let asked = *store.0.borrow();
+        assert!(asked >= 1 && asked < 5, "the check stopped before it had asked all five: {asked}");
+    }
+
+    /// A window longer than anything the read will go back for cannot be stored; saying nothing
+    /// there reads as having nothing to store.
+    #[test]
+    fn a_window_beyond_the_furthest_read_is_said_to_be_out_of_reach() {
+        let dir = scratch("outofreach");
+        let mut lines = vec![json!({"type": "user", "uuid": "u-far", "timestamp": "2026-10-17T09:00:00Z",
+            "message": {"role": "user", "content": "start the very long job"}})];
+        let filler = "y".repeat(20_000);
+        for i in 0..70 {
+            lines.push(json!({"type": "assistant", "uuid": format!("a{i}"), "message": {"content": [
+                {"type": "tool_use", "id": format!("t{i}"), "name": "Bash", "input": {"command": format!("step {i} {filler}")}}]}}));
+        }
+        let path = dir.join("far.jsonl");
+        std::fs::write(&path, lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).unwrap();
+        let signals = scratch("outofreach-signals");
+        let store = Stub::quiet();
+        let how = Capture { kind: "turn", without_stamp: 8, until: soon(), reach: TRANSCRIPT_TAIL_BYTES };
+        store_unsaved(&scratch("outofreach-state"), Some(&signals), Client::ClaudeCode,
+            &payload(&path.to_string_lossy(), json!({})), &store, &how);
+        let log = std::fs::read_to_string(signals.join("outcomes.log")).unwrap_or_default();
+        assert!(log.contains("transcript-window-out-of-reach"), "the loss is recorded: {log}");
+    }
+
+    #[test]
+    fn a_stamp_that_has_scrolled_out_of_what_was_read_is_said_so() {
+        let dir = scratch("stampgone");
+        let path = transcript_file(&dir, "Understood.");
+        let state = scratch("stampgone-state");
+        std::fs::write(stamp_file(&state, "s-1"), "a-record-no-longer-in-the-file").unwrap();
+        let signals = scratch("stampgone-signals");
+        let how = Capture { kind: "turn", without_stamp: 8, until: soon(), reach: REACH_LIMIT_BYTES };
+        store_unsaved(&state, Some(&signals), Client::ClaudeCode, &payload(&path, json!({})), &Stub::quiet(), &how);
+        let log = std::fs::read_to_string(signals.join("outcomes.log")).unwrap_or_default();
+        assert!(log.contains("transcript-stamp-out-of-reach"), "recorded: {log}");
     }
 
     // ---- before something is attributed to him ---------------------------------------------
@@ -809,7 +967,7 @@ mod tests {
             verify: Some(json!({"checked": true, "found": false})),
             text: None,
         };
-        let first = name_back_in(&state, None, Client::ClaudeCode, &payload(&path, json!({"stop_hook_active": false})), &store);
+        let first = name_back_in(&state, None, Client::ClaudeCode, &payload(&path, json!({"stop_hook_active": false})), &store, soon());
         match first {
             Some(crate::safety::Outcome::Emitted(s)) => {
                 assert!(s.contains("block"), "{s}");
@@ -817,7 +975,7 @@ mod tests {
             }
             other => panic!("expected a block naming the quote: {other:?}"),
         }
-        let again = name_back_in(&state, None, Client::ClaudeCode, &payload(&path, json!({"stop_hook_active": false})), &store);
+        let again = name_back_in(&state, None, Client::ClaudeCode, &payload(&path, json!({"stop_hook_active": false})), &store, soon());
         assert!(again.is_none(), "named once; the same sentence never holds the stop twice: {again:?}");
     }
 
@@ -828,15 +986,15 @@ mod tests {
         let p = payload(&path, json!({"stop_hook_active": false}));
 
         let found = Stub { seen: RefCell::new(vec![]), verify: Some(json!({"checked": true, "found": true})), text: None };
-        assert!(name_back_in(&scratch("q1"), None, Client::ClaudeCode, &p, &found).is_none(), "he did say it");
+        assert!(name_back_in(&scratch("q1"), None, Client::ClaudeCode, &p, &found, soon()).is_none(), "he did say it");
 
         let cannot = Stub { seen: RefCell::new(vec![]), verify: Some(json!({"checked": false, "found": false})), text: None };
-        assert!(name_back_in(&scratch("q2"), None, Client::ClaudeCode, &p, &cannot).is_none(),
+        assert!(name_back_in(&scratch("q2"), None, Client::ClaudeCode, &p, &cannot, soon()).is_none(),
             "an off lane did not check, and not found would be a lie");
 
         let unfound = Stub { seen: RefCell::new(vec![]), verify: Some(json!({"checked": true, "found": false})), text: None };
         let retry = payload(&path, json!({"stop_hook_active": true}));
-        assert!(name_back_in(&scratch("q3"), None, Client::ClaudeCode, &retry, &unfound).is_none(), "a retry is never held again");
+        assert!(name_back_in(&scratch("q3"), None, Client::ClaudeCode, &retry, &unfound, soon()).is_none(), "a retry is never held again");
         assert!(unfound.seen.borrow().is_empty(), "and the engine is not even asked");
     }
 }
