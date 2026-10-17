@@ -503,7 +503,7 @@ pub struct WindowCapture {
 
 /// Cap on closed windows kept by one read: a catch-up after a compaction needs the recent
 /// discussion, and a tail read holds at most a megabyte of it.
-const MAX_CLOSED_WINDOWS: usize = 400;
+pub(crate) const MAX_CLOSED_WINDOWS: usize = 400;
 
 /// Longest key argument kept for a tool line.
 const TOOL_ARG_CHARS: usize = 120;
@@ -569,13 +569,13 @@ fn mark_failed_tools(capture: &mut WindowCapture, v: &serde_json::Value) {
 
 /// Close the window `turn` holds into its history and hand the history on, for the record that
 /// is about to open a new window.
-fn history_through(turn: &mut Turn) -> Vec<WindowCapture> {
+fn history_through(turn: &mut Turn, keep: usize) -> Vec<WindowCapture> {
     let mut closed = std::mem::take(&mut turn.closed);
     if !turn.capture.is_empty() {
         closed.push(std::mem::take(&mut turn.capture));
     }
-    if closed.len() > MAX_CLOSED_WINDOWS {
-        closed.drain(..closed.len() - MAX_CLOSED_WINDOWS);
+    if closed.len() > keep {
+        closed.drain(..closed.len() - keep);
     }
     closed
 }
@@ -1710,6 +1710,13 @@ fn rule_b_engaged(facts: &StopFacts) -> bool {
 }
 
 pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
+    read_turn_keeping(transcript_text, MAX_CLOSED_WINDOWS)
+}
+
+/// [`read_turn`] with the number of closed windows kept chosen by the caller. The hooks keep
+/// [`MAX_CLOSED_WINDOWS`]; a measurement of what the hook would store over a whole history keeps
+/// them all, so that its figures come from this reader and from no second one.
+pub fn read_turn_keeping(transcript_text: &str, keep: usize) -> Result<Turn, SilenceReason> {
     if transcript_text.trim().is_empty() {
         return Err(SilenceReason::NoTranscript);
     }
@@ -1864,7 +1871,7 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                 // An open instruction survives a wake-up too: a job finishing
                 // does not discharge what the judge asked for.
                 let open = turn.instruction_open;
-                let closed = history_through(&mut turn);
+                let closed = history_through(&mut turn, keep);
                 turn = Turn::default();
                 turn.closed = closed;
                 // A notification opens a window he did not speak in: nothing of his.
@@ -1886,10 +1893,11 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                 // writes the marker, so the agent cannot fake it and cannot
                 // suppress it.
                 let carry = pending_carry(&turn);
-                let closed = history_through(&mut turn);
+                let closed = history_through(&mut turn, keep);
                 turn = Turn::default();
                 turn.closed = closed;
-                turn.capture = WindowCapture::opened_by(&v, user_text(&v));
+                // The marker is the client's, not his: it opens a window and says nothing of his.
+                turn.capture = WindowCapture::opened_by(&v, String::new());
                 turn.interrupted = true;
                 turn.human_window = true;
                 turn.sidechain = is_sidechain(&v);
@@ -1903,7 +1911,7 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
                 // A job he did not wait for is still running when he types; it
                 // will still wake the session, so it is still pending.
                 let carry = pending_carry(&turn);
-                let closed = history_through(&mut turn);
+                let closed = history_through(&mut turn, keep);
                 turn = Turn::default();
                 turn.closed = closed;
                 turn.capture = WindowCapture::opened_by(&v, user_text(&v));

@@ -38,8 +38,21 @@ const MIN_QUOTE_WORDS: usize = 5;
 /// A quote longer than this is a pasted passage, not a quotation.
 const MAX_QUOTE_CHARS: usize = 400;
 
-/// Spent on checking attributions before the stop gate answers regardless.
-const CHECK_BUDGET: std::time::Duration = std::time::Duration::from_millis(1500);
+/// Spent on checking attributions before the stop gate answers regardless. The hook as a whole is
+/// killed silently at four seconds, and the decision it has already reached is printed last, so
+/// every record job here is held to a share of that and leaves the rest for the answer.
+const CHECK_BUDGET: std::time::Duration = std::time::Duration::from_millis(1200);
+
+/// Spent on storing windows when a turn ends, before the answer is printed.
+const TURN_CAPTURE_BUDGET: std::time::Duration = std::time::Duration::from_millis(1200);
+
+/// Spent on storing windows after a compaction, before the thread is asked for and handed back.
+const COMPACTION_CAPTURE_BUDGET: std::time::Duration = std::time::Duration::from_millis(2000);
+
+/// The furthest back a read goes to find where a window opened. A window can be longer than the
+/// tail a hook normally reads (a long run of tool calls is megabytes), and a window whose opening
+/// is not in the text read has no key to be stored under.
+const REACH_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Words that say what follows is HIS: a quotation near one is an attribution to him.
 const ATTRIBUTION_CUES: &[&str] = &[
@@ -80,6 +93,25 @@ fn transcript_of(payload: &str) -> Option<(String, String)> {
     Some((session, text))
 }
 
+/// The turn read from the transcript, reading further back until `wants` is satisfied: the tail
+/// first, then four times as much, up to [`REACH_LIMIT_BYTES`] or the whole file. Reading the tail
+/// alone loses a window that opened before it, silently and for good.
+fn turn_reaching(payload: &str, wants: &dyn Fn(&stop::Turn) -> bool) -> Option<(String, stop::Turn)> {
+    let v: Value = serde_json::from_str(payload).ok()?;
+    let path = v.get("transcript_path").and_then(Value::as_str)?;
+    let session = pipeline::session_id_in(payload)?;
+    let file_len = std::fs::metadata(path).ok()?.len();
+    let mut size = TRANSCRIPT_TAIL_BYTES;
+    loop {
+        let text = pipeline::read_tail(path, size).ok()?;
+        let turn = stop::read_turn(&text).ok()?;
+        if wants(&turn) || size >= file_len || size >= REACH_LIMIT_BYTES {
+            return Some((session, turn));
+        }
+        size = size.saturating_mul(4).min(REACH_LIMIT_BYTES);
+    }
+}
+
 /// Store one window. `None` for a window whose opening is not in the tail read, which has no id to
 /// complete it by; `Some(Err)` when the engine could not take it.
 fn append_window(
@@ -112,6 +144,13 @@ fn append_window(
     })
 }
 
+/// How a capture is taken: what it is called, how far back to go with no stamp, how long it may take.
+struct Capture {
+    kind: &'static str,
+    without_stamp: usize,
+    budget: std::time::Duration,
+}
+
 /// Store what the transcript holds that was not stored last time: every window since the last one
 /// stored, and the window it ends in. Fired when a turn ends.
 ///
@@ -133,8 +172,8 @@ fn stamp_file(dir: &Path, session: &str) -> PathBuf {
 }
 
 /// The windows still to store, oldest first: from the one the stamp names (it may have grown since)
-/// to the end; with no stamp, or one that has scrolled out of the tail, the last few.
-fn unsaved<'a>(turn: &'a stop::Turn, last: Option<&str>) -> Vec<&'a WindowCapture> {
+/// to the end; with no stamp, or one that has scrolled out of what was read, the last `fallback`.
+fn unsaved<'a>(turn: &'a stop::Turn, last: Option<&str>, fallback: usize) -> Vec<&'a WindowCapture> {
     let all: Vec<&WindowCapture> = turn
         .closed
         .iter()
@@ -146,7 +185,7 @@ fn unsaved<'a>(turn: &'a stop::Turn, last: Option<&str>) -> Vec<&'a WindowCaptur
             return all[i..].to_vec();
         }
     }
-    let from = all.len().saturating_sub(WINDOWS_WITHOUT_A_STAMP);
+    let from = all.len().saturating_sub(fallback);
     all[from..].to_vec()
 }
 
@@ -157,23 +196,54 @@ fn capture_current_in(
     payload: &str,
     store: &dyn Store,
 ) {
-    let Some((session, text)) = transcript_of(payload) else { return };
-    let Ok(turn) = stop::read_turn(&text) else { return };
-    let last = std::fs::read_to_string(stamp_file(state, &session)).ok();
+    let how = Capture { kind: "turn", without_stamp: WINDOWS_WITHOUT_A_STAMP, budget: TURN_CAPTURE_BUDGET };
+    store_unsaved(state, signals, client, payload, store, &how);
+}
+
+/// Store the windows not yet stored, oldest first, and return how many the engine took. Stops at the
+/// time budget: the stamp stays at the last window stored, so the next capture resumes where this
+/// one stopped and no window is ever skipped over.
+fn store_unsaved(
+    state: &Path,
+    signals: Option<&Path>,
+    client: Client,
+    payload: &str,
+    store: &dyn Store,
+    how: &Capture,
+) -> usize {
+    let started = std::time::Instant::now();
+    let Some(session) = pipeline::session_id_in(payload) else { return 0 };
+    let last = std::fs::read_to_string(stamp_file(state, &session)).ok().map(|k| k.trim().to_string());
+    let reached = |t: &stop::Turn| {
+        if t.capture.key.is_none() {
+            return false;
+        }
+        match last.as_deref() {
+            Some(k) => t.closed.iter().chain(std::iter::once(&t.capture)).any(|w| w.key.as_deref() == Some(k)),
+            None => t.closed.len() >= how.without_stamp,
+        }
+    };
+    let Some((_, turn)) = turn_reaching(payload, &reached) else { return 0 };
     let mut resume_at: Option<String> = None;
-    for window in unsaved(&turn, last.as_deref().map(str::trim)) {
-        match append_window(store, &session, client, "turn", window) {
+    let mut stored = 0usize;
+    for window in unsaved(&turn, last.as_deref(), how.without_stamp) {
+        if started.elapsed() > how.budget {
+            record(signals, "transcript-capture-slow", &format!("{}|stored={stored}", how.kind));
+            break;
+        }
+        match append_window(store, &session, client, how.kind, window) {
             Some(Err(e)) => {
                 // Not advanced past a window the engine could not take: the next capture retries it.
-                record(signals, "transcript-capture-failed", &format!("turn|{e}"));
-                return;
+                record(signals, "transcript-capture-failed", &format!("{}|{e}", how.kind));
+                break;
             }
             Some(Ok(outcome)) => {
                 if outcome == "disabled" {
                     record(signals, "transcript-capture-off", "the lane is switched off on this deployment");
-                    return;
+                    break;
                 }
                 resume_at = window.key.clone();
+                stored += 1;
             }
             None => {}
         }
@@ -182,6 +252,7 @@ fn capture_current_in(
         let _ = std::fs::create_dir_all(state);
         let _ = std::fs::write(stamp_file(state, &session), key);
     }
+    stored
 }
 
 /// Store the window so far, at most once every [`MIN_GAP_SECS`] per session. Fired by the observer
@@ -219,17 +290,21 @@ fn cadence_due_in(dir: &Path, session: &str, now: u64, gap: u64) -> bool {
 }
 
 /// Fired when a session starts: after a COMPACTION (the start event whose source says so), store
-/// every window the transcript still holds and hand back the thread he was following.
+/// the windows the transcript holds that were not stored, and hand back the thread he was following.
 ///
 /// The transcript file keeps what a compaction removes from the model's context, so the catch-up
-/// reads it from disk after the fact rather than needing a hook that fires before.
+/// reads it from disk after the fact rather than needing a hook that fires before. It resumes from
+/// the stamp the stop and observer captures keep, so it sends what is missing and not the whole
+/// history again; with no stamp it sends every window still readable. It is held to a time budget
+/// because the hook is killed silently at four seconds, and the hand-back is what the start is for.
 ///
 /// `None` for any other kind of start, and the engine is not asked.
 pub fn after_compaction(client: Client, payload: &str, store: &dyn Store) -> Option<String> {
-    after_compaction_in(signal_dir().as_deref(), client, payload, store)
+    after_compaction_in(&state_dir()?, signal_dir().as_deref(), client, payload, store)
 }
 
 fn after_compaction_in(
+    state: &Path,
     signals: Option<&Path>,
     client: Client,
     payload: &str,
@@ -240,21 +315,13 @@ fn after_compaction_in(
         return None;
     }
     let session = pipeline::session_id_in(payload)?;
-    if let Some((_, text)) = transcript_of(payload) {
-        if let Ok(turn) = stop::read_turn(&text) {
-            let mut stored = 0usize;
-            for window in turn.closed.iter().chain(std::iter::once(&turn.capture)) {
-                match append_window(store, &session, client, "compaction", window) {
-                    Some(Ok(_)) => stored += 1,
-                    Some(Err(e)) => {
-                        record(signals, "transcript-capture-failed", &format!("compaction|{e}"))
-                    }
-                    None => {}
-                }
-            }
-            record(signals, "transcript-compaction-catchup", &format!("windows={stored}"));
-        }
-    }
+    let how = Capture {
+        kind: "compaction",
+        without_stamp: stop::MAX_CLOSED_WINDOWS,
+        budget: COMPACTION_CAPTURE_BUDGET,
+    };
+    let stored = store_unsaved(state, signals, client, payload, store, &how);
+    record(signals, "transcript-compaction-catchup", &format!("windows={stored}"));
     let request = json!({
         "kind": "recall",
         "format": "text",
@@ -578,7 +645,7 @@ mod tests {
         let dir = scratch("startup");
         let path = transcript_file(&dir, "Understood.");
         let store = Stub::quiet();
-        assert!(after_compaction_in(None, Client::ClaudeCode, &payload(&path, json!({"source": "startup"})), &store).is_none());
+        assert!(after_compaction_in(&scratch("startup-state"), None, Client::ClaudeCode, &payload(&path, json!({"source": "startup"})), &store).is_none());
         assert!(store.seen.borrow().is_empty());
     }
 
@@ -591,7 +658,7 @@ mod tests {
             verify: None,
             text: Some("[transcript] no size cap, just compression · when he said on 2026-10-17".into()),
         };
-        let thread = after_compaction_in(None, Client::ClaudeCode, &payload(&path, json!({"source": "compact"})), &store)
+        let thread = after_compaction_in(&scratch("compact-state"), None, Client::ClaudeCode, &payload(&path, json!({"source": "compact"})), &store)
             .expect("the thread comes back");
         assert!(thread.contains("no size cap, just compression"), "{thread}");
 
@@ -603,6 +670,118 @@ mod tests {
         assert_eq!(json!(["transcript"]), recall["lanes"], "the lane is named, as the engine requires");
         assert_eq!(THREAD_MESSAGES, recall["recent"]);
         assert_eq!("s-1", recall["session"]);
+    }
+
+    // ---- what the first audit of C21 found ---------------------------------------------------
+
+    /// A window whose opening lies further back than the tail a hook reads had no key, so it was
+    /// skipped without a sound. Measured on this machine: one human window in twelve is that long.
+    #[test]
+    fn a_window_that_opened_before_the_tail_is_still_stored_under_its_own_key() {
+        let dir = scratch("long");
+        let mut lines = vec![json!({"type": "user", "uuid": "u-long", "timestamp": "2026-10-17T09:00:00Z",
+            "message": {"role": "user", "content": "run the whole migration and report"}})];
+        let filler = "x".repeat(20_000);
+        for i in 0..80 {
+            lines.push(json!({"type": "assistant", "uuid": format!("a{i}"), "message": {"content": [
+                {"type": "tool_use", "id": format!("t{i}"), "name": "Bash", "input": {"command": format!("step {i} {filler}")}}]}}));
+        }
+        lines.push(json!({"type": "assistant", "uuid": "a-final", "message": {"content": [
+            {"type": "text", "text": "Migration finished."}]}}));
+        let path = dir.join("long.jsonl");
+        std::fs::write(&path, lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).unwrap();
+        assert!(std::fs::metadata(&path).unwrap().len() > TRANSCRIPT_TAIL_BYTES, "the window is longer than the tail");
+
+        let store = Stub::quiet();
+        capture_current_in(&scratch("long-state"), None, Client::ClaudeCode,
+            &payload(&path.to_string_lossy(), json!({})), &store);
+        let seen = store.seen.borrow();
+        let r = seen.iter().find(|r| r["key"] == "u-long")
+            .unwrap_or_else(|| panic!("the long window was stored under the record that opened it: {seen:?}"));
+        assert_eq!("run the whole migration and report", r["his"]);
+        assert_eq!("Migration finished.", r["agent"]);
+    }
+
+    /// The client writes its own marker when he presses the interrupt key. It opens a window; it is
+    /// not something he typed, and the thread handed back after a compaction must not be made of it.
+    #[test]
+    fn the_interrupt_marker_opens_a_window_and_is_not_his_words() {
+        let dir = scratch("interrupt");
+        let lines = [
+            json!({"type": "user", "uuid": "u1", "timestamp": "2026-10-17T09:00:00Z",
+                   "message": {"role": "user", "content": "start the long job please"}}),
+            json!({"type": "assistant", "uuid": "a1", "message": {"content": [{"type": "text", "text": "Starting."}]}}),
+            json!({"type": "user", "uuid": "i1", "timestamp": "2026-10-17T09:01:00Z",
+                   "message": {"role": "user", "content": [{"type": "text", "text": "[Request interrupted by user]"}]}}),
+            json!({"type": "assistant", "uuid": "a2", "message": {"content": [{"type": "text", "text": "Stopped."}]}}),
+        ];
+        let path = dir.join("interrupt.jsonl");
+        std::fs::write(&path, lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).unwrap();
+        let store = Stub::quiet();
+        capture_current_in(&scratch("interrupt-state"), None, Client::ClaudeCode,
+            &payload(&path.to_string_lossy(), json!({})), &store);
+        let seen = store.seen.borrow();
+        assert!(seen.iter().all(|r| !r["his"].to_string().contains("interrupted")),
+            "the marker is never stored as his words: {seen:?}");
+        assert!(seen.iter().any(|r| r["key"] == "u1" && r["his"] == "start the long job please"));
+    }
+
+    /// A record job that runs out of time stops, leaves the stamp at the last window it stored, and
+    /// the next capture carries on from there: nothing is skipped and nothing waits past the answer.
+    #[test]
+    fn a_capture_that_runs_out_of_time_stops_and_the_next_one_resumes() {
+        struct Slow(RefCell<Vec<String>>);
+        impl Store for Slow {
+            fn ask(&self, _: Value) -> Result<Answer, QueryError> {
+                Ok(Answer::Nothing)
+            }
+            fn ask_value(&self, a: Value) -> Result<Value, QueryError> {
+                std::thread::sleep(std::time::Duration::from_millis(80));
+                self.0.borrow_mut().push(a["key"].as_str().unwrap_or("").to_string());
+                Ok(json!({"appended": "stored"}))
+            }
+        }
+        let dir = scratch("slow");
+        let mut lines = vec![];
+        for i in 0..6 {
+            lines.push(json!({"type": "user", "uuid": format!("u{i}"), "timestamp": "2026-10-17T09:00:00Z",
+                "message": {"role": "user", "content": format!("message number {i} of the session")}}));
+            lines.push(json!({"type": "assistant", "uuid": format!("a{i}"), "message": {"content": [
+                {"type": "text", "text": format!("answer {i}")}]}}));
+        }
+        let path = dir.join("slow.jsonl");
+        std::fs::write(&path, lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).unwrap();
+        let state = scratch("slow-state");
+        let how = Capture { kind: "turn", without_stamp: 8, budget: std::time::Duration::from_millis(200) };
+        let p = payload(&path.to_string_lossy(), json!({}));
+
+        let first = Slow(RefCell::new(vec![]));
+        let n1 = store_unsaved(&state, None, Client::ClaudeCode, &p, &first, &how);
+        assert!(n1 >= 1 && n1 < 6, "stopped before the end: {n1}");
+        let second = Slow(RefCell::new(vec![]));
+        let how2 = Capture { kind: "turn", without_stamp: 8, budget: std::time::Duration::from_secs(5) };
+        store_unsaved(&state, None, Client::ClaudeCode, &p, &second, &how2);
+        let mut all: Vec<String> = first.0.borrow().clone();
+        all.extend(second.0.borrow().iter().cloned());
+        for i in 0..6 {
+            assert!(all.contains(&format!("u{i}")), "window u{i} was stored by one run or the other: {all:?}");
+        }
+    }
+
+    /// The catch-up after a compaction sends what is missing, not the whole history every time.
+    #[test]
+    fn a_compaction_catch_up_resumes_from_the_stamp_the_other_captures_keep() {
+        let dir = scratch("resume");
+        let path = transcript_file(&dir, "Understood.");
+        let state = scratch("resume-state");
+        let store = Stub::quiet();
+        capture_current_in(&state, None, Client::ClaudeCode, &payload(&path, json!({})), &store);
+        store.seen.borrow_mut().clear();
+        after_compaction_in(&state, None, Client::ClaudeCode, &payload(&path, json!({"source": "compact"})), &store);
+        let seen = store.seen.borrow();
+        let appends: Vec<&Value> = seen.iter().filter(|r| r["kind"] == "transcript_append").collect();
+        assert_eq!(1, appends.len(), "only the window the stamp names, which may have grown: {seen:?}");
+        assert_eq!("u2", appends[0]["key"]);
     }
 
     // ---- before something is attributed to him ---------------------------------------------
