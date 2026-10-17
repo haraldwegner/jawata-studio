@@ -304,6 +304,13 @@ fn guard(client: Client, payload: &str) -> Outcome {
             }
             return emit_permission(client, true, String::new());
         }
+        // Sprint 28g S22 — A SHELL COMMAND CARRYING `jawata-duplicate:` OR `jawata-distinct:` IS
+        // HOW AN AGENT ANSWERS THE DUPLICATE GATE. A write has no field to say it in, so the
+        // declaration is made in a command and recorded for the session; the next write the gate
+        // would have refused consumes it. The command is then judged like any other command.
+        if tool.eq_ignore_ascii_case("Bash") {
+            note_duplicate_declaration(home_dir().as_deref(), payload);
+        }
         if let Some(path) = edit_path_in(payload) {
             // D1: an edit that PERFORMS a refactoring a tool performs is refused by name - inside
             // an authoring window too, because the window is how forty-seven of them got through.
@@ -733,6 +740,24 @@ fn dup_gate(
     payload: &str,
     store: &dyn Store,
 ) -> Option<Outcome> {
+    dup_gate_in(home_dir().as_deref(), client, config, payload, store)
+}
+
+/// Record the declaration a shell command made, so the duplicate gate can consume it.
+fn note_duplicate_declaration(home: Option<&std::path::Path>, payload: &str) {
+    let (Some(home), Some(session)) = (home, session_id_in(payload)) else { return };
+    if let Some(declaration) = crate::dupgate::disposition_in(payload) {
+        crate::dupgate::open_declaration(home, &session, &declaration);
+    }
+}
+
+fn dup_gate_in(
+    home: Option<&std::path::Path>,
+    client: Client,
+    config: &HookConfig,
+    payload: &str,
+    store: &dyn Store,
+) -> Option<Outcome> {
     let tool = tool_name_in(payload)?;
     let path = edit_path_in(payload)?;
     let mode = crate::dupgate::Mode::parse(config.dup_gate.as_deref());
@@ -769,6 +794,19 @@ fn dup_gate(
         }
 
         crate::dupgate::Verdict::Nominated { method, job, location, existing_known } => {
+            // The agent may already have answered, in a shell command, before making this write.
+            // Taken only HERE, once a nominee exists, so a write that needed no answer does not
+            // spend the declaration meant for the next one.
+            if let (Some(home), Some(session)) = (home, session_id_in(payload)) {
+                if let Some(declaration) = crate::dupgate::take_declaration(home, &session) {
+                    let signal = match declaration {
+                        crate::dupgate::Declaration::Duplicate(_) => "duplicate-declared",
+                        crate::dupgate::Declaration::Distinct(_) => "duplicate-distinct-declared",
+                    };
+                    emit_gate_signal(signal, declaration.reason());
+                    return None;
+                }
+            }
             match mode {
             crate::dupgate::Mode::Observe => {
                 emit_gate_signal("duplicate-nominated", &location);
@@ -3583,6 +3621,45 @@ mod payload_parsing_tests {
             "PROOF OF LIFE: the gate did ask, and the engine did fail: {:?}",
             store.requests()
         );
+    }
+
+    /// THE WAY OUT OF THE REFUSAL, end to end. A `Write` has no field to carry a declaration, so a
+    /// refusal that accepted one only inside the call could never be satisfied. The agent says it in
+    /// a shell command; the guard records it; the repeated write proceeds — ONCE.
+    #[test]
+    fn a_shell_declaration_lets_the_repeated_write_through_once() {
+        let home = std::env::temp_dir().join(format!("jawata-dup-pipe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let write = serde_json::json!({
+            "session_id": "s-dup",
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/p/src/Reader.java",
+                "content": "class R { Tree go(S s){return null;} }"
+            }
+        })
+        .to_string();
+        let ask = |store: &Recording| {
+            dup_gate_in(Some(&home), Client::ClaudeCode, &gate_config("claude-code"), &write, store)
+        };
+        let refused = |o: &Option<Outcome>| matches!(o, Some(Outcome::Emitted(t)) if t.contains("deny"));
+
+        let store = Recording::new(Ok(Answer::Nothing)).answering_duplicate_check_with(nominee_answer());
+        assert!(refused(&ask(&store)), "PROOF OF LIFE: with no declaration the write is refused");
+
+        // The shell command that carries the declaration.
+        let say = serde_json::json!({
+            "session_id": "s-dup",
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo 'jawata-distinct: that job reads files, this one reads a string'"}
+        })
+        .to_string();
+        note_duplicate_declaration(Some(&home), &say);
+
+        assert!(!refused(&ask(&store)), "the repeated write proceeds");
+        assert!(refused(&ask(&store)), "and the same line covers no second write");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     fn nominee_answer() -> serde_json::Value {

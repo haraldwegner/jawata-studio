@@ -53,6 +53,8 @@
 //! different facts and this sprint exists because they used to print the same.
 
 use serde_json::Value;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// How much authority the gate has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +147,64 @@ impl Declaration {
         match self {
             Declaration::Duplicate(r) | Declaration::Distinct(r) => r,
         }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Declaration::Duplicate(_) => "duplicate",
+            Declaration::Distinct(_) => "distinct",
+        }
+    }
+}
+
+// ---- WHERE A DECLARATION IS MADE ------------------------------------------------------------
+//
+// A `Write` or an `Edit` carries a path and the text to write, and nothing else — there is no
+// field in it for an agent to say what it judged, and the token inside the drafted text is
+// content, not a declaration (see [`disposition_in`]). So a gate that refused those calls and
+// accepted a declaration only inside them could never be satisfied: a refusal with no way out.
+//
+// The way out is the one the authoring window already uses. The agent runs a SHELL command that
+// carries the declaration, the guard records it for the session, and the next write that would
+// have been refused consumes it. It covers ONE write, so a genuinely new method costs exactly one
+// line, and it expires, so it cannot become a standing bypass.
+
+fn declaration_path(home: &Path, session_id: &str) -> PathBuf {
+    crate::editgate::window_path(home, &format!("{session_id}.dup"))
+}
+
+/// Record the declaration a shell command made, for this session. Best effort, like the
+/// authoring window: one that cannot be recorded simply does not open, which is the safe
+/// direction — the write is refused again and the agent says it again.
+pub fn open_declaration(home: &Path, session_id: &str, declaration: &Declaration) {
+    let path = declaration_path(home, session_id);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let reason = declaration.reason().replace(['\n', '\t'], " ");
+    let _ = std::fs::write(&path, format!("{now}\t{}\t{reason}\n", declaration.kind()));
+}
+
+/// Consume the session's declaration if it is fresh. TAKING it is the point: the same line
+/// cannot cover a second write.
+pub fn take_declaration(home: &Path, session_id: &str) -> Option<Declaration> {
+    let path = declaration_path(home, session_id);
+    let body = std::fs::read_to_string(&path).ok()?;
+    let mut fields = body.trim_end().splitn(3, '\t');
+    let opened: u64 = fields.next()?.parse().ok()?;
+    let kind = fields.next()?;
+    let reason = fields.next()?.to_string();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    if now.saturating_sub(opened) >= crate::editgate::WINDOW_TTL_SECS {
+        return None;
+    }
+    // Remove BEFORE answering: if the removal fails the declaration must not be usable twice.
+    std::fs::remove_file(&path).ok()?;
+    match kind {
+        "duplicate" => Some(Declaration::Duplicate(reason)),
+        "distinct" => Some(Declaration::Distinct(reason)),
+        _ => None,
     }
 }
 
@@ -353,8 +413,10 @@ pub fn steering(
          and proceed:\n  `{DUPLICATE} <why a second implementation is right here>` — the job \
          exists and a second one is deliberate;\n  `{DISTINCT} <how this method's job differs \
          from the one above>` — the nearest text is not the same job, which is a normal answer \
-         here. A reason is required in both and both are logged: the architect's report carries \
-         it, so a second implementation nobody justified is refused there too.{unchecked}"
+         here. Say it in a SHELL command (for example `echo '{DISTINCT} …'`) and then repeat \
+         this write: the line covers that one write. A reason is required in both and both are \
+         logged: the architect's report carries it, so a second implementation nobody justified \
+         is refused there too.{unchecked}"
     )
 }
 
@@ -577,6 +639,47 @@ mod tests {
         // The control: shown without refusing, the same facts are given and the hold is not.
         let shown = steering("parse", "Parse a compilation unit", "a.b.SourceScan#parse", true, false);
         assert!(!shown.contains("HELD"), "{shown}");
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("jawata-dup-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A WRITE HAS NO FIELD TO SAY IT IN, so the declaration is made in a shell command and
+    /// recorded for the session. It covers ONE write: a second one is refused again.
+    #[test]
+    fn a_shell_declaration_covers_exactly_one_write() {
+        let home = scratch("once");
+        let said = Declaration::Distinct("that job reads files, this one reads a string".into());
+        open_declaration(&home, "s1", &said);
+
+        assert_eq!(Some(said), take_declaration(&home, "s1"), "the first write is covered");
+        assert_eq!(None, take_declaration(&home, "s1"), "and the same line covers no second one");
+        // The control: another session never sees it.
+        open_declaration(&home, "s2", &Declaration::Duplicate("deliberate".into()));
+        assert_eq!(None, take_declaration(&home, "s3"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn an_expired_or_torn_declaration_covers_nothing() {
+        let home = scratch("stale");
+        let path = declaration_path(&home, "old");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let stale = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+            - crate::editgate::WINDOW_TTL_SECS
+            - 5;
+        std::fs::write(&path, format!("{stale}\tdistinct\ta reason\n")).unwrap();
+        assert_eq!(None, take_declaration(&home, "old"), "it expires, so it is no standing bypass");
+
+        let torn = declaration_path(&home, "torn");
+        std::fs::write(&torn, "not-a-timestamp\tdistinct\tx\n").unwrap();
+        assert_eq!(None, take_declaration(&home, "torn"));
+        assert_eq!(None, take_declaration(&home, "never-written"));
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]
