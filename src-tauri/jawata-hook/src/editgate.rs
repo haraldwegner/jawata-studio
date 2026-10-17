@@ -467,3 +467,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+mod surface_tests {
+    use super::*;
+
+    /// A declaration covers one edit by a tool that FAILED on it, so each declarable tool is an engine tool
+    /// that changes code. One the engine retired is a name no declaration can ever cite truthfully.
+    #[test]
+    fn every_declarable_tool_is_an_engine_tool_that_changes_code() {
+        for tool in DECLARABLE_TOOLS {
+            assert!(
+                crate::surface::changes_code(tool),
+                "'{tool}' is declarable but is not an engine tool that changes code"
+            );
+        }
+    }
+}

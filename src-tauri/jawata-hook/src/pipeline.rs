@@ -202,19 +202,13 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
 /// this binary — and is why it is written down here.
 /// Tools that CHANGE something, as opposed to reading it.
 ///
-/// Deliberately the same list `Turn::changed_code` uses, plus the two ways a
-/// commit or a release actually happens here — a shell command and a file
-/// write. Reading is never refused: answering him often requires it.
+/// The same question `Turn::changed_code` asks, plus the two ways a commit or a
+/// release actually happens here — a shell command and a file write. Reading is
+/// never refused: answering him often requires it. Which of the ENGINE's tools
+/// change code is the engine's own flag, read from the vendored surface
+/// (`crate::surface`), under whichever spelling the client gives the name.
 fn is_mutating_tool(tool: &str) -> bool {
-    matches!(
-        tool,
-        "Edit" | "Write" | "NotebookEdit" | "Bash"
-            | "rename_symbol" | "extract" | "inline" | "move" | "move_method"
-            | "move_in_hierarchy" | "change_method_signature" | "generate"
-            | "organize_imports" | "apply_cleanup" | "apply_null_annotations"
-            | "refactor_to_pattern" | "replace_duplicates" | "refactoring"
-            | "encapsulate_field" | "quick_fix" | "format"
-    )
+    matches!(tool, "Edit" | "Write" | "NotebookEdit" | "Bash") || crate::surface::changes_code(tool)
 }
 
 /// `Some(reason)` when this call would turn an answer into a launch pad.
@@ -3812,5 +3806,37 @@ mod payload_parsing_tests {
         let mut args = serde_json::json!({"kind": "recall"});
         with_budget(&mut args, live.0.timeout);
         assert!(args["budget_ms"].is_number());
+    }
+}
+
+#[cfg(test)]
+mod mutating_tool_tests {
+    use super::*;
+
+    /// REL44-37: the answering-then-working gate refuses a WRITE after he has been answered. It matched the
+    /// engine's tools bare, and Claude Code names them `mcp__<server>__<tool>`, so a refactoring made after
+    /// an answer was never refused - while `Edit` was.
+    #[test]
+    fn an_engine_tool_that_changes_code_is_a_write_under_the_name_the_client_gives_it() {
+        for write in [
+            "mcp__jawata-javata-dev__rename_symbol",
+            "mcp__jawata-patterns__hierarchy",
+            "mcp__jawata-x__data",
+            "mcp__jawata-x__dependency",
+            "extract",
+            "Edit",
+            "Bash",
+        ] {
+            assert!(is_mutating_tool(write), "{write} writes and must be treated as a write");
+        }
+        for read in [
+            "mcp__jawata-javata-dev__search_symbols",
+            "mcp__jawata-javata-dev__compile_workspace",
+            "mcp__jawata-javata-dev__experience",
+            "mcp__jawata-x__move_method", // retired
+            "Read",
+        ] {
+            assert!(!is_mutating_tool(read), "{read} writes nothing and answering him may need it");
+        }
     }
 }

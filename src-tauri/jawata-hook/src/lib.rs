@@ -33,6 +33,7 @@ pub mod roles;
 pub mod safety;
 pub mod silence;
 pub mod stop;
+pub mod surface;
 
 use safety::{Outcome, SilenceReason};
 

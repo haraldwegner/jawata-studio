@@ -715,3 +715,24 @@ mod tests {
         assert_eq!(tool("    int f() {\n        return 1;\n    }\n", "    int f() {\n        return 1;\n    }\n    int g() {\n        return 1;\n    }\n"), None);
     }
 }
+
+#[cfg(test)]
+mod surface_tests {
+    use super::*;
+
+    /// Each shape names the engine tool that performs it, in a sentence the agent is told to run. A tool the
+    /// engine retired, or one that changes nothing, would send the agent to a call that cannot do the edit.
+    #[test]
+    fn every_shape_names_an_engine_tool_that_changes_code() {
+        for shape in [IMPORT, VISIBILITY, RENAME, SIGNATURE, RECORD_COMPONENT, DELETE_MEMBER, EXTRACT_METHOD] {
+            assert!(
+                crate::surface::changes_code(shape.tool),
+                "the shape '{}' names '{}', which is not an engine tool that changes code",
+                shape.name,
+                shape.tool
+            );
+            let head = shape.call.split('(').next().unwrap_or("");
+            assert_eq!(shape.tool, head, "the call '{}' must call the tool the shape names", shape.call);
+        }
+    }
+}

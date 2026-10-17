@@ -102,6 +102,18 @@ if [ "$D4" -ne 0 ]; then
     exit "$D4"
 fi
 
+echo
+echo "=== gate: the engine-surface check can fail ==="
+# The studio's copy of the engine's tool surface (src-tauri/engine-surface.json) is compared with the
+# published engine in the release job. This proves the comparison fails when it should: on a flipped
+# flag, a dropped tool, a dropped retired name, an engine that does not publish the flag.
+"$ROOT/build/engine-surface-selftest.sh"
+SURFACE=$?
+if [ "$SURFACE" -ne 0 ]; then
+    echo "FAILED: the engine-surface self-test (exit $SURFACE). The release job's comparison would not be trusted."
+    exit "$SURFACE"
+fi
+
 # NOT RUN HERE, AND EACH FOR ITS OWN STATED REASON rather than by omission:
 #
 #   build/seam-gate.sh   — drives the REAL hook binary against the REAL published
@@ -109,6 +121,10 @@ fi
 #     would fail the local suite on a machine that simply has nothing deployed. A
 #     gate that cries wolf gets ignored, which is worse than a gate that is absent.
 #     It stays in the release job and is worth running by hand before a release.
+#
+#   build/engine-surface.sh check — asks the PUBLISHED engine what it lists and compares it with the
+#     committed copy; it needs the engine's release and the network, so it runs in the release job and by
+#     hand (build/engine-surface.sh check <jar> <record>) before a release.
 #
 #   build/guard-probe.sh — drives the INSTALLED binary at its deployed role name, so
 #     it is a probe of a DEPLOYMENT rather than of this tree. It is referenced by

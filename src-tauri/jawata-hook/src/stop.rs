@@ -2025,14 +2025,13 @@ pub fn read_turn(transcript_text: &str) -> Result<Turn, SilenceReason> {
     // — so demanding compile_workspace of it made a correct run declare the
     // gate "inapplicable", which teaches agents to narrate around gates. The
     // obligation now follows the edit.
+    //
+    // WHICH OF THE ENGINE'S TOOLS CHANGE CODE is the engine's own flag, vendored in
+    // `engine-surface.json` and read through `crate::surface` (REL44-37). This list
+    // used to hold the names bare, and a transcript writes an MCP tool as
+    // `mcp__<server>__<tool>`, so no engine tool ever counted.
     turn.changed_code = turn.launches.iter().any(|l| {
-        matches!(l.name.as_str(),
-            "Edit" | "Write" | "NotebookEdit"
-            | "rename_symbol" | "extract" | "inline" | "move" | "move_method"
-            | "move_in_hierarchy" | "change_method_signature" | "generate"
-            | "organize_imports" | "apply_cleanup" | "apply_null_annotations"
-            | "refactor_to_pattern" | "replace_duplicates" | "refactoring"
-            | "encapsulate_field" | "quick_fix" | "format")
+        matches!(l.name.as_str(), "Edit" | "Write" | "NotebookEdit") || crate::surface::changes_code(&l.name)
     });
     Ok(turn)
 }
@@ -4219,6 +4218,45 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
         let t = read_turn(TRANSCRIPT).expect("parses");
         assert_eq!("the summary", t.final_text);
         assert!(t.communicator_ran(), "the communicator call must be seen");
+    }
+
+    /// REL44-37, and a worse half than the ledger row said: the list `changed_code` matched against held
+    /// the engine's tool names BARE, and Claude Code writes an MCP tool into the transcript as
+    /// `mcp__<server>__<tool>`. So no engine tool was ever counted as a code change under that name - a turn
+    /// that only refactored through `rename_symbol` or `hierarchy` was not asked for its compile gate.
+    /// The list also named four tools the engine had retired and missed four it publishes. The answer now
+    /// comes from the engine's own flag (`engine-surface.json`), under either spelling of the name.
+    #[test]
+    fn an_engine_call_that_changes_code_counts_as_one_under_the_name_the_client_gives_it() {
+        let turn_calling = |tool: &str| {
+            let human = r#"{"type":"user","message":{"content":"go"}}"#;
+            let call = format!(
+                r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","name":"{tool}","input":{{}}}}]}}}}"#
+            );
+            let transcript = format!("{human}\n{call}\n");
+            read_turn(&transcript).expect("parses")
+        };
+        for changing in [
+            "mcp__jawata-javata-dev__rename_symbol",
+            "mcp__jawata-patterns__hierarchy",
+            "mcp__jawata-orb-strategy__data",
+            "mcp__jawata-x__delete_anonymous_implementation",
+            "mcp__jawata-x__dependency",
+            "mcp__jawata-x__refactoring",
+            "rename_symbol", // a client that passes the bare name
+        ] {
+            assert!(turn_calling(changing).changed_code, "{changing} changes code and must count as a code change");
+        }
+        for reading in [
+            "mcp__jawata-javata-dev__compile_workspace",
+            "mcp__jawata-javata-dev__search_symbols",
+            "mcp__jawata-javata-dev__experience",
+            "mcp__jawata-javata-dev__run_tests",
+            "mcp__jawata-x__move_method", // retired: the engine answers it not-found, so it changed nothing
+        ] {
+            assert!(!turn_calling(reading).changed_code, "{reading} changes no code and must not count as one");
+        }
+        assert!(turn_calling("Edit").changed_code, "the host's own editing tools still count");
     }
 
     /// A tool RESULT arrives as a `user` entry. If that reset the window, the

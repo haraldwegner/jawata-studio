@@ -177,6 +177,28 @@ jobs:
           export PATH="$JAVA_HOME_21_X64/bin:$PATH"
           ./build/seam-gate.sh src-tauri/target/release/jawata-hook "$JAR"
 
+      # REL44-37 / REL44-39: the studio's copy of the engine's tool surface is checked against the engine it
+      # ships beside, not kept by hand. The hook's list of code-changing tools, the recall script's patterns
+      # and the sweep of every text the studio writes for an agent all read src-tauri/engine-surface.json.
+      # This asks the PUBLISHED engine (the jar the seam gate just ran) what it lists, with the flag it
+      # publishes per tool, and the engine's record of every name it ever published, at its own tag, and fails
+      # on any difference. A missing record, an engine that does not publish the flag, or a jar that will not
+      # answer is a failure, never a skip.
+      - name: Engine surface gate (vendored surface vs published engine)
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          JAR="$(ls /tmp/jawata-v*/jawata.jar | head -1)"
+          TAG="$(basename "$(dirname "$JAR")")"; TAG="${TAG#jawata-}"
+          case "$TAG" in v[0-9]*) ;; *) echo "::error::cannot read the engine tag from $JAR"; exit 1 ;; esac
+          curl -sfL -o /tmp/published-tool-names.txt \
+            "https://raw.githubusercontent.com/haraldwegner/jawata-mcp/${TAG}/build/published-tool-names.txt" \
+            || { echo "::error::the engine at ${TAG} publishes no build/published-tool-names.txt"; exit 1; }
+          export JAVA_HOME="$JAVA_HOME_21_X64"
+          export PATH="$JAVA_HOME_21_X64/bin:$PATH"
+          ./build/engine-surface-selftest.sh
+          ./build/engine-surface.sh check "$JAR" /tmp/published-tool-names.txt
+
       - name: Install frontend dependencies
         run: npm install
 

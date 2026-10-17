@@ -9071,7 +9071,42 @@ fn build_primer_script(mcp_url: &str, token: &str) -> String {
 /// The PreToolUse recall script (URL + Bearer token baked in). Same peel; gated to
 /// refactor-ish jawata verbs with a symbol cue.
 fn build_recall_script(mcp_url: &str, token: &str) -> String {
-    RECALL_TEMPLATE.replace("__MCP_URL__", mcp_url).replace("__TOKEN__", token)
+    RECALL_TEMPLATE
+        .replace("__MCP_URL__", mcp_url)
+        .replace("__TOKEN__", token)
+        .replace("__CHANGING_TOOL_PATTERNS__", &changing_tool_case_patterns())
+}
+
+/// The engine's vendored tool surface (`src-tauri/engine-surface.json`): refreshed from the published engine
+/// by `build/engine-surface.sh` and compared with it in the release job, never typed here.
+const ENGINE_SURFACE_JSON: &str = include_str!("../engine-surface.json");
+
+/// The engine's live tools whose own flag says they change code (`_meta."jawata/changesCode"`, the engine's
+/// `Tool.changesCode()`). The recall script fires before such a call; the list it matched was typed by hand
+/// and named `replace_duplicates` and `convert_anonymous...` after the engine retired them while omitting
+/// `data` and `hierarchy` (REL44-37).
+fn engine_changing_tools() -> Vec<String> {
+    let json: serde_json::Value = serde_json::from_str(ENGINE_SURFACE_JSON).unwrap_or_default();
+    json["live"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter(|row| row["changesCode"].as_bool() == Some(true))
+                .filter_map(|row| row["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A shell `case` alternation over those tools, matching the name as Claude Code writes an MCP tool
+/// (`mcp__<server>__<tool>`) and as a bare name. Anchored at the tool name rather than a substring, so a
+/// tool of another server that merely ENDS in `move` or `data` does not fire a recall.
+fn changing_tool_case_patterns() -> String {
+    engine_changing_tools()
+        .iter()
+        .flat_map(|name| [format!("*__{name}"), name.clone()])
+        .collect::<Vec<_>>()
+        .join("|")
 }
 /// The UserPromptSubmit recall script (Sprint 21c item D): prompt → keyword cues →
 /// terminal recall → inject the ONE fitting fact, or nothing. Same envelope peel.
@@ -9279,7 +9314,7 @@ input="$(cat)"
 flatin="$(printf '%s' "$input" | tr '\n\r' '  ')"
 tool_name="$(printf '%s' "$flatin" | sed -n 's/.*"tool_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
 case "$tool_name" in
-  *rename_symbol*|*extract*|*move*|*refactor*|*inline*|*change_method_signature*|*apply_cleanup*|*apply_null*|*encapsulate*|*replace_duplicates*|*convert_anonymous*) ;;
+  __CHANGING_TOOL_PATTERNS__) ;;
   Edit|Write|MultiEdit) ;;   # Sprint 22a: recall on a hand-edit of a source file too
   *) exit 0 ;;
 esac
@@ -16164,71 +16199,157 @@ judge was never told to give"
         );
     }
 
-    /// REL44-18's class, on the surface that matters most: the rule block is deployed into every
-    /// client's guidance, so a retired tool named there is an instruction to call something that does
-    /// not exist, repeated in every project and every session. It told agents to call ten of them
-    /// until 2026-10-16, when running the published 4.4.6 answered each with "Tool not found".
-    ///
-    /// A NEGATIVE pin, because the studio repository holds no authoritative list of the engine's tools
-    /// (and its CI has no engine checkout to read one from); the names below were each measured as
-    /// not found on the published 4.4.6 Linux build. A tool retired later is not caught by this and
-    /// is the engine's `retiredNames()` to answer for.
-    #[test]
-    fn the_rule_block_names_no_tool_the_engine_has_retired() {
-        const RETIRED: [&str; 17] = [
-            "move_in_hierarchy",
-            "analyze_type",
-            "get_type_members",
-            "get_type_hierarchy",
-            "get_call_hierarchy_incoming",
-            "find_method_references",
-            "extract_method",
-            "inline_method",
-            "pull_up",
-            "move_class",
-            "undo_refactoring",
-            "apply_refactoring",
-            "inspect_refactoring",
-            "get_symbol_info",
-            "get_type_at_position",
-            "list_projects",
-            "add_project",
-        ];
-        for client in ["claude", "cursor"] {
-            let servers = vec![url_server("jawata-ws-a", 8800, "tok", false)];
-            let block = build_rule_block(client, &servers);
-            let named: Vec<&str> = RETIRED
+    /// The engine's tool surface as the studio vendors it (`src-tauri/engine-surface.json`, refreshed from the
+    /// published engine by `build/engine-surface.sh` and checked against it in the release job). Read from
+    /// the FILE, never typed: the 17-name pin this replaces was the fourth hand-kept copy of the same fact.
+    fn vendored_surface() -> (Vec<String>, Vec<String>) {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("engine-surface.json");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!("cannot read {}: {error} - this sweep did NOT run", path.display())
+        });
+        let json: serde_json::Value = serde_json::from_str(&text).expect("engine-surface.json is JSON");
+        let names = |key: &str, field: Option<&str>| -> Vec<String> {
+            json[key]
+                .as_array()
+                .unwrap_or_else(|| panic!("engine-surface.json has no {key} array"))
                 .iter()
-                .copied()
-                .filter(|name| block.contains(&format!("`{name}`")))
-                .collect();
-            assert!(
-                named.is_empty(),
-                "the {client} rule block tells an agent to call tools the engine retired: {named:?}"
-            );
-        }
+                .map(|v| match field {
+                    Some(f) => v[f].as_str().expect("a live row has a name").to_string(),
+                    None => v.as_str().expect("a retired row is a name").to_string(),
+                })
+                .collect()
+        };
+        (names("live", Some("name")), names("retired", None))
+    }
 
-        // The same names in the shell guard the studio deploys, where they are plain words and
-        // not backticked: its blocked-edit message named `move_in_hierarchy` until the
-        // architect's review of this very run found it. A whole-word match, so `extract` inside
-        // `extract_method` and the reverse are not confused.
-        let guard = build_guard_script("http://127.0.0.1:8800/health");
+    /// Whole-word occurrences of `names` in `text` (a name is a run of letters, digits and underscores, so
+    /// `extract` inside `extract_method` is not a hit for `extract`, and the reverse).
+    fn names_found(text: &str, names: &[String]) -> Vec<String> {
         let word_char = |c: char| c.is_alphanumeric() || c == '_';
-        let in_guard: Vec<&str> = RETIRED
+        names
             .iter()
-            .copied()
             .filter(|name| {
-                guard.match_indices(*name).any(|(at, _)| {
-                    let before = guard[..at].chars().next_back();
-                    let after = guard[at + name.len()..].chars().next();
+                text.match_indices(name.as_str()).any(|(at, _)| {
+                    let before = text[..at].chars().next_back();
+                    let after = text[at + name.len()..].chars().next();
                     !before.map_or(false, word_char) && !after.map_or(false, word_char)
                 })
             })
+            .cloned()
+            .collect()
+    }
+
+    /// REL44-18's class, swept instead of pinned: the studio writes the engine's tool names into text an agent
+    /// reads and calls from - the rule block in every client's rules file, the scripts deployed beside it, the
+    /// help, the seat, skill and agent files, and the hook's own messages - and every one of those was fixed
+    /// alone when a failure showed it (studio 4.4.2, 4.4.3; engine 4.4.7, 4.4.8). This reads every name the
+    /// engine has retired from the file the engine's own record produces, and fails on any text that still
+    /// names one.
+    #[test]
+    fn nothing_the_studio_writes_for_an_agent_names_a_tool_the_engine_retired() {
+        let (live, retired) = vendored_surface();
+        assert!(live.len() >= 30, "the vendored surface lists {} live tools; it was truncated", live.len());
+        assert!(retired.len() >= 60, "the vendored surface lists {} retired names; it was truncated", retired.len());
+        // A name that is live now is never a finding, however it was once used.
+        let retired: Vec<String> = retired.into_iter().filter(|n| !live.contains(n)).collect();
+
+        let mut texts: Vec<(String, String)> = Vec::new();
+        for client in ["claude", "cursor"] {
+            let servers = vec![url_server("jawata-ws-a", 8800, "tok", false)];
+            texts.push((format!("the {client} rule block"), build_rule_block(client, &servers)));
+        }
+        let (url, token) = ("http://127.0.0.1:8800/mcp", "tok");
+        texts.push(("the guard script".into(), build_guard_script("http://127.0.0.1:8800/health")));
+        texts.push(("the observer script".into(), build_observer_script(url, token)));
+        texts.push(("the stop script".into(), build_stop_script(url, token)));
+        texts.push(("the primer script".into(), build_primer_script(url, token)));
+        texts.push(("the recall script".into(), build_recall_script(url, token)));
+        texts.push(("the user-prompt script".into(), build_userprompt_script(url, token)));
+        texts.push(("the Cursor primer script".into(), build_cursor_primer_script(url, token)));
+        texts.push(("the Cursor guard script".into(), build_cursor_guard_script()));
+        texts.push(("the Cursor recall script".into(), build_cursor_recall_script(url, token)));
+        texts.push(("the Cursor observer script".into(), build_cursor_observer_script()));
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut files: Vec<std::path::PathBuf> = vec![root.join("src/assets/help.md"), root.join("README.md")];
+        for dir in ["seats", "skills", "agents"] {
+            let mut entries: Vec<_> = std::fs::read_dir(root.join(dir))
+                .unwrap_or_else(|e| panic!("cannot list {dir}: {e} - this sweep did NOT run"))
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().map_or(false, |x| x == "md"))
+                .collect();
+            entries.sort();
+            files.extend(entries);
+        }
+        // The hook's own source, minus its test module: the messages it prints and the lists it matches on.
+        let mut hook_sources: Vec<_> = std::fs::read_dir(root.join("src-tauri/jawata-hook/src"))
+            .expect("the hook crate's source directory")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().map_or(false, |x| x == "rs"))
+            .collect();
+        hook_sources.sort();
+        files.extend(hook_sources.iter().cloned());
+
+        let mut swept = 0;
+        for file in &files {
+            let mut text = std::fs::read_to_string(file)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e} - this sweep did NOT run", file.display()));
+            if file.extension().map_or(false, |x| x == "rs") {
+                if let Some(at) = text.find("\n#[cfg(test)]") {
+                    text.truncate(at);
+                }
+            }
+            texts.push((file.strip_prefix(&root).unwrap_or(file).display().to_string(), text));
+            swept += 1;
+        }
+        assert!(swept >= 25, "swept only {swept} files; a directory was empty and this proves nothing");
+
+        let findings: Vec<String> = texts
+            .iter()
+            .filter_map(|(what, text)| {
+                let found = names_found(text, &retired);
+                (!found.is_empty()).then(|| format!("{what} names {found:?}"))
+            })
             .collect();
         assert!(
-            in_guard.is_empty(),
-            "the deployed guard script's message tells an agent to call tools the engine retired: {in_guard:?}"
+            findings.is_empty(),
+            "text the studio writes for an agent names tools the engine retired:\n  {}",
+            findings.join("\n  ")
         );
+    }
+
+
+    /// The recall script decides in shell whether a call is a code change, and the alternation it matched was
+    /// typed by hand: it named tools the engine had retired and missed `data` and `hierarchy`. This runs the
+    /// generated `case` itself, under the name Claude Code gives an MCP tool.
+    #[test]
+    fn the_recall_script_fires_before_every_engine_tool_that_changes_code_and_before_no_other() {
+        let (live, _) = vendored_surface();
+        let changing = engine_changing_tools();
+        assert!(changing.len() >= 10 && changing.len() < live.len(), "{} of {} flagged", changing.len(), live.len());
+        let script = build_recall_script("http://127.0.0.1:8800/mcp", "tok");
+        assert!(!script.contains("__CHANGING_TOOL_PATTERNS__"), "the placeholder must be filled");
+        let patterns = changing_tool_case_patterns();
+        let decide = |tool: &str| -> bool {
+            let program = format!("case \"$1\" in {patterns}) echo yes;; *) echo no;; esac");
+            let out = std::process::Command::new("bash")
+                .args(["-c", &program, "bash", tool])
+                .output()
+                .expect("bash runs");
+            String::from_utf8_lossy(&out.stdout).trim() == "yes"
+        };
+        for tool in &changing {
+            assert!(decide(&format!("mcp__jawata-patterns__{tool}")), "{tool} changes code and must fire the recall");
+            assert!(decide(tool), "{tool} by its bare name must fire the recall");
+        }
+        for tool in &live {
+            if !changing.contains(tool) {
+                assert!(!decide(&format!("mcp__jawata-patterns__{tool}")), "{tool} changes no code and must not fire it");
+            }
+        }
+        for other in ["mcp__other-server__metadata", "mcp__other-server__remove", "mcp__other-server__reformat", "Read", "Bash"] {
+            assert!(!decide(other), "{other} is not an engine tool that changes code");
+        }
     }
 
     /// REL44-36's reach: the rule block is rewritten into a client's rules file only by a deploy,
