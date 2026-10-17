@@ -227,37 +227,18 @@ pub fn parse_declaration(reason: &str) -> Declaration {
     }
 }
 
-fn exception_path(home: &Path, session_id: &str) -> PathBuf {
-    window_path(home, &format!("{session_id}.once"))
-}
-
 /// Record a one-use exception. Best effort, like the window: an exception that cannot be recorded
-/// simply does not open, which is the safe direction.
+/// simply does not open, which is the safe direction. The limits (one use, bounded time) live in
+/// [`crate::oneshot`], shared with every other record of this kind.
 pub fn open_exception(home: &Path, session_id: &str, tool: &str, failure: &str) {
-    let path = exception_path(home, session_id);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let _ = std::fs::write(&path, format!("{now}\t{tool}\t{failure}\n"));
+    crate::oneshot::open(home, session_id, "once", &[tool, failure]);
 }
 
 /// Consume the exception if it is fresh and names this tool. TAKING it is the point: the same
 /// declaration cannot cover a second edit.
 pub fn take_exception(home: &Path, session_id: &str, tool: &str) -> Option<String> {
-    let path = exception_path(home, session_id);
-    let body = std::fs::read_to_string(&path).ok()?;
-    let mut fields = body.trim_end().splitn(3, '\t');
-    let opened: u64 = fields.next()?.parse().ok()?;
-    let declared = fields.next()?;
-    let failure = fields.next()?.to_string();
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-    if now.saturating_sub(opened) >= WINDOW_TTL_SECS || declared != tool {
-        return None;
-    }
-    // Remove BEFORE answering: if the removal fails the exception must not be usable twice.
-    std::fs::remove_file(&path).ok()?;
-    Some(failure)
+    crate::oneshot::take(home, session_id, "once", |f| f.first().is_some_and(|t| t == tool))
+        .and_then(|f| f.get(1).cloned())
 }
 
 /// The text of the refusal: it names the tool and the call, and says how to be covered once.

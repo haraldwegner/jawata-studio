@@ -746,8 +746,12 @@ fn dup_gate(
 /// Record the declaration a shell command made, so the duplicate gate can consume it.
 fn note_duplicate_declaration(home: Option<&std::path::Path>, payload: &str) {
     let (Some(home), Some(session)) = (home, session_id_in(payload)) else { return };
-    if let Some(declaration) = crate::dupgate::disposition_in(payload) {
-        crate::dupgate::open_declaration(home, &session, &declaration);
+    if let Some(declaration) = crate::dupgate::declaration_in_command(payload) {
+        // Bound to the refusal it answers: with none pending the agent has been shown no nominee,
+        // so there is nothing to answer, and the line opens nothing.
+        if !crate::dupgate::open_declaration(home, &session, &declaration) {
+            emit_gate_signal("duplicate-declaration-unbound", declaration.reason());
+        }
     }
 }
 
@@ -775,17 +779,6 @@ fn dup_gate_in(
         | crate::dupgate::Verdict::NoDraftMethods
         | crate::dupgate::Verdict::NoNominee => None,
 
-        // The agent said why a second implementation is right here. Recorded so
-        // the architect's watch can read the reason, then out of the way.
-        crate::dupgate::Verdict::Dispositioned { declaration } => {
-            let signal = match declaration {
-                crate::dupgate::Declaration::Duplicate(_) => "duplicate-declared",
-                crate::dupgate::Declaration::Distinct(_) => "duplicate-distinct-declared",
-            };
-            emit_gate_signal(signal, declaration.reason());
-            None
-        }
-
         // Recorded as ITS OWN fact. Folding it into "nothing to say" would throw
         // away the one distinction this sprint exists to keep.
         crate::dupgate::Verdict::Unavailable { why } => {
@@ -794,18 +787,18 @@ fn dup_gate_in(
         }
 
         crate::dupgate::Verdict::Nominated { method, job, location, existing_known } => {
-            // The agent may already have answered, in a shell command, before making this write.
-            // Taken only HERE, once a nominee exists, so a write that needed no answer does not
-            // spend the declaration meant for the next one.
+            // The agent may already have answered the refusal, in a shell command, before
+            // repeating this write. The declaration is bound to the refusal, so the log can say
+            // which job each reason was given about; it is consumed here, once.
             if let (Some(home), Some(session)) = (home, session_id_in(payload)) {
-                if let Some(declaration) = crate::dupgate::take_declaration(home, &session) {
-                    let signal = match declaration {
-                        crate::dupgate::Declaration::Duplicate(_) => "duplicate-declared",
-                        crate::dupgate::Declaration::Distinct(_) => "duplicate-distinct-declared",
-                    };
-                    emit_gate_signal(signal, declaration.reason());
+                if let Some((declaration, declared_about)) = crate::dupgate::take_declaration(home, &session) {
+                    let about = if declared_about.is_empty() { location.clone() } else { declared_about };
+                    emit_gate_signal(declaration.signal(), &format!("{about} :: {}", declaration.reason()));
                     return None;
                 }
+                // Refused (or shown): remember the nominee, so the declaration that answers it can
+                // be bound to it.
+                crate::dupgate::note_refusal(home, &session, &method, &location);
             }
             match mode {
             crate::dupgate::Mode::Observe => {
@@ -3578,33 +3571,67 @@ mod payload_parsing_tests {
         }
     }
 
-    /// (g) THE SAME WRITE CARRYING EITHER DECLARATION PROCEEDS, and it does not even ask.
+    /// (g) THE SAME WRITE, AFTER EITHER DECLARATION IS MADE IN A SHELL COMMAND, PROCEEDS — and it
+    /// is the refusal that makes the declaration count.
     #[test]
-    fn the_same_write_carrying_either_declaration_proceeds() {
+    fn the_same_write_after_either_declaration_proceeds() {
         for declaration in [
-            "jawata-duplicate: the shared reader cannot see this format",
-            "jawata-distinct: that job reads files and this one reads a string",
+            "echo 'jawata-duplicate: the shared reader cannot see this format'",
+            "echo 'jawata-distinct: that job reads files and this one reads a string'",
         ] {
-            let payload = serde_json::json!({
-                "tool_name": "Write",
-                "why": declaration,
-                "tool_input": {
-                    "file_path": "/p/src/Reader.java",
-                    "content": "class R { Tree go(S s){return null;} }"
-                }
-            })
-            .to_string();
+            let home = std::env::temp_dir().join(format!("jawata-dup-g-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&home);
+            std::fs::create_dir_all(&home).unwrap();
+            let write = sessioned_write("s-g");
             let store = Recording::new(Ok(Answer::Nothing)).answering_duplicate_check_with(nominee_answer());
-            let out = run(Role::ToolRecall, &gate_config("claude-code"), &payload, &store);
-            assert!(
-                !matches!(&out, Outcome::Emitted(text) if text.contains("deny")),
-                "{declaration}: a declared write must not be refused: {out:?}"
-            );
-            assert!(
-                !store.requests().iter().any(|r| r["kind"].as_str() == Some("duplicate_check")),
-                "{declaration}: a declared write must not pay a round trip to be told it may proceed"
-            );
+            let ask = || dup_gate_in(Some(&home), Client::ClaudeCode, &gate_config("claude-code"), &write, &store);
+            let refused = |o: &Option<Outcome>| matches!(o, Some(Outcome::Emitted(t)) if t.contains("deny"));
+
+            assert!(refused(&ask()), "PROOF OF LIFE: refused first");
+            note_duplicate_declaration(Some(&home), &shell_payload("s-g", declaration));
+            assert!(!refused(&ask()), "{declaration}: the repeated write proceeds");
+            let _ = std::fs::remove_dir_all(&home);
         }
+    }
+
+    fn sessioned_write(session: &str) -> String {
+        serde_json::json!({
+            "session_id": session,
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/p/src/Reader.java", "content": "class R { Tree go(S s){return null;} }"}
+        })
+        .to_string()
+    }
+
+    fn shell_payload(session: &str, command: &str) -> String {
+        serde_json::json!({
+            "session_id": session,
+            "tool_name": "Bash",
+            "tool_input": {"command": command}
+        })
+        .to_string()
+    }
+
+    /// A DECLARATION WITH NO REFUSAL TO ANSWER OPENS NOTHING: said before any nominee was shown, or
+    /// a command that merely mentions the token, it is not a judgement about anything.
+    #[test]
+    fn a_declaration_before_any_refusal_or_a_mere_mention_opens_nothing() {
+        let home = std::env::temp_dir().join(format!("jawata-dup-pre-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let write = sessioned_write("s-pre");
+        let store = Recording::new(Ok(Answer::Nothing)).answering_duplicate_check_with(nominee_answer());
+        let ask = || dup_gate_in(Some(&home), Client::ClaudeCode, &gate_config("claude-code"), &write, &store);
+        let refused = |o: &Option<Outcome>| matches!(o, Some(Outcome::Emitted(t)) if t.contains("deny"));
+
+        // Before the gate has said anything.
+        note_duplicate_declaration(Some(&home), &shell_payload("s-pre", "echo 'jawata-distinct: said in advance'"));
+        assert!(refused(&ask()), "a declaration made before any refusal must not wave the write through");
+
+        // A command that merely mentions the token.
+        note_duplicate_declaration(Some(&home), &shell_payload("s-pre", "grep -rn \"jawata-distinct:\" src"));
+        assert!(refused(&ask()), "a grep that names the token is not a declaration");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// (h) WITH THE ENGINE UNAVAILABLE THE WRITE PROCEEDS — an outage is not a work stoppage.

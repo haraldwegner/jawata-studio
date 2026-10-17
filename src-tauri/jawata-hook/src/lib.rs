@@ -26,6 +26,7 @@ pub mod gatefile;
 pub mod guard;
 pub mod local;
 pub mod observer;
+pub mod oneshot;
 pub mod pipeline;
 pub mod query;
 pub mod recallgate;

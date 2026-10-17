@@ -31,8 +31,10 @@
 //! - `jawata-distinct: <how this method's job differs from the nominated one>` — the nominee is
 //!   the nearest text and not the same job.
 //!
-//! Both take a REASON and both are logged for the architect's watch, so the agent is never stuck,
-//! the same as the `jawata-author:` lattice. The cost is the one he accepted: a false match costs
+//! Both take a REASON and both are logged for the architect's watch — the reason together with the
+//! location of the job it was given about — so the agent is never stuck, the same as the
+//! `jawata-author:` lattice. The declaration is made in a shell command, after the refusal, and
+//! covers the next write once (see the section below on where it is made). The cost is the one he accepted: a false match costs
 //! one extra line.
 //!
 //! The nominated job and its location are named in the refusal, so the declaration is made after
@@ -53,8 +55,7 @@
 //! different facts and this sprint exists because they used to print the same.
 
 use serde_json::Value;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::Path;
 
 /// How much authority the gate has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,9 +92,6 @@ pub enum Verdict {
     NotAJavaEdit,
     /// The kill switch is off.
     Disabled,
-    /// The agent already said what it judged — a deliberate duplicate, or a distinct job — and
-    /// the write proceeds; the declaration and its reason are logged for the architect's watch.
-    Dispositioned { declaration: Declaration },
     /// The draft declares no method, so there is nothing to ask about.
     NoDraftMethods,
     /// The lane was asked and nominated nothing with an address.
@@ -105,8 +103,8 @@ pub enum Verdict {
     ///
     /// **A nomination and not a finding.** See the module note: the ranking
     /// carries no threshold, so this names the nearest job and never asserts it
-    /// is the same one. In [`Mode::Observe`] — the default — it is shown and
-    /// recorded, and the write proceeds.
+    /// is the same one. In [`Mode::Block`] — the default — the write is held until the
+    /// agent declares what it judged; in [`Mode::Observe`] it is shown and recorded.
     ///
     /// `existing_known` is the ENGINE's own answer to a different question: could
     /// it subtract what the drafted file already declares. When it is false the
@@ -149,6 +147,14 @@ impl Declaration {
         }
     }
 
+    /// The name the gate's signal log records this declaration under.
+    pub fn signal(&self) -> &'static str {
+        match self {
+            Declaration::Duplicate(_) => "duplicate-declared",
+            Declaration::Distinct(_) => "duplicate-distinct-declared",
+        }
+    }
+
     fn kind(&self) -> &'static str {
         match self {
             Declaration::Duplicate(_) => "duplicate",
@@ -157,104 +163,75 @@ impl Declaration {
     }
 }
 
-// ---- WHERE A DECLARATION IS MADE ------------------------------------------------------------
+// ---- WHERE A DECLARATION IS MADE, AND WHAT IT ANSWERS ---------------------------------------
 //
-// A `Write` or an `Edit` carries a path and the text to write, and nothing else — there is no
-// field in it for an agent to say what it judged, and the token inside the drafted text is
-// content, not a declaration (see [`disposition_in`]). So a gate that refused those calls and
-// accepted a declaration only inside them could never be satisfied: a refusal with no way out.
+// A `Write` or an `Edit` carries a path and the text to write, and nothing else — there is no field
+// in it for an agent to say what it judged, and a token inside the drafted text is content, not a
+// declaration. So the declaration is made in a SHELL command, the way the authoring window is
+// opened: the guard reads the command and records the declaration for the session, and the next
+// write that would have been refused consumes it.
 //
-// The way out is the one the authoring window already uses. The agent runs a SHELL command that
-// carries the declaration, the guard records it for the session, and the next write that would
-// have been refused consumes it. It covers ONE write, so a genuinely new method costs exactly one
-// line, and it expires, so it cannot become a standing bypass.
+// It is BOUND TO A REFUSAL. A refusal leaves a pending record naming the nominated job; a
+// declaration is accepted only while one is pending, and it carries that job's location with it.
+// So a declaration made before the agent was shown anything — or a command that merely mentions the
+// token — opens nothing, and the log can say which job each reason was given about. It covers ONE
+// write and expires, so a genuinely new method costs exactly one line and nothing becomes a standing
+// bypass. Both records live in [`crate::oneshot`], the one store of this kind.
 
-fn declaration_path(home: &Path, session_id: &str) -> PathBuf {
-    crate::editgate::window_path(home, &format!("{session_id}.dup"))
+const PENDING: &str = "dup-pending";
+const SAID: &str = "dup-said";
+
+/// A write was refused (or shown) because of this nominee: remember it, so the declaration that
+/// answers it can be bound to it.
+pub fn note_refusal(home: &Path, session_id: &str, method: &str, location: &str) {
+    crate::oneshot::open(home, session_id, PENDING, &[method, location]);
 }
 
-/// Record the declaration a shell command made, for this session. Best effort, like the
-/// authoring window: one that cannot be recorded simply does not open, which is the safe
-/// direction — the write is refused again and the agent says it again.
-pub fn open_declaration(home: &Path, session_id: &str, declaration: &Declaration) {
-    let path = declaration_path(home, session_id);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let reason = declaration.reason().replace(['\n', '\t'], " ");
-    let _ = std::fs::write(&path, format!("{now}\t{}\t{reason}\n", declaration.kind()));
+/// Record a declaration for the refusal that is pending. Returns false — and records nothing — when
+/// none is: the agent has not been shown a nominee, so it has nothing to answer.
+pub fn open_declaration(home: &Path, session_id: &str, declaration: &Declaration) -> bool {
+    let Some(pending) = crate::oneshot::peek(home, session_id, PENDING) else {
+        return false;
+    };
+    let location = pending.get(1).map(String::as_str).unwrap_or("");
+    crate::oneshot::open(home, session_id, SAID, &[declaration.kind(), declaration.reason(), location]);
+    true
 }
 
-/// Consume the session's declaration if it is fresh. TAKING it is the point: the same line
-/// cannot cover a second write.
-pub fn take_declaration(home: &Path, session_id: &str) -> Option<Declaration> {
-    let path = declaration_path(home, session_id);
-    let body = std::fs::read_to_string(&path).ok()?;
-    let mut fields = body.trim_end().splitn(3, '\t');
-    let opened: u64 = fields.next()?.parse().ok()?;
-    let kind = fields.next()?;
-    let reason = fields.next()?.to_string();
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-    if now.saturating_sub(opened) >= crate::editgate::WINDOW_TTL_SECS {
-        return None;
-    }
-    // Remove BEFORE answering: if the removal fails the declaration must not be usable twice.
-    std::fs::remove_file(&path).ok()?;
-    match kind {
-        "duplicate" => Some(Declaration::Duplicate(reason)),
-        "distinct" => Some(Declaration::Distinct(reason)),
+/// Consume the session's declaration, with the location of the job it was made about. TAKING it is
+/// the point: the same line cannot cover a second write.
+pub fn take_declaration(home: &Path, session_id: &str) -> Option<(Declaration, String)> {
+    let fields = crate::oneshot::take(home, session_id, SAID, |_| true)?;
+    crate::oneshot::discard(home, session_id, PENDING);
+    let reason = fields.get(1)?.clone();
+    let location = fields.get(2).cloned().unwrap_or_default();
+    match fields.first()?.as_str() {
+        "duplicate" => Some((Declaration::Duplicate(reason), location)),
+        "distinct" => Some((Declaration::Distinct(reason), location)),
         _ => None,
     }
 }
 
-/// Did this write already say why the duplicate is deliberate?
+/// The declaration a shell command carries, if it carries one.
 ///
-/// # The DRAFT is excluded, and that closes a bypass rather than being a nicety
-///
-/// The token is the agent's declaration ABOUT the write; it is not content OF
-/// the write. Scanning the whole payload conflated the two, so a `.java` file
-/// whose own source contains the token — a comment, a doc block, or this gate's
-/// own rules quoted into Java — dispositioned the very write that created it.
-/// Found by the C8 audit. The draft is removed before the search, so a
-/// declaration has to be made where declarations are made.
-pub fn disposition_in(payload: &str) -> Option<Declaration> {
-    let Ok(mut value) = serde_json::from_str::<Value>(payload) else {
-        return disposition_outside_the_draft(payload);
-    };
-    if let Some(nested) = value.get_mut("tool_input") {
-        strip_draft_fields(nested);
-    }
-    strip_draft_fields(&mut value);
-    disposition_outside_the_draft(&value.to_string())
+/// It reads the COMMAND, decoded — `tool_input.command`, or a top-level `command` — and nothing
+/// else in the payload. The earlier version scanned the re-serialised payload, which left the
+/// escaping in the text: `grep -rn "jawata-distinct:" src` ended in `\"` and the stray backslash
+/// counted as a reason. A reason must now contain a letter or a digit, so a quote or a backslash
+/// cannot stand in for one.
+pub fn declaration_in_command(payload: &str) -> Option<Declaration> {
+    let value: Value = serde_json::from_str(payload).ok()?;
+    let command = value
+        .pointer("/tool_input/command")
+        .or_else(|| value.get("command"))?
+        .as_str()?;
+    declaration_in_text(command)
 }
 
-/// Remove every field [`draft_text`] reads, so what is left is only what the
-/// agent said ABOUT the write.
-///
-/// IT STRIPS THE PARSED VALUE, NOT THE TEXT, and the first version did the
-/// opposite: `payload.replace(draft, "")`, which removed NOTHING. `draft_text`
-/// hands back the DECODED content while the payload holds it JSON-ESCAPED, so a
-/// draft carrying a newline never matched its own escaped form and the token
-/// went on dispositioning its own write. The line reads exactly like the thing
-/// it was meant to do, which is why only running it said otherwise.
-fn strip_draft_fields(scope: &mut Value) {
-    let Some(map) = scope.as_object_mut() else {
-        return;
-    };
-    map.remove("content");
-    map.remove("new_string");
-    if let Some(edits) = map.get_mut("edits").and_then(Value::as_array_mut) {
-        for edit in edits {
-            if let Some(one) = edit.as_object_mut() {
-                one.remove("new_string");
-            }
-        }
-    }
-}
-
-fn disposition_outside_the_draft(payload: &str) -> Option<Declaration> {
-    let lower = payload.to_lowercase();
+fn declaration_in_text(text: &str) -> Option<Declaration> {
+    // ASCII lowering keeps every byte offset, so the index found in the lowered copy is valid in
+    // the original even when the text before the token is not ASCII.
+    let lower = text.to_ascii_lowercase();
     // Either token counts, and a bare one counts as neither: the first spelling that carries a
     // reason decides, so a stray empty `jawata-duplicate:` does not hide a real `jawata-distinct:`.
     for (token, make) in [
@@ -262,12 +239,16 @@ fn disposition_outside_the_draft(payload: &str) -> Option<Declaration> {
         (DISTINCT, Declaration::Distinct as fn(String) -> Declaration),
     ] {
         let Some(at) = lower.find(token) else { continue };
-        let reason: String = payload[at + token.len()..]
-            .chars()
-            .take_while(|c| *c != '\n' && *c != '"')
-            .collect();
-        let reason = reason.trim();
-        if !reason.is_empty() {
+        let rest = &text[at + token.len()..];
+        // The reason follows the token after a space, as a sentence does. A token followed at
+        // once by a quote or a bracket is a pattern being SEARCHED FOR (`grep "jawata-distinct:"
+        // src`), and what comes after the quote is a path, not a judgement.
+        if !rest.starts_with([' ', '\t']) {
+            continue;
+        }
+        let line = rest.lines().next().unwrap_or("");
+        let reason = line.trim().trim_end_matches(['\'', '"', '`']).trim();
+        if reason.chars().any(char::is_alphanumeric) {
             return Some(make(reason.to_string()));
         }
     }
@@ -338,9 +319,10 @@ pub fn first_nominee(data: &Value) -> Option<(String, String, String)> {
 /// independent of the pipeline's transport, and so a test can hand it a fixture
 /// without standing up an engine.
 ///
-/// The order is the design: a DISPOSITION short-circuits before the engine is
-/// asked at all. An agent that has already said why the duplicate is deliberate
-/// should not pay a round trip to be told it may proceed.
+/// Judge one write: what would the engine nominate for it.
+///
+/// This decides nothing about a declaration — that is the pipeline's, because a declaration is
+/// made in a shell command and bound to the refusal it answers (see [`open_declaration`]).
 pub fn judge<F>(mode: Mode, tool_name: &str, path: &str, payload: &str, ask: F) -> Verdict
 where
     F: Fn(&str, &str) -> Result<Value, crate::query::QueryError>,
@@ -353,9 +335,6 @@ where
     // the smell the sibling detector reports.
     if !crate::editgate::is_editing_tool(tool_name) || !crate::editgate::is_java_source(path) {
         return Verdict::NotAJavaEdit;
-    }
-    if let Some(declaration) = disposition_in(payload) {
-        return Verdict::Dispositioned { declaration };
     }
     let Some(draft) = draft_text(payload) else {
         return Verdict::NoDraftMethods;
@@ -484,79 +463,6 @@ mod tests {
     }
 
     #[test]
-    fn a_declared_duplicate_proceeds_and_carries_its_reason() {
-        let payload = json!({
-            "content": "private static Tree parse(Source s) { return null; }",
-            "why": "jawata-duplicate: the shared one resolves bindings and this path must not"
-        })
-        .to_string();
-        match judge(Mode::Block, "Write", "/p/A.java", &payload, |_, _| {
-            panic!("a dispositioned write must not pay a round trip to the engine")
-        }) {
-            Verdict::Dispositioned { declaration } => {
-                assert!(matches!(declaration, Declaration::Duplicate(_)), "{declaration:?}");
-                assert!(declaration.reason().contains("must not"), "{declaration:?}");
-            }
-            other => panic!("expected a disposition, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_bare_token_with_no_reason_is_not_a_disposition() {
-        // The one-word bypass this gate is shaped to refuse.
-        assert_eq!(None, disposition_in("jawata-duplicate:"));
-        assert_eq!(None, disposition_in("jawata-duplicate:    "));
-        assert_eq!(None, disposition_in("jawata-distinct:"));
-        assert_eq!(
-            Some(Declaration::Duplicate("the two differ on the error path".to_string())),
-            disposition_in("jawata-duplicate: the two differ on the error path")
-        );
-        assert_eq!(
-            Some(Declaration::Distinct("this one rounds money, that one parses source".to_string())),
-            disposition_in("jawata-distinct: this one rounds money, that one parses source")
-        );
-        // A stray empty token must not hide a real one beside it.
-        assert_eq!(
-            Some(Declaration::Distinct("a different job".to_string())),
-            disposition_in("jawata-duplicate:\njawata-distinct: a different job")
-        );
-    }
-
-    /// THE DRAFT CANNOT DISPOSITION ITSELF — a bypass the C8 audit found.
-    ///
-    /// The token declares something ABOUT the write. A file whose own source
-    /// contains it (a comment, a doc block, this gate's rules quoted into Java)
-    /// would otherwise wave through the very write that created it, and the
-    /// bypass is trivially reachable by anyone writing about the mechanism.
-    #[test]
-    fn the_token_inside_the_drafted_file_is_content_not_a_declaration() {
-        let payload = json!({
-            "tool_name": "Write",
-            "tool_input": {
-                "file_path": "/p/Notes.java",
-                "content": "/** Write `jawata-duplicate: because X` to declare one. */\n\
-                            class Notes { void go() {} }"
-            }
-        })
-        .to_string();
-        assert_eq!(
-            None,
-            disposition_in(&payload),
-            "the token is inside the DRAFT, so it is the file's content and not the \
-             agent's declaration about writing it"
-        );
-        // The control: the same token OUTSIDE the draft still dispositions, or
-        // the fix above would have closed the mechanism rather than the bypass.
-        let declared = json!({
-            "tool_name": "Write",
-            "why": "jawata-duplicate: the shared reader cannot see this format",
-            "tool_input": {"file_path": "/p/Notes.java", "content": "class N { void go() {} }"}
-        })
-        .to_string();
-        assert!(disposition_in(&declared).is_some(), "a real declaration must still count");
-    }
-
-    #[test]
     fn an_unavailable_engine_lets_the_write_through_and_says_which() {
         match judge(Mode::Block, "Write", "/p/A.java", &write_of("void x() {}"), |_, _| {
             Err(crate::query::QueryError::ToolRefused {
@@ -641,65 +547,6 @@ mod tests {
         assert!(!shown.contains("HELD"), "{shown}");
     }
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("jawata-dup-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    /// A WRITE HAS NO FIELD TO SAY IT IN, so the declaration is made in a shell command and
-    /// recorded for the session. It covers ONE write: a second one is refused again.
-    #[test]
-    fn a_shell_declaration_covers_exactly_one_write() {
-        let home = scratch("once");
-        let said = Declaration::Distinct("that job reads files, this one reads a string".into());
-        open_declaration(&home, "s1", &said);
-
-        assert_eq!(Some(said), take_declaration(&home, "s1"), "the first write is covered");
-        assert_eq!(None, take_declaration(&home, "s1"), "and the same line covers no second one");
-        // The control: another session never sees it.
-        open_declaration(&home, "s2", &Declaration::Duplicate("deliberate".into()));
-        assert_eq!(None, take_declaration(&home, "s3"));
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    #[test]
-    fn an_expired_or_torn_declaration_covers_nothing() {
-        let home = scratch("stale");
-        let path = declaration_path(&home, "old");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let stale = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
-            - crate::editgate::WINDOW_TTL_SECS
-            - 5;
-        std::fs::write(&path, format!("{stale}\tdistinct\ta reason\n")).unwrap();
-        assert_eq!(None, take_declaration(&home, "old"), "it expires, so it is no standing bypass");
-
-        let torn = declaration_path(&home, "torn");
-        std::fs::write(&torn, "not-a-timestamp\tdistinct\tx\n").unwrap();
-        assert_eq!(None, take_declaration(&home, "torn"));
-        assert_eq!(None, take_declaration(&home, "never-written"));
-        let _ = std::fs::remove_dir_all(&home);
-    }
-
-    #[test]
-    fn a_distinct_declaration_proceeds_and_carries_its_reason() {
-        let payload = json!({
-            "content": "private static Tree parse(Source s) { return null; }",
-            "why": "jawata-distinct: that one reads files, this one reads a string"
-        })
-        .to_string();
-        match judge(Mode::Block, "Write", "/p/A.java", &payload, |_, _| {
-            panic!("a dispositioned write must not pay a round trip to the engine")
-        }) {
-            Verdict::Dispositioned { declaration } => {
-                assert!(matches!(declaration, Declaration::Distinct(_)), "{declaration:?}");
-                assert!(declaration.reason().contains("reads a string"), "{declaration:?}");
-            }
-            other => panic!("expected a disposition, got {other:?}"),
-        }
-    }
-
     #[test]
     fn an_edit_fragment_is_forwarded_as_the_draft() {
         // An Edit carries a fragment rather than a file, and it must still reach
@@ -725,5 +572,89 @@ mod tests {
         let blocked = judge(Mode::Block, "Write", "/p/A.java", &write_of("void x() {}"), ask);
         assert_eq!(observed, blocked);
         assert!(matches!(observed, Verdict::Nominated { .. }), "{observed:?}");
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("jawata-dup-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn shell(command: &str) -> String {
+        json!({"tool_name": "Bash", "tool_input": {"command": command}}).to_string()
+    }
+
+    /// A declaration is read from the DECODED command, and a bare token is nothing — including on
+    /// the payloads that really arrive, where the escaping once turned a quote into a reason.
+    #[test]
+    fn a_bare_token_with_no_reason_is_not_a_declaration_on_real_payloads() {
+        for command in [
+            "grep -rn \"jawata-distinct:\" src",
+            "echo \"jawata-distinct:\"",
+            "echo 'jawata-duplicate:'",
+            "echo jawata-distinct:   ",
+            "git commit -m \"mention jawata-duplicate:\"",
+        ] {
+            assert_eq!(None, declaration_in_command(&shell(command)), "{command}");
+        }
+        assert_eq!(
+            Some(Declaration::Distinct("this one rounds money, that one parses source".into())),
+            declaration_in_command(&shell("echo 'jawata-distinct: this one rounds money, that one parses source'"))
+        );
+        assert_eq!(
+            Some(Declaration::Duplicate("the shared runner cannot see this format".into())),
+            declaration_in_command(&shell("echo jawata-duplicate: the shared runner cannot see this format"))
+        );
+        // A stray empty token must not hide a real one beside it.
+        assert_eq!(
+            Some(Declaration::Distinct("a different job".into())),
+            declaration_in_command(&shell("echo jawata-duplicate:\necho jawata-distinct: a different job"))
+        );
+        // A top-level `command`, the other client's shape.
+        assert!(declaration_in_command(&json!({"command": "echo jawata-distinct: a real reason"}).to_string()).is_some());
+    }
+
+    /// THE DRAFT AND THE FILE'S EXISTING TEXT ARE NEVER A DECLARATION: only a shell command's text
+    /// is read, so a token sitting in a file (written earlier, or quoted in an `old_string`) opens
+    /// nothing.
+    #[test]
+    fn a_token_in_a_write_or_an_edit_is_content_and_never_a_declaration() {
+        for payload in [
+            json!({"tool_name": "Write", "tool_input": {"file_path": "/p/N.java",
+                "content": "// jawata-distinct: because x\nclass N {}"}}),
+            json!({"tool_name": "Edit", "tool_input": {"file_path": "/p/N.java",
+                "old_string": "// jawata-distinct: because x", "new_string": "void go() {}"}}),
+            json!({"tool_name": "Edit", "tool_input": {"file_path": "/p/N.java", "why": "jawata-distinct: sneaked in"}}),
+        ] {
+            assert_eq!(None, declaration_in_command(&payload.to_string()), "{payload}");
+        }
+    }
+
+    /// A DECLARATION ANSWERS A REFUSAL. Made before one is pending it opens nothing; made after, it
+    /// carries the refused job's location, and it covers exactly one write.
+    #[test]
+    fn a_declaration_is_bound_to_the_refusal_it_answers_and_covers_one_write() {
+        let home = scratch("bound");
+        let said = Declaration::Distinct("that job reads files, this one reads a string".into());
+
+        assert!(!open_declaration(&home, "s", &said), "nothing is pending, so there is nothing to answer");
+        assert_eq!(None, take_declaration(&home, "s"), "and nothing was recorded");
+
+        note_refusal(&home, "s", "parse", "a.b.SourceScan#parse");
+        assert!(open_declaration(&home, "s", &said));
+        assert_eq!(
+            Some((said.clone(), "a.b.SourceScan#parse".to_string())),
+            take_declaration(&home, "s"),
+            "it carries the location of the job it was about"
+        );
+        assert_eq!(None, take_declaration(&home, "s"), "and the same line covers no second write");
+        // The refusal was answered, so a later declaration has no refusal to attach to.
+        assert!(!open_declaration(&home, "s", &said));
+        // Another session never sees it.
+        note_refusal(&home, "other", "parse", "x#y");
+        assert!(open_declaration(&home, "other", &said));
+        assert_eq!(None, take_declaration(&home, "s"));
+        let _ = std::fs::remove_dir_all(&home);
     }
 }
