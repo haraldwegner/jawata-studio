@@ -50,6 +50,11 @@ const TURN_CAPTURE_BUDGET: std::time::Duration = std::time::Duration::from_milli
 /// The most storing windows after a compaction takes, before the thread is asked for.
 const COMPACTION_CAPTURE_BUDGET: std::time::Duration = std::time::Duration::from_millis(2000);
 
+/// What reading and parsing a transcript costs, per byte, in the worst case measured (dense small
+/// records at 64 MiB took about a second). A further step back is taken only when the time left
+/// covers this estimate for it, so a read can never be the thing that runs past the deadline.
+const READ_NANOS_PER_BYTE: u64 = 16;
+
 /// Less than this left, and an ask is not made: it could not be answered in time.
 const SMALLEST_ASK: std::time::Duration = std::time::Duration::from_millis(150);
 
@@ -124,12 +129,24 @@ fn turn_reaching(
     let file_len = std::fs::metadata(path).ok()?.len();
     let mut size = TRANSCRIPT_TAIL_BYTES;
     loop {
-        let text = pipeline::read_tail(path, size).ok()?;
-        let turn = stop::read_turn(&text).ok()?;
-        if wants(&turn) || size >= file_len || size >= limit || std::time::Instant::now() >= until {
-            return Some((session, turn));
+        // A tail that cannot be read or holds no whole record (the last record is longer than the
+        // tail) is not a reason to give up: read further back, as for a window that has not opened.
+        let read = pipeline::read_tail(path, size).ok().and_then(|text| stop::read_turn(&text).ok());
+        let finished = size >= file_len || size >= limit;
+        let done = match &read {
+            Some(turn) => wants(turn) || finished,
+            None => finished,
+        };
+        if done {
+            return read.map(|turn| (session, turn));
         }
-        size = size.saturating_mul(4).min(limit);
+        let next = size.saturating_mul(4).min(limit);
+        let cost = std::time::Duration::from_nanos(next.saturating_mul(READ_NANOS_PER_BYTE));
+        if std::time::Instant::now() + cost > until {
+            // Not enough time left to read that far: hand back what was read, if anything.
+            return read.map(|turn| (session, turn));
+        }
+        size = next;
     }
 }
 
@@ -240,7 +257,7 @@ fn reach_signals(signals: Option<&Path>, turn: &stop::Turn, last: Option<&str>, 
     if let Some(k) = last {
         let held = turn.closed.iter().chain(std::iter::once(&turn.capture)).any(|w| w.key.as_deref() == Some(k));
         if !held {
-            record(signals, "transcript-stamp-out-of-reach", &format!("{kind}|the last window stored is not in what was read"));
+            record(signals, "transcript-stamp-out-of-reach", &format!("{kind}|the last window stored is not in what was read (out of reach, or out of time)"));
         }
     }
 }
@@ -267,7 +284,10 @@ fn store_unsaved(
             None => t.closed.len() >= how.without_stamp,
         }
     };
-    let Some((_, turn)) = turn_reaching(payload, &reached, how.reach, how.until) else { return 0 };
+    let Some((_, turn)) = turn_reaching(payload, &reached, how.reach, how.until) else {
+        record(signals, "transcript-unreadable", &format!("{}|nothing could be read from the transcript", how.kind));
+        return 0;
+    };
     reach_signals(signals, &turn, last.as_deref(), how.kind);
     let mut resume_at: Option<String> = None;
     let mut stored = 0usize;
@@ -375,7 +395,10 @@ fn after_compaction_in(
         "recent": THREAD_MESSAGES,
         "session": session,
     });
-    match store.ask(request) {
+    // The hand-back is what this start is for, but not at the cost of the primer already computed:
+    // it is asked for only while there is time, and never allowed past the process's clock.
+    let within = left_before(crate::safety::optional_work_ends())?;
+    match store.ask_within(request, within) {
         Ok(crate::query::Answer::Text(thread)) if !thread.trim().is_empty() => Some(format!(
             "AFTER A COMPACTION — what he said most recently, from the transcript lane, newest \
              first and verbatim. The summary above this line is the model's; these are his \
@@ -478,6 +501,7 @@ fn name_back_in(
     if v.get("stop_hook_active").and_then(Value::as_bool).unwrap_or(false) {
         return None;
     }
+    left_before(until)?; // no time left: the transcript is not even read
     let session = pipeline::session_id_in(payload)?;
     let (_, text) = transcript_of(payload)?;
     let turn = stop::read_turn(&text).ok()?;
@@ -940,6 +964,98 @@ mod tests {
         store_unsaved(&state, Some(&signals), Client::ClaudeCode, &payload(&path, json!({})), &Stub::quiet(), &how);
         let log = std::fs::read_to_string(signals.join("outcomes.log")).unwrap_or_default();
         assert!(log.contains("transcript-stamp-out-of-reach"), "recorded: {log}");
+    }
+
+    // ---- the third audit: the read, the recall and the clock ---------------------------------
+
+    #[test]
+    fn a_record_job_never_ends_later_than_the_hooks_own_clock_allows() {
+        assert!(ends_by(std::time::Duration::from_secs(60)) <= crate::safety::optional_work_ends(),
+            "a share of a minute is cut to what the whole hook can spare");
+    }
+
+    /// One long window, read with almost no time left: the climb must not start a step it cannot pay
+    /// for, because a read that overruns is how the answer the gate already holds gets killed.
+    #[test]
+    fn a_read_does_not_go_further_back_than_the_time_left_pays_for() {
+        let dir = scratch("climbcost");
+        let mut lines = vec![json!({"type": "user", "uuid": "u-far", "timestamp": "2026-10-17T09:00:00Z",
+            "message": {"role": "user", "content": "start the long job"}})];
+        let filler = "z".repeat(20_000);
+        for i in 0..80 {
+            lines.push(json!({"type": "assistant", "uuid": format!("a{i}"), "message": {"content": [
+                {"type": "tool_use", "id": format!("t{i}"), "name": "Bash", "input": {"command": format!("s {i} {filler}")}}]}}));
+        }
+        let path = dir.join("cost.jsonl");
+        std::fs::write(&path, lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).unwrap();
+        let p = payload(&path.to_string_lossy(), json!({}));
+        let opened = |t: &stop::Turn| t.capture.key.is_some();
+
+        let hurried = turn_reaching(&p, &opened, REACH_LIMIT_BYTES,
+            std::time::Instant::now() + std::time::Duration::from_millis(5)).expect("the tail was read");
+        assert!(hurried.1.capture.key.is_none(), "with 5 ms left it did not climb to 4 MiB");
+
+        let unhurried = turn_reaching(&p, &opened, REACH_LIMIT_BYTES, soon()).expect("read");
+        assert_eq!(Some("u-far".to_string()), unhurried.1.capture.key, "with time it reached the opening");
+    }
+
+    /// The last record is longer than the tail, so the tail holds no whole record: reading it fails.
+    /// That is a reason to read further back, not a reason to lose the window without a sound.
+    #[test]
+    fn a_last_record_longer_than_the_tail_does_not_lose_the_window() {
+        let dir = scratch("bigrecord");
+        let lines = [
+            json!({"type": "user", "uuid": "u-big", "timestamp": "2026-10-17T09:00:00Z",
+                   "message": {"role": "user", "content": "write the big file"}}),
+            json!({"type": "assistant", "uuid": "a-big", "message": {"content": [
+                {"type": "tool_use", "id": "t1", "name": "Write",
+                 "input": {"file_path": "/x/big.txt", "content": "q".repeat(2_000_000)}}]}}),
+        ];
+        let path = dir.join("big.jsonl");
+        std::fs::write(&path, lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).unwrap();
+        let store = Stub::quiet();
+        capture_current_in(&scratch("bigrecord-state"), None, Client::ClaudeCode,
+            &payload(&path.to_string_lossy(), json!({})), &store);
+        let seen = store.seen.borrow();
+        assert!(seen.iter().any(|r| r["key"] == "u-big" && r["his"] == "write the big file"),
+            "the window was stored although its last record is longer than the tail: {seen:?}");
+    }
+
+    #[test]
+    fn a_transcript_that_cannot_be_read_at_all_is_recorded_not_skipped_in_silence() {
+        let signals = scratch("unreadable-signals");
+        let how = Capture { kind: "turn", without_stamp: 8, until: soon(), reach: REACH_LIMIT_BYTES };
+        store_unsaved(&scratch("unreadable-state"), Some(&signals), Client::ClaudeCode,
+            &payload("/nonexistent/transcript.jsonl", json!({})), &Stub::quiet(), &how);
+        let log = std::fs::read_to_string(signals.join("outcomes.log")).unwrap_or_default();
+        assert!(log.contains("transcript-unreadable"), "recorded: {log}");
+    }
+
+    #[test]
+    fn the_thread_after_a_compaction_is_asked_for_within_the_clock_and_not_past_it() {
+        struct Recalls(RefCell<Vec<std::time::Duration>>);
+        impl Store for Recalls {
+            fn ask(&self, _: Value) -> Result<Answer, QueryError> {
+                Ok(Answer::Text("[transcript] no size cap, just compression".into()))
+            }
+            fn ask_value(&self, _: Value) -> Result<Value, QueryError> {
+                Ok(json!({"appended": "stored"}))
+            }
+            fn ask_within(&self, a: Value, within: std::time::Duration) -> Result<Answer, QueryError> {
+                self.0.borrow_mut().push(within);
+                self.ask(a)
+            }
+        }
+        let dir = scratch("recallclock");
+        let path = transcript_file(&dir, "Understood.");
+        let store = Recalls(RefCell::new(vec![]));
+        let thread = after_compaction_in(&scratch("recallclock-state"), None, Client::ClaudeCode,
+            &payload(&path, json!({"source": "compact"})), &store);
+        assert!(thread.is_some(), "the thread comes back");
+        let told = store.0.borrow();
+        assert_eq!(1, told.len(), "the recall was asked through the limited ask");
+        assert!(told[0] <= crate::safety::TOTAL_DEADLINE - crate::safety::ANSWER_RESERVE,
+            "and was never told it could take longer than the clock allows: {told:?}");
     }
 
     // ---- before something is attributed to him ---------------------------------------------

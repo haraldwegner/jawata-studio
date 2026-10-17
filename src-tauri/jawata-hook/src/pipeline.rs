@@ -31,6 +31,16 @@ pub trait Store {
     /// has already paid for once.
     fn ask_value(&self, arguments: serde_json::Value) -> Result<serde_json::Value, QueryError>;
 
+    /// [`Store::ask`] that will not wait longer than `within`; see [`Store::ask_value_within`].
+    fn ask_within(
+        &self,
+        arguments: serde_json::Value,
+        within: std::time::Duration,
+    ) -> Result<Answer, QueryError> {
+        let _ = within;
+        self.ask(arguments)
+    }
+
     /// [`Store::ask_value`] that will not wait longer than `within`, for a job that is not the
     /// answer (a record, a check) and must leave the hook time to print what it has decided.
     /// The default asks without the limit, which is right for a store that answers at once.
@@ -56,6 +66,17 @@ impl Store for LiveStore {
     fn ask_value(&self, mut arguments: serde_json::Value) -> Result<serde_json::Value, QueryError> {
         with_budget(&mut arguments, self.0.timeout);
         query::ask_value(&self.0, arguments)
+    }
+
+    fn ask_within(
+        &self,
+        mut arguments: serde_json::Value,
+        within: std::time::Duration,
+    ) -> Result<Answer, QueryError> {
+        let mut endpoint = self.0.clone();
+        endpoint.timeout = endpoint.timeout.min(within);
+        with_budget(&mut arguments, endpoint.timeout);
+        query::ask(&endpoint, arguments)
     }
 
     fn ask_value_within(

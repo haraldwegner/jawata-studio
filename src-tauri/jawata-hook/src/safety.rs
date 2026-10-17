@@ -222,11 +222,24 @@ pub fn started_at() -> std::time::Instant {
     *STARTED.get_or_init(std::time::Instant::now)
 }
 
-/// The last moment a job that is not the answer may still be waiting on anything: the total
-/// deadline less [`ANSWER_RESERVE`]. The time the gate itself has already spent is included,
-/// because the clock is the process's and not the job's.
+/// The last moment a job that is not the answer may still be waiting on anything, for a process
+/// that began at `started`: the total deadline less [`ANSWER_RESERVE`]. The time the gate has
+/// already spent is in it, because the clock is the process's and not the job's.
+pub fn optional_work_ends_for(started: std::time::Instant) -> std::time::Instant {
+    started + TOTAL_DEADLINE - ANSWER_RESERVE
+}
+
+/// [`optional_work_ends_for`] this process. In the library's own unit tests the process is the test
+/// binary, whose age says nothing about a hook, so there the clock starts at each call.
 pub fn optional_work_ends() -> std::time::Instant {
-    started_at() + TOTAL_DEADLINE - ANSWER_RESERVE
+    #[cfg(test)]
+    {
+        optional_work_ends_for(std::time::Instant::now())
+    }
+    #[cfg(not(test))]
+    {
+        optional_work_ends_for(started_at())
+    }
 }
 
 /// Arm the watchdog: whatever the main thread is doing when the deadline
@@ -379,6 +392,18 @@ mod tests {
     fn a_payload_that_arrives_in_time_is_returned() {
         let result = read_with_deadline(Duration::from_millis(500), || "{\"prompt\":\"x\"}".into());
         assert_eq!(Ok("{\"prompt\":\"x\"}".to_string()), result);
+    }
+
+    #[test]
+    fn the_time_the_gate_has_already_spent_counts_against_the_record_jobs() {
+        let now = std::time::Instant::now();
+        let started = now - Duration::from_millis(2_500);
+        let ends = optional_work_ends_for(started);
+        assert!(ends > now, "half a second is still left for a record job");
+        assert!(ends <= now + Duration::from_millis(500) + Duration::from_millis(5),
+            "and no more than that: the process began 2.5 s ago, so only 0.5 s of the 3 s remain");
+        assert!(optional_work_ends_for(now - Duration::from_millis(3_100)) < now,
+            "past the reserve, nothing optional may start");
     }
 
     #[test]
