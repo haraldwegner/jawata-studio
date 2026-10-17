@@ -5167,10 +5167,17 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
          format=text)` — the domain layer Claude Code receives automatically."
             .to_string(),
         "- BEFORE diagnosing a symptom or refactoring a symbol → \
-         `experience(kind=recall, symbol=\"pkg.Type#member\")` or \
-         `experience(kind=recall, symptom=\"...\")`. A match is a CLOSED SET — match \
+         `experience(kind=recall, lane=experience, symbol=\"pkg.Type#member\")` or \
+         `experience(kind=recall, lane=experience, symptom=\"...\")`. A match is a CLOSED SET — match \
          your observation to ONE of them with evidence, or declare it genuinely new; \
          do not generate a novel cause."
+            .to_string(),
+        "- EVERY recall and nominate names its lane (`lane=` one, or `lanes=` several), \
+         and a call with none is refused: `experience` (also `lessons`) is what was learned; \
+         `patterns` is the borrowed design catalogue; `domain` (also `business`) is facts and \
+         contracts; `rules` are promoted rules; `code` says what each member is FOR and is \
+         asked only to check whether something already does a job — by job, never to read \
+         code, which the compiler tools do."
             .to_string(),
         "- Learned something durable (lesson, failure mode, hazard, convention) → \
          `experience(kind=record, type=lesson, summary=..., symbol=...)` — it becomes \
@@ -7236,6 +7243,7 @@ fn canary_probe(workspace: &str, url: &str, token: &str) -> crate::field_view::C
         token,
         serde_json::json!({
             "kind": "recall",
+            "lanes": ["experience"],
             "symptom": crate::field_view::CANARY_RECALL_SYMPTOM,
             // jawata-mcp#37: state OUR deadline, strictly under the 15 s HTTP
             // timeout below. Without it, the engine's own default equals our
@@ -9253,7 +9261,7 @@ symptoms="$(add_cue "$symptoms" "$sym3")"
 symptoms="$(add_cue "$symptoms" "$sym4")"
 symptoms="$(add_cue "$symptoms" "$sym5")"
 [ -n "$symbols$symptoms" ] || exit 0
-args='{"kind":"recall","format":"text"'
+args='{"kind":"recall","format":"text","lanes":["experience"]'
 [ -n "$symbols" ] && args="$args,\"symbols\":[$symbols]"
 [ -n "$symptoms" ] && args="$args,\"symptoms\":[$symptoms]"
 [ -n "$sid" ] && args="$args,\"session\":\"$sid\""
@@ -9334,7 +9342,7 @@ if [ -z "$sym" ]; then
   case "$fp" in *.java) sym="$(basename "$fp" .java)" ;; esac
 fi
 [ -n "$sym" ] || exit 0
-req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"recall","format":"text","symbol":"'"$sym"'"}}}'
+req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"recall","format":"text","lanes":["experience","code"],"symbol":"'"$sym"'"}}}'
 resp="$(curl -s --max-time 3 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$req" "$MCP_URL" 2>/dev/null)"
 [ -n "$resp" ] || exit 0
 flat="$(printf '%s' "$resp" | tr -d '\n\r')"
@@ -9425,7 +9433,7 @@ if command -v curl >/dev/null 2>&1; then
   prompt="$(printf '%s' "$flatin" | sed -n 's/.*"prompt"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
   cue="$(printf '%s' "$prompt" | grep -oE '[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*#[A-Za-z0-9_]+|[A-Z][A-Za-z0-9_]*(\.[A-Z][A-Za-z0-9_]*)+' 2>/dev/null | head -n 1)"
   if [ -n "$cue" ]; then
-    req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"recall","format":"text","symbol":"'"$cue"'"}}}'
+    req='{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"experience","arguments":{"kind":"recall","format":"text","lanes":["experience"],"symbol":"'"$cue"'"}}}'
     curl -s --max-time 2 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$req" "$MCP_URL" >/dev/null 2>&1 || true
   fi
 fi
@@ -10753,8 +10761,13 @@ mod tests {
             "names the memory discipline section"
         );
         assert!(
-            block.contains("experience(kind=recall, symbol="),
-            "shows the symbol-cue recall call shape"
+            block.contains("experience(kind=recall, lane=experience, symbol="),
+            "shows the symbol-cue recall call shape, with the lane it must name"
+        );
+        assert!(
+            block.contains("a call with none is refused") && block.contains("`patterns`")
+                && block.contains("`code`"),
+            "says every call names its lane and lists the lanes"
         );
         assert!(block.contains("CLOSED SET"), "carries the classify contract");
         assert!(

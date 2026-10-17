@@ -2856,7 +2856,7 @@ pub fn collect_profile_evidence(
                 // cannot tell them apart — and an unnamed seat recall would
                 // leave the "seat" counter permanently zero, which reads as
                 // "seats never recall" rather than "nobody said so".
-                serde_json::json!({ "kind": "recall", "symbol": format!("{seam_class}#{seam_method}"), "format": "text", "surface": "seat" }),
+                serde_json::json!({ "kind": "recall", "lanes": ["experience", "domain"], "symbol": format!("{seam_class}#{seam_method}"), "format": "text", "surface": "seat" }),
             )
             .map(|v| extract_tool_text(&v))
             .unwrap_or_else(|e| format!("(recall failed: {e})"));
@@ -4811,7 +4811,7 @@ You are the echo seat. You document what you are told to document.
                 &exec
                     .call_tool(
                         "experience",
-                        serde_json::json!({ "kind": "recall", "operation": "seat:architect", "format": "text" }),
+                        serde_json::json!({ "kind": "recall", "lanes": ["experience"], "operation": "seat:architect", "format": "text" }),
                     )
                     .expect("recall"),
             );
@@ -5169,7 +5169,7 @@ You are the echo seat. You document what you are told to document.
                 &exec
                     .call_tool(
                         "experience",
-                        serde_json::json!({ "kind": "recall", "symbol": "com.example.BillingMain#rebate", "format": "text" }),
+                        serde_json::json!({ "kind": "recall", "lanes": ["experience", "domain"], "symbol": "com.example.BillingMain#rebate", "format": "text" }),
                     )
                     .unwrap_or_else(|e| { let _ = &e; serde_json::json!({"result": {"content": [{"text": format!("(recall failed: {e})")}]}}) }),
             );

@@ -149,17 +149,12 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
             let deadline = mode
                 .as_ref()
                 .map(|_| std::time::Instant::now() + std::time::Duration::from_millis(800));
-            // Sprint 28f Stage 8 D1 — THE MAP. A second query, on the code
-            // lane, with the prompt's own words: what this codebase IS, before
-            // anything about what to do. It rides the same way the mode line
-            // does and for the same reason — the store being empty or down is
-            // a fact about the store, and the other blocks do not depend on it.
-            let map = map_for_prompt(payload, store, deadline);
-            // Order is the reading order: the grant's state, then the ground,
-            // then the nominees. The map is deliberately ABOVE the nominees —
-            // a description of this code is not a candidate to weigh, and a
-            // reader meets the two in that order.
-            let extras: Vec<String> = [mode, map].into_iter().flatten().collect();
+            // Sprint 28g S22 — NO CODE MAP ON A TYPED MESSAGE. Ruling 1, his words: "We are
+            // talking about jobs in the discussions, never about code itself." The 28f build
+            // asked the code lane on every typed message and always returned eight rows, the
+            // pile the signed spec had ruled out. The agent asks the code lane by job when the
+            // talk turns to functionality; this arm asks the lessons and nothing else.
+            let extras: Vec<String> = [mode].into_iter().flatten().collect();
             match (extras, recall(role, client, payload, store, deadline)) {
                 (e, out) if e.is_empty() => out,
                 // The extra blocks ride ON TOP of whatever the recall said…
@@ -661,7 +656,11 @@ fn recall_gate(
 ) -> Option<Outcome> {
     let mode = crate::recallgate::Mode::parse(config.recall_gate.as_deref());
     let verdict = crate::recallgate::judge(mode, payload, |cue| {
-        store.ask_value(serde_json::json!({ "kind": "recall", "symbol": cue }))
+        store.ask_value(serde_json::json!({
+            "kind": "recall",
+            "symbol": cue,
+            "lanes": crate::lanes::argument(crate::lanes::RECALL_GATE),
+        }))
     });
 
     match verdict {
@@ -723,13 +722,11 @@ fn recall_gate(
 /// edit payloads — D6 made the experience and domain lanes go silent on a bare
 /// `Edit`, and this is the lane whose moment an edit actually IS.
 ///
-/// # Observe SHOWS; it does not merely count
+/// # It REFUSES by default (Sprint 28g S22)
 ///
-/// Its sibling's Observe records a would-block and stays silent, because there
-/// the withheld action IS the block. Here the useful half is the LOOK — being
-/// told what may already do this, with an address — and that costs the agent
-/// nothing and denies nothing. A silent Observe would ship a gate that does
-/// nothing at all until somebody flips a switch nobody has a reason to flip.
+/// The write is held until the call carries `jawata-duplicate:` or `jawata-distinct:` with a
+/// reason, as the 28f spec signed. `Observe` still exists for a project that wants to measure
+/// first: it shows what Block would hold and denies nothing.
 fn dup_gate(
     client: Client,
     config: &HookConfig,
@@ -755,8 +752,12 @@ fn dup_gate(
 
         // The agent said why a second implementation is right here. Recorded so
         // the architect's watch can read the reason, then out of the way.
-        crate::dupgate::Verdict::Dispositioned { reason } => {
-            emit_gate_signal("duplicate-declared", &reason);
+        crate::dupgate::Verdict::Dispositioned { declaration } => {
+            let signal = match declaration {
+                crate::dupgate::Declaration::Duplicate(_) => "duplicate-declared",
+                crate::dupgate::Declaration::Distinct(_) => "duplicate-distinct-declared",
+            };
+            emit_gate_signal(signal, declaration.reason());
             None
         }
 
@@ -774,7 +775,7 @@ fn dup_gate(
                 Some(emit_body(
                     client,
                     Role::ToolRecall,
-                    crate::dupgate::steering(&method, &job, &location, existing_known),
+                    crate::dupgate::steering(&method, &job, &location, existing_known, false),
                 ))
             }
             crate::dupgate::Mode::Block => {
@@ -782,7 +783,7 @@ fn dup_gate(
                 Some(emit_permission(
                     client,
                     false,
-                    crate::dupgate::steering(&method, &job, &location, existing_known),
+                    crate::dupgate::steering(&method, &job, &location, existing_known, true),
                 ))
             }
             crate::dupgate::Mode::Off => None,
@@ -867,6 +868,14 @@ fn recall(
         ));
     }
 
+    // Sprint 28g S22 — THE OCCASION NAMES THE LANES, from the one table in `lanes`. A typed
+    // message asks the lessons; a tool call naming a member asks the lessons and what that member
+    // is for. Nothing here reads a lane off the wording of a cue.
+    let lanes: &[&str] = match role {
+        Role::ToolRecall => crate::lanes::TOOL_CALL,
+        _ => crate::lanes::TYPED_MESSAGE,
+    };
+
     // Symbol cues first — they are precise, and they fire independently of the
     // two-token gate. Then symptoms. The FIRST answer wins; an absence falls
     // through to the next cue, which is why an observed absence must be
@@ -886,7 +895,12 @@ fn recall(
                 "mode-line budget spent; remaining cue attempts skipped".into(),
             ));
         }
-        match store.ask(serde_json::json!({ "kind": "recall", "format": "text", key: cue })) {
+        match store.ask(serde_json::json!({
+            "kind": "recall",
+            "format": "text",
+            key: cue,
+            "lanes": crate::lanes::argument(lanes),
+        })) {
             Ok(Answer::Text(text)) => {
                 // Sprint 28g D8e, second defect: candidates injected into conversational
                 // prompts that cannot use them. A prompt naming NO symbol has no work item to
@@ -1020,66 +1034,6 @@ fn area_on_open(client: Client, payload: &str, store: &dyn Store) -> Option<Outc
          by the cataloguer; they describe, they do not advise:",
         &session,
     ))
-}
-
-/// Sprint 28f Stage 8 D1 — THE MAP A TASK OPENS WITH.
-///
-/// A second store query at UserPrompt, on the CODE lane, carrying the prompt's own words.
-/// The engine answers with the areas and jobs its cataloguer wrote about this code, already
-/// rendered as a `JAWATA MAP —` block; this emits it verbatim, which is the standing
-/// division of labour — rendering lives in the engine where it is tested, and the hooks stay
-/// dumb enough that a wording change needs no release of this crate.
-///
-/// **It asks the code lane and only the code lane.** The recall beside it fires on symbol and
-/// symptom cues and answers with nominees to judge; this answers with a description of the
-/// codebase, which is a different kind of thing and must not be weighed the same way.
-///
-/// **`Nothing` is an ordinary outcome and is silent HERE rather than empty.** The engine
-/// distinguishes "the store carries no description" (which it says in words, inside the
-/// block) from "the lookup did not run" (a typed error). What this function must never do is
-/// turn the second into the first: a failed query returns `None`, so the prompt carries no
-/// map at all rather than a map asserting an absence nobody measured.
-///
-/// The deadline is the UserPrompt arm's own budget, shared with the recall for the reason
-/// that arm records: a mode line is waiting, and its delivery must not be hostage to store
-/// latency. Out of budget, the map is skipped — it is the least load-bearing of the three
-/// blocks, and skipping it costs a reader context rather than correctness.
-fn map_for_prompt(
-    payload: &str,
-    store: &dyn Store,
-    deadline: Option<std::time::Instant>,
-) -> Option<String> {
-    if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
-        return None;
-    }
-    // THE SAME GATE THE RECALL TAKES, asked of the same module, and the first version of
-    // this function did not and was wrong for it: two tests went red because a map was
-    // emitted for a SLASH COMMAND, which the cue module skips on purpose — a command
-    // invocation is not a description of work, and its text must not be mined as one.
-    //
-    // Asking `cues_for` rather than re-deciding here is the point. "Is this typed text
-    // worth putting to the store" is one question with one owner, and a second answer to
-    // it would agree today and drift the first time either moves. The cost is stated: a
-    // prompt too short to yield cues gets no map either, and if that ever needs to differ
-    // it differs in the cue module, where both readers see it.
-    cues_for(Role::UserPrompt, payload).ok()?;
-    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
-    let question = string_at(&value, &["prompt"])?;
-    if question.trim().is_empty() {
-        return None;
-    }
-    match store.ask(serde_json::json!({
-        "kind": "nominate",
-        "question": question,
-        "lane": "code",
-        "format": "text",
-    })) {
-        Ok(Answer::Text(text)) if !text.trim().is_empty() => Some(text),
-        // Nothing, an empty body, or a store that could not answer: no block. The
-        // engine says an absence IN the block when it ran; anything else here is us
-        // not knowing, and printing a claim would be inventing one.
-        _ => None,
-    }
 }
 
 fn emit_body(client: Client, role: Role, body: String) -> Outcome {
@@ -2238,32 +2192,38 @@ mod tests {
         }
     }
 
-    /// Answers the two UserPrompt questions DIFFERENTLY, which is what makes the map
-    /// assertions mean anything: a stub returning one canned string for every `kind` would
-    /// put the same text in both blocks and could not tell them apart.
-    struct ByKind {
-        map: Result<Answer, QueryError>,
+    /// Records every request it is asked and answers each kind of ask by its own rule, so a test
+    /// can say WHAT the hook asked — which verb, which lanes — and not only what came back.
+    pub(super) struct Recording {
+        seen: std::sync::Mutex<Vec<serde_json::Value>>,
         recall: Result<Answer, QueryError>,
+        /// The answer to `duplicate_check`; `None` means the engine could not answer it.
+        nominee: Option<serde_json::Value>,
     }
-    impl Store for ByKind {
-        fn ask(&self, q: serde_json::Value) -> Result<Answer, QueryError> {
-            match q.get("kind").and_then(|k| k.as_str()) {
-                Some("nominate") => {
-                    // The lane is the whole point of the second query, so the stub
-                    // REFUSES to answer a nomination that did not name it — a hook that
-                    // dropped the lane would silently get the every-lane answer.
-                    assert_eq!(
-                        q.get("lane").and_then(|l| l.as_str()),
-                        Some("code"),
-                        "the map asks the code lane by name"
-                    );
-                    self.map.clone()
-                }
-                _ => self.recall.clone(),
-            }
+    impl Recording {
+        pub(super) fn new(recall: Result<Answer, QueryError>) -> Self {
+            Recording { seen: std::sync::Mutex::new(Vec::new()), recall, nominee: None }
         }
-        fn ask_value(&self, _: serde_json::Value) -> Result<serde_json::Value, QueryError> {
-            Err(QueryError::ShapeChanged("this stub answers only the text path".into()))
+        pub(super) fn answering_duplicate_check_with(mut self, answer: serde_json::Value) -> Self {
+            self.nominee = Some(answer);
+            self
+        }
+        pub(super) fn requests(&self) -> Vec<serde_json::Value> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+    impl Store for Recording {
+        fn ask(&self, q: serde_json::Value) -> Result<Answer, QueryError> {
+            self.seen.lock().unwrap().push(q);
+            self.recall.clone()
+        }
+        fn ask_value(&self, q: serde_json::Value) -> Result<serde_json::Value, QueryError> {
+            let verb = q.get("kind").and_then(|k| k.as_str()).map(str::to_string);
+            self.seen.lock().unwrap().push(q);
+            match (verb.as_deref(), &self.nominee) {
+                (Some("duplicate_check"), Some(answer)) => Ok(answer.clone()),
+                _ => Err(QueryError::ShapeChanged("this stub answers only what a test gave it".into())),
+            }
         }
     }
 
@@ -2363,31 +2323,61 @@ mod tests {
         }
     }
 
+    /// (i) A TYPED MESSAGE TRIGGERS NO CODE-LANE REQUEST. Ruling 1: the discussion is about jobs,
+    /// never about code, and the agent asks the code lane itself when the talk turns to
+    /// functionality. The hook asks the lessons, once per cue, and nothing else.
     #[test]
-    fn the_map_rides_above_the_nominees_and_is_a_different_block() {
-        let store = ByKind {
-            map: Ok(Answer::Text("JAWATA MAP — what this code is\n  area: the store".into())),
-            recall: Ok(Answer::Text("[lesson] a line".into())),
-        };
+    fn a_typed_message_asks_the_lessons_and_never_the_code_lane() {
+        let store = Recording::new(Ok(Answer::Text("[lesson] a line".into())));
         let out = run(
             Role::UserPrompt,
             &config("claude-code"),
             r#"{"prompt":"the importer classifier regression"}"#,
             &store,
         );
-        match out {
-            Outcome::Emitted(s) => {
-                let v: serde_json::Value = serde_json::from_str(&s).unwrap();
-                let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
-                assert!(ctx.contains("JAWATA MAP —"), "the map block is there: {ctx}");
-                assert!(ctx.contains("NOMINEES"), "and so is the shortlist: {ctx}");
-                assert!(
-                    ctx.find("JAWATA MAP —").unwrap() < ctx.find("NOMINEES").unwrap(),
-                    "the ground before the candidates — a description of this code is not \
-                     a candidate to weigh, and the reader meets them in that order: {ctx}"
-                );
-            }
-            other => panic!("expected an emission: {other:?}"),
+        assert!(matches!(out, Outcome::Emitted(_)), "PROOF OF LIFE: the lesson arrived: {out:?}");
+        let asked = store.requests();
+        assert!(!asked.is_empty(), "the hook must have asked something, or this proves nothing");
+        for request in &asked {
+            assert_eq!(
+                Some("recall"),
+                request["kind"].as_str(),
+                "a typed message asks a recall and no nomination, so no code map: {request}"
+            );
+            assert_eq!(
+                serde_json::json!(["experience"]),
+                request["lanes"],
+                "and it names the lessons lane, and only that: {request}"
+            );
+        }
+    }
+
+    /// A tool call naming a member asks the lessons and what that member is for.
+    #[test]
+    fn a_tool_call_naming_a_member_names_its_lanes_and_the_gate_names_its_own() {
+        let store = Recording::new(Ok(Answer::Text("[lesson] a line".into())));
+        let _ = run(
+            Role::ToolRecall,
+            &config("claude-code"),
+            r#"{"tool_name":"Read","tool_input":{"file_path":"com.example.Importer#classify"}}"#,
+            &store,
+        );
+        let all = store.requests();
+        // The ordinary injection asks for text; the recall gate asks for the structured answer.
+        let injection: Vec<_> =
+            all.iter().filter(|r| r["format"].as_str() == Some("text")).collect();
+        assert!(!injection.is_empty(), "PROOF OF LIFE: the injection recall was asked: {all:?}");
+        for request in injection {
+            assert_eq!(serde_json::json!(["experience", "code"]), request["lanes"], "{request}");
+        }
+        let gate: Vec<_> = all.iter().filter(|r| r["format"].is_null()).collect();
+        assert!(!gate.is_empty(), "PROOF OF LIFE: the recall gate asked as well: {all:?}");
+        for request in gate {
+            assert_eq!(
+                serde_json::json!(["experience", "domain"]),
+                request["lanes"],
+                "the gate asks records anchored at the member, not the jobs describing it: {request}"
+            );
         }
     }
 
@@ -2404,7 +2394,7 @@ mod tests {
     /// is noise the reader learns to skip, and then skips the one that mattered.
     #[test]
     fn a_conversational_prompt_gets_no_similarity_pile() {
-        let store = ByKind { map: Ok(Answer::Nothing), recall: Ok(Answer::Text(UNANCHORED_PILE.into())) };
+        let store = Stub(Ok(Answer::Text(UNANCHORED_PILE.into())));
         let out = run(
             Role::UserPrompt,
             &config("claude-code"),
@@ -2417,34 +2407,12 @@ mod tests {
         );
     }
 
-    /// The map is the ground, not a candidate, and it must survive the recall being a pile.
-    #[test]
-    fn the_map_still_rides_when_the_recall_is_only_a_pile() {
-        let store = ByKind {
-            map: Ok(Answer::Text("JAWATA MAP — what this code is\n  area: the store".into())),
-            recall: Ok(Answer::Text(UNANCHORED_PILE.into())),
-        };
-        let out = run(
-            Role::UserPrompt,
-            &config("claude-code"),
-            r#"{"prompt":"the importer classifier regression"}"#,
-            &store,
-        );
-        match out {
-            Outcome::Emitted(s) => {
-                assert!(s.contains("JAWATA MAP —"), "the map survives: {s}");
-                assert!(!s.contains("NOMINEES"), "and the pile does not ride beside it: {s}");
-            }
-            other => panic!("expected an emission carrying the map: {other:?}"),
-        }
-    }
-
-    /// The CONTROL for the two above, without which they could pass against a hook that
+    /// The CONTROL for the case above, without which it could pass against a hook that
     /// suppressed every unanchored answer: a prompt that names a symbol is working on
     /// something, and nominees by resemblance may help it.
     #[test]
     fn a_prompt_naming_a_symbol_keeps_its_nominees_when_nothing_is_anchored() {
-        let store = ByKind { map: Ok(Answer::Nothing), recall: Ok(Answer::Text(UNANCHORED_PILE.into())) };
+        let store = Stub(Ok(Answer::Text(UNANCHORED_PILE.into())));
         let out = run(
             Role::UserPrompt,
             &config("claude-code"),
@@ -2454,53 +2422,6 @@ mod tests {
         match out {
             Outcome::Emitted(s) => assert!(s.contains("NOMINEES"), "{s}"),
             other => panic!("a prompt naming a symbol keeps its nominees: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn the_map_still_rides_when_the_recall_has_nothing() {
-        // The two queries are independent. A map suppressed because the OTHER question
-        // found nothing would make the orientation vanish exactly on an unfamiliar topic,
-        // which is when it is worth most.
-        let store = ByKind {
-            map: Ok(Answer::Text("JAWATA MAP — what this code is\n  area: the store".into())),
-            recall: Ok(Answer::Nothing),
-        };
-        let out = run(
-            Role::UserPrompt,
-            &config("claude-code"),
-            r#"{"prompt":"the importer classifier regression"}"#,
-            &store,
-        );
-        match out {
-            Outcome::Emitted(s) => {
-                assert!(s.contains("JAWATA MAP —"), "the map survives a silent recall: {s}");
-            }
-            other => panic!("expected an emission: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_store_that_could_not_answer_the_map_emits_no_map_block() {
-        // An unreachable store must not produce a block at all. The engine says an absence
-        // IN the block when it ran; anything printed here would be a claim about a codebase
-        // nobody looked at.
-        let store = ByKind {
-            map: Err(QueryError::Unreachable("connection refused".into())),
-            recall: Ok(Answer::Text("[lesson] a line".into())),
-        };
-        let out = run(
-            Role::UserPrompt,
-            &config("claude-code"),
-            r#"{"prompt":"the importer classifier regression"}"#,
-            &store,
-        );
-        match out {
-            Outcome::Emitted(s) => {
-                assert!(!s.contains("JAWATA MAP"), "no map, and no invented absence: {s}");
-                assert!(s.contains("NOMINEES"), "the recall is unaffected: {s}");
-            }
-            other => panic!("expected an emission: {other:?}"),
         }
     }
 
@@ -3387,6 +3308,7 @@ mod tests {
 
 #[cfg(test)]
 mod payload_parsing_tests {
+    use super::tests::Recording;
     use super::*;
 
     /// A byte-order mark must not make a payload unreadable.
@@ -3524,9 +3446,9 @@ mod payload_parsing_tests {
             timeout_ms: Some(50),
             field_dir: None,
             recall_gate: None,   // absent = Observe, the shipping default
-            dup_gate: None,      // absent = Observe too; left at the real default on
-                                 // purpose, so this test would notice the duplicate gate
-                                 // answering on a payload the recall gate owns
+            dup_gate: None,      // absent = Block, the signed default; left at the real
+                                 // default on purpose, so this test would notice the duplicate
+                                 // gate answering on a payload the recall gate owns
         }
     }
 
@@ -3595,21 +3517,89 @@ mod payload_parsing_tests {
         match out {
             Outcome::Emitted(text) => assert!(
                 text.contains("SourceScan#parse") && text.contains("may already be done"),
-                "Observe SHOWS the nominee — a silent Observe would ship a gate that does \
-                 nothing until somebody flips a switch nobody has a reason to flip: {text}"
+                "the gate names the nominee: {text}"
             ),
-            other => panic!("expected the advisory, got {other:?}"),
+            other => panic!("expected the refusal, got {other:?}"),
         }
+    }
+
+    /// (f) A WRITE THAT ADDS A METHOD, WITH A NOMINEE AND NO DECLARATION, IS REFUSED — by
+    /// default, and the refusal names the nominated job and its location.
+    #[test]
+    fn a_write_with_a_nominee_and_no_declaration_is_refused_by_default() {
+        let store = Recording::new(Ok(Answer::Nothing)).answering_duplicate_check_with(nominee_answer());
+        let out = run(Role::ToolRecall, &gate_config("claude-code"), java_write(), &store);
+        match out {
+            Outcome::Emitted(text) => {
+                assert!(text.contains("permissionDecision") && text.contains("deny"), "{text}");
+                assert!(text.contains("SourceScan#parse"), "the location is named: {text}");
+                assert!(text.contains("Parse a compilation unit"), "and so is the job: {text}");
+                assert!(text.contains("jawata-distinct:"), "and both declarations: {text}");
+            }
+            other => panic!("the default must refuse, got {other:?}"),
+        }
+    }
+
+    /// (g) THE SAME WRITE CARRYING EITHER DECLARATION PROCEEDS, and it does not even ask.
+    #[test]
+    fn the_same_write_carrying_either_declaration_proceeds() {
+        for declaration in [
+            "jawata-duplicate: the shared reader cannot see this format",
+            "jawata-distinct: that job reads files and this one reads a string",
+        ] {
+            let payload = serde_json::json!({
+                "tool_name": "Write",
+                "why": declaration,
+                "tool_input": {
+                    "file_path": "/p/src/Reader.java",
+                    "content": "class R { Tree go(S s){return null;} }"
+                }
+            })
+            .to_string();
+            let store = Recording::new(Ok(Answer::Nothing)).answering_duplicate_check_with(nominee_answer());
+            let out = run(Role::ToolRecall, &gate_config("claude-code"), &payload, &store);
+            assert!(
+                !matches!(&out, Outcome::Emitted(text) if text.contains("deny")),
+                "{declaration}: a declared write must not be refused: {out:?}"
+            );
+            assert!(
+                !store.requests().iter().any(|r| r["kind"].as_str() == Some("duplicate_check")),
+                "{declaration}: a declared write must not pay a round trip to be told it may proceed"
+            );
+        }
+    }
+
+    /// (h) WITH THE ENGINE UNAVAILABLE THE WRITE PROCEEDS — an outage is not a work stoppage.
+    #[test]
+    fn an_unavailable_engine_does_not_hold_the_write() {
+        let store = Recording::new(Ok(Answer::Nothing)); // no nominee: duplicate_check errors
+        let out = run(Role::ToolRecall, &gate_config("claude-code"), java_write(), &store);
+        assert!(
+            !matches!(&out, Outcome::Emitted(text) if text.contains("deny")),
+            "an engine that cannot answer must never hold a write: {out:?}"
+        );
+        assert!(
+            store.requests().iter().any(|r| r["kind"].as_str() == Some("duplicate_check")),
+            "PROOF OF LIFE: the gate did ask, and the engine did fail: {:?}",
+            store.requests()
+        );
+    }
+
+    fn nominee_answer() -> serde_json::Value {
+        serde_json::json!({
+            "nominees": [{
+                "method": "go",
+                "job": "Parse a compilation unit with binding resolution",
+                "location": "org.jawata.mcp.tools.shared.SourceScan#parse"
+            }]
+        })
     }
 
     /// BLOCK ACTUALLY DENIES — the arm nothing drove.
     ///
-    /// `Block` is a published mode: an operator can set `dup_gate=block` and the
-    /// pipeline answers with a PERMISSION DENIAL rather than an advisory. It had no
-    /// test. That is this repository's recorded "published refusal, zero coverage"
-    /// shape, and it is worse here than usual, because the gate ships in Observe by
-    /// declared deviation — so the one arm nobody exercises is the one an operator
-    /// reaches for when they decide the deviation was wrong.
+    /// `Block` is the signed default and an operator can also set `dup_gate=block`
+    /// explicitly; either way the pipeline answers with a PERMISSION DENIAL rather than an
+    /// advisory.
     ///
     /// Driving `run()` rather than `judge()` is the point: `judge` never reads the
     /// mode past the kill switch, so Block and Observe are the SAME verdict there.
@@ -3660,12 +3650,14 @@ mod payload_parsing_tests {
             draft_seen: std::sync::Arc::new(std::sync::Mutex::new(String::new())),
         };
         // The SAME payload and the SAME store; only the mode differs.
-        let out = run(Role::ToolRecall, &gate_config("claude-code"), java_write(), &store);
+        let mut config = gate_config("claude-code");
+        config.dup_gate = Some("observe".into());
+        let out = run(Role::ToolRecall, &config, java_write(), &store);
 
         match out {
             Outcome::Emitted(text) => assert!(
                 !text.contains("\"permissionDecision\""),
-                "the shipping default advises; it must not deny: {text}"
+                "observe advises when it is asked for; it must not deny: {text}"
             ),
             other => panic!("expected the advisory, got {other:?}"),
         }

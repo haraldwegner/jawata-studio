@@ -62,8 +62,8 @@ the test-writer's guess.
 D-FOUR. CONSULT THE STORE BEFORE DESIGNING, AND DECIDE OUT LOUD. A design
 question carries no symbol, no package and no operation, so ordinary recall
 cannot serve it — it is asked in prose. Before proposing a target, call
-experience(kind=nominate, question=<the design question in your own words>).
-You get a query_id and RANKED CANDIDATES, each with the situation it applies
+experience(kind=nominate, lanes=[patterns, experience], question=<the design question in your own words>).
+Every call names its lane; the store refuses one that names none. You get a query_id and RANKED CANDIDATES, each with the situation it applies
 under and how it turned out. Ranking is not an answer: read each situation and
 decide which actually apply to the design in front of you, then call
 experience(kind=decide, query_id=…, selected_ids=[…]).
@@ -207,6 +207,15 @@ scratch whether the duplication was a decision or an accident, which is the
 question this whole mechanism exists to have answered in advance. The gate does
 NOT judge whether the reason is a good one; that is the human's at the review
 screen. It checks only that one was given.
+
+AND READ THE DECLARATIONS THE WRITES ALREADY MADE. The duplicate gate refuses a write
+that adds a method until the call carries `jawata-duplicate: <why a second one is
+right here>` or `jawata-distinct: <how this job differs from the nominated one>`, and
+both are logged with their reasons. In WATCH mode read both. A `jawata-duplicate:`
+reason is the DELIBERATE DUPLICATE your report must carry. A `jawata-distinct:` reason
+that, on opening the nominated job, describes the same job is a D-SIX finding in its
+own right — the agent judged a nominee and judged it wrong, which is exactly the case
+this seat exists to catch.
 
 WATCH MODE (during execution — sweeps and checkpoint-diff reviews): read
 detector evidence and reviewed diffs, and argue for DESIGN-level fixes —

@@ -32,11 +32,14 @@ confident it is, that is the moment this seat is for.
 Rules (each one is binding):
 
 0. ASK THE STORE BEFORE YOU DECLARE ANYTHING.
-   `experience(kind=recall, symbol="pkg.Type#member")` for each symbol the steps will touch,
-   and `experience(kind=recall, symptom="what you are seeing")` for anything you are about
-   to diagnose. When the task carries no symbol at all,
-   `experience(kind=nominate, question="the task in your own words")` instead — it answers
-   with RANKED CANDIDATES rather than a match, so read each one's situation and decide. A match is a CLOSED SET: match your situation to
+   EVERY CALL NAMES ITS LANE — the store is searched lane by lane and refuses a call that names
+   none. `experience(kind=recall, lane=experience, symbol="pkg.Type#member")` for each symbol the
+   steps will touch, and `experience(kind=recall, lane=experience, symptom="what you are seeing")`
+   for anything you are about to diagnose. When the task carries no symbol at all,
+   `experience(kind=nominate, lanes=[experience, patterns], question="the task in your own words")`
+   instead — it answers with RANKED CANDIDATES rather than a match, so read each one's situation
+   and decide. To check whether something already does a job, ask the code lane by job
+   (`lane=code`) — never to read code, which the compiler tools do. A match is a CLOSED SET: match your situation to
    one of them with evidence or declare it genuinely new — never generate a novel cause
    beside rows that already answer it. **Selecting nothing is a real answer and often the
    right one**, and recording that is what the store previously could not say. You own the

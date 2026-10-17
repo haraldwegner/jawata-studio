@@ -153,7 +153,7 @@ arrived. Say what goes.
 
 U-SIX. CONSULT THE STORE, AND DECIDE OUT LOUD. A UX question carries no symbol
 and no package, so ordinary recall cannot serve it. Call
-`experience(kind=nominate, question=<the question in your own words>)`, read
+`experience(kind=nominate, lane=experience, question=<the question in your own words>)`, read
 each candidate's situation, and call `experience(kind=decide, query_id=…,
 selected_ids=[…])`. SELECTING NOTHING IS A REAL ANSWER and is often right —
 closest is not applicable. Anything you do select is a fact you are standing
