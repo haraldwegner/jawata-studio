@@ -89,9 +89,74 @@ fn brief_path(home: &Path, session: &str) -> PathBuf {
     dir(home).join(format!("{}.brief", crate::pipeline::sanitize_session(session)))
 }
 
+/// Words that, followed by `=` or `:`, mean the next word is a secret.
+const SECRET_NAMES: [&str; 7] = ["token", "password", "passwd", "secret", "apikey", "api_key", "authorization"];
+
+/// Prefixes of well-known credential formats.
+const SECRET_PREFIXES: [&str; 8] = ["ghp_", "gho_", "ghs_", "github_pat_", "sk-", "xoxb-", "xoxp-", "AKIA"];
+
+/// Shortest run of letters and digits that is taken for a credential on its own.
+const SECRET_RUN: usize = 32;
+
+/// Replace what looks like a credential with `[redacted]` before text leaves the machine for a hired
+/// brain. The window carries shell commands, and a command can carry a token. This is the
+/// STRICTER default: it only ever removes, so it needs no one's word, and what it cannot recognise
+/// it cannot remove — it is a net with known holes (a secret in a form none of these patterns
+/// names), not a promise. It acts on whole words made of letters, digits, `_`, `+`, `=` and `-`
+/// (a path or a URL breaks into short pieces and is left alone).
+pub fn redact(text: &str) -> String {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '=' | '-');
+    let mut out = String::with_capacity(text.len());
+    let mut redact_next = false;
+    let mut rest = text;
+    while !rest.is_empty() {
+        let end = rest.find(|c: char| !is_word(c)).unwrap_or(rest.len());
+        if end == 0 {
+            let Some(c) = rest.chars().next() else { break };
+            out.push(c);
+            rest = &rest[c.len_utf8()..];
+            continue;
+        }
+        let word = &rest[..end];
+        let bare = word.trim_end_matches('=');
+        let lower = bare.to_ascii_lowercase();
+        let looks_secret = redact_next
+            || SECRET_PREFIXES.iter().any(|p| word.starts_with(p) && word.len() >= 12)
+            || (word.len() >= SECRET_RUN
+                && word.chars().any(|c| c.is_ascii_digit())
+                && word.chars().any(|c| c.is_ascii_alphabetic()));
+        // `NAME=value` in one word: the name says the value is a secret.
+        let inline = word.find('=').filter(|&at| {
+            at + 1 < word.len() && SECRET_NAMES.iter().any(|n| word[..at].to_ascii_lowercase().ends_with(n))
+        });
+        if let (Some(at), false) = (inline, looks_secret) {
+            out.push_str(&word[..=at]);
+            out.push_str("[redacted]");
+            redact_next = false;
+        } else if looks_secret {
+            out.push_str("[redacted]");
+            redact_next = false;
+        } else {
+            out.push_str(word);
+            let after = &rest[end..];
+            let separator = after.starts_with(|c: char| matches!(c, '=' | ':')) || word.ends_with('=');
+            redact_next = lower == "bearer"
+                || (SECRET_NAMES.iter().any(|n| lower.ends_with(n)) && separator);
+        }
+        rest = &rest[end..];
+        // A separator and the quote or space after it keep the secret that follows pending.
+        if redact_next {
+            let skip = rest.find(|c: char| !matches!(c, '=' | ':' | ' ' | '"' | '\'')).unwrap_or(rest.len());
+            out.push_str(&rest[..skip]);
+            rest = &rest[skip..];
+        }
+    }
+    out
+}
+
 /// One call as the brief shows it: its number, the tool, whether it was refused, what it did.
 fn brief_line(c: &CallView) -> String {
-    let text: String = c.text.chars().take(240).collect::<String>().replace('\n', " ⏎ ");
+    let text: String = redact(&c.text).chars().take(240).collect::<String>().replace('\n', " ⏎ ");
     let refused = if c.refused { " [REFUSED]" } else { "" };
     format!("#{} {}{} {}\n", c.n, c.tool, refused, text)
 }
@@ -109,7 +174,7 @@ pub fn brief(window: &Window, his: &[String]) -> String {
         out.push_str("(nothing available)\n");
     }
     for message in his {
-        out.push_str(&format!("> {}\n", message.chars().take(HIS_CHARS).collect::<String>().replace('\n', " ")));
+        out.push_str(&format!("> {}\n", redact(message).chars().take(HIS_CHARS).collect::<String>().replace('\n', " ")));
     }
     out.push_str("\nAnswer with exactly one line: VERDICT: CLEAR, or VERDICT: HALT <1-5>: <correction>.\n");
     out
@@ -380,6 +445,48 @@ mod tests {
         let old = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - VERDICT_TTL_SECS - 1;
         std::fs::write(&path, format!("{old}\t1\told news\n")).unwrap();
         assert_eq!(take_halt(&home, "s"), None);
+    }
+
+    #[test]
+    fn credentials_are_removed_from_what_leaves_for_the_hired_brain() {
+        let ghp = format!("ghp_{}", "a1B2c3D4".repeat(5));
+        let long = "9f8e7d6c5b4a39281706f5e4d3c2b1a0ffeeddcc";
+        for (text, gone) in [
+            (format!("curl -H \"Authorization: Bearer {long}\" https://x/y"), long.to_string()),
+            (format!("git push https://{ghp}@github.com/o/r"), ghp.clone()),
+            ("export API_TOKEN=abc123def456 && run".to_string(), "abc123def456".to_string()),
+            ("mysql --password=hunter2hunter2 -u root".to_string(), "hunter2hunter2".to_string()),
+            ("curl --header 'api_key: shortbutsecret' x".to_string(), "shortbutsecret".to_string()),
+            (format!("echo {long}"), long.to_string()),
+        ] {
+            let red = redact(&text);
+            assert!(!red.contains(&gone), "{text} -> {red}");
+            assert!(red.contains("[redacted]"), "{red}");
+        }
+    }
+
+    #[test]
+    fn ordinary_commands_paths_and_words_are_left_alone() {
+        for text in [
+            "cd /home/harald/CursorProjects/jawata-mcp/org.jawata.mcp.tests/src/org/jawata/mcp/execution && ls -la",
+            "gh run watch 38381348957 --exit-status",
+            "git commit -q -m \"the token is read from the config\"",
+            "sed -n '1,60p' src-tauri/jawata-hook/src/judge.rs",
+        ] {
+            assert_eq!(redact(text), text);
+        }
+    }
+
+    #[test]
+    fn the_brief_never_carries_a_credential_from_a_call_or_a_message() {
+        let secret = "ghp_".to_string() + &"x9Y8".repeat(6);
+        let window = Window {
+            number: 1,
+            calls: vec![CallView { n: 1, tool: "Bash".into(), text: format!("git push https://{secret}@host"), ..CallView::default() }],
+            ..Window::default()
+        };
+        let text = brief(&window, &[format!("use token={secret} for it")]);
+        assert!(!text.contains(&secret), "{text}");
     }
 
     #[test]
