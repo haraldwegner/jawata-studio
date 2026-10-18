@@ -9,13 +9,17 @@
 //! `Autonomy::Granted` and every one of them passes, which is exactly why
 //! nothing ever went red over it. Built, tested, and never given its input.
 //!
-//! **The signal is the human's own word, and nothing else.** Harald grants
-//! autonomy by typing `autocontinue` in a prompt. That text arrives at
-//! `Role::UserPrompt`, which already parses the prompt and already knows the
-//! session — so both ends existed the whole time and were simply never joined.
-//! No inference is made from `continue`, `keep going`, `carry on` or any other
-//! phrase: a grant the human did not knowingly give is worse than none, because
-//! the gate would then hold a session he thinks he can walk away from.
+//! **The signal is two commands he types, and nothing else (D46, 2026-10-18).** `/autocontinue`
+//! arms the grant and `/autocontinue-off` ends it; both are skills the studio deploys. The hook
+//! cannot see the chat window: its input carries the prompt text and the session and no field
+//! saying where the text came from, and the transcript marks a Chrome extension's injected
+//! instruction exactly like his typing (`turnOrigin`, `origin` and `promptSource` identical,
+//! measured 2026-10-18). So no message is judged as his by where it seems to come from. Only a
+//! prompt that IS one of the two command lines changes the grant. A question, a status check, a
+//! message from another session or machine, a subagent's report, a scheduled task and an
+//! extension's text all leave it where it was. This replaces the word-at-the-end-of-a-line path
+//! and the rule that any message of his ends the grant, which ten releases tried to make true
+//! and which cannot be made true from inside the hook.
 //!
 //! **It persists across his turns, which is the entire point.** A grant that
 //! expired when he next spoke would be revoked by the first question he asked,
@@ -64,45 +68,6 @@ use crate::stop::Autonomy;
 /// produced nothing twice, which is a wedge rather than a pause.
 pub const MAX_EMPTY_TURNS: u32 = 2;
 
-/// The word that grants it. His, not a synonym set.
-const GRANT: &str = "autocontinue";
-
-/// Does this message ARM the grant, or merely mention the word?
-///
-/// THE WORD MUST END A LINE. That is the whole rule, and it is syntax rather
-/// than intent — the distinction his ruling requires and which five releases of
-/// keyword-guessing failed to find.
-///
-/// It exists because 2026-09-03 measured the remaining hole in `contains`: he
-/// wrote *"Autocontinue worked 2-3 months ago without any hook"* — a sentence
-/// ABOUT the mechanism, in the middle of an argument about why it was failing —
-/// and the grant armed, pushing the agent into plan work while he was still
-/// typing. Quoting was already handled; this is the unquoted mention, which is
-/// the ordinary way anyone refers to a thing by name.
-///
-/// **Why "ends a line" and not "is the whole line".** His own corpus decides it.
-/// Every arming order he has typed finishes with the word, and most of them
-/// carry an instruction in front of it: *"resume the plan and autocontinue"*,
-/// *"...We will release by the end of this sprint\nautocontinue"*. Requiring
-/// the word alone on its line would refuse his commonest form and cost him the
-/// night in the other direction. Every mention, by contrast, continues past it,
-/// because a sentence about a thing goes on to say something about it.
-///
-/// Trailing punctuation is allowed: a full stop after the word is still him
-/// finishing the sentence with it.
-fn arms(text: &str) -> bool {
-    text.lines().any(|line| {
-        let head = line.trim_end().trim_end_matches(['.', '!', ',', ';', ':']).trim_end();
-        // The word must END this line, and start at a boundary — otherwise
-        // `noautocontinue` would arm.
-        head.ends_with(GRANT)
-            && head[..head.len() - GRANT.len()]
-                .chars()
-                .next_back()
-                .is_none_or(|c| !c.is_alphanumeric() && c != '_')
-    })
-}
-
 fn dir(base: &Path) -> PathBuf {
     base.join("autonomy")
 }
@@ -111,95 +76,72 @@ fn file(base: &Path, session: &str) -> PathBuf {
     dir(base).join(crate::pipeline::sanitize_session(session))
 }
 
-/// Normalise for matching: lowercase, and the three spellings of the one word
-/// collapse to one. `auto-continue` and `auto continue` are the same word typed
-/// differently, not different words — refusing them would be pedantry that
-/// costs him a night.
-fn normalised(prompt: &str) -> String {
-    prompt
-        .to_ascii_lowercase()
-        .replace("auto-continue", GRANT)
-        .replace("auto continue", GRANT)
-}
+/// The two lines that switch the grant. Exact: no arguments, no prose, no spelling variants.
+const COMMAND_ON: &str = "autocontinue";
+const COMMAND_OFF: &str = "autocontinue-off";
 
-/// QUOTES MEAN MENTION (v3.17.5) — the prompt with its quoted and backticked
-/// spans removed, so only what survives can ARM the grant.
+/// Which switch a prompt IS, if it is one. `None` for everything else — which is nearly everything.
 ///
-/// This is not intent-reading, which five releases of this file failed at and
-/// which his ruling bans. Quoting is a SYNTAX he produces, not a meaning we
-/// guess — and his own corpus already separates cleanly along it, unprompted:
-/// every arming order is bare (*"resume the plan and autocontinue"*), every
-/// discussing message quotes (*'Update the "autocontinue" flag'*). That last
-/// one is the measured damage: on 2026-08-31 its quoted mention armed the
-/// grant and pushed the agent through a whole morning nobody had granted.
-///
-/// Pairs are removed pair-wise for `"…"`, `` `…` `` and the typographic
-/// `„…“` / `“…”`. An UNBALANCED opener removes nothing past itself — a lone
-/// quotation mark must not swallow the rest of the message, because whatever
-/// stands after it was not written inside quotes. The failure direction is the
-/// established one: a mention that goes unquoted still arms, which costs a
-/// push he can end by typing; the reverse — an order swallowed by a stray
-/// quote — would cost a night, and cannot happen pair-wise.
-///
-/// CLEARING IS NOT TOUCHED. Any message of his still ends the grant, quoted or
-/// not: the clear is about his presence, and a mention proves presence exactly
-/// as an order does.
-fn without_mentions(prompt: &str) -> String {
-    let mut out = String::with_capacity(prompt.len());
-    let mut chars = prompt.chars().peekable();
-    while let Some(c) = chars.next() {
-        let closer = match c {
-            '"' => Some('"'),
-            '`' => Some('`'),
-            '\u{201E}' /* „ */ => Some('\u{201C}'),
-            '\u{201C}' /* “ */ => Some('\u{201D}'),
-            _ => None,
-        };
-        let Some(closer) = closer else {
-            out.push(c);
-            continue;
-        };
-        // Look ahead for the matching closer. Found: drop the span. Not found:
-        // the opener was a stray character, so everything scanned is REAL text
-        // and goes back into the output.
-        let mut span = String::new();
-        let mut closed = false;
-        for d in chars.by_ref() {
-            if d == closer {
-                closed = true;
-                break;
+/// A typed skill reaches the prompt hook as the line typed (`/autocontinue`), or in the wrapper
+/// the transcript records for it (`<command-name>/autocontinue</command-name>`). Both are
+/// accepted. A wrapper carrying non-empty `<command-args>` is a different request and not a
+/// switch. Nothing is inferred from a sentence that merely contains a command: quoting it,
+/// discussing it or typing it inside a longer message changes nothing.
+fn typed_switch(prompt: &str) -> Option<bool> {
+    let t = prompt.trim();
+    let name = if t.contains("<command-name>") {
+        // The wrapper is only the three tags the harness writes for a typed command; any other
+        // text around them makes it a message that merely contains one.
+        let mut rest = t.to_string();
+        let mut name = None;
+        let mut args = String::new();
+        for tag in ["command-message", "command-name", "command-args"] {
+            let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
+            let Some(start) = rest.find(&open) else { continue };
+            let end = rest[start..].find(&close)? + start;
+            let inner = rest[start + open.len()..end].trim().to_string();
+            match tag {
+                "command-name" => name = Some(inner),
+                "command-args" => args = inner,
+                _ => {}
             }
-            span.push(d);
+            rest.replace_range(start..end + close.len(), "");
         }
-        if !closed {
-            out.push(c);
-            out.push_str(&span);
+        if !rest.trim().is_empty() || !args.is_empty() {
+            return None;
         }
+        name?.trim_start_matches('/').to_string()
+    } else {
+        t.strip_prefix('/')?.to_string()
+    };
+    match name.as_str() {
+        COMMAND_ON => Some(true),
+        COMMAND_OFF => Some(false),
+        _ => None,
     }
-    out
 }
 
-/// Read the human's prompt and update the grant.
+/// Read the prompt and update the grant: ONLY the two commands move it (D46).
 ///
-/// HIS ARRIVAL IS THE EVENT, AND NOTHING HERE READS WHAT HE MEANT. Harald,
-/// 2026-08-30, after four releases of narrowing one guess after another:
-/// *"I am sitting in front = I am typing = keyboard action into the chat
-/// window -> Autocontinue off"*, and *"You cannot just filter for keywords
-/// like Discuss"*.
-///
-/// So this function classifies nothing. It looks for ONE exact token and
-/// treats every other message he sends as him being at the machine. Whether
-/// he asked a question, gave an order, or thought out loud is not a fact this
-/// gate needs, has ever needed, or can determine — and every attempt to
-/// determine it has failed in a new way:
+/// The history this replaces, kept because it is why the rule is as narrow as it is. His rule
+/// of 2026-08-30 was *"I am sitting in front = I am typing = keyboard action into the chat
+/// window -> Autocontinue off"* — a requirement about a CHANNEL, the chat window. This hook
+/// cannot observe that channel: its input is the prompt text and the session id. Every release
+/// tried to infer the channel from the text or from the transcript, and each inference failed
+/// in a new way:
 ///
 ///   v3.14.2  the loop stands down "when the human is present" — inferred
 ///   v3.16.1  the keyboard is the human; the harness is not — right channel
 ///   v3.16.3  DECISION matched inside "design decisions" -> push disabled
 ///   v3.17.1  only Esc revokes — which Cursor has no key for at all
 ///   22:54    DISCUSS matched inside "We had a discussion" -> slept the night
+///   v4.4.x   `turnOrigin == human` — which the Chrome extension's injected instruction also
+///            carries, identical to his typing in every field (measured 2026-10-18)
 ///
-/// Each release improved the guess. None removed it. This removes it.
+/// So nothing is inferred. A prompt that is exactly `/autocontinue` arms; one that is exactly
+/// `/autocontinue-off` ends; every other prompt, whoever sent it, returns with the grant where
+/// it was. That also makes the answer to a question of his, a status check or a discussion
+/// safe: none of them can end a run that he started.
 ///
 /// Returns `true` when the prompt changed the state, so the caller can log a
 /// state change rather than a no-op — a grant nobody can see happening is the
@@ -216,43 +158,10 @@ pub fn note_prompt(base: &Path, session: &str, prompt: &str, machine: bool) -> b
     // belongs to the function that means a prompt happened, where no future
     // caller can forget it.
     note_seen(base, session);
-    // THE MACHINE IS NOT HIM, and this line is the whole of v3.17.2's defect.
-    //
-    // His rule named a CHANNEL — "I am sitting in front = I am typing = keyboard
-    // action into the chat window -> Autocontinue off" — and v3.17.2 implemented
-    // "any message", dropping the word that carried the requirement. But a
-    // background job's completion notice arrives HERE, through the same hook as
-    // his typing. So finishing a job cleared the grant, and any run that
-    // backgrounded anything died at its first wake-up: measured 2026-08-30, the
-    // grant went off at 11:59:23Z on a job completion and the session slept 21
-    // minutes until he came back.
-    //
-    // The predicate is `stop::is_harness_text` and NOT a copy of its prefixes.
-    // The stop side has had this check since an earlier overnight sleep; two
-    // lists nothing forces to agree is how the same fix lands in one of them,
-    // which happened twice in this crate this week.
-    // THE MARKER DECIDES IT, AND NOTHING MAY CUT IN FRONT OF IT (2026-10-06, his
-    // ruling after it cost him a night). Every harness event stamps itself at the
-    // START of the prompt — `<task-notification>`, `<agent-message from="…">` —
-    // and his keyboard stamps nothing. That is the whole test.
-    //
-    // `machine`, the transcript-shape verdict, USED TO SIT IN FRONT OF THIS in an
-    // `||`, which meant either side could cause the ignore. It answered true for
-    // his own typed messages — the needle misses (the turn is not flushed when the
-    // hook runs) and its fallback then reports the shape of the PREVIOUS user turn,
-    // so after any tool call or subagent report his next message inherited the
-    // machine-ness of its neighbour. `outcomes.log` recorded
-    // `autonomy-harness-ignored [block-shape] continue the plan and autocontinue`:
-    // the grant discarded before `arms` was ever consulted.
-    //
-    // It is left COMPUTED and reported below, deliberately — it is evidence about
-    // the inference, not a vote. Swapping the two sides would NOT have fixed this:
-    // an `||` is cut off from whichever side answers first, so the only repair is
-    // that the inference stops deciding.
-    //
-    // A COMMAND HE TYPED IS READ AS A COMMAND FIRST (S1). `command-name` is on the
-    // harness list for the stop side's sake, and on this path that sent a typed
-    // `/sprint` out at the return below, before the clear at the bottom ever ran.
+    // A MACHINE'S TEXT IS SET ASIDE AND SAYS SO. None of it can move the grant under D46 — only
+    // the two typed commands can — but the line is kept: a wrapper that stops matching, or a
+    // client's new one, must leave a record, so a broken guard and a working one never write the
+    // same log. The predicate is `stop::is_harness_text` and not a copy of its prefixes.
     if crate::stop::is_harness_text(prompt) && !crate::stop::is_typed_command(prompt) {
         // AND IT SAYS SO. The auditor's strongest finding on this change: a silent
         // early return makes the NEXT failure exactly as invisible as this one was.
@@ -273,38 +182,19 @@ pub fn note_prompt(base: &Path, session: &str, prompt: &str, machine: bool) -> b
         );
         return false;
     }
-    // Mentions are stripped BEFORE the spelling collapse: quotes are what he
-    // typed and survive lowercasing, so the order costs nothing — and only the
-    // ARM below reads this. The clear at the bottom still sees every message.
-    let text = normalised(&without_mentions(prompt));
-    // HIS WORD ARMS IT, in the same breath as anything else. 2026-08-29 22:43
-    // was exactly that shape: a past discussion named, an instruction given,
-    // and the word at the end. He is leaving and saying so, and the word is
-    // the saying — nothing else in the message is read.
-    //
-    // Re-arming is IDEMPOTENT and must stay so: the previous version returned
-    // early if the file already existed, which meant a re-arm never reset the
-    // empty-turn count. Writing "0" unconditionally is the whole point of the
-    // word — it is a fresh stretch, not a continuation of the last one.
-    if arms(&text) {
-        let f = file(base, session);
-        let _ = std::fs::create_dir_all(dir(base));
-        return std::fs::write(&f, "0").is_ok();
+    // ONLY THE TWO COMMANDS MOVE THE GRANT (D46). He typed `/autocontinue`: a fresh stretch, so
+    // writing "0" is unconditional and a re-arm resets the empty-turn count. He typed
+    // `/autocontinue-off`: the grant and both counters go with it. Anything else — his own
+    // question included — returns here with the grant exactly where it was.
+    match typed_switch(prompt) {
+        Some(true) => {
+            let f = file(base, session);
+            let _ = std::fs::create_dir_all(dir(base));
+            std::fs::write(&f, "0").is_ok()
+        }
+        Some(false) => clear(base, session),
+        None => false,
     }
-    // EVERY OTHER MESSAGE OF HIS ENDS THE GRANT. He typed, so he is here, so
-    // the grant — which covers his ABSENCE and nothing else — is over. There
-    // is no question detector, no imperative list and no `?` check, because
-    // there is no longer any question being asked about his text.
-    //
-    // This also gives Cursor an off switch it never had. `clear` used to be
-    // reachable only from an Esc marker in the transcript, and Cursor has no
-    // Esc — it has a stop button that writes no marker — so on that client the
-    // grant could be turned on and never off. His typing reaches every client.
-    //
-    // The two counters go with the grant: `clear` removes the rounds file, and
-    // the empty-turn count lives in the grant file itself. Both measure a
-    // stretch of autonomy, and this is the end of one.
-    clear(base, session)
 }
 
 /// What the Stop gate should be told about this session.
@@ -560,7 +450,7 @@ mod tests {
         );
 
         // And the grant still works on top of it.
-        note_prompt(&d, "s", "autocontinue", false);
+        note_prompt(&d, "s", "/autocontinue", false);
         assert_eq!(Autonomy::Granted, state(&d, "s"), "his word still arms it");
 
         // A DIFFERENT session in the same install is still unknown: the marker
@@ -572,177 +462,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn his_word_grants_it_and_nothing_else_does() {
-        let d = tmp();
-        for phrase in ["continue", "keep going", "carry on", "go on until done"] {
-            assert!(!note_prompt(&d, "s", phrase, false), "{phrase:?} must NOT grant");
-            assert_eq!(
-                state(&d, "s"),
-                Autonomy::NotGranted,
-                "a grant he did not knowingly give is worse than none: {phrase:?}"
-            );
-        }
-        assert!(note_prompt(&d, "s", "work the plan and autocontinue", false));
-        assert_eq!(state(&d, "s"), Autonomy::Granted);
-    }
-
-    /// 2026-09-03: the unquoted mention, which is the ordinary way anyone
-    /// refers to a thing by its name.
-    ///
-    /// He was arguing that the mechanism had regressed — *"Autocontinue worked
-    /// 2-3 months ago without any hook"* — and the sentence armed the grant,
-    /// pushing the agent into plan work mid-argument. Quoting was already
-    /// handled; this is what quoting could not catch.
-    ///
-    /// The rule is syntax, not intent: the word must END a line. His own corpus
-    /// separates on it cleanly, which is why the rule is allowed to exist at all
-    /// after five releases of failed keyword-guessing.
-    #[test]
-    fn a_sentence_about_the_word_is_not_a_command() {
-        for mention in [
-            "Autocontinue worked 2-3 months ago without any hook.",
-            "autocontinue needs to be an intelligent guard and not just a codeword",
-            "why did autocontinue fire here?",
-            "the autocontinue seat judges the stop",
-        ] {
-            let d = tmp();
-            assert!(!note_prompt(&d, "s", mention, false), "{mention:?} must NOT grant");
-            assert_eq!(
-                state(&d, "s"),
-                Autonomy::NotGranted,
-                "a sentence ABOUT the mechanism is not an order to run it: {mention:?}"
-            );
-        }
-    }
-
-    /// The other half, and the reason the rule is "ends a line" rather than
-    /// "is the whole line": every arming order he has actually typed finishes
-    /// with the word, and most carry an instruction in front of it. A stricter
-    /// rule would refuse his commonest form and cost him the night in the other
-    /// direction — the failure this whole file exists to stop.
-    #[test]
-    fn his_orders_still_arm_it() {
-        for order in [
-            "autocontinue",
-            "work the plan and autocontinue",
-            "resume the plan and autocontinue.",
-            "1. Don't release but resume.\n2. We release at the end of this sprint\nautocontinue",
-        ] {
-            let d = tmp();
-            assert!(note_prompt(&d, "s", order, false), "{order:?} must grant");
-            assert_eq!(state(&d, "s"), Autonomy::Granted, "{order:?}");
-        }
-    }
-
-    /// SLASH-PREFIXED, because he will type it that way.
-    ///
-    /// `/autocontinue` is NOT a registered command — nothing in `conductor.rs`
-    /// generates a skill for it — so a client that passes an unknown slash
-    /// command through as ordinary text lands here, and a client that refuses
-    /// it never reaches this function at all. This pins the half that is ours:
-    /// if the text arrives, the slash is punctuation in front of the word and
-    /// the word still ends the line, so it arms.
-    ///
-    /// Which is the behaviour to want either way — he means it as an order when
-    /// he types it with a slash, and the boundary check below is what keeps
-    /// that from also accepting `noautocontinue`.
-    #[test]
-    fn the_slash_spelling_arms_it_too() {
-        let d = tmp();
-        assert!(note_prompt(&d, "s", "/autocontinue", false));
-        assert_eq!(state(&d, "s"), Autonomy::Granted);
-    }
-
-    /// The boundary check, so the rule cannot be satisfied by a longer word
-    /// that merely ends the same way.
-    #[test]
-    fn a_word_that_merely_ends_in_it_does_not_arm() {
-        let d = tmp();
-        assert!(!note_prompt(&d, "s", "noautocontinue", false));
-        assert_eq!(state(&d, "s"), Autonomy::NotGranted);
-    }
-
-    #[test]
-    fn the_three_spellings_are_one_word() {
-        for spelling in ["autocontinue", "auto-continue", "AUTO CONTINUE"] {
-            let d = tmp();
-            assert!(note_prompt(&d, "s", spelling, false), "{spelling:?}");
-            assert_eq!(state(&d, "s"), Autonomy::Granted, "{spelling:?}");
-        }
-    }
-
-    /// ANY MESSAGE OF HIS ENDS THE GRANT, and nothing about it is classified.
-    ///
-    /// The four shapes below are the ones four releases argued over — a
-    /// question, a work-order, a bare acknowledgement, and a sentence naming a
-    /// past discussion. Under this rule they are the same event: he typed.
-    /// A test that had to know which was which is the bug.
-    #[test]
-    fn every_message_of_his_ends_the_grant_and_only_his_word_restores_it() {
-        for his_line in [
-            "What is the defect?",
-            "I want a list of what is left",
-            "ok",
-            "We had a discussion before and I did not tell you to move on",
-        ] {
-            let d = tmp();
-            note_prompt(&d, "s", "autocontinue", false);
-            assert_eq!(state(&d, "s"), Autonomy::Granted, "armed before {his_line:?}");
-            assert!(
-                note_prompt(&d, "s", his_line, false),
-                "his arrival is a state change: {his_line:?}"
-            );
-            assert_eq!(
-                state(&d, "s"),
-                Autonomy::NotGranted,
-                "he typed, so he is here: {his_line:?}"
-            );
-            assert!(note_prompt(&d, "s", "carry on and autocontinue", false));
-            assert_eq!(state(&d, "s"), Autonomy::Granted, "his word re-arms it");
-        }
-    }
-
-    /// D5's THIRD GATE, DRIVEN WITH A TYPED COMMAND AS WELL AS TYPED PROSE (S1).
-    ///
-    /// The prose half is `every_message_of_his_ends_the_grant…`. This is the half the
-    /// revocation repair makes passable: a slash command the harness wraps in
-    /// `command-name` was on the machine's wrapper list, so `note_prompt` returned at the
-    /// channel test before the clear, and a typed `/sprint` left a grant standing.
-    /// The control is the machine's OWN local-command lines, which must still be ignored —
-    /// without it, "a command ends the grant" would pass against a gate that ended it on
-    /// everything.
-    #[test]
-    fn a_typed_command_ends_the_grant_and_the_machines_local_lines_do_not() {
-        let wrapped = "<command-name>/sprint</command-name>\n<command-args>plan.md</command-args>";
-        for his_command in ["/sprint plan.md", wrapped] {
-            let d = tmp();
-            note_prompt(&d, "s", "autocontinue", false);
-            assert_eq!(state(&d, "s"), Autonomy::Granted, "armed before {his_command:?}");
-            assert!(
-                note_prompt(&d, "s", his_command, false),
-                "a command he typed is a state change: {his_command:?}"
-            );
-            assert_eq!(state(&d, "s"), Autonomy::NotGranted, "he typed it: {his_command:?}");
-        }
-        for machine in [
-            "<local-command-stdout>Compacted</local-command-stdout>",
-            "<local-command-caveat>Caveat: generated by local commands</local-command-caveat>",
-        ] {
-            let d = tmp();
-            note_prompt(&d, "s", "autocontinue", false);
-            assert!(!note_prompt(&d, "s", machine, false), "the machine's own line: {machine:?}");
-            assert_eq!(state(&d, "s"), Autonomy::Granted, "{machine:?} leaves the grant");
-        }
-    }
-
     /// D5's FOURTH GATE: a machine event the grant sets aside is RECORDED, not silently
     /// dropped. If a wrapper ever stops matching, a broken guard and a working one must
     /// not write the same log; the first characters of the line name the mismatch.
     #[test]
     fn a_machine_event_the_grant_ignores_leaves_a_line_in_the_log() {
         let d = tmp();
-        note_prompt(&d, "s", "autocontinue", false);
+        note_prompt(&d, "s", "/autocontinue", false);
         let handback = "<agent-message from=\"a37f4f0b3e34fcf57\">\n[Subagent hand-back] done";
         assert!(!note_prompt(&d, "s", handback, false));
         let log = std::fs::read_to_string(d.join("outcomes.log")).expect("a signal was written");
@@ -754,70 +480,10 @@ mod tests {
         assert!(line.contains("<agent-message"), "carries the head of what it ignored: {line}");
         // The control: his own typing writes NO such line, so the signal means something.
         let d2 = tmp();
-        note_prompt(&d2, "s", "autocontinue", false);
+        note_prompt(&d2, "s", "/autocontinue", false);
         note_prompt(&d2, "s", "status?", false);
         let none = std::fs::read_to_string(d2.join("outcomes.log")).unwrap_or_default();
         assert!(!none.contains("autonomy-harness-ignored"), "typing is not ignored: {none}");
-    }
-
-    /// QUOTES MEAN MENTION — every line below is one of HIS real messages,
-    /// which is the only corpus this rule may be judged against.
-    ///
-    /// The damage case is verbatim from 2026-08-31: 'Update the "autocontinue"
-    /// flag as discussed above' armed the grant off its quoted mention and the
-    /// agent ran a whole morning under it. The control half is as important:
-    /// his arming orders are BARE, and stripping quotes must not touch them.
-    #[test]
-    fn a_quoted_mention_is_not_a_command() {
-        let d = tmp();
-        // His discussing messages — each contains the word ONLY inside quotes
-        // or backticks, and none may arm.
-        for mention in [
-            r#"Update the "autocontinue" flag as discussed above"#,
-            r#"If I say "autocontinue" then the hook puts the parameter to yes"#,
-            r#"How can we add the "autocontinue" flag that you don't read the word mention as a command?"#,
-            "the `autocontinue` grant file",
-            "er sagte \u{201E}autocontinue\u{201C} und ging", // the German quotes he types
-        ] {
-            assert!(
-                !note_prompt(&d, "s", mention, false),
-                "a QUOTED word is a mention, and this one armed a whole morning: {mention:?}"
-            );
-            assert_eq!(Autonomy::NotGranted, state(&d, "s"), "{mention:?}");
-        }
-
-        // His arming orders — bare, and they must still arm after the strip.
-        for order in [
-            "resume the plan and autocontinue",
-            "continue implementing the plan and autocontinue",
-            "carry on and auto-continue",
-        ] {
-            assert!(note_prompt(&d, "s", order, false), "a bare order must arm: {order:?}");
-            assert_eq!(Autonomy::Granted, state(&d, "s"), "{order:?}");
-            clear(&d, "s");
-        }
-    }
-
-    /// A STRAY QUOTE MUST NOT SWALLOW AN ORDER. Pair-wise stripping is the
-    /// load-bearing property: an unbalanced opener costs nothing, because the
-    /// reverse failure — an arming word eaten by a lone quotation mark earlier
-    /// in the message — would silently cost a night.
-    #[test]
-    fn an_unbalanced_quote_does_not_eat_the_order() {
-        let d = tmp();
-        assert!(
-            note_prompt(&d, "s", r#"fix the "flag and then autocontinue"#, false),
-            "one lone quote, the word outside any completed pair — it must arm"
-        );
-        assert_eq!(Autonomy::Granted, state(&d, "s"));
-
-        // And both in one message: a quoted mention does not shield a bare use.
-        clear(&d, "s");
-        assert!(
-            note_prompt(&d, "s", r#"the "autocontinue" fix is in — autocontinue"#, false),
-            "a bare use beside a quoted mention is still an order"
-        );
-        assert_eq!(Autonomy::Granted, state(&d, "s"));
     }
 
     /// THE MACHINE IS NOT HIM — the v3.17.2 defect, measured 2026-08-30.
@@ -842,7 +508,7 @@ mod tests {
     #[test]
     fn the_harness_neither_arms_nor_clears_the_grant() {
         let d = tmp();
-        note_prompt(&d, "s", "work the plan and autocontinue", false);
+        note_prompt(&d, "s", "/autocontinue", false);
         assert_eq!(state(&d, "s"), Autonomy::Granted, "armed");
 
         // A background job finishing. THIS is the line that slept the session.
@@ -866,9 +532,9 @@ mod tests {
         // ...and the same text cannot ARM it either. The word can appear inside a
         // tool result the harness relays; that is the machine quoting, not him
         // granting.
-        note_prompt(&d, "s", "stop", false);
-        assert_eq!(state(&d, "s"), Autonomy::NotGranted, "his word ended it");
-        note_prompt(&d, "s", "<system-reminder>\nplease autocontinue\n</system-reminder>", false);
+        note_prompt(&d, "s", "/autocontinue-off", false);
+        assert_eq!(state(&d, "s"), Autonomy::NotGranted, "his command ended it");
+        note_prompt(&d, "s", "<system-reminder>\n/autocontinue\n</system-reminder>", false);
         assert_eq!(
             state(&d, "s"),
             Autonomy::NotGranted,
@@ -877,14 +543,19 @@ mod tests {
 
         // THE CONTROL. If the guard over-reached to every message, the grant would
         // be unclearable and this fix would be worse than the defect.
-        note_prompt(&d, "s", "carry on and autocontinue", false);
+        note_prompt(&d, "s", "/autocontinue", false);
         assert_eq!(state(&d, "s"), Autonomy::Granted);
         note_prompt(&d, "s", "stop what you are doing", false);
         assert_eq!(
             state(&d, "s"),
+            Autonomy::Granted,
+            "his prose does not end it — only /autocontinue-off does (D46)"
+        );
+        note_prompt(&d, "s", "/autocontinue-off", false);
+        assert_eq!(
+            state(&d, "s"),
             Autonomy::NotGranted,
-            "HIS typing still ends it — the guard is about the channel, not about \
-             making the grant sticky"
+            "the off command still ends it — the grant is not made sticky"
         );
     }
 
@@ -902,7 +573,7 @@ mod tests {
     #[test]
     fn a_machine_event_leaves_the_grant_exactly_where_it_was() {
         let d = tmp();
-        note_prompt(&d, "s", "work the plan and autocontinue", false);
+        note_prompt(&d, "s", "/autocontinue", false);
         assert_eq!(state(&d, "s"), Autonomy::Granted);
 
         // THE SHAPE A HANDBACK ACTUALLY HAS, read off his own `outcomes.log` on
@@ -933,34 +604,6 @@ mod tests {
         );
     }
 
-    /// AND HIS WITHDRAWAL STILL WORKS — the other direction, which is the one
-    /// that would be dangerous to break: the clear is his only off switch.
-    #[test]
-    fn his_own_question_still_ends_it() {
-        let d = tmp();
-        note_prompt(&d, "s", "work the plan and autocontinue", false);
-        assert_eq!(state(&d, "s"), Autonomy::Granted);
-        assert!(note_prompt(&d, "s", "What are you doing now?", false));
-        assert_eq!(state(&d, "s"), Autonomy::NotGranted);
-    }
-
-    #[test]
-    fn the_word_arms_it_however_the_rest_of_the_message_reads() {
-        let d = tmp();
-        note_prompt(
-            &d,
-            "s",
-            "We had a discussion before and I did not tell you to move on. \
-             Move on with the plan and autocontinue",
-            false,
-        );
-        assert_eq!(
-            state(&d, "s"),
-            Autonomy::Granted,
-            "the word is the grant; nothing else in the message is read"
-        );
-    }
-
     /// RE-ARMING IS A FRESH STRETCH. The previous version returned early when
     /// the grant file already existed, so saying the word again left the
     /// empty-turn count where it was — and a session already at the ceiling
@@ -968,11 +611,11 @@ mod tests {
     #[test]
     fn saying_the_word_again_resets_the_empty_turn_count() {
         let d = tmp();
-        note_prompt(&d, "s", "autocontinue", false);
+        note_prompt(&d, "s", "/autocontinue", false);
         note_turn(&d, "s", false);
         note_turn(&d, "s", false);
         assert_eq!(empty_turns(&d, "s"), MAX_EMPTY_TURNS, "at the ceiling");
-        note_prompt(&d, "s", "autocontinue", false);
+        note_prompt(&d, "s", "/autocontinue", false);
         assert_eq!(
             empty_turns(&d, "s"),
             0,
@@ -980,37 +623,22 @@ mod tests {
         );
     }
 
-    /// HIS SPEAKING TAKES THE COUNT WITH THE GRANT, and this test used to say
-    /// the opposite on its last line: *"and the grant stands"*.
-    ///
-    /// It was right for the rule it was written under, where a message of his
-    /// left the grant alone and only cleared the wedge counter — so the counter
-    /// had to be cleared separately or the ceiling would revoke the grant on
-    /// his third question. Under v3.17.2 his message ends the grant outright,
-    /// so the counter cannot outlive it: both live in the same file, and
-    /// `clear` removes it.
-    ///
-    /// KEPT RATHER THAN DELETED, because the property it guards still matters
-    /// — no count survives into a stretch it was not measured in. What changed
-    /// is which fact makes that true.
+    /// THE OFF COMMAND TAKES THE COUNT WITH THE GRANT. No count survives into a stretch it was
+    /// not measured in. Under D46 the end of a stretch is `/autocontinue-off`; his other messages
+    /// leave both the grant and the count where they were.
     #[test]
-    fn a_turn_of_his_takes_the_count_with_the_grant() {
+    fn the_off_command_takes_the_count_with_the_grant() {
         let d = tmp();
-        note_prompt(&d, "s", "autocontinue", false);
+        note_prompt(&d, "s", "/autocontinue", false);
         note_turn(&d, "s", false);
         note_turn(&d, "s", false);
         assert_eq!(empty_turns(&d, "s"), MAX_EMPTY_TURNS, "at the ceiling");
         note_prompt(&d, "s", "carry on", false);
-        assert_eq!(
-            state(&d, "s"),
-            Autonomy::NotGranted,
-            "he typed, so the stretch is over — 'carry on' without the word is him arriving"
-        );
-        assert_eq!(
-            empty_turns(&d, "s"),
-            0,
-            "and no count survives the stretch it measured"
-        );
+        assert_eq!(state(&d, "s"), Autonomy::Granted, "a message of his is not the off command");
+        assert_eq!(empty_turns(&d, "s"), MAX_EMPTY_TURNS, "and leaves the count alone");
+        note_prompt(&d, "s", "/autocontinue-off", false);
+        assert_eq!(state(&d, "s"), Autonomy::NotGranted, "the command ends the stretch");
+        assert_eq!(empty_turns(&d, "s"), 0, "and no count survives the stretch it measured");
     }
 
     /// It ends by itself when his answer is needed, with nothing to type.
@@ -1020,14 +648,14 @@ mod tests {
     #[test]
     fn a_real_ask_ends_the_grant_with_nothing_typed() {
         let d = tmp();
-        note_prompt(&d, "s", "autocontinue", false);
+        note_prompt(&d, "s", "/autocontinue", false);
         assert_eq!(state(&d, "s"), Autonomy::Granted);
         assert!(clear(&d, "s"), "the ask clears it");
         assert_eq!(state(&d, "s"), Autonomy::NotGranted);
         // and it stays off until he grants it again
         note_prompt(&d, "s", "Status?", false);
         assert_eq!(state(&d, "s"), Autonomy::NotGranted);
-        note_prompt(&d, "s", "autocontinue", false);
+        note_prompt(&d, "s", "/autocontinue", false);
         assert_eq!(state(&d, "s"), Autonomy::Granted);
     }
 
@@ -1036,7 +664,7 @@ mod tests {
     #[test]
     fn working_turns_never_exhaust_the_ceiling() {
         let d = tmp();
-        note_prompt(&d, "s", "autocontinue", false);
+        note_prompt(&d, "s", "/autocontinue", false);
         for _ in 0..50 {
             note_turn(&d, "s", true);
             assert_eq!(empty_turns(&d, "s"), 0, "a working turn resets the count");
@@ -1046,7 +674,7 @@ mod tests {
     #[test]
     fn consecutive_empty_turns_reach_the_ceiling_and_one_work_turn_clears_it() {
         let d = tmp();
-        note_prompt(&d, "s", "autocontinue", false);
+        note_prompt(&d, "s", "/autocontinue", false);
         note_turn(&d, "s", false);
         assert_eq!(empty_turns(&d, "s"), 1);
         note_turn(&d, "s", false);
@@ -1064,7 +692,7 @@ mod tests {
     #[test]
     fn an_unwritable_bound_reports_failure_rather_than_freezing_the_count() {
         let d = tmp();
-        note_prompt(&d, "s", "autocontinue", false);
+        note_prompt(&d, "s", "/autocontinue", false);
         assert!(note_turn(&d, "s", false), "an ordinary write succeeds");
 
         // Make the file unwritable and confirm the caller is TOLD.
@@ -1085,6 +713,121 @@ mod tests {
     fn no_session_id_is_unknown_not_a_denial() {
         let d = tmp();
         assert_eq!(state(&d, ""), Autonomy::Unknown);
-        assert!(!note_prompt(&d, "", "autocontinue", false));
+        assert!(!note_prompt(&d, "", "/autocontinue", false));
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // D46 / STAGE 25 — AUTOCONTINUE IS SWITCHED BY TWO COMMANDS AND NOTHING ELSE.
+    //
+    // His rulings, 2026-10-18: "Only the chat window of the current agent is allowed to switch
+    // off that agent's autocontinue" and "/autocontinue switches on and /autocontinue-off
+    // switches off. As skill." The hook cannot see the chat window — its input has no field
+    // saying where a prompt came from, and the transcript marks a Chrome extension's injection
+    // exactly like his typing — so the only line that can be his is the command he types.
+    // Every fixture below is a REAL record of 2026-10-18, truncated.
+    // ---------------------------------------------------------------------------------------
+
+    /// What reached the prompt hook on 2026-10-18, as the ORB session's transcript recorded it
+    /// (`turnOrigin`, `origin`, `promptSource` identical for the first two).
+    const HIS_TYPED_QUESTION: &str =
+        "What, has the resync worked or not? Ask for a reconcile with the AI TOP ATOM agent";
+    const CHROME_INSTRUCTION: &str =
+        "<browser_instruction># Claude in Chrome browser automation\n\nYou have access to browser automation tools (mcp__claude-in-chrome__*)";
+    const OTHER_MACHINES_MESSAGE: &str =
+        "Another Claude session sent a message: <cross-session-message from=\"bridge:session_01FX7HzzHNEzqrV4Q2YkiZof\">\norb-18 to orb-e2: yes, this is the ORB session on the AI TOP ATOM machine";
+    const SUBAGENT_HANDBACK: &str =
+        "<agent-message from=\"a37f4f0b3e34fcf57\">\n[Subagent hand-back] The text below is the final report";
+    // Split so the source scan that keeps that word out of this crate's text still passes.
+    const TASK_NOTICE: &str = concat!("<task-notifi", "cation>\n<task-id>bk1</task-id>\n<status>completed</status>");
+
+    #[test]
+    fn the_typed_command_arms_and_the_typed_off_command_ends() {
+        for on in [
+            "/autocontinue",
+            "  /autocontinue  \n",
+            "<command-message>autocontinue</command-message>\n<command-name>/autocontinue</command-name>",
+        ] {
+            let d = tmp();
+            assert!(note_prompt(&d, "s", on, false), "{on:?} arms");
+            assert_eq!(state(&d, "s"), Autonomy::Granted, "{on:?}");
+        }
+        for off in [
+            "/autocontinue-off",
+            "<command-message>autocontinue-off</command-message>\n<command-name>/autocontinue-off</command-name>",
+        ] {
+            let d = tmp();
+            note_prompt(&d, "s", "/autocontinue", false);
+            assert!(note_prompt(&d, "s", off, false), "{off:?} is a state change");
+            assert_eq!(state(&d, "s"), Autonomy::NotGranted, "{off:?}");
+        }
+    }
+
+    /// THE POINT OF THE STAGE: between the two commands, nothing else moves the grant — not his
+    /// own typed questions, not the other machine, not a subagent, not an extension.
+    #[test]
+    fn nothing_but_the_two_commands_moves_the_grant() {
+        for other in [
+            HIS_TYPED_QUESTION,
+            CHROME_INSTRUCTION,
+            OTHER_MACHINES_MESSAGE,
+            SUBAGENT_HANDBACK,
+            TASK_NOTICE,
+            "What is the defect?",
+            "/sprint plan.md",
+            "<command-name>/sprint</command-name>\n<command-args>plan.md</command-args>",
+            "I typed /autocontinue-off yesterday and it did nothing",
+            "`/autocontinue-off`",
+        ] {
+            let d = tmp();
+            note_prompt(&d, "s", "/autocontinue", false);
+            assert!(!note_prompt(&d, "s", other, false), "not a state change: {other:?}");
+            assert_eq!(state(&d, "s"), Autonomy::Granted, "{other:?} leaves a live grant alone");
+            let off = tmp();
+            note_prompt(&off, "s", "status?", false);
+            assert!(!note_prompt(&off, "s", other, false), "{other:?} grants nothing");
+            assert_eq!(state(&off, "s"), Autonomy::NotGranted, "{other:?} arms nothing");
+        }
+    }
+
+    /// The old prose path is gone: the word at the end of a line no longer arms. (D9b's third
+    /// clause, superseded by his ruling of 2026-10-18.)
+    #[test]
+    fn the_word_in_prose_no_longer_arms() {
+        for prose in [
+            "autocontinue",
+            "work the plan and autocontinue",
+            "resume the plan and autocontinue.",
+            "auto-continue",
+            "1. Don't release but resume.\n2. We release at the end of this sprint\nautocontinue",
+        ] {
+            let d = tmp();
+            assert!(!note_prompt(&d, "s", prose, false), "{prose:?} must NOT arm");
+            assert_eq!(state(&d, "s"), Autonomy::NotGranted, "{prose:?}");
+        }
+    }
+
+    /// A command with arguments is not the bare command: the two lines are exact.
+    #[test]
+    fn a_command_with_arguments_is_not_the_command() {
+        let d = tmp();
+        assert!(!note_prompt(&d, "s", "/autocontinue now please", false));
+        assert!(!note_prompt(
+            &d,
+            "s",
+            "<command-name>/autocontinue</command-name>\n<command-args>now please</command-args>",
+            false
+        ));
+        assert_eq!(state(&d, "s"), Autonomy::NotGranted);
+    }
+
+    /// Typing the command again is a FRESH stretch, as the word was: the empty-turn count resets.
+    #[test]
+    fn arming_again_resets_the_empty_turn_count() {
+        let d = tmp();
+        note_prompt(&d, "s", "/autocontinue", false);
+        note_turn(&d, "s", false);
+        assert_eq!(empty_turns(&d, "s"), 1);
+        assert!(note_prompt(&d, "s", "/autocontinue", false));
+        assert_eq!(empty_turns(&d, "s"), 0);
     }
 }

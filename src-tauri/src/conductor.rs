@@ -485,7 +485,13 @@ pub fn render_phrase_table(seats: &[SeatDefinition]) -> String {
 ///   in a single machine's `~/.claude/skills/`, so the pipeline the whole sprint
 ///   process depends on was simply absent everywhere else. Its body is now
 ///   single-sourced from `skills/sprint.md` and rides the same deploy as the rest.
-pub const UTILITY_MAP: [(&str, &str); 5] = [
+pub const UTILITY_MAP: [(&str, &str); 7] = [
+    // Sprint 28g D46 (2026-10-18): the TWO commands that switch autocontinue, and the only two
+    // things that do. The prompt hook cannot see the chat window, so it cannot tell his typing
+    // from an extension's injected text or another machine's message; a typed command is the one
+    // line that can only be his. An agent's Skill call of either is refused by the guard.
+    ("autocontinue", "Put this session into plan-execution mode: work the plan stage by stage and stop only at the checkpoints the plan numbers. Typed by the person; only /autocontinue-off ends it"),
+    ("autocontinue-off", "End plan-execution mode for this session: answer what each message asks and stop there until the person types /autocontinue again. Typed by the person"),
     // Sprint 28f Stage 6: this line is the ONE every client displays — it is interpolated
     // into each generated artifact's frontmatter — and it said "the knowledge substrate the
     // store is rebuilt from" while the body 68 lines below said the opposite, in the same
@@ -606,6 +612,8 @@ An empty run reports `no candidates — nothing in this session was durable and 
         // copy would drift from the one the seats' own process runs.
         // Single-sourced for the same reason /sprint is: long enough that a
         // second copy would drift from the file a human reviews.
+        "autocontinue" => include_str!("../../skills/autocontinue.md"),
+        "autocontinue-off" => include_str!("../../skills/autocontinue-off.md"),
         "brainstorm" => include_str!("../../skills/brainstorm.md"),
         "btw" => include_str!("../../skills/btw.md"),
         "setup" => include_str!("../../skills/setup.md"),
@@ -618,6 +626,8 @@ An empty run reports `no candidates — nothing in this session was durable and 
 /// utility, and its rendered page should not claim otherwise.
 fn utility_title(command: &str) -> &'static str {
     match command {
+        "autocontinue" => "switch plan-execution mode on",
+        "autocontinue-off" => "switch plan-execution mode off",
         "brainstorm" => "options, with their trade-offs",
         "btw" => "capture a thought, mid-task",
         "setup" => "the project declares what it is",

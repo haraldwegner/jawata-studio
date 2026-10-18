@@ -202,7 +202,7 @@ fn a_self_declared_decision_no_longer_ends_the_turn() {
     run(
         "userprompt",
         &home,
-        &serde_json::json!({"session_id": "sess-ceil", "prompt": "work the plan and autocontinue"})
+        &serde_json::json!({"session_id": "sess-ceil", "prompt": "/autocontinue"})
             .to_string(),
     );
     let push = run("stop", &home, &stop_payload("sess-ceil", &idle));

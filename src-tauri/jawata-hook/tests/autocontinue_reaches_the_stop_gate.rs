@@ -193,7 +193,7 @@ fn his_word_turns_rule_b_on_and_its_absence_leaves_it_off() {
         "with no grant the turn must be free to end; got: {without}"
     );
 
-    run("userprompt", &home, &prompt_payload("sess-a", "work the plan and autocontinue"));
+    run("userprompt", &home, &prompt_payload("sess-a", "/autocontinue"));
 
     let with = run("stop", &home, &stop_payload("sess-a", &t));
     assert!(
@@ -247,7 +247,7 @@ fn every_stop_verdict_is_recorded() {
     );
 
     // And a BLOCK names the rule it came from.
-    run("userprompt", &home, &prompt_payload("sess-v", "work the plan and autocontinue"));
+    run("userprompt", &home, &prompt_payload("sess-v", "/autocontinue"));
     let idle = transcript(&home, "carry on", "Next I will look at the extractor.");
     run("stop", &home, &stop_payload("sess-v", &idle));
 
@@ -271,49 +271,47 @@ fn every_stop_verdict_is_recorded() {
 /// discussion" and slept a night, and it went stale for the whole window, so a
 /// question at 22:43 silenced the push at 22:54 when he had long gone.
 ///
-/// Now his message ends the grant when it ARRIVES, and Rule B simply finds no
-/// grant. Nothing reads what he wrote. The test therefore no longer asserts
-/// "the grant survives his question" — it asserts the opposite, because that
-/// was the defect: a grant that survived his presence had to be suppressed by
-/// guesswork later.
+/// D46 (2026-10-18) CHANGES WHAT ENDS IT. The hook cannot see the chat window, so a typed
+/// question is indistinguishable from an extension's injected text or another machine's
+/// message, and "his message ends the grant" ended runs he never interrupted. Now only the
+/// typed `/autocontinue-off` ends the grant: his question leaves it standing, and Rule B finds
+/// the grant and pushes. The question window of studio#33 is gone with the rule that needed it.
 #[test]
-fn his_question_ends_the_grant_so_its_answer_is_never_pushed() {
+fn only_the_off_command_ends_the_grant_and_his_question_does_not() {
     let home = scratch_home("survives");
-    run("userprompt", &home, &prompt_payload("sess-b", "autocontinue"));
+    run("userprompt", &home, &prompt_payload("sess-b", "/autocontinue"));
 
-    // His question, through the channel it really arrives on.
+    // His question, through the channel it really arrives on: the grant stands.
     run("userprompt", &home, &prompt_payload("sess-b", "why did you stop"));
-
     let answering = transcript(&home, "why did you stop", "Because I finished that piece.");
     let out = run("stop", &home, &stop_payload("sess-b", &answering));
     assert!(
-        !out.contains("RULE B"),
-        "answering him must not be pushed into new work — and the reason must \
-         be that the grant is gone, not that his words were parsed: {out}"
+        out.contains("RULE B"),
+        "a question is not the off command, so the grant stands and the run goes on: {out}"
     );
 
-    // AND IT STAYS OFF until he says the word. "carry on" is him at the
-    // keyboard, so it is his arrival, not a resumption — under the old rule
-    // this line resumed the loop, which is how a conversation kept being
-    // treated as an absence.
+    // The off command ends it, and the same stop is then not pushed.
+    run("userprompt", &home, &prompt_payload("sess-b", "/autocontinue-off"));
     let working = transcript(&home, "carry on", "Stage done.");
-    run("userprompt", &home, &prompt_payload("sess-b", "carry on"));
+    let off = run("stop", &home, &stop_payload("sess-b", &working));
+    assert!(
+        !off.contains("RULE B"),
+        "after /autocontinue-off the turn is allowed to end: {off}"
+    );
+
+    // Prose does not re-arm; the command does — the control that proves the assertions above
+    // are the grant being OFF rather than the push being broken outright.
+    run("userprompt", &home, &prompt_payload("sess-b", "carry on and autocontinue"));
     let still_off = run("stop", &home, &stop_payload("sess-b", &working));
     assert!(
         !still_off.contains("RULE B"),
-        "only his word re-arms it; a work-order typed while he sits there is \
-         still him sitting there: {still_off}"
+        "the word in prose no longer arms it: {still_off}"
     );
-
-    // His word, and the loop is back — the control that proves the two
-    // assertions above are the grant being OFF rather than the push being
-    // broken outright.
-    run("userprompt", &home, &prompt_payload("sess-b", "carry on and autocontinue"));
+    run("userprompt", &home, &prompt_payload("sess-b", "/autocontinue"));
     let resumed = run("stop", &home, &stop_payload("sess-b", &working));
     assert!(
         resumed.contains("RULE B"),
-        "his word must re-arm the push, or this fix has disabled the feature \
-         instead of scoping it: {resumed}"
+        "the command must re-arm the push, or this change has disabled the feature: {resumed}"
     );
 }
 
@@ -324,7 +322,7 @@ fn his_question_ends_the_grant_so_its_answer_is_never_pushed() {
 fn two_empty_turns_release_the_session_rather_than_wedging_it() {
     let home = scratch_home("wedge");
     let t = transcript(&home, "carry on", "I have nothing further here.");
-    run("userprompt", &home, &prompt_payload("sess-c", "autocontinue"));
+    run("userprompt", &home, &prompt_payload("sess-c", "/autocontinue"));
 
     let first = run("stop", &home, &stop_payload("sess-c", &t));
     assert!(first.contains("RULE B"), "first push: {first}");
@@ -348,7 +346,7 @@ fn two_empty_turns_release_the_session_rather_than_wedging_it() {
 fn a_message_that_needs_his_answer_reaches_the_judge_and_the_verdict_ends_it() {
     let home = scratch_home("needs-him");
     let working = transcript(&home, "carry on", "Suite green, moving on.");
-    run("userprompt", &home, &prompt_payload("sess-e", "autocontinue"));
+    run("userprompt", &home, &prompt_payload("sess-e", "/autocontinue"));
     assert!(
         run("stop", &home, &stop_payload("sess-e", &working)).contains("RULE B"),
         "precondition: the grant is live"
@@ -418,7 +416,7 @@ fn a_message_that_needs_his_answer_reaches_the_judge_and_the_verdict_ends_it() {
 #[test]
 fn his_interrupt_beats_the_grant() {
     let home = scratch_home("esc");
-    run("userprompt", &home, &prompt_payload("sess-f", "autocontinue"));
+    run("userprompt", &home, &prompt_payload("sess-f", "/autocontinue"));
     let ordinary = transcript(&home, "carry on", "Stage done.");
     assert!(
         run("stop", &home, &stop_payload("sess-f", &ordinary)).contains("RULE B"),
@@ -459,7 +457,7 @@ fn his_interrupt_beats_the_grant() {
 #[test]
 fn his_esc_ends_the_grant_not_just_the_turn() {
     let home = scratch_home("esc-ends-grant");
-    run("userprompt", &home, &prompt_payload("sess-g", "autocontinue"));
+    run("userprompt", &home, &prompt_payload("sess-g", "/autocontinue"));
     let ordinary = transcript(&home, "carry on", "Stage done.");
     assert!(
         run("stop", &home, &stop_payload("sess-g", &ordinary)).contains("RULE B"),

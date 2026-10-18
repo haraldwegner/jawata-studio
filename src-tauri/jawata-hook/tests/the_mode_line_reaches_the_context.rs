@@ -110,7 +110,7 @@ fn payload(session: &str, prompt: &str) -> String {
 fn his_word_injects_plan_mode_even_with_the_store_down() {
     let home = scratch("on");
 
-    let out = userprompt_says(&payload("s-on", "carry on and autocontinue"), &home);
+    let out = userprompt_says(&payload("s-on", "/autocontinue"), &home);
 
     assert!(
         out.contains("AUTOCONTINUE: ON"),
@@ -126,17 +126,17 @@ fn his_word_injects_plan_mode_even_with_the_store_down() {
 }
 
 #[test]
-fn his_question_injects_conversation_mode() {
+fn the_off_command_injects_conversation_mode() {
     let home = scratch("off");
-    // Arm first, then clear with an ordinary message — the transition the two
-    // stale-copy incidents were made of.
-    let _ = userprompt_says(&payload("s-off", "work the plan and autocontinue"), &home);
+    // Arm first, then end it with the off command — the transition the two stale-copy
+    // incidents were made of.
+    let _ = userprompt_says(&payload("s-off", "/autocontinue"), &home);
 
-    let out = userprompt_says(&payload("s-off", "why did you stop?"), &home);
+    let out = userprompt_says(&payload("s-off", "/autocontinue-off"), &home);
 
     assert!(
         out.contains("AUTOCONTINUE: OFF"),
-        "his typing cleared the file; the context must be told in the same event, or \
+        "the off command cleared the file; the context must be told in the same event, or \
          the remembered copy keeps running the plan — the 20:23 divergence. Got: {out}"
     );
     assert!(
@@ -146,24 +146,28 @@ fn his_question_injects_conversation_mode() {
     );
 }
 
-/// The OFF line says "his typing clears the grant". That sentence must be TRUE of a typed
-/// slash command too, not only of prose — the line is asserted here against the rule the
-/// hook actually enforces, in both shapes a command can arrive in (S1).
+/// D46: a question of his, and any other typed command, leave the grant standing, so the line
+/// the context receives is still ON — in both shapes a command can arrive in. The line must
+/// not claim "his typing clears the grant", which is no longer true of anything.
 #[test]
-fn his_typed_command_injects_conversation_mode() {
-    for (tag, command) in [
+fn his_question_and_other_commands_keep_plan_mode() {
+    for (tag, prompt) in [
+        ("q-raw", "why did you stop?"),
         ("cmd-raw", "/sprint plan.md"),
         ("cmd-wrapped", "<command-name>/sprint</command-name>\n<command-args>plan.md</command-args>"),
     ] {
         let home = scratch(tag);
-        let _ = userprompt_says(&payload(tag, "work the plan and autocontinue"), &home);
+        let _ = userprompt_says(&payload(tag, "/autocontinue"), &home);
 
-        let out = userprompt_says(&payload(tag, command), &home);
+        let out = userprompt_says(&payload(tag, prompt), &home);
 
         assert!(
-            out.contains("AUTOCONTINUE: OFF"),
-            "a command he typed is him at the keyboard: the line must say the grant is \
-             gone, as it does for prose. {command:?} -> {out}"
+            out.contains("AUTOCONTINUE: ON"),
+            "only /autocontinue-off ends the grant, so the line must stay ON. {prompt:?} -> {out}"
+        );
+        assert!(
+            out.contains("/autocontinue-off"),
+            "ON must say what ends it. {prompt:?} -> {out}"
         );
     }
 }
@@ -177,7 +181,7 @@ fn his_typed_command_injects_conversation_mode() {
 #[test]
 fn a_harness_notification_reasserts_the_standing_grant() {
     let home = scratch("harness");
-    let _ = userprompt_says(&payload("s-h", "carry on and autocontinue"), &home);
+    let _ = userprompt_says(&payload("s-h", "/autocontinue"), &home);
 
     let out = userprompt_says(
         &payload("s-h", "<system-reminder>\n<task-notification>job done</task-notification>\n</system-reminder>"),
@@ -198,7 +202,7 @@ fn no_session_means_no_mode_line() {
     let home = scratch("nosession");
 
     let out = userprompt_says(
-        &serde_json::json!({ "prompt": "carry on and autocontinue" }).to_string(),
+        &serde_json::json!({ "prompt": "/autocontinue" }).to_string(),
         &home,
     );
 
@@ -228,7 +232,7 @@ fn a_hanging_store_cannot_eat_the_mode_line() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let url = format!("http://127.0.0.1:{}/mcp", listener.local_addr().unwrap().port());
 
-    let _ = userprompt_says_at(&payload("s-hang", "carry on and autocontinue"), &home, &url);
+    let _ = userprompt_says_at(&payload("s-hang", "/autocontinue"), &home, &url);
     let started = std::time::Instant::now();
     let out = userprompt_says_at(
         &payload(
