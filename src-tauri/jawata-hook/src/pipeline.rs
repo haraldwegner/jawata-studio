@@ -3171,6 +3171,53 @@ mod tests {
         }
     }
 
+    /// Sprint 28g S23 O1 — "Tier 1 makes no model call (asserted on the call record)". The call
+    /// record of a hook is what it asks the store; this store records every ask and answers none,
+    /// and the guard is driven through `run` for each of the four classes and for the delivery of
+    /// a hired observer's halt. A second assertion is structural: `guard` is not given the store.
+    #[test]
+    fn the_guard_with_the_observer_makes_no_model_call() {
+        struct Recording(std::cell::RefCell<Vec<String>>);
+        impl Store for Recording {
+            fn ask(&self, a: serde_json::Value) -> Result<Answer, QueryError> {
+                self.0.borrow_mut().push(a.to_string());
+                Ok(Answer::Nothing)
+            }
+            fn ask_value(&self, a: serde_json::Value) -> Result<serde_json::Value, QueryError> {
+                self.0.borrow_mut().push(a.to_string());
+                Err(QueryError::ShapeChanged("recording".into()))
+            }
+        }
+        let store = Recording(std::cell::RefCell::new(Vec::new()));
+        let session = format!("o1-norecord-{}-{}", std::process::id(), line!());
+        let home = home_dir().expect("a home directory");
+        let payload = |command: &str| {
+            serde_json::json!({ "session_id": session, "tool_name": "Bash", "tool_input": { "command": command } })
+                .to_string()
+        };
+        let mut denied = 0;
+        for command in [
+            "gh run watch 1",                              // foreground-wait
+            "build/patch-streak-gate.sh v1",               // rogue-gate
+            "grep -rn x src/Thing.java",                   // shell-on-java
+            "# jawata-author: a\nls",
+            "# jawata-author: b\nls",
+            "# jawata-author: c\nls",
+            "# jawata-author: d\nls",
+            "# jawata-author: e\nls",                      // script-habit
+        ] {
+            let out = run(Role::Guard, &config("claude-code"), &payload(command), &store);
+            if matches!(&out, Outcome::Emitted(s) if s.contains("\"deny\"")) {
+                denied += 1;
+            }
+        }
+        assert!(denied >= 3, "the rules really fired in this run ({denied} refusals), or the assertion below is empty");
+        let _ = std::fs::remove_file(
+            home.join(".claude").join("jawata-studio").join("watch").join(format!("{}.window", sanitize_session(&session))),
+        );
+        assert!(store.0.borrow().is_empty(), "the observer's first tier asked the store: {:?}", store.0.borrow());
+    }
+
     /// Sprint 28g S23 O2 — the hired observer from the call's side. A halt the judge left is
     /// delivered through `run` exactly once; and on every eighth call, with a seat file to hire
     /// and nothing in flight, the window is handed to the judge — never awaited, here a recorder.
