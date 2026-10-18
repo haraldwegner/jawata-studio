@@ -252,6 +252,17 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
         // edit feed) — no longer the stub that read as a dead channel.
         Role::Observer => {
             let observed = crate::observer::observe(client, payload, Some(config));
+            // Sprint 28g S23 O1 — the call after a halt carries the rule once, as a reminder.
+            let observed = match (
+                home_dir().zip(session_id_in(payload)).and_then(|(h, s)| crate::watch::take_reminder(&h, &s)),
+                observed,
+            ) {
+                (None, other) => other,
+                (Some(line), Outcome::Emitted(rendered)) => {
+                    Outcome::Emitted(prepend_context(client, &rendered, &line))
+                }
+                (Some(line), Outcome::Silent(_)) => emit_body(client, Role::Observer, line),
+            };
             // Sprint 28g S21 — small dated steps while work goes on: at most one capture in two
             // minutes per session, so a long unattended stretch is never one unsaved block.
             crate::transcript::capture_on_cadence(client, payload, store);
@@ -330,6 +341,12 @@ fn answering_then_working(payload: &str) -> Option<String> {
 }
 
 fn guard(client: Client, payload: &str) -> Outcome {
+    // Sprint 28g S23 O1 — the observer's first tier looks at EVERY call, before any other rule
+    // and with no model behind it. It refuses at most once per class per window, so a rule that
+    // is wrong costs one refusal that names how to go on.
+    if let Some(halted) = watch_call(client, payload) {
+        return halted;
+    }
     // THE EDIT HALF, FIRST. Sprint 28's binary read only a shell command and
     // never looked at which tool fired, so a front-door `Edit` of a `.java`
     // file went through unblocked — caught by the 3.7.3 dogfood, and the reason
@@ -499,6 +516,31 @@ fn guard(client: Client, payload: &str) -> Outcome {
     match emit::render(client, &emission) {
         Some(rendered) => Outcome::Emitted(rendered),
         None => Outcome::Silent(SilenceReason::CannotInject),
+    }
+}
+
+/// Tier 1 of the observer on one call: judge it, keep the window, refuse on a first finding.
+///
+/// A payload whose tool cannot be named is not watched: the guard that follows answers it, and
+/// an observer that halts on what it cannot read turns every odd payload into a refusal.
+fn watch_call(client: Client, payload: &str) -> Option<Outcome> {
+    if !crate::watch::enabled() {
+        return None;
+    }
+    let tool = tool_name_in(payload)?;
+    let text = command_in(payload).or_else(|| edit_path_in(payload)).unwrap_or_default();
+    let background = parse_payload(payload)
+        .ok()
+        .and_then(|v| v.get("tool_input")?.get("run_in_background")?.as_bool())
+        .unwrap_or(false);
+    let home = home_dir()?;
+    let session = session_id_in(payload).unwrap_or_default();
+    match crate::watch::watch(&home, &session, crate::watch::CallView { tool, text, background }) {
+        crate::watch::Watched::Pass => None,
+        crate::watch::Watched::Halt(finding) => {
+            emit_gate_signal("observer-halt", finding.class.name());
+            Some(emit_permission(client, false, finding.correction))
+        }
     }
 }
 
@@ -3002,6 +3044,60 @@ mod tests {
                 assert_eq!("deny", v["hookSpecificOutput"]["permissionDecision"], "got {s}");
             }
             other => panic!("the guard must decide through run: {other:?}"),
+        }
+    }
+
+    /// Sprint 28g S23 O1 — THE WIRE, NOT THE PART. `watch::judge` has its own unit tests; this
+    /// drives a real call through `run`: the first long foreground wait is refused with the
+    /// correction, the same class again in the window passes, and the call after the refusal
+    /// carries the reminder exactly once on the observer's event.
+    #[test]
+    fn tier_one_halts_once_through_run_and_the_next_call_carries_the_reminder() {
+        let session = format!("o1-wire-{}-{}", std::process::id(), line!());
+        let payload = |command: &str| {
+            serde_json::json!({
+                "session_id": session,
+                "tool_name": "Bash",
+                "tool_input": { "command": command },
+            })
+            .to_string()
+        };
+        let guard = |command: &str| run(Role::Guard, &config("claude-code"), &payload(command), &Stub(Ok(Answer::Nothing)));
+        let denied = |out: &Outcome| match out {
+            Outcome::Emitted(s) => {
+                let v: serde_json::Value = serde_json::from_str(s).unwrap();
+                (v["hookSpecificOutput"]["permissionDecision"] == "deny")
+                    .then(|| v["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap_or("").to_string())
+            }
+            _ => None,
+        };
+
+        let first = guard("gh run watch 123 --exit-status");
+        let reason = denied(&first).unwrap_or_else(|| panic!("the first long wait is halted: {first:?}"));
+        assert!(reason.contains("run_in_background"), "the correction names the way out: {reason}");
+        assert_eq!(None, denied(&guard("gh run watch 456 --exit-status")), "the same class passes inside the window");
+
+        let observer_payload = serde_json::json!({
+            "session_id": session,
+            "tool_name": "Bash",
+            "tool_input": { "command": "ls" },
+            "tool_response": { "stdout": "" },
+        })
+        .to_string();
+        let first_look = run(Role::Observer, &config("claude-code"), &observer_payload, &Stub(Ok(Answer::Nothing)));
+        match &first_look {
+            Outcome::Emitted(s) => assert!(s.contains("run_in_background"), "the reminder rides on the next call: {s}"),
+            other => panic!("a halt leaves a reminder for the next call: {other:?}"),
+        }
+        let second_look = run(Role::Observer, &config("claude-code"), &observer_payload, &Stub(Ok(Answer::Nothing)));
+        assert!(
+            !matches!(&second_look, Outcome::Emitted(s) if s.contains("run_in_background")),
+            "the reminder is delivered once: {second_look:?}"
+        );
+        if let Some(home) = home_dir() {
+            let _ = std::fs::remove_file(
+                home.join(".claude").join("jawata-studio").join("watch").join(format!("{}.window", sanitize_session(&session))),
+            );
         }
     }
 
