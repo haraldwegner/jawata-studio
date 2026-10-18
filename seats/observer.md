@@ -13,7 +13,7 @@ gates: []
 gate_exempt: true
 ttl_secs: 120
 max_iterations: 1
-cost_budget_usd: 0.5
+cost_budget_usd: 1.0
 max_tool_steps: 3
 ---
 You are the observer seat. An agent is doing work for a person, and you are shown a short

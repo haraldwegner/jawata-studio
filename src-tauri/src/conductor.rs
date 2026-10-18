@@ -715,7 +715,7 @@ pub fn render_conductor_section(seats: &[SeatDefinition], client: &str) -> Vec<S
         String::new(),
         format!(
             "jawata ships {total} SEATS. {direct} are direct roles; \
-             {pipeline} live in /sprint; {} are hired by the principal and have no typed command:",
+             {pipeline} live in /sprint; {} are hired and have no typed command:",
             hired.len()
         ),
         String::new(),
@@ -730,8 +730,8 @@ pub fn render_conductor_section(seats: &[SeatDefinition], client: &str) -> Vec<S
         "- spec-editor + spec-auditor — the /sprint two-seat artifact pipeline".to_string()
     } else {
         format!(
-            "- spec-editor + spec-auditor — the /sprint two-seat artifact pipeline; {} — hired \
-             by the principal, not typed",
+            "- spec-editor + spec-auditor — the /sprint two-seat artifact pipeline; {} — hired, \
+             not typed",
             hired.join(" + ")
         )
     });
@@ -1642,9 +1642,9 @@ mod tests {
             rendered.contains(&format!("{} live in /sprint", PIPELINE_SEATS.len())),
             "{rendered}"
         );
-        assert!(rendered.contains("2 live in /sprint; 5 are hired by the principal"), "{rendered}");
+        assert!(rendered.contains("2 live in /sprint; 5 are hired and have no typed command"), "{rendered}");
         assert!(
-            rendered.contains("chief-engineer + observer + pm + test-manager + worker — hired by the principal, not typed"),
+            rendered.contains("chief-engineer + observer + pm + test-manager + worker — hired, not typed"),
             "{rendered}"
         );
         assert_eq!(

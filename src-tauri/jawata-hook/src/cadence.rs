@@ -137,6 +137,14 @@ fn default_log() -> Option<PathBuf> {
 
 /// The whole subcommand. Returns the exit status.
 pub fn main(args: &[String]) -> i32 {
+    report_main("cadence", args, &|text, since| read(text, since).render())
+}
+
+/// The skeleton every log report shares: `--since <iso>` and `--log <path>`, the default log in the
+/// studio directory, and the rule that a log which cannot be read is an error and not a zero.
+/// `render` folds the log text (and the `since` bound) into what is printed. Two reports had
+/// each their own copy of this; a third would have been a third.
+pub fn report_main(name: &str, args: &[String], render: &dyn Fn(&str, Option<&str>) -> String) -> i32 {
     let mut since: Option<String> = None;
     let mut log: Option<PathBuf> = None;
     let mut it = args.iter();
@@ -148,7 +156,7 @@ pub fn main(args: &[String]) -> i32 {
         }
     }
     let Some(path) = log.or_else(default_log) else {
-        eprintln!("cadence: no home directory, and no --log given");
+        eprintln!("{name}: no home directory, and no --log given");
         return 2;
     };
     let text = match std::fs::read_to_string(&path) {
@@ -156,11 +164,11 @@ pub fn main(args: &[String]) -> i32 {
         Err(e) => {
             // Not the same as "no runs": a missing log means the gate never wrote
             // here, and saying zero would read as a quiet sprint.
-            eprintln!("cadence: cannot read {}: {e}", path.display());
+            eprintln!("{name}: cannot read {}: {e}", path.display());
             return 2;
         }
     };
-    print!("{}", read(&text, since.as_deref()).render());
+    print!("{}", render(&text, since.as_deref()));
     0
 }
 

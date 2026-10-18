@@ -53,7 +53,6 @@ fn main() {
     // A rule is "in force" from the moment he first said it. The event each class was learned
     // from, and the time of his first correction of it.
     let source = [
-        (Class::ShellOnJava, "B1"),
         (Class::ForegroundWait, "B3"),
         (Class::RogueGate, "B5"),
         (Class::ScriptHabit, "B6"),
@@ -71,7 +70,7 @@ fn main() {
 
     // `--briefs <outdir> <his.jsonl>`: write, for every window, the exact text the hired observer
     // is shown (`judge::brief`, the function the hook uses) with the last three things he typed
-    // BEFORE the window opened. Never one typed after: that would be the correction itself.
+    // up to the window's LAST call: what the product's judge would have read at that call, including anything he typed inside the window. Never one typed after: that would be the correction itself.
     let flag = |name: &str| args.iter().position(|a| a == name);
     let briefs_dir = flag("--briefs").and_then(|i| args.get(i + 1)).cloned();
     let his: Vec<(String, String)> = match flag("--briefs").and_then(|i| args.get(i + 2)) {
@@ -97,7 +96,8 @@ fn main() {
         let window_at = at.get(&from).cloned().unwrap_or_default();
         for n in from..=to {
             let Some((tool, arg)) = calls.get(&n) else { continue };
-            let call = CallView { tool: tool.clone(), text: arg.clone(), background: false };
+            let mut call = CallView::new(tool, arg, false);
+            call.n = n;
             if let Some(f) = judge(&seen, &call) {
                 if !halted.contains(&f.class) {
                     halted.push(f.class);
@@ -111,9 +111,10 @@ fn main() {
             seen.push(call);
         }
         if let Some(out) = &briefs_dir {
+            let window_end = at.get(&to).cloned().unwrap_or_default();
             let typed: Vec<String> = his
                 .iter()
-                .filter(|(ts, text)| ts.as_str() < window_at.as_str() && !text.trim().is_empty())
+                .filter(|(ts, text)| ts.as_str() <= window_end.as_str() && !text.trim().is_empty())
                 .map(|(_, text)| text.clone())
                 .collect();
             let last_three = typed[typed.len().saturating_sub(3)..].to_vec();

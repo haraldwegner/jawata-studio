@@ -30,11 +30,11 @@ pub fn open(home: &Path, session_id: &str, suffix: &str, fields: &[&str]) {
     let _ = std::fs::write(&path, format!("{}\t{}\n", now(), clean.join("\t")));
 }
 
-fn read_fresh(path: &Path) -> Option<Vec<String>> {
+fn read_fresh(path: &Path, ttl: u64) -> Option<Vec<String>> {
     let body = std::fs::read_to_string(path).ok()?;
     let mut parts = body.trim_end().split('\t');
     let opened: u64 = parts.next()?.parse().ok()?;
-    if now().saturating_sub(opened) >= crate::editgate::WINDOW_TTL_SECS {
+    if now().saturating_sub(opened) >= ttl {
         return None;
     }
     Some(parts.map(str::to_string).collect())
@@ -42,7 +42,14 @@ fn read_fresh(path: &Path) -> Option<Vec<String>> {
 
 /// The record's fields if it exists and is fresh, WITHOUT using it up.
 pub fn peek(home: &Path, session_id: &str, suffix: &str) -> Option<Vec<String>> {
-    read_fresh(&path_of(home, session_id, suffix))
+    peek_within(home, session_id, suffix, crate::editgate::WINDOW_TTL_SECS)
+}
+
+/// [`peek`] with a lifetime of the caller's choosing, in seconds. The default is the authoring
+/// window's; a record that means something for a shorter or longer time says so here and is not
+/// given a second mechanism.
+pub fn peek_within(home: &Path, session_id: &str, suffix: &str, ttl_secs: u64) -> Option<Vec<String>> {
+    read_fresh(&path_of(home, session_id, suffix), ttl_secs)
 }
 
 /// Use the record up: returns its fields if it is fresh and `accept` agrees, and removes it.
@@ -53,8 +60,19 @@ pub fn take(
     suffix: &str,
     accept: impl Fn(&[String]) -> bool,
 ) -> Option<Vec<String>> {
+    take_within(home, session_id, suffix, crate::editgate::WINDOW_TTL_SECS, accept)
+}
+
+/// [`take`] with a lifetime of the caller's choosing, in seconds.
+pub fn take_within(
+    home: &Path,
+    session_id: &str,
+    suffix: &str,
+    ttl_secs: u64,
+    accept: impl Fn(&[String]) -> bool,
+) -> Option<Vec<String>> {
     let path = path_of(home, session_id, suffix);
-    let fields = read_fresh(&path)?;
+    let fields = read_fresh(&path, ttl_secs)?;
     if !accept(&fields) {
         return None;
     }

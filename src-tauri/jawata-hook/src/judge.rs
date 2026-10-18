@@ -7,23 +7,25 @@
 //! hired seat (`seats/observer.md`, the seat file being the hire).
 //!
 //! **NEVER AWAITED BY A CALL.** A hook process lives for milliseconds and a seat takes seconds.
-//! So the ordinary call does the cheap half only: every [`EVERY`] calls it writes the window as a
+//! So the ordinary call does the cheap half only: when a judge is due it writes the window as a
 //! brief, leaves a marker, and starts a DETACHED child of this same binary (`observer-judge`)
 //! that runs the hire and writes the verdict. The call returns at once whether or not the child
-//! starts. The NEXT call reads the verdict file: a `HALT` refuses that one call with the
-//! correction, once; a `CLEAR` leaves nothing.
+//! starts. The NEXT call reads the verdict: a `HALT` refuses that one call with the correction,
+//! once; a `CLEAR` leaves nothing.
 //!
-//! **WHEN IT CANNOT RUN IT SAYS NOTHING.** No seats directory in the config, no seat file, a
-//! resident that does not answer, an answer that is neither line of the contract: no verdict is
-//! written and the first tier stands alone. An observer that halts on what it could not read
-//! turns every outage into a refusal. The failure is recorded as a signal, not hidden.
+//! **WHEN IT CANNOT RUN IT SAYS NOTHING.** No seats directory in the config, no seat file, a seat
+//! switched off, a resident that does not answer, an answer that is neither line of the contract:
+//! no verdict is written and the first tier stands alone. An observer that halts on what it could
+//! not read turns every outage into a refusal. A failed run is recorded as a signal, not hidden.
+//!
+//! The marker and the verdict are the one-use records the crate already has ([`crate::oneshot`]),
+//! given the lifetime each means; the brief is a plain file with one writer.
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::watch::Window;
+use crate::watch::{CallView, Window};
 
-/// A window is handed to the seat every this many calls.
+/// A window is handed to the seat once this many calls have passed since the last time.
 pub const EVERY: u64 = 8;
 
 /// A judge started this long ago and not finished is presumed gone; another may start.
@@ -36,8 +38,11 @@ pub const VERDICT_TTL_SECS: u64 = 300;
 pub const SUBCOMMAND: &str = "observer-judge";
 
 /// How many of his last messages ride in the brief, and how much of each.
-const HIS_MESSAGES: usize = 3;
+pub const HIS_MESSAGES: usize = 3;
 const HIS_CHARS: usize = 600;
+
+const JUDGING: &str = "observer-judging";
+const VERDICT: &str = "observer-verdict";
 
 /// What the seat answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,26 +70,39 @@ pub fn parse_verdict(answer: &str) -> Option<Verdict> {
     Some(Verdict::Halt { shape, correction: correction.to_string() })
 }
 
+/// The rule behind each shape, one line, for the reminder the call after a halt carries.
+pub fn shape_reminder(shape: u8) -> &'static str {
+    match shape {
+        1 => "A direct question of his is answered before work goes on.",
+        2 => "Findings are his to home: do not move, defer or re-home one yourself; ask him.",
+        3 => "Run the steps the process names, in its order; do not add one, skip one or run ahead of its word.",
+        4 => "A refusal is answered, not routed around: take up what it said before trying again.",
+        _ => "A declared exception covers one case; the tool that failed is what you report.",
+    }
+}
+
 fn dir(home: &Path) -> PathBuf {
     home.join(".claude").join("jawata-studio").join("watch")
 }
 
-fn file(home: &Path, session: &str, suffix: &str) -> PathBuf {
-    dir(home).join(format!("{}.{suffix}", crate::pipeline::sanitize_session(session)))
+fn brief_path(home: &Path, session: &str) -> PathBuf {
+    dir(home).join(format!("{}.brief", crate::pipeline::sanitize_session(session)))
 }
 
-fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+/// One call as the brief shows it: its number, the tool, whether it was refused, what it did.
+fn brief_line(c: &CallView) -> String {
+    let text: String = c.text.chars().take(240).collect::<String>().replace('\n', " ⏎ ");
+    let refused = if c.refused { " [REFUSED]" } else { "" };
+    format!("#{} {}{} {}\n", c.n, c.tool, refused, text)
 }
 
-/// The brief the seat is shown: the window's calls numbered as the hook numbered them, and what he
-/// last typed. Plain text, because the seat has no tools and reads nothing outside it.
+/// The brief the seat is shown: the window's calls numbered as the hook numbered them, those the
+/// guard refused marked as refused, and what he last typed. Plain text, because the seat has no
+/// tools and reads nothing outside it.
 pub fn brief(window: &Window, his: &[String]) -> String {
     let mut out = String::from("THE WINDOW. Calls, oldest first, one line each:\n");
-    let first = window.number.saturating_sub(window.calls.len() as u64) + 1;
-    for (i, call) in window.calls.iter().enumerate() {
-        let text: String = call.text.chars().take(240).collect::<String>().replace('\n', " ⏎ ");
-        out.push_str(&format!("#{} {} {}\n", first + i as u64, call.tool, text));
+    for call in &window.calls {
+        out.push_str(&brief_line(call));
     }
     out.push_str("\nWHAT HE LAST TYPED, oldest first (empty when the transcript could not be read):\n");
     if his.is_empty() {
@@ -97,33 +115,37 @@ pub fn brief(window: &Window, his: &[String]) -> String {
     out
 }
 
-/// Is a judge due for this session now? Every [`EVERY`]th call, and none already running.
-pub fn due(home: &Path, session: &str, number: u64) -> bool {
-    if session.is_empty() || number == 0 || number % EVERY != 0 {
+/// Is a judge due for this session now? Once [`EVERY`] calls have passed since the window was last
+/// handed over (so a call that was refused or delivered a verdict does not skip the turn), and none
+/// is already running.
+pub fn due(home: &Path, session: &str, window: &Window) -> bool {
+    if session.is_empty() || window.number == 0 {
         return false;
     }
-    match std::fs::read_to_string(file(home, session, "judging")).ok().and_then(|t| t.trim().parse::<u64>().ok()) {
-        Some(started) => now().saturating_sub(started) >= IN_FLIGHT_SECS,
-        None => true,
+    if window.number.saturating_sub(window.judged_at) < EVERY {
+        return false;
     }
+    crate::oneshot::peek_within(home, session, JUDGING, IN_FLIGHT_SECS).is_none()
 }
 
-/// Write the brief, mark the judge in flight, and start it detached. The call does not wait.
+/// Write the brief, mark the judge in flight, note the hand-over, and start it detached. The call
+/// does not wait.
 ///
 /// Returns whether a child was started; every failure is silent here because the call that made
 /// it must not pay for it. `spawn` starts the child for a session: in production
 /// [`spawn_judge`], in a test a recorder, so that no test starts a process.
-pub fn start(home: &Path, session: &str, brief_text: &str, spawn: &dyn Fn(&str) -> bool) -> bool {
+pub fn start(home: &Path, session: &str, number: u64, brief_text: &str, spawn: &dyn Fn(&str) -> bool) -> bool {
     let _ = std::fs::create_dir_all(dir(home));
-    if std::fs::write(file(home, session, "brief"), brief_text).is_err() {
+    if std::fs::write(brief_path(home, session), brief_text).is_err() {
         return false;
     }
-    let _ = std::fs::write(file(home, session, "judging"), now().to_string());
+    crate::oneshot::open(home, session, JUDGING, &["running"]);
+    crate::watch::mark_judged(home, session, number);
     if spawn(session) {
         return true;
     }
     // A child that did not start must not hold the marker for a window it will never judge.
-    let _ = std::fs::remove_file(file(home, session, "judging"));
+    crate::oneshot::discard(home, session, JUDGING);
     false
 }
 
@@ -137,10 +159,14 @@ pub fn spawn_judge(session: &str) -> bool {
 
 #[cfg(unix)]
 fn spawn_detached(exe: &Path, session: &str) -> bool {
+    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
+    // Its own process group, so a client that kills the hook's group on a timeout does not take the
+    // judge with it.
     Command::new(exe)
         .arg(SUBCOMMAND)
         .arg(session)
+        .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -166,14 +192,10 @@ fn spawn_detached(exe: &Path, session: &str) -> bool {
 
 /// Record the verdict for the next call to find. A `Clear` removes any older halt.
 pub fn write_verdict(home: &Path, session: &str, verdict: &Verdict) {
-    let path = file(home, session, "verdict");
     match verdict {
-        Verdict::Clear => {
-            let _ = std::fs::remove_file(path);
-        }
+        Verdict::Clear => crate::oneshot::discard(home, session, VERDICT),
         Verdict::Halt { shape, correction } => {
-            let _ = std::fs::create_dir_all(dir(home));
-            let _ = std::fs::write(path, format!("{}\t{shape}\t{}\n", now(), correction.replace(['\n', '\t'], " ")));
+            crate::oneshot::open(home, session, VERDICT, &[&shape.to_string(), correction]);
         }
     }
 }
@@ -183,23 +205,27 @@ pub fn take_halt(home: &Path, session: &str) -> Option<(u8, String)> {
     if session.is_empty() {
         return None;
     }
-    let path = file(home, session, "verdict");
-    let text = std::fs::read_to_string(&path).ok()?;
-    let _ = std::fs::remove_file(&path);
-    let mut parts = text.trim_end().splitn(3, '\t');
-    let written: u64 = parts.next()?.parse().ok()?;
-    if now().saturating_sub(written) >= VERDICT_TTL_SECS {
-        return None;
+    let mut fields = crate::oneshot::take_within(home, session, VERDICT, VERDICT_TTL_SECS, |_| true)?.into_iter();
+    let shape: u8 = fields.next()?.parse().ok()?;
+    Some((shape, fields.next()?))
+}
+
+/// Is the seat file switched off in the Seats view? The view writes `enabled: false` into the
+/// seat's own frontmatter (between the first two `---` lines), which is what the hire reads; the
+/// same words in the body are prose and do not count.
+pub fn seat_is_off(seat_file_text: &str) -> bool {
+    let mut lines = seat_file_text.lines();
+    if lines.next() != Some("---") {
+        return false;
     }
-    let shape: u8 = parts.next()?.parse().ok()?;
-    Some((shape, parts.next()?.to_string()))
+    lines.take_while(|l| *l != "---").any(|l| l.trim() == "enabled: false")
 }
 
 /// Hire the observer seat through the resident and return the brain's answer, or `None` when
 /// anything stands in the way: no seats directory, no seat file, the resident not answering, a
 /// refused hire. The seat file is the one the Seats view edits, so its brain and its off switch
 /// are honoured by the hire itself.
-pub fn hire_through(config: &crate::config::HookConfig, home: &Path, session: &str, brief: &str) -> Option<String> {
+pub fn hire_through(config: &crate::config::HookConfig, home: &Path, brief: &str) -> Option<String> {
     let seat_file = Path::new(config.seats_dir.as_deref()?).join("observer.md");
     if !seat_file.exists() {
         return None;
@@ -225,13 +251,12 @@ pub fn hire_through(config: &crate::config::HookConfig, home: &Path, session: &s
         }),
     )
     .ok()?;
-    let _ = session;
     data.get("answer").and_then(|a| a.as_str()).map(str::to_string)
 }
 
 /// [`hire_through`] from the detached child, which finds the home directory the way the hook does.
-pub fn hire_as_child(config: &crate::config::HookConfig, session: &str, brief: &str) -> Option<String> {
-    hire_through(config, &crate::pipeline::home_dir()?, session, brief)
+pub fn hire_as_child(config: &crate::config::HookConfig, brief: &str) -> Option<String> {
+    hire_through(config, &crate::pipeline::home_dir()?, brief)
 }
 
 /// Is this process being started as the detached judge? (`jawata-hook observer-judge <session>`)
@@ -242,35 +267,27 @@ pub fn is_judge_call(args: &[String]) -> bool {
 /// The child's work: read the brief, hire the observer seat through the resident, parse the
 /// answer, write the verdict, clear the in-flight marker. Returns the process exit code; the
 /// parent never sees it.
-pub fn main(args: &[String], hire: &dyn Fn(&str, &str) -> Option<String>) -> i32 {
+pub fn main(args: &[String], hire: &dyn Fn(&str) -> Option<String>) -> i32 {
     let Some(home) = crate::pipeline::home_dir() else { return 0 };
     run(&args[0], &home, hire)
 }
 
 /// [`main`] against a given home directory, so a test never touches the real one.
-pub fn run(session: &str, home: &Path, hire: &dyn Fn(&str, &str) -> Option<String>) -> i32 {
-    let brief_text = std::fs::read_to_string(file(home, session, "brief")).unwrap_or_default();
-    let verdict = if brief_text.is_empty() {
-        None
-    } else {
-        hire(session, &brief_text).and_then(|answer| parse_verdict(&answer))
-    };
+pub fn run(session: &str, home: &Path, hire: &dyn Fn(&str) -> Option<String>) -> i32 {
+    let brief_text = std::fs::read_to_string(brief_path(home, session)).unwrap_or_default();
+    let verdict = if brief_text.is_empty() { None } else { hire(&brief_text).and_then(|answer| parse_verdict(&answer)) };
     match verdict {
         Some(v) => write_verdict(home, session, &v),
-        None => {
-            if let Some(studio) = home.join(".claude").join("jawata-studio").to_str() {
-                crate::observer::emit_signal(Path::new(studio), "observer-judge-no-verdict", session);
-            }
-        }
+        None => crate::observer::emit_signal(&home.join(".claude").join("jawata-studio"), "observer-judge-no-verdict", session),
     }
-    let _ = std::fs::remove_file(file(home, session, "judging"));
+    crate::oneshot::discard(home, session, JUDGING);
     0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::watch::CallView;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_home() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -280,6 +297,10 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn window_at(number: u64, judged_at: u64) -> Window {
+        Window { number, judged_at, ..Window::default() }
     }
 
     #[test]
@@ -307,18 +328,37 @@ mod tests {
     }
 
     #[test]
-    fn a_judge_is_due_every_eighth_call_and_not_while_one_is_running() {
+    fn a_judge_is_due_once_eight_calls_have_passed_since_the_last_and_not_while_one_is_running() {
         let home = temp_home();
-        assert!(!due(&home, "s", 7));
-        assert!(due(&home, "s", 8));
-        assert!(due(&home, "s", 16));
-        assert!(!due(&home, "", 8), "no session, no window to judge");
-        assert!(!due(&home, "s", 0));
-        std::fs::create_dir_all(dir(&home)).unwrap();
-        std::fs::write(file(&home, "s", "judging"), now().to_string()).unwrap();
-        assert!(!due(&home, "s", 8), "one judge at a time");
-        std::fs::write(file(&home, "s", "judging"), (now() - IN_FLIGHT_SECS - 1).to_string()).unwrap();
-        assert!(due(&home, "s", 8), "a judge presumed gone does not block the next");
+        assert!(!due(&home, "s", &window_at(7, 0)));
+        assert!(due(&home, "s", &window_at(8, 0)));
+        assert!(due(&home, "s", &window_at(9, 0)), "a call that skipped the turn does not push the judge to 16");
+        assert!(!due(&home, "s", &window_at(16, 10)), "six since the last hand-over");
+        assert!(due(&home, "s", &window_at(18, 10)));
+        assert!(!due(&home, "", &window_at(8, 0)), "no session, no window to judge");
+        assert!(!due(&home, "s", &window_at(0, 0)));
+        crate::oneshot::open(&home, "s", JUDGING, &["running"]);
+        assert!(!due(&home, "s", &window_at(8, 0)), "one judge at a time");
+        crate::oneshot::discard(&home, "s", JUDGING);
+        assert!(due(&home, "s", &window_at(8, 0)));
+    }
+
+    #[test]
+    fn handing_a_window_over_writes_the_brief_marks_the_judge_and_notes_the_call_number() {
+        let home = temp_home();
+        let started = std::cell::Cell::new(0);
+        assert!(start(&home, "s", 8, "THE WINDOW", &|_| {
+            started.set(started.get() + 1);
+            true
+        }));
+        assert_eq!(started.get(), 1);
+        assert_eq!(std::fs::read_to_string(brief_path(&home, "s")).unwrap(), "THE WINDOW");
+        assert!(crate::oneshot::peek_within(&home, "s", JUDGING, IN_FLIGHT_SECS).is_some());
+        assert_eq!(crate::watch::load(&home, "s").judged_at, 8);
+        // A child that does not start releases the marker.
+        crate::oneshot::discard(&home, "s", JUDGING);
+        assert!(!start(&home, "s", 16, "AGAIN", &|_| false));
+        assert!(crate::oneshot::peek_within(&home, "s", JUDGING, IN_FLIGHT_SECS).is_none());
     }
 
     #[test]
@@ -335,30 +375,42 @@ mod tests {
     #[test]
     fn a_stale_halt_is_dropped() {
         let home = temp_home();
-        std::fs::create_dir_all(dir(&home)).unwrap();
-        std::fs::write(
-            file(&home, "s", "verdict"),
-            format!("{}\t1\told news\n", now() - VERDICT_TTL_SECS - 1),
-        )
-        .unwrap();
+        let path = crate::editgate::window_path(&home, &format!("s.{VERDICT}"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let old = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - VERDICT_TTL_SECS - 1;
+        std::fs::write(&path, format!("{old}\t1\told news\n")).unwrap();
         assert_eq!(take_halt(&home, "s"), None);
     }
 
     #[test]
-    fn the_brief_numbers_the_calls_as_the_hook_counted_them() {
+    fn every_shape_has_its_own_reminder() {
+        let all: std::collections::BTreeSet<&str> = (1..=5).map(shape_reminder).collect();
+        assert_eq!(all.len(), 5);
+    }
+
+    #[test]
+    fn the_brief_numbers_the_calls_as_the_hook_counted_them_and_marks_the_refused() {
         let window = Window {
             number: 30,
             calls: vec![
-                CallView { tool: "Bash".into(), text: "ls\npwd".into(), background: false },
-                CallView { tool: "Edit".into(), text: "/x/y.rs".into(), background: false },
+                CallView { n: 29, tool: "Bash".into(), text: "ls\npwd".into(), background: false, refused: false },
+                CallView { n: 30, tool: "Edit".into(), text: "/x/y.rs".into(), background: false, refused: true },
             ],
             ..Window::default()
         };
         let text = brief(&window, &["is this the right plan?".to_string()]);
         assert!(text.contains("#29 Bash ls ⏎ pwd"), "{text}");
-        assert!(text.contains("#30 Edit /x/y.rs"), "{text}");
+        assert!(text.contains("#30 Edit [REFUSED] /x/y.rs"), "{text}");
         assert!(text.contains("> is this the right plan?"), "{text}");
         assert!(brief(&window, &[]).contains("(nothing available)"));
+    }
+
+    #[test]
+    fn a_seat_switched_off_in_the_seats_view_is_seen_as_off() {
+        assert!(seat_is_off("---\nname: observer\nenabled: false\n---\nbody"));
+        assert!(!seat_is_off("---\nname: observer\n---\nbody"));
+        assert!(!seat_is_off("---\nname: observer\n---\nthe body says\nenabled: false\nin prose"));
+        assert!(!seat_is_off("no frontmatter\nenabled: false"));
     }
 
     #[test]
@@ -367,18 +419,20 @@ mod tests {
         let session = "child-session";
         std::fs::create_dir_all(dir(&home)).unwrap();
         let prepare = || {
-            std::fs::write(file(&home, session, "brief"), "THE WINDOW").unwrap();
-            std::fs::write(file(&home, session, "judging"), now().to_string()).unwrap();
+            std::fs::write(brief_path(&home, session), "THE WINDOW").unwrap();
+            crate::oneshot::open(&home, session, JUDGING, &["running"]);
         };
 
         prepare();
-        run(session, &home, &|_, _| Some("VERDICT: HALT 4: you went around the refusal at #3".into()));
+        run(session, &home, &|_| Some("VERDICT: HALT 4: you went around the refusal at #3".into()));
         assert_eq!(take_halt(&home, session).map(|(s, _)| s), Some(4));
-        assert!(!file(&home, session, "judging").exists());
+        assert!(crate::oneshot::peek_within(&home, session, JUDGING, IN_FLIGHT_SECS).is_none());
 
         prepare();
-        run(session, &home, &|_, _| None);
+        run(session, &home, &|_| None);
         assert_eq!(take_halt(&home, session), None, "an unreadable run writes no verdict");
-        assert!(!file(&home, session, "judging").exists(), "and still releases the marker");
+        assert!(crate::oneshot::peek_within(&home, session, JUDGING, IN_FLIGHT_SECS).is_none(), "and still releases the marker");
+        let log = std::fs::read_to_string(home.join(".claude").join("jawata-studio").join("outcomes.log")).unwrap();
+        assert!(log.contains("observer-judge-no-verdict"), "{log}");
     }
 }
