@@ -461,6 +461,12 @@ pub struct SeatDefinition {
     /// cut, writing is, so this is not a grant of writes.
     #[serde(default)]
     pub reads_files: bool,
+    /// The seat's own word that its job is to read and write the knowledge store through its tool
+    /// (S24: the rottenmeier seat). The engine's hire reads the same key and hires the seat outside
+    /// plan mode, which refuses every `experience` call; the seat still changes no code and is
+    /// offered none of the CLI's own file tools. Absent means plan mode.
+    #[serde(default)]
+    pub writes_store: bool,
     /// The activity labels this seat carries beyond its own name (Sprint 28g D45): a rule anchored
     /// to one of them, such as `release`, binds this seat's brief. The engine's hire reads the same
     /// key; a rule's label is matched EXACTLY, so the labels a seat asks for are written in its file
@@ -497,6 +503,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     let mut accepts_uncontained_writes = false;
     let mut changes_code = false;
     let mut reads_files = false;
+    let mut writes_store = false;
     let mut activities: Vec<String> = Vec::new();
     let mut answer_gates: Vec<String> = Vec::new();
     let mut ceilings = Ceilings::default();
@@ -571,6 +578,13 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
                     "true" => true,
                     "false" => false,
                     other => return Err(format!("reads_files '{other}': expected true or false")),
+                }
+            }
+            "writes_store" => {
+                writes_store = match value {
+                    "true" => true,
+                    "false" => false,
+                    other => return Err(format!("writes_store '{other}': expected true or false")),
                 }
             }
             "activities" => activities = parse_inline_list(value)?,
@@ -680,6 +694,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
         accepts_uncontained_writes,
         changes_code,
         reads_files,
+        writes_store,
         activities,
         answer_gates,
         ceilings,
@@ -3288,6 +3303,39 @@ You are the echo seat. You document what you are told to document.
         assert!(!ux.changes_code, "and reading is not writing: it still does not change code");
         let pm = parse_seat_definition(include_str!("../../seats/pm.md")).expect("the pm seat loads");
         assert!(!pm.reads_files, "a seat nobody ruled on is offered no built-in tool");
+    }
+
+    /// S24 R4: `writes_store` is the key the engine's hire reads to hire a seat outside plan mode,
+    /// which refuses every `experience` call. Studio must load a seat carrying it, read it as
+    /// strictly, and the shipped rottenmeier seat must say it — measured 2026-10-19, a hire without
+    /// it could read none of his turns and wrote no rule.
+    #[test]
+    fn a_seat_that_writes_the_store_loads_and_the_shipped_rottenmeier_says_so() {
+        let with = |value: &str| {
+            format!("---\nname: g\nkind: code\ntools: [experience]\ngates: []\nwrites_store: {value}\n---\nbody\n")
+        };
+        assert!(parse_seat_definition(&with("true")).expect("loads").writes_store);
+        assert!(!parse_seat_definition(&with("false")).expect("loads").writes_store);
+        let absent = "---\nname: g\nkind: code\ntools: [experience]\ngates: []\n---\nbody\n";
+        assert!(!parse_seat_definition(absent).expect("loads").writes_store, "absent is plan mode");
+        let err = parse_seat_definition(&with("yes")).unwrap_err();
+        assert!(err.contains("writes_store") && err.contains("true or false"), "got: {err}");
+
+        let governess = parse_seat_definition(include_str!("../../seats/rottenmeier.md"))
+            .expect("the rottenmeier seat loads");
+        assert!(governess.writes_store, "rottenmeier.md must say writes_store: true");
+        assert!(!governess.changes_code, "and writing the store is not changing code");
+        let cataloguer = parse_seat_definition(include_str!("../../seats/cataloguer.md"))
+            .expect("the cataloguer seat loads");
+        assert!(
+            cataloguer.writes_store,
+            "the cataloguer's product is jobs written through `experience`; hired in plan mode its \
+             one call was refused with 'Cannot call mcp__jawata__experience while in plan mode' \
+             (measured 2026-10-19)"
+        );
+        assert!(!cataloguer.changes_code, "and it still changes no code");
+        let pm = parse_seat_definition(include_str!("../../seats/pm.md")).expect("the pm seat loads");
+        assert!(!pm.writes_store, "a seat nobody ruled on stays in plan mode");
     }
 
     #[test]

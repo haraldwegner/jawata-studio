@@ -8,6 +8,11 @@ fires: on a package nobody has described; resumes where it stopped
 # refused by the store's own gate, so a cheaper tier spends the run on rejections)
 effort: medium
 tools: [inspect, search_symbols, analyze, experience]
+# writes_store: the product of this seat is jobs written through `experience`. A hire outside this
+# switch runs in plan mode, which refuses every `experience` call (measured 2026-10-19: "Cannot call
+# mcp__jawata__experience while in plan mode"). It still changes no code and is offered none of the
+# CLI's own file tools.
+writes_store: true
 gates: []
 ttl_secs: 900
 max_iterations: 1

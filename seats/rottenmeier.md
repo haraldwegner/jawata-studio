@@ -9,6 +9,11 @@ fires: when he is rude or interrupts, and when he types /rottenmeier
 # or his typed command, is the trigger.)
 effort: high
 tools: [experience]
+# writes_store: this seat's whole job is reading the transcript lane and saving candidate rules
+# through `experience`. A hire outside this switch runs in plan mode, which refuses every
+# `experience` call (measured 2026-10-19: no turn read, no rule written). It changes no code, is
+# offered none of the CLI's own file tools, and every code-changing tool stays hidden from it.
+writes_store: true
 gates: []
 ttl_secs: 600
 max_iterations: 1
