@@ -651,6 +651,11 @@ with two changes:
   **critical path**, the user's own manual steps and when they land, expected
   checkpoints. Plus the traceability matrix anchored to the spec's deliverables.
 - **NO risk section.** Deviation or failure = STOP + the user's decision.
+- **EVERY STAGE'S EXIT CRITERIA NAME THE WIDENING LADDER** (single test · class · package
+  or shard · suite — see *A failing test is fixed alone*) and the checkpoint summary lists
+  which single tests were run first. A stage whose only evidence is a full-suite run has
+  skipped the rungs below it. The plan's starting paragraph carries one sentence saying so,
+  so an agent that picks up a stage cold has the rule in front of it.
 - **EVERY STAGE DECLARES ITS DEPENDENCY AND ITS RESOURCE CLASS** — see below.
 
 ### The critical path is derived, not assumed (binding)
@@ -770,6 +775,18 @@ only."*)
 
 Between checkpoints: the touched classes and their siblings, plus whatever the
 mutation needs. That is the whole budget.
+
+**A FAILING TEST IS FIXED ALONE, AND THE RUN WIDENS ONLY UPWARD** (Harald, 2026-10-18,
+verbatim: *"If something is broken and a single test fails then don't run the complete
+test shard or suite until you have get the single test working."* and *"the usual way a
+human would work: just try to solve the problem until the single test works and then test
+all of the next wider shard and then the suite"*). The ladder, in order: **the one test ·
+its class · its package or shard · the whole suite.** A rung runs only after the rung below
+it is green. While any test is red, the run is THAT test: not the shard, not the sharded
+gate, not the suite, and never a red full run used to find out whether a fix worked. The
+suite at a checkpoint runs on a tree whose single tests are already green. The failure
+shape to refuse in your own cadence: *"I'll run the whole thing to see what else broke"*
+while a known test is still red.
 
 THE TWO REASONS, and the first one dissolves the usual excuse. **Nothing is
 production until a release** — every edit before that is working state, so
