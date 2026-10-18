@@ -62,7 +62,7 @@ the test-writer's guess.
 D-FOUR. CONSULT THE STORE BEFORE DESIGNING, AND DECIDE OUT LOUD. A design
 question carries no symbol, no package and no operation, so ordinary recall
 cannot serve it — it is asked in prose. Before proposing a target, call
-experience(kind=nominate, lanes=[patterns, experience], question=<the design question in your own words>).
+experience(kind=nominate, lanes=[experience, patterns], question=<the design question in your own words>).
 Every call names its lane; the store refuses one that names none. You get a query_id and RANKED CANDIDATES, each with the situation it applies
 under and how it turned out. Ranking is not an answer: read each situation and
 decide which actually apply to the design in front of you, then call

@@ -11,6 +11,8 @@
 //! | a tool call naming a `Type#member` | `experience`, `code` | the lessons about it, and what it is FOR |
 //! | the recall gate | `experience`, `domain` | records anchored at exactly that member; a job row there is a description and would gate every call |
 //! | after a compaction | `transcript` | what he said last, so a compaction forgets nothing (Sprint 28g S21) |
+//! | a design question, asked by a seat | `experience`, `patterns` | the lessons and the catalogued patterns; written in the seat and skill texts, never fired by a hook |
+//! | "does something already do this?", asked by a seat | `code` | the catalogued jobs, asked by job and never to read code; written in the seat texts, never fired by a hook |
 //!
 //! The discussion is asked on three occasions only (after a compaction, before something is
 //! attributed to him, on demand) and never on a typed message or a tool call.
@@ -33,6 +35,14 @@ pub const RECALL_GATE: &[&str] = &["experience", "domain"];
 /// After a compaction: the discussion, and nothing else.
 pub const AFTER_COMPACTION: &[&str] = &["transcript"];
 
+/// A design question a seat asks the store: the lessons and the catalogued patterns. Spelled in the
+/// seat and skill texts for the agent to type; no hook fires it.
+pub const DESIGN_QUESTION: &[&str] = &["experience", "patterns"];
+
+/// "Does something already do this?", asked by a seat: the catalogued jobs, by job. Spelled in the
+/// seat texts; no hook fires it, and it is never used to read code.
+pub const DOES_IT_EXIST: &[&str] = &["code"];
+
 /// Every row of the table, for the code that has to hold OTHER lane lists to it.
 ///
 /// Neither the studio nor the shell templates it writes can link this crate (the crates may not
@@ -41,7 +51,8 @@ pub const AFTER_COMPACTION: &[&str] = &["transcript"];
 /// not a row here. OPEN DESIGN NOTE: the alternative is for the engine to own the table and answer
 /// "which lanes for this occasion" itself, so no client spells a list at all — a larger change that
 /// needs the engine's call to take an occasion name, recorded in the findings ledger (ARCH-C22-3).
-pub const OCCASIONS: &[&[&str]] = &[TYPED_MESSAGE, TOOL_CALL, RECALL_GATE, AFTER_COMPACTION];
+pub const OCCASIONS: &[&[&str]] =
+    &[TYPED_MESSAGE, TOOL_CALL, RECALL_GATE, AFTER_COMPACTION, DESIGN_QUESTION, DOES_IT_EXIST];
 
 /// The `lanes` argument of a request, as the engine reads it.
 pub fn argument(lanes: &[&str]) -> Value {
@@ -64,7 +75,7 @@ mod tests {
         let known = ["experience", "patterns", "domain", "code", "rules", "transcript"];
         for occasion in OCCASIONS {
             assert!(!occasion.is_empty(), "an empty list is a call the engine refuses");
-            for lane in occasion {
+            for lane in occasion.iter() {
                 assert!(known.contains(lane), "{lane} is not a lane the engine has");
             }
         }
