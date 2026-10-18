@@ -34,6 +34,11 @@ fn main() {
         std::process::exit(code);
     }
 
+    // Sprint 28g S23 O3: the observer's counts are a report too — no stdin, no store, no deadline.
+    if jawata_hook::watch::is_kpi_call(&all_args) {
+        std::process::exit(jawata_hook::watch::kpi_main(&all_args[2..]));
+    }
+
     // The cadence read is a report, not a hook event: no stdin, no store, no deadline.
     if jawata_hook::cadence::is_cadence_call(&all_args) {
         std::process::exit(jawata_hook::cadence::main(&all_args[2..]));

@@ -519,6 +519,15 @@ fn guard(client: Client, payload: &str, config: Option<&HookConfig>) -> Outcome 
     }
 }
 
+/// The observer's KPI signals. Silent under `cargo test`: a test that drives a halt through `run`
+/// would otherwise write it into the developer's real log, and the counts that log feeds
+/// (`observer-kpi`) would include halts no agent ever made.
+fn emit_observer_signal(signal: &str, detail: &str) {
+    if !cfg!(test) {
+        emit_gate_signal(signal, detail);
+    }
+}
+
 /// Tier 1 of the observer on one call: judge it, keep the window, refuse on a first finding.
 ///
 /// A payload whose tool cannot be named is not watched: the guard that follows answers it, and
@@ -540,7 +549,7 @@ fn watch_call(client: Client, payload: &str, config: Option<&HookConfig>) -> Opt
             tier_two(client, payload, config, &home, &session, &crate::judge::spawn_judge)
         }
         crate::watch::Watched::Halt(finding) => {
-            emit_gate_signal("observer-halt", finding.class.name());
+            emit_observer_signal("observer-halt", finding.class.name());
             Some(emit_permission(client, false, finding.correction))
         }
     }
@@ -562,7 +571,7 @@ fn tier_two(
         return None;
     }
     if let Some((shape, correction)) = crate::judge::take_halt(home, session) {
-        emit_gate_signal("observer-judged-halt", &shape.to_string());
+        emit_observer_signal("observer-judged-halt", &shape.to_string());
         return Some(emit_permission(
             client,
             false,

@@ -399,9 +399,134 @@ pub fn take_reminder(home: &Path, session: &str) -> Option<String> {
     Some(reminder)
 }
 
+// ---- the KPI (O3): counted, gating nothing ------------------------------------------------
+
+/// The subcommand that prints the observer's counts.
+pub const KPI_SUBCOMMAND: &str = "observer-kpi";
+
+/// What the observer has done, read from the signal log it already writes. Nothing here decides
+/// anything: a halt is counted when it happens and the count is read on request. Whether a halt
+/// was a catch or a false refusal is a judgement only he can make, so it is NOT in the log and is
+/// not guessed here; the report says so.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Kpi {
+    /// First-tier halts by rule class.
+    pub first_tier: std::collections::BTreeMap<String, u32>,
+    /// Hired-observer halts by shape number.
+    pub hired: std::collections::BTreeMap<String, u32>,
+    /// Judge runs that ended without a readable verdict.
+    pub no_verdict: u32,
+}
+
+/// Count the observer's signals in a log of `time<TAB>version<TAB>signal<TAB>detail` lines,
+/// optionally only those at or after `since` (an ISO time prefix compared as text).
+pub fn read_kpi(log: &str, since: Option<&str>) -> Kpi {
+    let mut kpi = Kpi::default();
+    for line in log.lines() {
+        let mut parts = line.splitn(4, '\t');
+        let (Some(when), Some(_version), Some(signal)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        if since.is_some_and(|s| when < s) {
+            continue;
+        }
+        let detail = parts.next().unwrap_or("").trim().to_string();
+        match signal {
+            "observer-halt" => *kpi.first_tier.entry(detail).or_insert(0) += 1,
+            "observer-judged-halt" => *kpi.hired.entry(detail).or_insert(0) += 1,
+            "observer-judge-no-verdict" => kpi.no_verdict += 1,
+            _ => {}
+        }
+    }
+    kpi
+}
+
+impl Kpi {
+    /// The text the subcommand prints.
+    pub fn render(&self) -> String {
+        let list = |m: &std::collections::BTreeMap<String, u32>| {
+            if m.is_empty() {
+                "none".to_string()
+            } else {
+                m.iter().map(|(k, v)| format!("{k} {v}")).collect::<Vec<_>>().join(", ")
+            }
+        };
+        format!(
+            "observer halts, first tier, by rule: {}\nobserver halts, hired seat, by shape: {}\n\
+             hired-seat runs with no readable verdict: {}\n\
+             (Whether a halt was a catch or a false refusal is his to say; the log cannot know.)\n",
+            list(&self.first_tier),
+            list(&self.hired),
+            self.no_verdict
+        )
+    }
+}
+
+/// Is this process being asked for the observer's counts?
+pub fn is_kpi_call(args: &[String]) -> bool {
+    args.get(1).map(String::as_str) == Some(KPI_SUBCOMMAND)
+}
+
+/// The whole subcommand: `observer-kpi [--since <iso>] [--log <path>]`. Returns the exit status.
+/// A log that cannot be read is an error, not a zero: a missing log means nothing wrote here.
+pub fn kpi_main(args: &[String]) -> i32 {
+    let (mut since, mut log) = (None::<String>, None::<PathBuf>);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--since" => since = it.next().cloned(),
+            "--log" => log = it.next().map(PathBuf::from),
+            _ => {}
+        }
+    }
+    let Some(path) = log.or_else(|| {
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+        Some(PathBuf::from(home).join(".claude").join("jawata-studio").join("outcomes.log"))
+    }) else {
+        eprintln!("observer-kpi: no home directory, and no --log given");
+        return 2;
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            print!("{}", read_kpi(&text, since.as_deref()).render());
+            0
+        }
+        Err(e) => {
+            eprintln!("observer-kpi: cannot read {}: {e}", path.display());
+            2
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_kpi_counts_each_signal_by_its_detail_and_honours_since() {
+        let log = "2026-10-18T01:00:00Z\tv\tobserver-halt\tforeground-wait\n\
+                   2026-10-18T02:00:00Z\tv\tobserver-halt\tforeground-wait\n\
+                   2026-10-18T02:00:01Z\tv\tobserver-halt\tshell-on-java\n\
+                   2026-10-18T02:00:02Z\tv\tobserver-judged-halt\t2\n\
+                   2026-10-18T02:00:03Z\tv\tobserver-judge-no-verdict\tsess\n\
+                   2026-10-18T02:00:04Z\tv\tslip\tnot ours\n\
+                   not a log line\n";
+        let all = read_kpi(log, None);
+        assert_eq!(all.first_tier.get("foreground-wait"), Some(&2));
+        assert_eq!(all.first_tier.get("shell-on-java"), Some(&1));
+        assert_eq!(all.hired.get("2"), Some(&1));
+        assert_eq!(all.no_verdict, 1);
+        let later = read_kpi(log, Some("2026-10-18T01:30:00Z"));
+        assert_eq!(later.first_tier.get("foreground-wait"), Some(&1));
+        assert!(all.render().contains("foreground-wait 2"));
+        assert!(read_kpi("", None).render().contains("none"));
+    }
+
+    #[test]
+    fn a_missing_log_is_an_error_and_not_a_zero() {
+        let missing = std::env::temp_dir().join("no-such-outcomes-log-for-the-kpi");
+        assert_eq!(kpi_main(&["--log".to_string(), missing.to_string_lossy().into_owned()]), 2);
+    }
 
     fn bash(text: &str) -> CallView {
         CallView { tool: "Bash".into(), text: text.into(), background: false }
