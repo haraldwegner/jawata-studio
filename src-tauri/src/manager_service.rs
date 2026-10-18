@@ -9269,7 +9269,7 @@ symptoms="$(add_cue "$symptoms" "$sym3")"
 symptoms="$(add_cue "$symptoms" "$sym4")"
 symptoms="$(add_cue "$symptoms" "$sym5")"
 [ -n "$symbols$symptoms" ] || exit 0
-args='{"kind":"recall","format":"text","lanes":["experience"]'
+args='{"kind":"recall","format":"text","lanes":["experience","rules"]'
 [ -n "$symbols" ] && args="$args,\"symbols\":[$symbols]"
 [ -n "$symptoms" ] && args="$args,\"symptoms\":[$symptoms]"
 [ -n "$sid" ] && args="$args,\"session\":\"$sid\""

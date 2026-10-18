@@ -461,6 +461,12 @@ pub struct SeatDefinition {
     /// cut, writing is, so this is not a grant of writes.
     #[serde(default)]
     pub reads_files: bool,
+    /// The activity labels this seat carries beyond its own name (Sprint 28g D45): a rule anchored
+    /// to one of them, such as `release`, binds this seat's brief. The engine's hire reads the same
+    /// key; a rule's label is matched EXACTLY, so the labels a seat asks for are written in its file
+    /// and nowhere else.
+    #[serde(default)]
+    pub activities: Vec<String>,
 }
 
 /// A seat nobody switched off is on.
@@ -491,6 +497,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     let mut accepts_uncontained_writes = false;
     let mut changes_code = false;
     let mut reads_files = false;
+    let mut activities: Vec<String> = Vec::new();
     let mut answer_gates: Vec<String> = Vec::new();
     let mut ceilings = Ceilings::default();
     let mut body_start = false;
@@ -566,6 +573,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
                     other => return Err(format!("reads_files '{other}': expected true or false")),
                 }
             }
+            "activities" => activities = parse_inline_list(value)?,
             "gates" => {
                 for entry in parse_inline_list(value)? {
                     let class = GateClass::parse(&entry)?;
@@ -672,6 +680,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
         accepts_uncontained_writes,
         changes_code,
         reads_files,
+        activities,
         answer_gates,
         ceilings,
         stance: stance_trimmed.to_string(),

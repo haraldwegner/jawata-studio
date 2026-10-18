@@ -7,7 +7,8 @@
 //!
 //! | Occasion | Lanes | Why |
 //! |---|---|---|
-//! | a typed message | `experience` | what was learned; small enough to ask every time |
+//! | a typed message | `experience`, `rules` | what was learned, and the accepted rules whose situation the message names (Sprint 28g D45); small enough to ask every time |
+//! | an agent asking what was learned about a symbol or symptom | `experience` | the lessons and nothing else; written in the seat and skill texts and the studio's probes, never fired by a hook |
 //! | a tool call naming a `Type#member` | `experience`, `code` | the lessons about it, and what it is FOR |
 //! | the recall gate | `experience`, `domain` | records anchored at exactly that member; a job row there is a description and would gate every call |
 //! | after a compaction | `transcript` | what he said last, so a compaction forgets nothing (Sprint 28g S21) |
@@ -23,8 +24,12 @@
 
 use serde_json::{json, Value};
 
-/// A message the user typed: the lessons, and nothing else.
-pub const TYPED_MESSAGE: &[&str] = &["experience"];
+/// A message the user typed: the lessons, and the accepted rules whose situation it names.
+pub const TYPED_MESSAGE: &[&str] = &["experience", "rules"];
+
+/// An agent asking what was learned about a symbol or a symptom: the lessons and nothing else. A
+/// seat's explicit ask, and the studio's liveness probe; no hook fires it.
+pub const LESSON_LOOKUP: &[&str] = &["experience"];
 
 /// A tool call that names a member: the lessons about it and what it is for.
 pub const TOOL_CALL: &[&str] = &["experience", "code"];
@@ -52,7 +57,7 @@ pub const DOES_IT_EXIST: &[&str] = &["code"];
 /// "which lanes for this occasion" itself, so no client spells a list at all — a larger change that
 /// needs the engine's call to take an occasion name, recorded in the findings ledger (ARCH-C22-3).
 pub const OCCASIONS: &[&[&str]] =
-    &[TYPED_MESSAGE, TOOL_CALL, RECALL_GATE, AFTER_COMPACTION, DESIGN_QUESTION, DOES_IT_EXIST];
+    &[TYPED_MESSAGE, LESSON_LOOKUP, TOOL_CALL, RECALL_GATE, AFTER_COMPACTION, DESIGN_QUESTION, DOES_IT_EXIST];
 
 /// The `lanes` argument of a request, as the engine reads it.
 pub fn argument(lanes: &[&str]) -> Value {
@@ -67,7 +72,7 @@ mod tests {
     #[test]
     fn a_typed_message_never_asks_the_code_lane() {
         assert!(!TYPED_MESSAGE.contains(&"code"));
-        assert_eq!(vec!["experience"], TYPED_MESSAGE);
+        assert_eq!(vec!["experience", "rules"], TYPED_MESSAGE);
     }
 
     #[test]

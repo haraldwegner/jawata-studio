@@ -12,7 +12,7 @@ use std::path::Path;
 /// fails the build on a seat that exists on disk and is registered here).
 /// Materialized into `<config>/seats/` where absent; the materialized copy
 /// wins so a user-edited seat regenerates every channel on redeploy.
-pub const EMBEDDED_SEATS: [(&str, &str); 17] = [
+pub const EMBEDDED_SEATS: [(&str, &str); 18] = [
     ("architect.md", include_str!("../../seats/architect.md")),
     ("cataloguer.md", include_str!("../../seats/cataloguer.md")),
     ("chief-engineer.md", include_str!("../../seats/chief-engineer.md")),
@@ -24,6 +24,7 @@ pub const EMBEDDED_SEATS: [(&str, &str); 17] = [
     ("profiler.md", include_str!("../../seats/profiler.md")),
     ("report.md", include_str!("../../seats/report.md")),
     ("review.md", include_str!("../../seats/review.md")),
+    ("rottenmeier.md", include_str!("../../seats/rottenmeier.md")),
     ("spec-auditor.md", include_str!("../../seats/spec-auditor.md")),
     ("spec-editor.md", include_str!("../../seats/spec-editor.md")),
     ("test-manager.md", include_str!("../../seats/test-manager.md")),
@@ -42,7 +43,7 @@ pub const EMBEDDED_SEATS: [(&str, &str); 17] = [
 /// are the seat's own `purpose:` (see [`seat_description`]); a second copy here had drifted from
 /// the seat file for every seat, because the purposes were rewritten in plain language and these
 /// lines were not.
-pub const COMMAND_MAP: [(&str, &str); 10] = [
+pub const COMMAND_MAP: [(&str, &str); 11] = [
     ("main", "main"),
     ("cataloguer", "catalogue"),
     ("javadoc-writer", "javadocs"),
@@ -52,6 +53,7 @@ pub const COMMAND_MAP: [(&str, &str); 10] = [
     ("profiler", "profile"),
     ("report", "report"),
     ("review", "review"),
+    ("rottenmeier", "rottenmeier"),
     ("ux", "ux"),
 ];
 
@@ -441,7 +443,7 @@ pub fn render_antigravity_workflow(seat: &SeatDefinition) -> Option<String> {
 /// language entry everywhere). One row per command-bearing seat — that is the
 /// rule the table is built on, and `phrase_table_covers_every_command` fails
 /// the build on a command that has no way in through plain words.
-pub const PHRASE_MAP: [(&str, &str); 10] = [
+pub const PHRASE_MAP: [(&str, &str); 11] = [
     ("\"work this end to end\" / \"drive this task\"", "main"),
     ("\"document this class\" / \"add javadocs\"", "javadocs"),
     ("\"what is this package for\" / \"describe this code\"", "catalogue"),
@@ -451,6 +453,7 @@ pub const PHRASE_MAP: [(&str, &str); 10] = [
     ("\"why is this slow\" / \"profile this\"", "profile"),
     ("\"report this to jawata\" / \"file a jawata bug\"", "report"),
     ("\"clean up my store\" / \"what is nobody using\"", "review"),
+    ("\"make a rule from this\" / \"you did it again\"", "rottenmeier"),
     ("\"does the UI need this\" / \"review this view\"", "ux"),
 ];
 
@@ -690,8 +693,12 @@ pub fn render_antigravity_utility(command: &str, description: &str) -> String {
 /// firing row). The sentence that counted the seats wrongly (C7-3) was repaired without
 /// adding a line: the hired seats ride on the /sprint row. The next seat past this budget
 /// has to buy its lines by cutting some, or say why the number moves.
+///
+/// 2026-10-18: 32 -> 34, by exactly the two rows the rottenmeier seat adds (its command row and
+/// its firing row), which he asked for as a typed command (D45): the number moves because the
+/// seat is a direct role, and no row of the other ten was cut or lengthened.
 #[cfg(test)]
-pub const CONDUCTOR_SECTION_BUDGET_UNIVERSAL: usize = 32;
+pub const CONDUCTOR_SECTION_BUDGET_UNIVERSAL: usize = 34;
 #[cfg(test)]
 pub const CONDUCTOR_SECTION_BUDGET_INTELLIJ: usize = 60;
 

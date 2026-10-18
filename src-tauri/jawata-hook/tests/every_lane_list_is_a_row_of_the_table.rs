@@ -145,7 +145,9 @@ fn every_lane_list_the_studio_writes_down_is_a_row_of_the_table() {
 fn the_matcher_refuses_a_list_the_table_does_not_hold() {
     // The discriminator: without it the test above could pass for a matcher that accepts anything.
     assert!(on_the_table(&["experience".into(), "code".into()]));
-    assert!(!on_the_table(&["experience".into(), "rules".into()]));
+    assert!(on_the_table(&["experience".into(), "rules".into()]), "a typed message's row (D45)");
+    assert!(!on_the_table(&["rules".into()]), "the rules lane alone is no occasion");
+    assert!(!on_the_table(&["rules".into(), "experience".into()]), "order is part of the row");
     assert!(!on_the_table(&["code".into(), "experience".into()]), "order is part of the row");
 }
 

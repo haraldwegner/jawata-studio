@@ -2621,7 +2621,8 @@ mod tests {
 
     /// (i) A TYPED MESSAGE TRIGGERS NO CODE-LANE REQUEST. Ruling 1: the discussion is about jobs,
     /// never about code, and the agent asks the code lane itself when the talk turns to
-    /// functionality. The hook asks the lessons, once per cue, and nothing else.
+    /// functionality. The hook asks the lessons and, since Sprint 28g D45, the accepted rules whose
+    /// situation the message names — once per cue, and nothing else.
     #[test]
     fn a_typed_message_asks_the_lessons_and_never_the_code_lane() {
         let store = Recording::new(Ok(Answer::Text("[lesson] a line".into())));
@@ -2641,9 +2642,9 @@ mod tests {
                 "a typed message asks a recall and no nomination, so no code map: {request}"
             );
             assert_eq!(
-                serde_json::json!(["experience"]),
+                serde_json::json!(["experience", "rules"]),
                 request["lanes"],
-                "and it names the lessons lane, and only that: {request}"
+                "and it names the lessons and the rules lanes, and only those: {request}"
             );
         }
     }

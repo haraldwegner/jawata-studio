@@ -8,6 +8,9 @@ fires: when a seat's work needs a brain that is not this one
 # /main's, and wrong here costs a whole stage rather than one finding. No schedule: a human's
 # message or a seat's hand-back is the trigger.)
 effort: high
+# The activity labels this seat carries (D45): a rule anchored to `release` binds this seat's brief
+# and no worker's. Matched EXACTLY, so the label is written here and nowhere else.
+activities: [release]
 tools: [compile_workspace, get_diagnostics, search_symbols, find_references, inspect, analyze, find_quality_issue, experience]
 gates: []
 answer_gates: [upward_message]
