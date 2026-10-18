@@ -19,6 +19,7 @@ pub mod dupgate;
 pub mod editgate;
 pub mod editshape;
 pub mod javawatch;
+pub mod judge;
 pub mod lanes;
 pub mod emit;
 pub mod field;

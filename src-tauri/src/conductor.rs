@@ -12,13 +12,14 @@ use std::path::Path;
 /// fails the build on a seat that exists on disk and is registered here).
 /// Materialized into `<config>/seats/` where absent; the materialized copy
 /// wins so a user-edited seat regenerates every channel on redeploy.
-pub const EMBEDDED_SEATS: [(&str, &str); 16] = [
+pub const EMBEDDED_SEATS: [(&str, &str); 17] = [
     ("architect.md", include_str!("../../seats/architect.md")),
     ("cataloguer.md", include_str!("../../seats/cataloguer.md")),
     ("chief-engineer.md", include_str!("../../seats/chief-engineer.md")),
     ("debugger.md", include_str!("../../seats/debugger.md")),
     ("javadoc-writer.md", include_str!("../../seats/javadoc-writer.md")),
     ("main.md", include_str!("../../seats/main.md")),
+    ("observer.md", include_str!("../../seats/observer.md")),
     ("pm.md", include_str!("../../seats/pm.md")),
     ("profiler.md", include_str!("../../seats/profiler.md")),
     ("report.md", include_str!("../../seats/report.md")),
@@ -1114,8 +1115,8 @@ mod tests {
         code.sort();
         assert_eq!(
             text,
-            vec!["report", "review", "spec-auditor", "spec-editor"],
-            "the text seats are the ones whose input is an ARTIFACT"
+            vec!["observer", "report", "review", "spec-auditor", "spec-editor"],
+            "the text seats are the ones whose input is an ARTIFACT (the observer's is the window it is shown)"
         );
         assert!(
             code.contains(&"architect".to_string()),
@@ -1641,13 +1642,13 @@ mod tests {
             rendered.contains(&format!("{} live in /sprint", PIPELINE_SEATS.len())),
             "{rendered}"
         );
-        assert!(rendered.contains("2 live in /sprint; 4 are hired by the principal"), "{rendered}");
+        assert!(rendered.contains("2 live in /sprint; 5 are hired by the principal"), "{rendered}");
         assert!(
-            rendered.contains("chief-engineer + pm + test-manager + worker — hired by the principal, not typed"),
+            rendered.contains("chief-engineer + observer + pm + test-manager + worker — hired by the principal, not typed"),
             "{rendered}"
         );
         assert_eq!(
-            COMMAND_MAP.len() + PIPELINE_SEATS.len() + 4,
+            COMMAND_MAP.len() + PIPELINE_SEATS.len() + 5,
             EMBEDDED_SEATS.len(),
             "every embedded seat is typed, in the pipeline, or hired — none uncounted"
         );

@@ -3102,7 +3102,8 @@ impl ManagerService {
                     // only writer, so Cursor's binaries loaded NotConfigured and went
                     // silent. The same defect, pointing the other way, fixed on one side.
                     match write_hook_config(hooks_dir, &server.url, &server.token,
-                        Some(server.field_dir.as_str()).filter(|d| !d.is_empty())) {
+                        Some(server.field_dir.as_str()).filter(|d| !d.is_empty()),
+                        Some(self.seats_dir().to_string_lossy().as_ref())) {
                         Ok(true) => changed_sections.push("hook_config".into()),
                         Ok(false) => {}
                         Err(error) => errors.push(error),
@@ -8463,6 +8464,7 @@ fn write_hook_config(
     mcp_url: &str,
     token: &str,
     field_dir: Option<&str>,
+    seats_dir: Option<&str>,
 ) -> Result<bool, String> {
     let client = client_for_hooks_dir(hooks_dir);
     fs::create_dir_all(hooks_dir)
@@ -8475,13 +8477,19 @@ fn write_hook_config(
     // Sprint 28b (D4): `field_dir` travels with the endpoint, because the hook
     // must READ the resident's pile to nudge and has no other way to find it.
     // Absent means no nudge — never a guessed path.
-    let body = match field_dir {
+    let mut body = match field_dir {
         Some(dir) => serde_json::json!({
             "url": mcp_url, "token": token, "client": client, "field_dir": dir,
         }),
         None => serde_json::json!({ "url": mcp_url, "token": token, "client": client }),
+    };
+    // Sprint 28g S23 O2: where the deployed seat files are, so the hook can hire the observer
+    // from the seat file the Seats view edits (its brain, its off switch) rather than from a
+    // copy of its own. Absent means no hired observer: the first tier still runs.
+    if let (Some(dir), Some(map)) = (seats_dir, body.as_object_mut()) {
+        map.insert("seats_dir".into(), serde_json::json!(dir));
     }
-    .to_string();
+    let body = body.to_string();
 
     let target = hooks_dir.join("hook_config.json");
     if fs::read_to_string(&target).map(|existing| existing == body).unwrap_or(false) {
@@ -9613,7 +9621,7 @@ fn write_managed_cursor_hooks(
     //    URL and token baked into its text. The cutover to binaries moved the
     //    configuration mechanism and left the configuration behind — the same
     //    half-finished shape as the cutover itself.
-    if let Err(e) = write_hook_config(hooks_dir, mcp_url, token, field_dir) {
+    if let Err(e) = write_hook_config(hooks_dir, mcp_url, token, field_dir, None) {
         return Err(format!("failed writing the cursor hook config: {e}"));
     }
 
@@ -10483,7 +10491,7 @@ mod tests {
         let dir = unique_tempdir("hookcfg-claude").join(".claude").join("jawata-studio");
         fs::create_dir_all(&dir).unwrap();
 
-        write_hook_config(&dir, "http://127.0.0.1:1/mcp", "t", None).unwrap();
+        write_hook_config(&dir, "http://127.0.0.1:1/mcp", "t", None, None).unwrap();
 
         let body = fs::read_to_string(dir.join("hook_config.json")).unwrap();
         assert!(
@@ -10505,7 +10513,7 @@ mod tests {
         let dir = unique_tempdir("hookcfg-cursor").join(".cursor").join("hooks");
         fs::create_dir_all(&dir).unwrap();
 
-        write_hook_config(&dir, "http://127.0.0.1:1/mcp", "t", None).unwrap();
+        write_hook_config(&dir, "http://127.0.0.1:1/mcp", "t", None, None).unwrap();
 
         let body = fs::read_to_string(dir.join("hook_config.json")).unwrap();
         assert!(
@@ -14309,7 +14317,7 @@ judge was never told to give"
         }
         fs::write(&live, &body).unwrap();
 
-        write_hook_config(&dir, "http://u/mcp", "tw", None).unwrap();
+        write_hook_config(&dir, "http://u/mcp", "tw", None, None).unwrap();
 
         assert!(!live.exists(), "the deploy pass must have rotated the oversized log");
         assert_eq!(
@@ -14328,7 +14336,7 @@ judge was never told to give"
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        write_hook_config(&dir, "http://u/mcp", "t", Some("/w/ws/field")).unwrap();
+        write_hook_config(&dir, "http://u/mcp", "t", Some("/w/ws/field"), None).unwrap();
         let written = fs::read_to_string(dir.join("hook_config.json")).unwrap();
         assert!(written.contains("\"field_dir\":\"/w/ws/field\""),
             "the hook reads the pile from this path; without it no nudge can ever fire: {written}");
@@ -14338,9 +14346,32 @@ judge was never told to give"
         let bare = std::env::temp_dir().join(format!("jawata-mgr-nofield-{}", std::process::id()));
         let _ = fs::remove_dir_all(&bare);
         fs::create_dir_all(&bare).unwrap();
-        write_hook_config(&bare, "http://u/mcp", "t", None).unwrap();
+        write_hook_config(&bare, "http://u/mcp", "t", None, None).unwrap();
         assert!(!fs::read_to_string(bare.join("hook_config.json")).unwrap().contains("field_dir"),
             "no field dir must mean no key — never a guessed path");
+    }
+
+    /// Sprint 28g S23 O2: the hook hires the observer from the seat file the Seats view edits,
+    /// and can find it only if the deploy names the directory. Absent stays absent — the hook then
+    /// runs the first tier alone — and the written file still parses as the hook's own config.
+    #[test]
+    fn the_hook_config_carries_the_seats_directory_when_the_deploy_knows_it() {
+        let dir = std::env::temp_dir().join(format!("jawata-mgr-seatsdir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        write_hook_config(&dir, "http://u/mcp", "t", None, Some("/cfg/seats")).unwrap();
+        let written = fs::read_to_string(dir.join("hook_config.json")).unwrap();
+        assert!(written.contains("\"seats_dir\":\"/cfg/seats\""), "{written}");
+        // The studio has no dependency edge to the hook crate by design; the hook crate pins the
+        // reading side in `config::tests::the_seats_directory_the_deploy_names_is_read`.
+        let value: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(value["seats_dir"], "/cfg/seats");
+
+        let bare = std::env::temp_dir().join(format!("jawata-mgr-noseatsdir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&bare);
+        fs::create_dir_all(&bare).unwrap();
+        write_hook_config(&bare, "http://u/mcp", "t", None, None).unwrap();
+        assert!(!fs::read_to_string(bare.join("hook_config.json")).unwrap().contains("seats_dir"));
     }
 
     #[test]
@@ -14379,7 +14410,7 @@ judge was never told to give"
         // DEPLOY. This makes that state unreachable.
         let dir = unique_tempdir("hookcfg-race");
         let hooks = dir.join("hooks");
-        write_hook_config(&hooks, "http://u/mcp", "t0", None).unwrap();
+        write_hook_config(&hooks, "http://u/mcp", "t0", None, None).unwrap();
         let target = hooks.join("hook_config.json");
 
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -14411,7 +14442,7 @@ judge was never told to give"
         });
 
         for i in 0..300 {
-            write_hook_config(&hooks, "http://u/mcp", &format!("token-{i}"), None)
+            write_hook_config(&hooks, "http://u/mcp", &format!("token-{i}"), None, None)
                 .unwrap();
         }
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -14444,7 +14475,7 @@ judge was never told to give"
         assert!(leftovers.is_empty(), "temp files left behind: {leftovers:?}");
 
         // Byte-stable: rewriting the same content changes nothing.
-        assert!(!write_hook_config(&hooks, "http://u/mcp", "token-299", None).unwrap(),
+        assert!(!write_hook_config(&hooks, "http://u/mcp", "token-299", None, None).unwrap(),
             "an unchanged rewrite must be a no-op");
 
         let _ = std::fs::remove_dir_all(&dir);

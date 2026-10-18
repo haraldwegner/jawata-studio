@@ -136,7 +136,7 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
         // The guard decides locally and never asks: it must answer while the
         // resident is down, and a guard that asked and failed open would leak
         // exactly the calls it exists to deny.
-        Role::Guard => guard(client, payload),
+        Role::Guard => guard(client, payload, Some(config)),
         // Sprint 28g S21 — a session that starts AFTER A COMPACTION also gets the discussion back:
         // every window the transcript still holds is stored, and the last things he said ride on
         // top of the primer. Any other start asks the engine nothing extra.
@@ -340,11 +340,11 @@ fn answering_then_working(payload: &str) -> Option<String> {
     ))
 }
 
-fn guard(client: Client, payload: &str) -> Outcome {
+fn guard(client: Client, payload: &str, config: Option<&HookConfig>) -> Outcome {
     // Sprint 28g S23 O1 — the observer's first tier looks at EVERY call, before any other rule
     // and with no model behind it. It refuses at most once per class per window, so a rule that
     // is wrong costs one refusal that names how to go on.
-    if let Some(halted) = watch_call(client, payload) {
+    if let Some(halted) = watch_call(client, payload, config) {
         return halted;
     }
     // THE EDIT HALF, FIRST. Sprint 28's binary read only a shell command and
@@ -523,7 +523,7 @@ fn guard(client: Client, payload: &str) -> Outcome {
 ///
 /// A payload whose tool cannot be named is not watched: the guard that follows answers it, and
 /// an observer that halts on what it cannot read turns every odd payload into a refusal.
-fn watch_call(client: Client, payload: &str) -> Option<Outcome> {
+fn watch_call(client: Client, payload: &str, config: Option<&HookConfig>) -> Option<Outcome> {
     if !crate::watch::enabled() {
         return None;
     }
@@ -536,12 +536,73 @@ fn watch_call(client: Client, payload: &str) -> Option<Outcome> {
     let home = home_dir()?;
     let session = session_id_in(payload).unwrap_or_default();
     match crate::watch::watch(&home, &session, crate::watch::CallView { tool, text, background }) {
-        crate::watch::Watched::Pass => None,
+        crate::watch::Watched::Pass => {
+            tier_two(client, payload, config, &home, &session, &crate::judge::spawn_judge)
+        }
         crate::watch::Watched::Halt(finding) => {
             emit_gate_signal("observer-halt", finding.class.name());
             Some(emit_permission(client, false, finding.correction))
         }
     }
+}
+
+/// Sprint 28g S23 O2 — the hired observer, from the call's side. Two jobs and neither waits:
+/// deliver the halt a judge left for this session (once), and, every few calls, hand the judge
+/// a new window and start it detached. A call that finds nothing to deliver and nothing due
+/// costs one directory read.
+fn tier_two(
+    client: Client,
+    payload: &str,
+    config: Option<&HookConfig>,
+    home: &std::path::Path,
+    session: &str,
+    spawn: &dyn Fn(&str) -> bool,
+) -> Option<Outcome> {
+    if client != Client::ClaudeCode || session.is_empty() {
+        return None;
+    }
+    if let Some((shape, correction)) = crate::judge::take_halt(home, session) {
+        emit_gate_signal("observer-judged-halt", &shape.to_string());
+        return Some(emit_permission(
+            client,
+            false,
+            format!(
+                "THE OBSERVER, JUDGING YOUR LAST CALLS: {correction}\n\nThis refuses one call. \
+                 Take it up in your next step and carry on."
+            ),
+        ));
+    }
+    let seat = config?.seats_dir.as_deref().map(|d| std::path::Path::new(d).join("observer.md"))?;
+    if !seat.exists() {
+        return None;
+    }
+    let window = crate::watch::load(home, session);
+    if crate::judge::due(home, session, window.number) {
+        let brief = crate::judge::brief(&window, &recent_human_messages(payload));
+        crate::judge::start(home, session, &brief, spawn);
+    }
+    None
+}
+
+/// What he last typed, oldest first, from the transcript the payload names. Empty when there is
+/// none or it cannot be read: the seat is told so and judges only the calls.
+fn recent_human_messages(payload: &str) -> Vec<String> {
+    let Some(path) = parse_payload(payload)
+        .ok()
+        .and_then(|v| v.get("transcript_path").and_then(|p| p.as_str().map(str::to_string)))
+    else {
+        return Vec::new();
+    };
+    let Some(turn) = read_tail(&path, TRANSCRIPT_TAIL_BYTES)
+        .ok()
+        .and_then(|text| crate::stop::read_turn(&text).ok())
+    else {
+        return Vec::new();
+    };
+    let mut all: Vec<String> = turn.closed.iter().map(|w| w.his.clone()).collect();
+    all.push(turn.capture.his.clone());
+    let kept: Vec<String> = all.into_iter().filter(|h| !h.trim().is_empty()).collect();
+    kept[kept.len().saturating_sub(3)..].to_vec()
 }
 
 /// Render one permission decision. Shared by the edit half and the shell half
@@ -2333,7 +2394,7 @@ mod tests {
             timeout_ms: Some(50),
             field_dir: None,
             recall_gate: None,
-            dup_gate: None,
+            dup_gate: None, seats_dir: None,
         }
     }
 
@@ -3101,6 +3162,84 @@ mod tests {
         }
     }
 
+    /// Sprint 28g S23 O2 — the hired observer from the call's side. A halt the judge left is
+    /// delivered through `run` exactly once; and on every eighth call, with a seat file to hire
+    /// and nothing in flight, the window is handed to the judge — never awaited, here a recorder.
+    #[test]
+    fn a_judged_halt_is_delivered_through_run_once_and_a_window_is_handed_over_every_eighth_call() {
+        let session = format!("o2-wire-{}-{}", std::process::id(), line!());
+        let home = home_dir().expect("a home directory");
+        let payload = |command: &str| {
+            serde_json::json!({ "session_id": session, "tool_name": "Bash", "tool_input": { "command": command } })
+                .to_string()
+        };
+
+        // 1. THE DELIVERY, through the real arm.
+        crate::judge::write_verdict(
+            &home,
+            &session,
+            &crate::judge::Verdict::Halt { shape: 1, correction: "You left his question open at #4.".into() },
+        );
+        let first = run(Role::Guard, &config("claude-code"), &payload("echo hi"), &Stub(Ok(Answer::Nothing)));
+        match &first {
+            Outcome::Emitted(s) => {
+                assert!(s.contains("deny") && s.contains("left his question open at #4"), "{s}");
+            }
+            other => panic!("the judge's halt refuses the next call: {other:?}"),
+        }
+        let second = run(Role::Guard, &config("claude-code"), &payload("echo hi"), &Stub(Ok(Answer::Nothing)));
+        assert!(!matches!(&second, Outcome::Emitted(s) if s.contains("left his question open")), "delivered once: {second:?}");
+
+        // 2. THE HAND-OVER: seven calls are on the window; the eighth is due.
+        let seats = std::env::temp_dir().join(format!("o2-seats-{}", std::process::id()));
+        std::fs::create_dir_all(&seats).unwrap();
+        std::fs::write(seats.join("observer.md"), "---\nname: observer\n---\n").unwrap();
+        let mut with_seats = config("claude-code");
+        with_seats.seats_dir = Some(seats.to_string_lossy().into_owned());
+        let started = std::cell::RefCell::new(Vec::<String>::new());
+        let record = |s: &str| {
+            started.borrow_mut().push(s.to_string());
+            true
+        };
+        // `second` was call 2 in this session's window.
+        for n in 3..=8u64 {
+            let verdict = crate::watch::watch(
+                &home,
+                &session,
+                crate::watch::CallView { tool: "Bash".into(), text: format!("echo {n}"), background: false },
+            );
+            assert_eq!(verdict, crate::watch::Watched::Pass);
+        }
+        assert!(tier_two(Client::ClaudeCode, &payload("x"), Some(&with_seats), &home, &session, &record).is_none());
+        assert_eq!(started.borrow().as_slice(), [session.clone()], "the eighth call hands the window over");
+        assert!(
+            std::fs::read_to_string(
+                home.join(".claude").join("jawata-studio").join("watch").join(format!("{}.brief", sanitize_session(&session)))
+            )
+            .unwrap()
+            .contains("#8 Bash echo 8"),
+            "the brief carries the window as counted"
+        );
+        // One judge at a time: the marker is held, so a second look starts nothing.
+        assert!(tier_two(Client::ClaudeCode, &payload("x"), Some(&with_seats), &home, &session, &record).is_none());
+        assert_eq!(started.borrow().len(), 1);
+        // No seats directory, no hired observer.
+        let none = config("claude-code");
+        std::fs::remove_file(
+            home.join(".claude").join("jawata-studio").join("watch").join(format!("{}.judging", sanitize_session(&session))),
+        )
+        .unwrap();
+        assert!(tier_two(Client::ClaudeCode, &payload("x"), Some(&none), &home, &session, &record).is_none());
+        assert_eq!(started.borrow().len(), 1, "without a seat file the first tier stands alone");
+
+        for suffix in ["window", "brief", "judging", "verdict"] {
+            let _ = std::fs::remove_file(
+                home.join(".claude").join("jawata-studio").join("watch").join(format!("{}.{suffix}", sanitize_session(&session))),
+            );
+        }
+        let _ = std::fs::remove_dir_all(&seats);
+    }
+
     /// Same sweep, same hole: every existing test passed `Role::UserPrompt`,
     /// which shares an arm with `ToolRecall`, so the recall role was never
     /// itself exercised. Asserting the EVENT NAME pins the role rather than
@@ -3645,7 +3784,7 @@ mod payload_parsing_tests {
             timeout_ms: Some(50),
             field_dir: None,
             recall_gate: None,   // absent = Observe, the shipping default
-            dup_gate: None,      // absent = Block, the signed default; left at the real
+            dup_gate: None, seats_dir: None,      // absent = Block, the signed default; left at the real
                                  // default on purpose, so this test would notice the duplicate
                                  // gate answering on a payload the recall gate owns
         }

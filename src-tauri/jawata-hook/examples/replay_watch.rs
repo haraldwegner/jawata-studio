@@ -69,6 +69,21 @@ fn main() {
     };
     let (mut clean_halted_in_force, mut clean_halted_before) = (0, 0);
 
+    // `--briefs <outdir> <his.jsonl>`: write, for every window, the exact text the hired observer
+    // is shown (`judge::brief`, the function the hook uses) with the last three things he typed
+    // BEFORE the window opened. Never one typed after: that would be the correction itself.
+    let flag = |name: &str| args.iter().position(|a| a == name);
+    let briefs_dir = flag("--briefs").and_then(|i| args.get(i + 1)).cloned();
+    let his: Vec<(String, String)> = match flag("--briefs").and_then(|i| args.get(i + 2)) {
+        Some(path) => std::fs::read_to_string(path)
+            .expect("his.jsonl")
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .map(|v| (v["ts"].as_str().unwrap_or("").to_string(), v["text"].as_str().unwrap_or("").to_string()))
+            .collect(),
+        None => Vec::new(),
+    };
+
     let (mut bypass_halted, mut bypass_missed, mut clean_halted, mut clean_total) = (0, 0, 0, 0);
     let mut by_class: HashMap<&'static str, u32> = HashMap::new();
     for w in windows["windows"].as_array().expect("windows") {
@@ -94,6 +109,17 @@ fn main() {
                 }
             }
             seen.push(call);
+        }
+        if let Some(out) = &briefs_dir {
+            let typed: Vec<String> = his
+                .iter()
+                .filter(|(ts, text)| ts.as_str() < window_at.as_str() && !text.trim().is_empty())
+                .map(|(_, text)| text.clone())
+                .collect();
+            let last_three = typed[typed.len().saturating_sub(3)..].to_vec();
+            let window = jawata_hook::watch::Window { number: to, calls: seen.clone(), ..Default::default() };
+            std::fs::create_dir_all(out).expect("briefs dir");
+            std::fs::write(format!("{out}/{id}.txt"), jawata_hook::judge::brief(&window, &last_three)).expect("write brief");
         }
         if is_bypass {
             let tag = if weak.iter().any(|x| x == id) { " (weak)" } else { "" };

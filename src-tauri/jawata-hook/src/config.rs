@@ -62,6 +62,11 @@ pub struct HookConfig {
     /// here rather than in the store so it can be reached with the resident down.
     #[serde(default)]
     pub dup_gate: Option<String>,
+    /// Sprint 28g S23 O2: the directory the deploy keeps the seat files in, so the hook can hire
+    /// the observer from the seat file the Seats view edits. Absent (an older deploy, or Cursor)
+    /// means no hired observer; the first tier still runs.
+    #[serde(default)]
+    pub seats_dir: Option<String>,
 }
 
 impl HookConfig {
@@ -224,7 +229,17 @@ mod tests {
             other => panic!("an unknown client must not resolve: {other:?}"),
         }
         assert_eq!(Ok(crate::roles::Client::Cursor),
-            HookConfig { url: "u".into(), token: "t".into(), client: "cursor".into(), timeout_ms: None, field_dir: None, recall_gate: None, dup_gate: None }.client());
+            HookConfig { url: "u".into(), token: "t".into(), client: "cursor".into(), timeout_ms: None, field_dir: None, recall_gate: None, dup_gate: None, seats_dir: None }.client());
+    }
+
+    #[test]
+    fn the_seats_directory_the_deploy_names_is_read() {
+        let p = tmp("seats-dir");
+        std::fs::write(&p, r#"{"url":"http://x/mcp","token":"t","client":"claude-code","seats_dir":"/cfg/seats"}"#).unwrap();
+        assert_eq!(load_from(&p).unwrap().seats_dir.as_deref(), Some("/cfg/seats"));
+        let bare = tmp("no-seats-dir");
+        std::fs::write(&bare, r#"{"url":"http://x/mcp","token":"t","client":"claude-code"}"#).unwrap();
+        assert_eq!(load_from(&bare).unwrap().seats_dir, None, "an older deploy leaves the hired observer off");
     }
 
     #[test]

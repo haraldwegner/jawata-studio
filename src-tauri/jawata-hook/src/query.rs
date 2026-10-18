@@ -236,11 +236,26 @@ pub fn ask_value(
     parse_data(&send(endpoint, arguments)?)
 }
 
-/// The wire: request, contract header, status, contract echo, body.
+/// Call any tool by name and peel the STRUCTURED answer — the observer's judge hires a seat
+/// through the resident with it. The same wire and contract check as [`ask`].
+pub fn call_tool(
+    endpoint: &Endpoint,
+    tool: &str,
+    arguments: serde_json::Value,
+) -> Result<serde_json::Value, QueryError> {
+    parse_data(&send_to(endpoint, tool, arguments)?)
+}
+
+/// The wire for the `experience` tool.
 fn send(endpoint: &Endpoint, arguments: serde_json::Value) -> Result<String, QueryError> {
+    send_to(endpoint, "experience", arguments)
+}
+
+/// The wire: request, contract header, status, contract echo, body.
+fn send_to(endpoint: &Endpoint, tool: &str, arguments: serde_json::Value) -> Result<String, QueryError> {
     let request = serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": { "name": "experience", "arguments": arguments }
+        "params": { "name": tool, "arguments": arguments }
     });
     let client = reqwest::blocking::Client::builder()
         .timeout(endpoint.timeout)
