@@ -543,8 +543,18 @@ pub fn label_main(args: &[String]) -> i32 {
         eprintln!("observer-label: no home directory");
         return 2;
     };
-    crate::observer::emit_signal(&home.join(".claude").join("jawata-studio"), "observer-label", label);
+    label_in(&home.join(".claude").join("jawata-studio"), label);
     0
+}
+
+/// Write one `observer-label` signal into a studio directory. Anything but `catch` or `false` is
+/// refused and writes nothing.
+pub fn label_in(studio: &Path, label: &str) -> bool {
+    if !matches!(label, "catch" | "false") {
+        return false;
+    }
+    crate::observer::emit_signal(studio, "observer-label", label);
+    true
 }
 
 #[cfg(test)]
@@ -607,6 +617,17 @@ mod tests {
     fn a_label_must_be_catch_or_false() {
         assert_eq!(label_main(&["maybe".to_string()]), 2);
         assert_eq!(label_main(&[]), 2);
+    }
+
+    #[test]
+    fn a_label_is_written_and_the_count_reads_it_back() {
+        let dir = home();
+        assert!(label_in(&dir, "catch"));
+        assert!(label_in(&dir, "false"));
+        assert!(label_in(&dir, "false"));
+        assert!(!label_in(&dir, "maybe"), "anything else writes nothing");
+        let kpi = read_kpi(&std::fs::read_to_string(dir.join("outcomes.log")).unwrap(), None);
+        assert_eq!((kpi.catches, kpi.false_refusals), (1, 2));
     }
 
     #[test]

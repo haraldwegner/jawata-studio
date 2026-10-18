@@ -3338,6 +3338,9 @@ mod tests {
                 .to_string()
         };
 
+        let signals = std::env::temp_dir().join(format!("o2-signals-{}-{}", std::process::id(), line!()));
+        let _ = std::fs::remove_dir_all(&signals);
+        TEST_SIGNAL_DIR.with(|d| *d.borrow_mut() = Some(signals.clone()));
         // 1. THE DELIVERY, through the real arm.
         crate::judge::write_verdict(
             &home,
@@ -3354,6 +3357,11 @@ mod tests {
             Some(crate::judge::shape_reminder(1)),
             "the call after a hired halt carries the rule it broke"
         );
+        // And the count: a hired halt reaches the signal log, by shape, where the report reads it.
+        let log = std::fs::read_to_string(signals.join("outcomes.log")).expect("the hook wrote its signal");
+        assert_eq!(crate::watch::read_kpi(&log, None).hired.get("1"), Some(&1), "one hired halt, shape 1: {log}");
+        TEST_SIGNAL_DIR.with(|d| *d.borrow_mut() = None);
+        let _ = std::fs::remove_dir_all(&signals);
 
         // 2. THE HAND-OVER: seven more calls are on the window; the eighth is due.
         let seats = std::env::temp_dir().join(format!("o2-seats-{}-{}", std::process::id(), line!()));

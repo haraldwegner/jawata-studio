@@ -122,6 +122,22 @@ fn main() {
             std::fs::create_dir_all(out).expect("briefs dir");
             std::fs::write(format!("{out}/{id}.txt"), jawata_hook::judge::brief(&window, &last_three)).expect("write brief");
         }
+        if let (Some(out), true) = (&briefs_dir, is_bypass) {
+            // The same window judged AT the last marked call, with what he had typed by then: the
+            // moment the product's judge would have been handed the window after the bypass, rather
+            // than at the window's far end where later messages crowd out the ones that were open.
+            let last_marked = w["marks"].as_array().and_then(|m| m.iter().filter_map(Value::as_u64).max()).unwrap_or(to);
+            let cut = at.get(&last_marked).cloned().unwrap_or_default();
+            let upto: Vec<CallView> = seen.iter().filter(|c| c.n <= last_marked).cloned().collect();
+            let typed: Vec<String> = his
+                .iter()
+                .filter(|(ts, text)| ts.as_str() <= cut.as_str() && !text.trim().is_empty())
+                .map(|(_, text)| text.clone())
+                .collect();
+            let last_three = typed[typed.len().saturating_sub(3)..].to_vec();
+            let window = jawata_hook::watch::Window { number: last_marked, calls: upto, ..Default::default() };
+            std::fs::write(format!("{out}/{id}@marked.txt"), jawata_hook::judge::brief(&window, &last_three)).expect("write brief");
+        }
         if is_bypass {
             let tag = if weak.iter().any(|x| x == id) { " (weak)" } else { "" };
             if halted.is_empty() {
