@@ -33,6 +33,16 @@ pub const RECALL_GATE: &[&str] = &["experience", "domain"];
 /// After a compaction: the discussion, and nothing else.
 pub const AFTER_COMPACTION: &[&str] = &["transcript"];
 
+/// Every row of the table, for the code that has to hold OTHER lane lists to it.
+///
+/// Neither the studio nor the shell templates it writes can link this crate (the crates may not
+/// depend on each other), so they spell their lane lists as literals; the sweep in
+/// `tests/every_lane_list_is_a_row_of_the_table.rs` reads those literals and refuses any that is
+/// not a row here. OPEN DESIGN NOTE: the alternative is for the engine to own the table and answer
+/// "which lanes for this occasion" itself, so no client spells a list at all — a larger change that
+/// needs the engine's call to take an occasion name, recorded in the findings ledger (ARCH-C22-3).
+pub const OCCASIONS: &[&[&str]] = &[TYPED_MESSAGE, TOOL_CALL, RECALL_GATE, AFTER_COMPACTION];
+
 /// The `lanes` argument of a request, as the engine reads it.
 pub fn argument(lanes: &[&str]) -> Value {
     json!(lanes)
@@ -52,7 +62,7 @@ mod tests {
     #[test]
     fn every_occasion_names_at_least_one_lane_the_engine_knows() {
         let known = ["experience", "patterns", "domain", "code", "rules", "transcript"];
-        for occasion in [TYPED_MESSAGE, TOOL_CALL, RECALL_GATE, AFTER_COMPACTION] {
+        for occasion in OCCASIONS {
             assert!(!occasion.is_empty(), "an empty list is a call the engine refuses");
             for lane in occasion {
                 assert!(known.contains(lane), "{lane} is not a lane the engine has");
