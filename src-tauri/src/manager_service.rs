@@ -6722,7 +6722,8 @@ fi
 
 /// The single `PreToolUse` matcher entry that invokes the guard. Matchers are
 /// unanchored regex: `Bash|Grep` (search gate), `Edit|Write|MultiEdit` (edit
-/// enforcement), and `mcp__jawata.*` (jawata-call logging for the try-first gate).
+/// enforcement), `Skill` (the refusal of an agent's `/autocontinue` call, S25 A3) and
+/// `mcp__jawata.*` (jawata-call logging for the try-first gate).
 /// Kept deterministic so the settings.json write is idempotent.
 ///
 /// studio#41 WIDENED it to the READING tools — `Read`, `Glob`, `NotebookEdit`,
@@ -6763,7 +6764,7 @@ fn hook_command_for(path: &Path, platform: HostPlatform) -> String {
 fn build_managed_hook_entry(guard_path: &Path) -> serde_json::Value {
     let command = hook_command_for(guard_path, HostPlatform::host());
     serde_json::json!({
-        "matcher": "Bash|Grep|Read|Glob|Edit|Write|MultiEdit|NotebookEdit|NotebookRead|mcp__jawata.*",
+        "matcher": "Bash|Grep|Read|Glob|Edit|Write|MultiEdit|NotebookEdit|NotebookRead|Skill|mcp__jawata.*",
         "hooks": [
             { "type": "command", "timeout": HOOK_TIMEOUT_SECS, "command": command }
         ]
@@ -12880,16 +12881,33 @@ judge was never told to give"
         assert_eq!(script, build_guard_script("http://127.0.0.1:8890/mcp"));
     }
 
+    /// S25 A3, reopened by the live check of 2026-10-19 (ledger S25-1). The guard refuses an agent's
+    /// Skill call of `/autocontinue` or `/autocontinue-off` (`autocontinue_skill_in`, tested in the
+    /// hook crate against a payload), but a rule that is never invoked refuses nothing: the
+    /// registered matcher did not name `Skill`, so on the deployed machine the agent's call
+    /// launched the skill. This pins the registration, which is where the refusal was lost.
+    #[test]
+    fn the_guard_entry_matches_a_skill_call() {
+        let guard = PathBuf::from("/home/u/.claude/jawata-studio/pretooluse-guard.sh");
+        let entry = build_managed_hook_entry(&guard);
+        let matcher = entry["matcher"].as_str().unwrap();
+        assert!(
+            matcher.split('|').any(|tool| tool == "Skill"),
+            "the matcher must name Skill or the guard never sees an agent's /autocontinue call: {matcher}"
+        );
+    }
+
     #[test]
     fn managed_hook_entry_shape() {
         let guard = PathBuf::from("/home/u/.claude/jawata-studio/pretooluse-guard.sh");
         let entry = build_managed_hook_entry(&guard);
         assert_eq!(
-            entry["matcher"], "Bash|Grep|Read|Glob|Edit|Write|MultiEdit|NotebookEdit|NotebookRead|mcp__jawata.*",
+            entry["matcher"], "Bash|Grep|Read|Glob|Edit|Write|MultiEdit|NotebookEdit|NotebookRead|Skill|mcp__jawata.*",
             "fires for search (Bash|Grep), READS (Read|Glob|NotebookRead), edits \
-             (Edit|Write|MultiEdit|NotebookEdit) and jawata calls (mcp__jawata.*). The \
-             reading tools are studio#41: without them, unregistering guard-workspace.sh \
-             would stop containment applying to Read."
+             (Edit|Write|MultiEdit|NotebookEdit), skill calls (Skill) and jawata calls \
+             (mcp__jawata.*). The reading tools are studio#41: without them, unregistering \
+             guard-workspace.sh would stop containment applying to Read. Skill is S25 A3: \
+             without it the refusal of an agent's /autocontinue is never invoked."
         );
         let cmd = entry["hooks"][0]["command"].as_str().unwrap();
         assert!(cmd.contains(JAWATA_HOOK_SENTINEL), "command references the managed guard");
