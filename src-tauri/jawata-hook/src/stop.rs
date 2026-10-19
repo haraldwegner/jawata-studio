@@ -580,6 +580,15 @@ fn history_through(turn: &mut Turn, keep: usize) -> Vec<WindowCapture> {
     closed
 }
 
+/// One Write or Edit of a Java file in a window (REL44-43): the file, and the text it put there.
+/// `new_text` is `None` for a Write — the whole file was replaced — and for an Edit that carried no
+/// new text; both mean "treat the whole file as written".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JavaEdit {
+    pub path: String,
+    pub new_text: Option<String>,
+}
+
 /// The last assistant turn, as read from the transcript.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Turn {
@@ -811,6 +820,11 @@ pub struct Turn {
     /// through JDT. Gathered here for the same reason `wrote_markdown` is: the tool NAME
     /// cannot carry it, only the call's own `file_path` can.
     pub changed_java_files: Vec<String>,
+    /// REL44-43 — WHAT each Java write put in the file, so the engine can be asked about the
+    /// members those lines fall in and not about every member of the file. One entry per Write or
+    /// Edit call, in order. The hook still parses no Java: it keeps the new text and later finds
+    /// which LINES it occupies; deciding which members those lines belong to stays the engine's.
+    pub java_edits: Vec<JavaEdit>,
     /// studio#4: tool RESULTS in this window that carried a degradation stamp.
     ///
     /// Counted from tool results only — never from the raw window and never
@@ -2062,6 +2076,17 @@ pub fn read_turn_keeping(transcript_text: &str, keep: usize) -> Result<Turn, Sil
                                     .filter(|p| p.ends_with(".java"))
                                 {
                                     let p = p.to_string();
+                                    // An Edit carries its new text; a Write replaces the whole
+                                    // file, which is stated as `None` and read as "all of it".
+                                    let new_text = if name == "Edit" {
+                                        input
+                                            .and_then(|i| i.get("new_string"))
+                                            .and_then(|s| s.as_str())
+                                            .map(str::to_string)
+                                    } else {
+                                        None
+                                    };
+                                    turn.java_edits.push(JavaEdit { path: p.clone(), new_text });
                                     if !turn.changed_java_files.contains(&p) {
                                         turn.changed_java_files.push(p);
                                     }
@@ -3223,7 +3248,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
             // Mirrors reality rather than defaulting: a turn carrying tool calls
             // HAS worked. A helper that always said `false` would let a test pass
             // against a fixture that could not occur.
-            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, carried: vec![], instruction_open: false, refusals_emitted: 0, judge_verdict: None, judge_call_ids: vec![], human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, changed_java_files: vec![], answered_substantially: false, capture: WindowCapture::default(), closed: vec![] },
+            turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, carried: vec![], instruction_open: false, refusals_emitted: 0, judge_verdict: None, judge_call_ids: vec![], human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, changed_java_files: vec![], java_edits: vec![], answered_substantially: false, capture: WindowCapture::default(), closed: vec![] },
             autonomy,
             substrate: None,
             reseed_bounces: 0, jobs_missing: None, job_bounces: 0,

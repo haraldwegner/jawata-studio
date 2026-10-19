@@ -2029,7 +2029,7 @@ fn stop_gate(
             .unwrap_or(0),
     };
     // Asked only when the turn actually wrote Java, so an ordinary turn pays no round trip.
-    let jobs_missing = jobs_missing(store, &turn.changed_java_files);
+    let jobs_missing = jobs_missing(store, &turn.changed_java_files, &turn.java_edits);
 
     // THE CONVERSATION-LOOP COUNTER (2026-08-29, Harald: "the conversation
     // loop counter needs to be reset correctly. Double check!"). The audit-fix
@@ -2246,19 +2246,85 @@ fn stop_gate(
 /// project is loaded, which the engine REFUSES rather than answering with an empty list for
 /// exactly this reason. The gate treats `None` as no ruling, so a resident that cannot see
 /// never turns into a turn that is clean.
-fn jobs_missing(store: &dyn Store, files: &[String]) -> Option<Vec<String>> {
+fn jobs_missing(
+    store: &dyn Store,
+    files: &[String],
+    edits: &[crate::stop::JavaEdit],
+) -> Option<Vec<String>> {
     if files.is_empty() {
         return None;
     }
-    let data = store
-        .ask_value(serde_json::json!({
-            "kind": "describe",
-            "action": "jobs_for",
-            "filePaths": files,
-        }))
-        .ok()?;
+    let mut request = serde_json::json!({
+        "kind": "describe",
+        "action": "jobs_for",
+        "filePaths": files,
+    });
+    // REL44-43 — the question was "every member of every file this turn touched", so a one-line
+    // edit to a class of twenty tests demanded twenty-three descriptions. Where every edit of a
+    // file can be placed in it, the lines are sent and the engine asks only about the members
+    // they fall in. A file that cannot be placed is simply not named, and the engine asks about
+    // all of it, as it always did.
+    let mut changed = serde_json::Map::new();
+    for file in files {
+        let texts: Vec<Option<&str>> = edits
+            .iter()
+            .filter(|e| &e.path == file)
+            .map(|e| e.new_text.as_deref())
+            .collect();
+        let Ok(now) = std::fs::read_to_string(file) else { continue };
+        if let Some(ranges) = written_ranges(&now, &texts) {
+            changed.insert(
+                file.clone(),
+                serde_json::Value::Array(
+                    ranges.iter().map(|(a, b)| serde_json::json!([a, b])).collect(),
+                ),
+            );
+        }
+    }
+    if !changed.is_empty() {
+        request["changedLines"] = serde_json::Value::Object(changed);
+    }
+    let data = store.ask_value(request).ok()?;
     let missing = data.get("missing")?.as_array()?;
     Some(missing.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+}
+
+/// The lines (1-based, inclusive) that edits wrote in a file, found by placing each edit's new text
+/// in the file as it now stands. `None` whenever any edit cannot be placed — a whole-file write, a
+/// text a later edit removed, an empty text, no edits at all, or a text found so often that
+/// guessing is worse than asking about the whole file — and `None` means ASK ABOUT THE WHOLE FILE.
+/// A text found in several places counts every place: asking too much is the safe direction, and
+/// silence about a member nobody described is not.
+fn written_ranges(text: &str, new_texts: &[Option<&str>]) -> Option<Vec<(usize, usize)>> {
+    const MOST_PLACES: usize = 8;
+    let mut out = Vec::new();
+    for new in new_texts {
+        let new = new.as_ref()?.trim_end_matches('\n');
+        if new.is_empty() {
+            return None;
+        }
+        let extra = new.matches('\n').count();
+        let mut from = 0;
+        let mut found = 0;
+        while let Some(at) = text[from..].find(new) {
+            let at = from + at;
+            let first = 1 + text[..at].matches('\n').count();
+            out.push((first, first + extra));
+            found += 1;
+            if found > MOST_PLACES {
+                return None;
+            }
+            from = at + new.len();
+        }
+        if found == 0 {
+            return None;
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 fn substrate_drift(store: &dyn Store) -> Option<crate::stop::SubstrateDrift> {
@@ -2340,6 +2406,75 @@ pub(crate) fn read_tail(path: &str, max: u64) -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// REL44-43: the lines an edit wrote, found by placing its new text in the file as it now
+    /// stands. Every doubtful case answers `None`, which means "ask about the whole file" — the
+    /// direction a gate may be wrong in, because the other direction is a member nobody described
+    /// and nobody was asked about.
+    #[test]
+    fn an_edits_lines_are_found_and_every_doubt_asks_about_the_whole_file() {
+        let file = "one\ntwo\nthree\nfour\nfive\n";
+        assert_eq!(
+            written_ranges(file, &[Some("two\nthree")]),
+            Some(vec![(2, 3)]),
+            "a two-line edit is lines 2 to 3"
+        );
+        assert_eq!(
+            written_ranges(file, &[Some("four\n")]),
+            Some(vec![(4, 4)]),
+            "the newline that ends the new text is not a second line"
+        );
+        assert_eq!(
+            written_ranges(file, &[Some("one"), Some("five")]),
+            Some(vec![(1, 1), (5, 5)]),
+            "two edits are two ranges"
+        );
+        assert_eq!(written_ranges(file, &[Some("two"), None]), None, "a whole-file write anywhere means the whole file");
+        assert_eq!(written_ranges(file, &[Some("not in the file")]), None, "text that is no longer there cannot be placed");
+        assert_eq!(written_ranges(file, &[Some("")]), None, "an empty new text writes no line and cannot be placed");
+        assert_eq!(written_ranges(file, &[]), None, "no edits, no ranges");
+        let twice = "x\nsame\ny\nsame\n";
+        assert_eq!(
+            written_ranges(twice, &[Some("same")]),
+            Some(vec![(2, 2), (4, 4)]),
+            "a text found twice counts BOTH places: asking too much is the safe direction"
+        );
+    }
+
+    /// A request names the lines only for a file whose every edit could be placed.
+    #[test]
+    fn the_request_carries_changed_lines_only_for_a_file_it_could_place() {
+        struct Capture(std::cell::RefCell<Vec<serde_json::Value>>);
+        impl Store for Capture {
+            fn ask(&self, _: serde_json::Value) -> Result<Answer, QueryError> {
+                Ok(Answer::Nothing)
+            }
+            fn ask_value(&self, a: serde_json::Value) -> Result<serde_json::Value, QueryError> {
+                self.0.borrow_mut().push(a);
+                Ok(serde_json::json!({"missing": ["Placed#a"]}))
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("jawata-rel4443-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let placed = dir.join("Placed.java").to_string_lossy().to_string();
+        let whole = dir.join("Whole.java").to_string_lossy().to_string();
+        std::fs::write(&placed, "class Placed {\n  void a() {\n    go();\n  }\n}\n").unwrap();
+        std::fs::write(&whole, "class Whole {\n  void b() {}\n}\n").unwrap();
+        let edits = vec![
+            crate::stop::JavaEdit { path: placed.clone(), new_text: Some("go();".into()) },
+            crate::stop::JavaEdit { path: whole.clone(), new_text: None },
+        ];
+        let store = Capture(Default::default());
+
+        let missing = jobs_missing(&store, &[placed.clone(), whole.clone()], &edits);
+
+        assert_eq!(missing, Some(vec!["Placed#a".to_string()]));
+        let sent = store.0.borrow()[0].clone();
+        let lines = &sent["changedLines"];
+        assert_eq!(lines[&placed], serde_json::json!([[3, 3]]), "the edit that could be placed names its line: {sent}");
+        assert!(lines.get(&whole).is_none(), "a whole-file write names no lines, so the engine asks about the whole file: {sent}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// THE DECISION THE GRANT PATH ACTUALLY MAKES — needle, fallback and default together.
     ///
@@ -3129,7 +3264,7 @@ mod tests {
             review_rounds: 0,
             already_bounced: false,
             bounces: 0,
-            turn: Turn { final_text: "summary".into(), launches: vec![], carried: vec![], instruction_open: false, refusals_emitted: 0, judge_verdict: None, judge_call_ids: vec![], human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, changed_java_files: vec![], worked_since_push: false, answered_substantially: false, capture: Default::default(), closed: vec![] },
+            turn: Turn { final_text: "summary".into(), launches: vec![], carried: vec![], instruction_open: false, refusals_emitted: 0, judge_verdict: None, judge_call_ids: vec![], human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, changed_java_files: vec![], java_edits: vec![], worked_since_push: false, answered_substantially: false, capture: Default::default(), closed: vec![] },
             autonomy: Autonomy::Granted,
             substrate: None,
             reseed_bounces: 0, jobs_missing: None, job_bounces: 0,
