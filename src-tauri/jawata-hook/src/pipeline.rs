@@ -1506,6 +1506,15 @@ fn tool_cues(value: &serde_json::Value) -> Result<crate::cue::Cues, SilenceReaso
         return crate::cue::extract_tool_target(&cmd)
             .map_err(|skip| SilenceReason::NoCues(format!("{skip:?}")));
     }
+    // A tool called with no arguments arrives as `"tool_input": {}` — a well-formed event with
+    // nothing to recall about, which is a silence for want of cues and not a moved event shape.
+    if value
+        .get("tool_input")
+        .and_then(|input| input.as_object())
+        .is_some_and(|input| input.is_empty())
+    {
+        return Err(SilenceReason::NoCues("the tool was called with no arguments".to_string()));
+    }
     Err(SilenceReason::PayloadUnreadable(format!(
         "the payload carried no recognised tool input — the event shape moved.{}",
         shape_of(value)
@@ -2518,6 +2527,29 @@ mod tests {
             !prompt_channel_is_machine(&no_origins, "nowhere in this transcript"),
             "with nothing to ask, the old default stands rather than being guessed the other way"
         );
+    }
+
+    /// REL44-50, found by the live check of 2026-10-19: a tool called with NO arguments (health_check
+    /// is one) arrives with `"tool_input": {}`. That is a complete, correctly shaped event with
+    /// nothing in it to recall about, so the silence log must say "no cues", not "the event shape
+    /// moved" — the second wording sends a reader looking for a client change that did not happen.
+    #[test]
+    fn a_tool_called_with_no_arguments_is_no_cues_not_a_moved_event_shape() {
+        let payload = serde_json::json!({
+            "tool_name": "mcp__jawata-javata-dev__health_check",
+            "session_id": "s-1",
+            "tool_input": {}
+        });
+        match tool_cues(&payload) {
+            Err(SilenceReason::NoCues(_)) => {}
+            other => panic!("an empty tool input is no-cues, not payload-unreadable: {other:?}"),
+        }
+        // The control: a tool input that is NOT empty and carries nothing recognised is still the
+        // moved-shape alarm, so the cure did not turn that alarm off.
+        let moved = serde_json::json!({
+            "tool_name": "Read", "tool_input": { "unexpected_field": "x" }
+        });
+        assert!(matches!(tool_cues(&moved), Err(SilenceReason::PayloadUnreadable(_))));
     }
 
     /// studio#6 / studio#7: when the event shape moves, the degrade line must say
