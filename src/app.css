@@ -409,6 +409,15 @@ button {
   height: 100%;
 }
 
+/* C11-11 (2026-10-20, "The scroll is slow" on the installed 4.4.5): the Seats view draws 18 of these
+   cards inside one scroll container, and `.panel` gives each a 30px blurred shadow, which the web view
+   repaints on every scroll frame. The card keeps its border and its place; only the blur goes.
+   CANDIDATE FIX, not a measured cure: there is no frame counter on this web view, so it is judged
+   by scrolling the real window. */
+.seats-root .settings-section {
+  box-shadow: none;
+}
+
 .paired-section-intro {
   min-height: 4.1rem;
   align-content: start;
