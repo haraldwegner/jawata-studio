@@ -1681,7 +1681,16 @@ fn note_autonomy_from_prompt(payload: &str) -> Option<String> {
     // The line asserts the state AFTER this prompt was noted — a harness
     // notification changes nothing and is told the standing state, which is
     // precisely what a wake-up needs to know and used to have to remember.
-    Some(match crate::autonomy::state(&dir, &session) {
+    let stray = if machine { None } else { crate::autonomy::stray_command(&prompt) };
+    Some(mode_line(crate::autonomy::state(&dir, &session), stray))
+}
+
+/// The mode line the prompt hook puts at the top of a prompt's context: the standing state, and,
+/// when his message carried a command on a line of its own that the grant did not act on, the
+/// sentence that says so (S25-2 — it used to say nothing, and the grant stayed as it was while he
+/// believed it had changed).
+fn mode_line(state: crate::stop::Autonomy, stray: Option<&str>) -> String {
+    let mut line = match state {
         crate::stop::Autonomy::Granted => "AUTOCONTINUE: ON — plan-execution mode \
             (this line is the hook's own state, re-asserted so your context cannot go \
             stale). Work the plan; stop only at a checkpoint the plan itself numbers. \
@@ -1696,7 +1705,15 @@ fn note_autonomy_from_prompt(payload: &str) -> Option<String> {
             the start of the next task — if he wants the plan resumed, he types \
             /autocontinue."
             .to_string(),
-    })
+    };
+    if let Some(command) = stray {
+        line.push_str(&format!(
+            " NOT APPLIED: this message carries {command} on a line of its own inside a longer \
+            message, and a command counts only when it is the WHOLE message, so the state above \
+            is unchanged. Tell him, in one sentence, to send {command} alone."
+        ));
+    }
+    line
 }
 
 fn studio_dir() -> Option<std::path::PathBuf> {
@@ -2415,6 +2432,22 @@ pub(crate) fn read_tail(path: &str, max: u64) -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S25-2: the line names a command it did not act on, in both states, and says nothing extra
+    /// when there is none — so the standing line he is used to is byte for byte what it was.
+    #[test]
+    fn the_mode_line_names_a_command_it_did_not_apply() {
+        for state in [crate::stop::Autonomy::Granted, crate::stop::Autonomy::NotGranted] {
+            let plain = mode_line(state, None);
+            let said = mode_line(state, Some("/autocontinue-off"));
+            assert!(!plain.contains("NOT APPLIED"), "{plain}");
+            assert!(said.starts_with(&plain), "the standing state stays first and unchanged");
+            assert!(said.contains("NOT APPLIED"), "{said}");
+            assert!(said.contains("send /autocontinue-off alone"), "{said}");
+        }
+        assert!(mode_line(crate::stop::Autonomy::Granted, None).starts_with("AUTOCONTINUE: ON"));
+        assert!(mode_line(crate::stop::Autonomy::NotGranted, None).starts_with("AUTOCONTINUE: OFF"));
+    }
 
     /// REL44-43: the lines an edit wrote, found by placing its new text in the file as it now
     /// stands. Every doubtful case answers `None`, which means "ask about the whole file" — the

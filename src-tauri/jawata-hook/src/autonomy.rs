@@ -121,6 +121,24 @@ fn typed_switch(prompt: &str) -> Option<bool> {
     }
 }
 
+/// The switch command a longer, human-typed message carries on a line of its own, which the grant
+/// will NOT act on (a command counts only as the whole message). Named so the mode line can say
+/// so: S25-2 found that a command typed last in a longer message did nothing and said nothing.
+/// `None` for a message that IS a switch, one that only mentions a command in prose, and machine
+/// text — which is never his typing.
+pub fn stray_command(prompt: &str) -> Option<&'static str> {
+    if typed_switch(prompt).is_some()
+        || (crate::stop::is_harness_text(prompt) && !crate::stop::is_typed_command(prompt))
+    {
+        return None;
+    }
+    prompt.lines().map(str::trim).find_map(|line| match line {
+        "/autocontinue-off" => Some("/autocontinue-off"),
+        "/autocontinue" => Some("/autocontinue"),
+        _ => None,
+    })
+}
+
 /// Read the prompt and update the grant: ONLY the two commands move it (D46).
 ///
 /// The history this replaces, kept because it is why the rule is as narrow as it is. His rule
@@ -786,6 +804,34 @@ mod tests {
             note_prompt(&off, "s", "status?", false);
             assert!(!note_prompt(&off, "s", other, false), "{other:?} grants nothing");
             assert_eq!(state(&off, "s"), Autonomy::NotGranted, "{other:?} arms nothing");
+        }
+    }
+
+    /// S25-2 (2026-10-20, found live): he typed `/autocontinue-off` as the last line of a longer
+    /// message. By D46 it did nothing — a command counts only as the whole message — and nothing
+    /// SAID so, so the mode line stayed ON for six minutes while he believed it was off. The
+    /// prompt that carries a command line it will not act on now names that line.
+    #[test]
+    fn a_command_line_inside_a_longer_message_is_named_and_not_acted_on() {
+        let mixed = "A5 -> Ok\nWhat rules?\n/autocontinue-off";
+        assert_eq!(stray_command(mixed), Some("/autocontinue-off"));
+        assert_eq!(stray_command("done\n  /autocontinue  \nthanks"), Some("/autocontinue"));
+        let d = tmp();
+        note_prompt(&d, "s", "/autocontinue", false);
+        assert!(!note_prompt(&d, "s", mixed, false), "naming it must not act on it (D46)");
+        assert_eq!(state(&d, "s"), Autonomy::Granted);
+        // Not strays: the whole message, a command named in prose, and machine text.
+        for not in [
+            "/autocontinue-off",
+            "<command-message>autocontinue-off</command-message>\n<command-name>/autocontinue-off</command-name>",
+            "I typed /autocontinue-off yesterday and it did nothing",
+            "`/autocontinue-off`",
+            "What is the defect?",
+            SUBAGENT_HANDBACK,
+            TASK_NOTICE,
+            CHROME_INSTRUCTION,
+        ] {
+            assert_eq!(stray_command(not), None, "{not:?}");
         }
     }
 
