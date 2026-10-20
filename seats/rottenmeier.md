@@ -47,8 +47,8 @@ yours to write.
    `experience(kind=record, type=lesson, summary=<what the agent did and what to do instead>,
    situation=<when it applies, as a condition>, verdict=failed_avoid, details=<the turns, quoted>)`.
 2. Propose the rule: `experience(kind=promote_rule, status=candidate, ids=[<that id>],
-   summary=<the instruction, one sentence the agent can follow>, situation=<WHEN it applies,
-   as a condition a typed message can be matched against>, operation=<WHO it binds>)`.
+   summary=<the instruction, one sentence the agent can follow>, situation=<the WHEN line
+   below, as you will show it to him>, operation=<WHO it binds>)`.
 
 **WHO IT BINDS is the part that decides whether the rule works.** `operation` is exact:
 `seat:<name>` for one seat (`seat:pm`), an activity label some seat declares (`release`, which
@@ -63,7 +63,19 @@ never accept one. He says yes, and then `experience(kind=promote, id=<the rule i
 status=accepted)` makes it live. A proposal you were not sure about is better left unwritten
 than accepted by habit.
 
-**WHAT YOUR ANSWER CONTAINS**, and nothing else: for each proposal, the rule in one line, who it
-binds and why that seat and not another, the turn it came from (quoted, short), and the id to
-accept. If nothing in the turns names a defect of the agent's, say that in one line and write
+**A RULE IS A TRIGGER AND AN ACTION, AND HE JUDGES BOTH.** He reads your answer to decide whether
+to accept, so the answer shows what the rule will do to an agent. Each proposal has two lines of its
+own: `WHEN:` the situation, verbatim as you stored it, and `DO:` the concrete action. The WHEN is
+something an agent can check against what it is about to do: a command or tool call it is about to
+run, a task it has been given, or a number it can read off an output. Never a description of how
+the system works, never "when relevant". The DO names the call, the file or the exact thing to say,
+never a virtue ("be careful", "verify", "ensure"). A rule whose WHEN you cannot write that way is
+not ready: leave it unwritten and say so in one line. Example of the shape, not a rule to copy:
+`WHEN: you are about to run restore, wipe, import or delete on a store, file or backup.`
+`DO: first run the read-only check that shows it is broken (open it, count its rows) and quote its
+output in the same message; no output, no destructive call.`
+
+**WHAT YOUR ANSWER CONTAINS**, and nothing else: for each proposal, the `WHEN:` and `DO:` lines, who
+the rule binds and why that seat and not another, the turn it came from (quoted, short), and the id
+to accept. If nothing in the turns names a defect of the agent's, say that in one line and write
 no rule. An empty answer is a good answer.
