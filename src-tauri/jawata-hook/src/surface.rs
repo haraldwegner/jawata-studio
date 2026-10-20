@@ -17,6 +17,18 @@ use std::sync::OnceLock;
 /// The vendored file, compiled in: a hook has no network and no engine to ask at the moment it fires.
 const SURFACE_JSON: &str = include_str!("../../engine-surface.json");
 
+/// Names of the engine's live tools, whatever they do.
+fn live() -> &'static HashSet<String> {
+    static LIVE: OnceLock<HashSet<String>> = OnceLock::new();
+    LIVE.get_or_init(|| {
+        let json: serde_json::Value = serde_json::from_str(SURFACE_JSON).unwrap_or_default();
+        json["live"]
+            .as_array()
+            .map(|rows| rows.iter().filter_map(|row| row["name"].as_str().map(str::to_string)).collect())
+            .unwrap_or_default()
+    })
+}
+
 /// Names of the engine's live tools whose own flag says they change code.
 fn changing() -> &'static HashSet<String> {
     static CHANGING: OnceLock<HashSet<String>> = OnceLock::new();
@@ -39,6 +51,12 @@ fn changing() -> &'static HashSet<String> {
 /// underscore, so the last segment is the name.
 pub(crate) fn bare_name(raw: &str) -> &str {
     raw.rsplit("__").next().unwrap_or(raw)
+}
+
+/// Whether this call is to one of the engine's own live tools. Their arguments are the engine's to define,
+/// so a hook that recalls from a tool's input cannot expect them to carry the keys it cues from.
+pub(crate) fn is_engine_tool(raw_tool_name: &str) -> bool {
+    live().contains(bare_name(raw_tool_name))
 }
 
 /// Whether this call is to one of the engine's tools that changes code. A retired name is not: the engine

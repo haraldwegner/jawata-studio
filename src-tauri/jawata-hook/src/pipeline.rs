@@ -1519,6 +1519,19 @@ fn tool_cues(value: &serde_json::Value) -> Result<crate::cue::Cues, SilenceReaso
     {
         return Err(SilenceReason::NoCues("the tool was called with no arguments".to_string()));
     }
+    // An ENGINE tool's arguments are the engine's own (`experience` takes kind/lane/limit, `run_tests`
+    // takes action/sessionId), so a well-formed object with none of the cue keys is nothing to recall
+    // about. The moved-shape alarm is kept for a host tool, a missing `tool_input` and a non-object.
+    let engine_tool_with_arguments = value
+        .get("tool_name")
+        .and_then(|name| name.as_str())
+        .is_some_and(crate::surface::is_engine_tool)
+        && value.get("tool_input").is_some_and(|input| input.is_object());
+    if engine_tool_with_arguments {
+        return Err(SilenceReason::NoCues(
+            "the engine tool's arguments name nothing to recall about".to_string(),
+        ));
+    }
     Err(SilenceReason::PayloadUnreadable(format!(
         "the payload carried no recognised tool input — the event shape moved.{}",
         shape_of(value)
@@ -2587,6 +2600,36 @@ mod tests {
             "tool_name": "Read", "tool_input": { "unexpected_field": "x" }
         });
         assert!(matches!(tool_cues(&moved), Err(SilenceReason::PayloadUnreadable(_))));
+    }
+
+    /// REL44-50 follow-up, found 2026-10-20: 109 silences since the 4.4.6 install read "the event shape
+    /// moved" for ENGINE tools whose input is perfectly well formed but carries none of the keys a
+    /// recall is cued from (`experience` with `format,kind,lane,limit`; `run_tests`; `compile_workspace`;
+    /// `hire`; `data`). The engine's own tools take arguments the cue list does not know, so for them a
+    /// non-empty object with no cue key is "nothing to recall about". The alarm stays for a host tool
+    /// (`Read` with an unexpected field), a missing `tool_input` and a `tool_input` that is not an object.
+    #[test]
+    fn an_engine_tool_with_arguments_that_name_no_cue_is_no_cues_not_a_moved_event_shape() {
+        for (tool, input) in [
+            ("mcp__jawata-javata-dev__experience", serde_json::json!({"format":"text","kind":"recall","lane":"experience","limit":5})),
+            ("mcp__jawata-javata-dev__run_tests", serde_json::json!({"action":"status","sessionId":"x"})),
+            ("mcp__jawata-javata-dev__compile_workspace", serde_json::json!({"summary":true})),
+            ("mcp__jawata-patterns__hire", serde_json::json!({"hirer":"pm","seat":"worker"})),
+            ("health_check", serde_json::json!({"projectKey":"p"})),
+        ] {
+            let payload = serde_json::json!({"tool_name": tool, "tool_input": input});
+            assert!(
+                matches!(tool_cues(&payload), Err(SilenceReason::NoCues(_))),
+                "{tool}: an engine tool's own arguments are no-cues: {:?}",
+                tool_cues(&payload)
+            );
+        }
+        let host = serde_json::json!({"tool_name":"Read","tool_input":{"unexpected_field":"x"}});
+        assert!(matches!(tool_cues(&host), Err(SilenceReason::PayloadUnreadable(_))), "a host tool keeps the alarm");
+        let missing = serde_json::json!({"tool_name":"mcp__jawata-javata-dev__experience"});
+        assert!(matches!(tool_cues(&missing), Err(SilenceReason::PayloadUnreadable(_))), "no tool_input keeps the alarm");
+        let not_object = serde_json::json!({"tool_name":"mcp__jawata-javata-dev__experience","tool_input":"x"});
+        assert!(matches!(tool_cues(&not_object), Err(SilenceReason::PayloadUnreadable(_))), "a non-object tool_input keeps the alarm");
     }
 
     /// studio#6 / studio#7: when the event shape moves, the degrade line must say
