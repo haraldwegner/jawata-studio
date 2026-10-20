@@ -581,7 +581,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(windows, ignore = "unproven on Windows: since REL44-2 the word splitter keeps a Windows path as written (gatefile::tests::a_windows_path_keeps_its_separators, run on every platform), but these tests run end to end and have not run on a Windows machine since that fix; un-ignore them at the next Windows run")]
     fn a_cd_moves_the_base_the_next_script_is_read_from() {
         let (dir, name) = script_with("# jawata-gate: long");
         let elsewhere = std::env::temp_dir();
