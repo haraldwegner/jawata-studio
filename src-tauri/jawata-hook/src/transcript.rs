@@ -391,14 +391,13 @@ fn after_compaction_in(
     let request = json!({
         "kind": "recall",
         "format": "text",
-        "lanes": crate::lanes::argument(crate::lanes::AFTER_COMPACTION),
         "recent": THREAD_MESSAGES,
         "session": session,
     });
     // The hand-back is what this start is for, but not at the cost of the primer already computed:
     // it is asked for only while there is time, and never allowed past the process's clock.
     let within = left_before(crate::safety::optional_work_ends())?;
-    match store.ask_within(request, within) {
+    match crate::lanes::ON_AFTER_COMPACTION.ask(request, |request| store.ask_within(request, within)) {
         Ok(crate::query::Answer::Text(thread)) if !thread.trim().is_empty() => Some(format!(
             "AFTER A COMPACTION — what he said most recently, from the transcript lane, newest \
              first and verbatim. The summary above this line is the model's; these are his \
@@ -741,7 +740,8 @@ mod tests {
         assert_eq!(2, appends.len(), "both windows still in the file are stored");
         assert!(appends.iter().all(|r| r["capture"] == "compaction"));
         let recall = seen.iter().find(|r| r["kind"] == "recall").expect("then the thread is asked for");
-        assert_eq!(json!(["transcript"]), recall["lanes"], "the lane is named, as the engine requires");
+        assert_eq!(json!("after_compaction"), recall["occasion"], "the occasion is named; the engine owns its lanes");
+        assert!(recall.get("lanes").is_none(), "{recall}");
         assert_eq!(THREAD_MESSAGES, recall["recent"]);
         assert_eq!("s-1", recall["session"]);
     }

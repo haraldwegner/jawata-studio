@@ -926,11 +926,13 @@ fn recall_gate(
 ) -> Option<Outcome> {
     let mode = crate::recallgate::Mode::parse(config.recall_gate.as_deref());
     let verdict = crate::recallgate::judge(mode, payload, |cue| {
-        store.ask_value(serde_json::json!({
-            "kind": "recall",
-            "symbol": cue,
-            "lanes": crate::lanes::argument(crate::lanes::RECALL_GATE),
-        }))
+        crate::lanes::ON_RECALL_GATE.ask(
+            serde_json::json!({
+                "kind": "recall",
+                "symbol": cue,
+            }),
+            |request| store.ask_value(request),
+        )
     });
 
     match verdict {
@@ -1165,9 +1167,9 @@ fn recall(
     // Sprint 28g S22 — THE OCCASION NAMES THE LANES, from the one table in `lanes`. A typed
     // message asks the lessons; a tool call naming a member asks the lessons and what that member
     // is for. Nothing here reads a lane off the wording of a cue.
-    let lanes: &[&str] = match role {
-        Role::ToolRecall => crate::lanes::TOOL_CALL,
-        _ => crate::lanes::TYPED_MESSAGE,
+    let occasion = match role {
+        Role::ToolRecall => crate::lanes::ON_TOOL_CALL,
+        _ => crate::lanes::ON_TYPED_MESSAGE,
     };
 
     // Symbol cues first — they are precise, and they fire independently of the
@@ -1189,12 +1191,14 @@ fn recall(
                 "mode-line budget spent; remaining cue attempts skipped".into(),
             ));
         }
-        match store.ask(serde_json::json!({
-            "kind": "recall",
-            "format": "text",
-            key: cue,
-            "lanes": crate::lanes::argument(lanes),
-        })) {
+        match occasion.ask(
+            serde_json::json!({
+                "kind": "recall",
+                "format": "text",
+                key: cue,
+            }),
+            |request| store.ask(request),
+        ) {
             Ok(Answer::Text(text)) => {
                 // Sprint 28g D8e, second defect: candidates injected into conversational
                 // prompts that cannot use them. A prompt naming NO symbol has no work item to
@@ -2842,10 +2846,11 @@ mod tests {
                 "a typed message asks a recall and no nomination, so no code map: {request}"
             );
             assert_eq!(
-                serde_json::json!(["experience", "rules"]),
-                request["lanes"],
-                "and it names the lessons and the rules lanes, and only those: {request}"
+                Some("typed_message"),
+                request["occasion"].as_str(),
+                "it names its OCCASION and the engine owns which lanes that asks (ARCH-C22-5): {request}"
             );
+            assert!(request.get("lanes").is_none(), "the lane list is the fallback, not the ask: {request}");
         }
     }
 
@@ -2865,16 +2870,94 @@ mod tests {
             all.iter().filter(|r| r["format"].as_str() == Some("text")).collect();
         assert!(!injection.is_empty(), "PROOF OF LIFE: the injection recall was asked: {all:?}");
         for request in injection {
-            assert_eq!(serde_json::json!(["experience", "code"]), request["lanes"], "{request}");
+            assert_eq!(Some("tool_call"), request["occasion"].as_str(), "{request}");
+            assert!(request.get("lanes").is_none(), "{request}");
         }
         let gate: Vec<_> = all.iter().filter(|r| r["format"].is_null()).collect();
         assert!(!gate.is_empty(), "PROOF OF LIFE: the recall gate asked as well: {all:?}");
         for request in gate {
             assert_eq!(
-                serde_json::json!(["experience", "domain"]),
-                request["lanes"],
+                Some("recall_gate"),
+                request["occasion"].as_str(),
                 "the gate asks records anchored at the member, not the jobs describing it: {request}"
             );
+            assert!(request.get("lanes").is_none(), "{request}");
+        }
+    }
+
+    /// A store that behaves like an engine older than 4.4.10: a request that names an OCCASION is
+    /// refused (it knows only lane lists); a request that names lanes is answered.
+    struct EngineWithoutOccasions {
+        seen: std::sync::Mutex<Vec<serde_json::Value>>,
+    }
+    impl EngineWithoutOccasions {
+        fn new() -> Self {
+            EngineWithoutOccasions { seen: std::sync::Mutex::new(Vec::new()) }
+        }
+        fn requests(&self) -> Vec<serde_json::Value> {
+            self.seen.lock().unwrap().clone()
+        }
+    }
+    impl Store for EngineWithoutOccasions {
+        fn ask(&self, q: serde_json::Value) -> Result<Answer, QueryError> {
+            self.seen.lock().unwrap().push(q.clone());
+            if q.get("occasion").is_some() {
+                return Err(QueryError::ToolRefused {
+                    code: "INVALID_PARAMETER".into(),
+                    message: "Invalid parameter 'lane': recall names no lane".into(),
+                });
+            }
+            Ok(Answer::Text("[lesson] a line".into()))
+        }
+        fn ask_value(&self, q: serde_json::Value) -> Result<serde_json::Value, QueryError> {
+            self.seen.lock().unwrap().push(q.clone());
+            if q.get("occasion").is_some() {
+                return Err(QueryError::ToolRefused {
+                    code: "INVALID_PARAMETER".into(),
+                    message: "Invalid parameter 'lane': recall names no lane".into(),
+                });
+            }
+            Err(QueryError::ShapeChanged("this stub answers only what a test gave it".into()))
+        }
+    }
+
+    /// ARCH-C22-5, the client half. The table of which lanes an occasion asks lives in the engine;
+    /// the hook names the occasion. An engine that does not know occasions refuses that, and the
+    /// hook asks again by lane list, so a studio that lands before its engine (the cache window of
+    /// every release) still recalls instead of going silent.
+    #[test]
+    fn an_engine_that_refuses_the_occasion_is_asked_again_by_lane_list() {
+        let store = EngineWithoutOccasions::new();
+        let out = run(
+            Role::UserPrompt,
+            &config("claude-code"),
+            r#"{"prompt":"the importer classifier regression"}"#,
+            &store,
+        );
+        assert!(matches!(out, Outcome::Emitted(_)), "the fallback answered, so a lesson arrived: {out:?}");
+        let asked = store.requests();
+        let first = &asked[0];
+        assert_eq!(Some("typed_message"), first["occasion"].as_str(), "{first}");
+        let second = &asked[1];
+        assert_eq!(serde_json::json!(["experience", "rules"]), second["lanes"], "{second}");
+        assert!(second.get("occasion").is_none(), "{second}");
+    }
+
+    /// Only the refusal of the occasion is retried. Any other failure is the store's own and is not
+    /// asked twice: a second ask of a store that is down would double the wait inside a deadline.
+    #[test]
+    fn a_failure_that_is_not_the_occasion_is_not_asked_twice() {
+        let store = Recording::new(Err(QueryError::Unreachable("the resident is down".into())));
+        let _ = run(
+            Role::UserPrompt,
+            &config("claude-code"),
+            r#"{"prompt":"the importer classifier regression"}"#,
+            &store,
+        );
+        let asked = store.requests();
+        assert!(!asked.is_empty());
+        for request in &asked {
+            assert_eq!(Some("typed_message"), request["occasion"].as_str(), "{request}");
         }
     }
 

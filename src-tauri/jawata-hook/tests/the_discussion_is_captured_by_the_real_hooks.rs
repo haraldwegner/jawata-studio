@@ -238,7 +238,8 @@ fn a_start_after_a_compaction_stores_every_window_and_brings_his_last_words_back
     assert!(resident.requests_of("transcript_append").iter().all(|r| r["capture"] == "compaction"));
     let recall = resident.requests_of("recall");
     assert_eq!(1, recall.len(), "and his last words asked for: {:?}", resident.kinds());
-    assert_eq!(json!(["transcript"]), recall[0]["lanes"]);
+    assert_eq!(json!("after_compaction"), recall[0]["occasion"], "the occasion is named; the engine owns its lanes");
+    assert!(recall[0].get("lanes").is_none(), "{}", recall[0]);
     assert!(out.contains("AFTER A COMPACTION") && out.contains("no size cap, just compression"),
         "and they reach the new context: {out}");
 }

@@ -64,6 +64,67 @@ pub fn argument(lanes: &[&str]) -> Value {
     json!(lanes)
 }
 
+/// An occasion the hook fires, with the name the engine knows it by and the lane list it asks.
+///
+/// ARCH-C22-5, the client half. The engine owns which lanes an occasion asks (`Occasion` in the
+/// engine, 4.4.10 on), so a request NAMES THE OCCASION and no lane. The lane list stays here for
+/// one reason only: an engine older than 4.4.10 refuses a request that names an occasion, and a
+/// studio lands before its engine in the cache window of every release, so the hook asks again by
+/// lane list rather than recall nothing. The table above is therefore the fallback and the sweep's
+/// reference, not the ask.
+#[derive(Clone, Copy)]
+pub struct Occasion {
+    name: &'static str,
+    lanes: &'static [&'static str],
+}
+
+/// A message the user typed.
+pub const ON_TYPED_MESSAGE: Occasion = Occasion { name: "typed_message", lanes: TYPED_MESSAGE };
+/// A tool call that names a member.
+pub const ON_TOOL_CALL: Occasion = Occasion { name: "tool_call", lanes: TOOL_CALL };
+/// The recall gate.
+pub const ON_RECALL_GATE: Occasion = Occasion { name: "recall_gate", lanes: RECALL_GATE };
+/// After a compaction.
+pub const ON_AFTER_COMPACTION: Occasion = Occasion { name: "after_compaction", lanes: AFTER_COMPACTION };
+
+impl Occasion {
+    /// The request as an engine that knows occasions reads it: the occasion, and no lane.
+    fn by_name(&self, mut request: Value) -> Value {
+        request["occasion"] = json!(self.name);
+        request
+    }
+
+    /// The request as every engine reads it: the lane list, and no occasion.
+    fn by_lanes(&self, mut request: Value) -> Value {
+        request["lanes"] = json!(self.lanes);
+        request
+    }
+
+    /// Ask on this occasion. The engine is asked by occasion; if (and only if) it refuses the
+    /// occasion as something it does not know, it is asked again by lane list. Any other failure is
+    /// returned as it came: a second ask of a store that is down would double the wait inside a
+    /// deadline.
+    pub fn ask<T>(
+        &self,
+        request: Value,
+        ask: impl Fn(Value) -> Result<T, crate::query::QueryError>,
+    ) -> Result<T, crate::query::QueryError> {
+        match ask(self.by_name(request.clone())) {
+            Err(crate::query::QueryError::ToolRefused { message, .. }) if names_lane_or_occasion(&message) => {
+                ask(self.by_lanes(request))
+            }
+            other => other,
+        }
+    }
+}
+
+/// Whether a refusal is the engine saying it does not take an occasion (an older engine asks for a
+/// lane instead, and names the parameter it wanted).
+fn names_lane_or_occasion(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("lane") || m.contains("occasion")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
