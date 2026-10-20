@@ -293,8 +293,11 @@ mod tests {
             Err(Refusal::RelativeDir("build".into())),
             parse(&args(&["--cd", "build", "--out", &out, "--", "true"]))
         );
+        // Absolute on every platform (a bare `/no/such/dir` has no drive letter on Windows and is
+        // refused there as RELATIVE), and absent.
+        let absent = d.join("no-such-dir-anywhere").display().to_string();
         assert!(matches!(
-            parse(&args(&["--cd", "/no/such/dir/anywhere", "--out", &out, "--", "true"])),
+            parse(&args(&["--cd", &absent, "--out", &out, "--", "true"])),
             Err(Refusal::NotADirectory(_))
         ));
     }
@@ -351,7 +354,9 @@ mod tests {
     fn it_runs_in_the_directory_it_was_given_and_nowhere_else() {
         let d = scratch("cwd");
         let out = d.join("o.txt");
-        let req = Request { dir: d.clone(), out: out.clone(), argv: args(&["pwd"]) };
+        // `pwd` is not a Windows program; `cd` with no argument prints the directory there.
+        let print_cwd = if cfg!(windows) { args(&["cmd", "/C", "cd"]) } else { args(&["pwd"]) };
+        let req = Request { dir: d.clone(), out: out.clone(), argv: print_cwd };
         let (_, status) = execute(&req);
         assert_eq!(0, status);
         let printed = std::fs::read_to_string(&out).unwrap();

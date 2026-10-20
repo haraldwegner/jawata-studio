@@ -979,7 +979,9 @@ mod tests {
             if path.extension().and_then(|e| e.to_str()) != Some("rs") {
                 continue;
             }
-            let text = std::fs::read_to_string(&path).unwrap();
+            // A Windows checkout holds CRLF, and the cut below searches for "\n": without this the
+            // marker is never found and the whole file, tests included, is scanned as shipped.
+            let text = std::fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
             // Everything before the TESTS MODULE. The first version cut at the first
             // `#[cfg(test)]`, which sits on a mid-file item in safety.rs and left three
             // hundred lines unscanned; it also dropped everything after a `//` on a line,
