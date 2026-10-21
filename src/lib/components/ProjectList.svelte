@@ -372,6 +372,11 @@
     };
   }
 
+  /** Closes the "More" menu after one of its buttons was pressed. */
+  function closeMore(event: Event) {
+    (event.currentTarget as HTMLElement).closest("details")?.removeAttribute("open");
+  }
+
   function handleDeleteAll() {
     // Finding #8: App's onDeleteAll raises the single native confirm.
     onDeleteAll();
@@ -684,7 +689,8 @@
       </button>
       <details class="more-menu">
         <summary title="Less common actions">More ▾</summary>
-        <div class="more-menu-body">
+        <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+        <div class="more-menu-body" on:click={closeMore}>
           <button
             class="danger"
             disabled={disabled || projects.length === 0}

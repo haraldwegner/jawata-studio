@@ -151,21 +151,6 @@
   }
   let mcpMergeMode: McpMergeMode = "safeMerge";
   let mcpBackupBeforeWrite = true;
-  // Sprint 28f Stage 5: copies of the EXPERIENCE STORE the resident keeps. Empty means
-  // "the resident's default" and is sent as 0 — studio deliberately holds no copy of that
-  // default, so the number has one home and cannot drift out of step with the engine.
-  // NUMBER, not string, and the type is load-bearing. Svelte coerces a `bind:value` on an
-  // `<input type="number">` through its own `to_number` — `''` becomes null, anything else
-  // becomes `+value` — so this variable is never a string once the box is touched. Declared
-  // as a string it type-checked perfectly and threw `.trim is not a function` on the first
-  // keystroke, and because `buildSaveInput()` runs on EVERY bound edit in this component,
-  // that one throw left Save disabled for the whole settings screen. `svelte-check` cannot
-  // see it: it infers the type from the initialiser and agrees with itself.
-  let experienceBackupDepth: number | null = null;
-  // Sprint 28f Stage 6: the story-export folder. A STRING, and empty means off — unlike
-  // the depth above there is no numeric coercion in play, so the box's own value is what
-  // `.trim()` is called on and the sibling's `to_number` hazard does not arise here.
-  let experienceStoriesDir = "";
   let deployTargets: DeployTargetFlags = {
     cursor: true,
     claude: true,
@@ -221,8 +206,6 @@
       mcpClientPaths: nextSettings.mcpClientPaths,
       mcpMergeMode: nextSettings.mcpMergeMode,
       mcpBackupBeforeWrite: nextSettings.mcpBackupBeforeWrite,
-      experienceBackupDepth: nextSettings.experienceBackupDepth,
-      experienceStoriesDir: nextSettings.experienceStoriesDir,
       deployTargets: nextSettings.deployTargets,
       releaseRepo: nextSettings.releaseRepo
     };
@@ -268,8 +251,6 @@
       mcpClientPaths: normalizeMcpClientPaths(input.mcpClientPaths),
       mcpMergeMode: input.mcpMergeMode,
       mcpBackupBeforeWrite: input.mcpBackupBeforeWrite,
-      experienceBackupDepth: input.experienceBackupDepth,
-      experienceStoriesDir: input.experienceStoriesDir,
       deployTargets: {
         cursor: input.deployTargets.cursor,
         claude: input.deployTargets.claude,
@@ -305,17 +286,6 @@
       mcpClientPaths,
       mcpMergeMode,
       mcpBackupBeforeWrite,
-      // Empty box = "the resident's default", sent as 0. The backend stores that as an
-      // absent value rather than a depth of zero, which the resident would floor to 1 —
-      // silently turning "use your default" into "keep exactly one copy".
-      // An empty box is null (Svelte's own `to_number`), and null is sent as 0 — which the
-      // backend stores as an ABSENT value rather than a depth of zero, since the resident
-      // would floor 0 to 1 and silently turn "use your default" into "keep one copy".
-      experienceBackupDepth: experienceBackupDepth ?? 0,
-      // An empty box means "turn the export off", sent as "". The backend stores that as
-      // an ABSENT value rather than an empty string, because the engine treats a blank
-      // folder exactly as it treats a missing one — two spellings of one state.
-      experienceStoriesDir: experienceStoriesDir.trim(),
       deployTargets,
       releaseRepo: releaseRepo.trim().length > 0 ? releaseRepo.trim() : null
     };
@@ -373,8 +343,6 @@
     runtimeKind = nextSettings.globalRuntimeSource.kind;
     mcpMergeMode = nextSettings.mcpMergeMode;
     mcpBackupBeforeWrite = nextSettings.mcpBackupBeforeWrite;
-    experienceBackupDepth = nextSettings.experienceBackupDepth;
-    experienceStoriesDir = nextSettings.experienceStoriesDir ?? "";
     mcpClientPaths = nextSettings.mcpClientPaths;
     deployTargets = nextSettings.deployTargets;
     releaseRepo = nextSettings.releaseRepo ?? "";
@@ -582,30 +550,52 @@
     dispatch("save", payload);
   }
 </script>
-
 <section class="panel stack runtime-settings-root">
   <div>
     <h2>Settings</h2>
-    <p class="muted">Configure JAWATA runtime, machine controls, diagnostics, and MCP location metadata.</p>
+    <p
+      class="summary-line"
+      class:attention={!installedRuntime || (releaseStatus?.updateAvailable ?? false)}
+      title="The engine is what runs your workspaces. Deploy writes to the agents ticked under Agents."
+    >
+      <strong>
+        {#if installedRuntime}jawata engine v{installedRuntime.version}{:else}jawata engine not installed{/if}
+      </strong>
+      {#if releaseStatus?.updateAvailable}
+        — v{releaseStatus.latestVersion} is available
+      {:else if installedRuntime && releaseStatus?.latestVersion}
+        (latest)
+      {/if}
+      · deploying to {Object.values(deployTargets).filter(Boolean).length} of {Object.keys(deployTargets).length} agents ·
+      {workspaceStats.workspaces} workspaces ({workspaceStats.runningWorkspaces} running)
+    </p>
+    {#if updatePolicy === "ask" && releaseStatus?.updateAvailable}
+      <div class="actions">
+        <button
+          disabled={interactionDisabled}
+          on:click={() => dispatch("download")}
+          title="Download and install the latest jawata release from the configured source"
+          type="button"
+        >
+          Download update v{releaseStatus.latestVersion}
+        </button>
+      </div>
+    {/if}
   </div>
 
-  <div class="settings-grid">
-    <section class="panel stack settings-section runtime-section">
-      <div class="section-intro">
-        <h3>JAWATA Runtime</h3>
-        <p class="muted">
-          Runtime source and update behavior.
-          <a
-            href="https://github.com/haraldwegner/jawata-studio/releases"
-            target="_blank"
-            rel="noopener noreferrer"
-            style="color: #60a5fa; text-decoration: underline; margin-left: 0.5rem;"
-          >
-            Check for jawata-studio updates
-          </a>
-        </p>
-      </div>
-
+  <details class="fold">
+    <summary title="Where the jawata engine comes from, whether it updates itself, and a check that it answers.">Engine</summary>
+    <div class="fold-body">
+      <p class="muted">
+        <a
+          href="https://github.com/haraldwegner/jawata-studio/releases"
+          target="_blank"
+          rel="noopener noreferrer"
+          style="color: #60a5fa; text-decoration: underline;"
+        >
+          Check for jawata-studio updates
+        </a>
+      </p>
       <label class="field">
         <span>Release source</span>
         <select
@@ -693,65 +683,26 @@
         <span>Auto-check release source on dashboard load</span>
       </label>
 
-      {#if updatePolicy === "ask" && releaseStatus?.updateAvailable}
-        <div class="actions">
-          <button
-            disabled={interactionDisabled}
-            on:click={() => dispatch("download")}
-            title="Download and install the latest jawata release from the configured source"
-            type="button"
-          >
-            Download update v{releaseStatus.latestVersion}
-          </button>
-        </div>
-      {/if}
-    </section>
 
-    <section class="panel stack settings-section services-section">
-      <div class="section-intro">
-        <h3>Exposed Services</h3>
-        <p class="muted">Probe JAWATA live to detect exposed MCP tools.</p>
-      </div>
-      {#if !lastServiceProbe && !serviceProbeBusy}
-        <p class="hint">Click <strong>Test Services</strong> to run a live MCP handshake and list tools.</p>
-      {/if}
       <div class="actions">
         <button
           disabled={disabled || serviceProbeBusy}
           on:click={() => dispatch("probeServices")}
-          title="Spawn jawata, run an MCP handshake, and list the exposed tools"
+          title="Start the engine, run an MCP handshake and count the tools it exposes. Use it when an agent says jawata is not reachable."
           type="button"
         >
-          {serviceProbeBusy ? "Testing..." : "Test Services"}
+          {serviceProbeBusy ? "Testing..." : "Test services"}
         </button>
+        {#if lastServiceProbe}
+          <span class={lastServiceProbe.ok ? "hint" : "project-error"}>
+            {#if lastServiceProbe.ok}
+              Answered: {lastServiceProbe.services.length} tools in {lastServiceProbe.durationMs} ms
+            {:else}
+              {lastServiceProbe.detail}{#if lastServiceProbe.rawProtocolError} ({lastServiceProbe.rawProtocolError}){/if}
+            {/if}
+          </span>
+        {/if}
       </div>
-      {#if lastServiceProbe}
-        <div class={`probe-result ${lastServiceProbe.ok ? "ok" : "error"}`}>
-          {#if lastServiceProbe.ok}
-            <p><strong>Probe successful</strong></p>
-            <p class="hint">Duration: {lastServiceProbe.durationMs} ms</p>
-            <p class="hint">Found {lastServiceProbe.services.length} services</p>
-          {:else}
-            <p>{lastServiceProbe.detail}</p>
-            <p class="hint">Duration: {lastServiceProbe.durationMs} ms</p>
-          {/if}
-          {#if lastServiceProbe.ok && lastServiceProbe.services.length > 0}
-            <ul class="service-list compact service-list-scroll">
-              {#each lastServiceProbe.services as service}
-                <li class="service-item">
-                  <strong title={service.name}>{service.name}</strong>
-                  <span class="hint" title={service.description ?? "No description provided by JAWATA."}>
-                    {service.description ?? "No description provided by JAWATA."}
-                  </span>
-                </li>
-              {/each}
-            </ul>
-          {/if}
-          {#if !lastServiceProbe.ok && lastServiceProbe.rawProtocolError}
-            <p class="hint">Protocol error: {lastServiceProbe.rawProtocolError}</p>
-          {/if}
-        </div>
-      {/if}
       {#if serviceProbeError && !lastServiceProbe}
         <div class="probe-result error">
           <p>{serviceProbeError}</p>
@@ -760,13 +711,119 @@
           </div>
         </div>
       {/if}
-    </section>
+    </div>
+  </details>
 
-    <section class="panel stack settings-section machine-section">
-      <div class="section-intro paired-section-intro">
-        <h3>Machine Runtime Controls</h3>
-        <p class="muted">Machine-local runtime paths and controls.</p>
+  <details class="fold">
+    <summary title="Which of your agents Deploy writes to, and where each keeps its configuration.">Agents</summary>
+    <div class="fold-body">
+      <div class="actions">
+        <button
+          disabled={interactionDisabled}
+          on:click={() => dispatch("redetectMcpPaths")}
+          title="Re-scan the system for default MCP config files for each client"
+          type="button"
+        >
+          Redetect defaults
+        </button>
       </div>
+      <div class="mcp-clients-scroll">
+      {#each [
+        ["cursor", "Cursor"],
+        ["claude", "Claude Code"],
+        ["codex", "Codex"],
+        ["copilotCli", "Copilot CLI"],
+        ["vscode", "VS Code"],
+        ["grok", "Grok"]
+      ] as [clientKey, clientLabel]}
+        {@const key = clientKey as keyof McpClientPaths}
+        {@const entry = mcpClientPaths[key]}
+        <!-- Sprint 28a 2b (Harald's design): ONE switch per agent. Checked =
+             in play (appears in the dashboard picker, pre-ticked). Unchecked =
+             complete skip — greyed here, absent from the picker entirely. The
+             picker stays the per-run override for agents in play. -->
+        <div
+          class="stack mcp-client-card compact"
+          class:mcp-client-off={!deployTargets[key as keyof DeployTargetFlags]}
+        >
+          <div class="mcp-client-heading">
+            <div class="mcp-client-title-row">
+              <strong>{clientLabel}</strong>
+              <div class="mcp-client-title-controls">
+                <label
+                  class="checkbox-row compact mcp-deploy-checkbox"
+                  title="Checked: offered in the dashboard deploy picker, pre-ticked. Unchecked: skipped entirely."
+                >
+                  <input
+                    bind:checked={deployTargets[key as keyof DeployTargetFlags]}
+                    disabled={interactionDisabled}
+                    on:change={handleBoundEdit}
+                    type="checkbox"
+                  />
+                  <span>Include in deploys</span>
+                </label>
+                <span class={`mcp-source-badge ${mcpPathSource(entry)}`}>{mcpPathSourceLabel(entry)}</span>
+              </div>
+            </div>
+          </div>
+          <p class="hint mcp-current-path" title={effectivePath(entry)}>
+            <strong>Current:</strong> {effectivePath(entry)}
+          </p>
+          {#if shouldShowDetectedHint(entry)}
+            <p class="hint" title={entry?.autoDetectedPath ?? undefined}>
+              Detected default: {entry?.autoDetectedPath}
+            </p>
+          {/if}
+          <div class="field-row">
+            <input
+              disabled={interactionDisabled}
+              on:input={(event) => setManualMcpPath(key, (event.currentTarget as HTMLInputElement).value)}
+              placeholder="Manual override path"
+              title="Manual override for this client's MCP config file (leave empty to use the auto-detected default)"
+              value={entry?.manualOverridePath ?? ""}
+            />
+            <button
+              disabled={interactionDisabled}
+              on:click={() => chooseMcpPath(key)}
+              title="Open a file picker to choose this client's MCP config file"
+              type="button"
+            >Browse</button>
+            <button
+              disabled={interactionDisabled}
+              on:click={() => clearManualMcpPath(key)}
+              title="Clear the manual override and fall back to the auto-detected path"
+              type="button"
+            >Clear</button>
+          </div>
+        </div>
+      {/each}
+      </div>
+
+      <details class="fold">
+        <summary title="Rarely changed. Safe merge touches only what the manager owns; the backup is a .bak copy written next to each config before a change.">Advanced</summary>
+        <div class="fold-body">
+      <label class="field">
+        <span>Merge mode</span>
+        <select bind:value={mcpMergeMode} disabled={interactionDisabled} on:change={handleBoundEdit}>
+          <option value="safeMerge">Safe merge</option>
+          <option value="replaceManagedSection">Replace managed section</option>
+        </select>
+      </label>
+
+      <label class="checkbox-row" title="Write a .bak copy of each MCP config file before deploying changes">
+        <input bind:checked={mcpBackupBeforeWrite} disabled={interactionDisabled} on:change={handleBoundEdit} type="checkbox" />
+        <span>Create backup before MCP config write</span>
+      </label>
+
+
+        </div>
+      </details>
+    </div>
+  </details>
+
+  <details class="fold">
+    <summary title="Where the manager keeps its data, how it starts, and the memory limit of each workspace.">This machine</summary>
+    <div class="fold-body">
       <div class="machine-controls-grid">
         <section class="machine-control-card compact-card stack">
           <h4>System Settings</h4>
@@ -857,8 +914,11 @@
           {/if}
         </section>
 
-        <section class="machine-control-card diagnostics-card stack">
-          <h4><strong>Diagnostics</strong></h4>
+
+      </div>
+      <details class="fold">
+        <summary title="Where the manager keeps its settings, state and data. Quote these when you report a problem.">Paths</summary>
+        <div class="fold-body">
           <div class="bootstrap-grid compact">
             <div>
               <span class="label">Projects</span>
@@ -897,6 +957,12 @@
             </div>
           </div>
 
+
+        </div>
+      </details>
+      <details class="fold">
+        <summary title="Delete generated logs and caches. Your settings and registered projects survive; stop running services first.">Maintenance</summary>
+        <div class="fold-body">
           <div class="actions compact">
             <button
               disabled={interactionDisabled}
@@ -942,171 +1008,11 @@
               <button on:click={() => dispatch("clearCleanupSummary")} type="button">Dismiss</button>
             </div>
           {/if}
-        </section>
-      </div>
-    </section>
 
-    <section class="panel stack settings-section mcp-locations-section">
-      <div class="section-intro paired-section-intro mcp-section-intro">
-        <div>
-          <h3>MCP Config Locations</h3>
-          <p class="muted">Review detected config paths and set optional manual overrides.</p>
         </div>
-        <button
-          disabled={interactionDisabled}
-          on:click={() => dispatch("redetectMcpPaths")}
-          title="Re-scan the system for default MCP config files for each client"
-          type="button"
-        >
-          Redetect defaults
-        </button>
-      </div>
-
-      <div class="mcp-clients-scroll">
-      {#each [
-        ["cursor", "Cursor"],
-        ["claude", "Claude Code"],
-        ["codex", "Codex"],
-        ["copilotCli", "Copilot CLI"],
-        ["vscode", "VS Code"],
-        ["grok", "Grok"]
-      ] as [clientKey, clientLabel]}
-        {@const key = clientKey as keyof McpClientPaths}
-        {@const entry = mcpClientPaths[key]}
-        <!-- Sprint 28a 2b (Harald's design): ONE switch per agent. Checked =
-             in play (appears in the dashboard picker, pre-ticked). Unchecked =
-             complete skip — greyed here, absent from the picker entirely. The
-             picker stays the per-run override for agents in play. -->
-        <div
-          class="stack mcp-client-card compact"
-          class:mcp-client-off={!deployTargets[key as keyof DeployTargetFlags]}
-        >
-          <div class="mcp-client-heading">
-            <div class="mcp-client-title-row">
-              <strong>{clientLabel}</strong>
-              <div class="mcp-client-title-controls">
-                <label
-                  class="checkbox-row compact mcp-deploy-checkbox"
-                  title="Checked: offered in the dashboard deploy picker, pre-ticked. Unchecked: skipped entirely."
-                >
-                  <input
-                    bind:checked={deployTargets[key as keyof DeployTargetFlags]}
-                    disabled={interactionDisabled}
-                    on:change={handleBoundEdit}
-                    type="checkbox"
-                  />
-                  <span>Include in deploys</span>
-                </label>
-                <span class={`mcp-source-badge ${mcpPathSource(entry)}`}>{mcpPathSourceLabel(entry)}</span>
-              </div>
-            </div>
-          </div>
-          <p class="hint mcp-current-path" title={effectivePath(entry)}>
-            <strong>Current:</strong> {effectivePath(entry)}
-          </p>
-          {#if shouldShowDetectedHint(entry)}
-            <p class="hint" title={entry?.autoDetectedPath ?? undefined}>
-              Detected default: {entry?.autoDetectedPath}
-            </p>
-          {/if}
-          <div class="field-row">
-            <input
-              disabled={interactionDisabled}
-              on:input={(event) => setManualMcpPath(key, (event.currentTarget as HTMLInputElement).value)}
-              placeholder="Manual override path"
-              title="Manual override for this client's MCP config file (leave empty to use the auto-detected default)"
-              value={entry?.manualOverridePath ?? ""}
-            />
-            <button
-              disabled={interactionDisabled}
-              on:click={() => chooseMcpPath(key)}
-              title="Open a file picker to choose this client's MCP config file"
-              type="button"
-            >Browse</button>
-            <button
-              disabled={interactionDisabled}
-              on:click={() => clearManualMcpPath(key)}
-              title="Clear the manual override and fall back to the auto-detected path"
-              type="button"
-            >Clear</button>
-          </div>
-        </div>
-      {/each}
-        <!-- Not a client the backend knows: a static explanatory row. The
-             general grey-when-unchecked mechanism carries it for free, and the
-             WHY lives in the mouseover (Harald's placement) with a fuller
-             paragraph in Help. -->
-        <div class="stack mcp-client-card compact mcp-client-off">
-          <div class="mcp-client-heading">
-            <div class="mcp-client-title-row">
-              <strong>Antigravity</strong>
-              <div class="mcp-client-title-controls">
-                <label
-                  class="checkbox-row compact mcp-deploy-checkbox"
-                  title="Not supported: Antigravity's CLI has no mechanism to connect jawata (see Help)."
-                >
-                  <input checked={false} disabled type="checkbox" />
-                  <span>Include in deploys</span>
-                </label>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <label class="field">
-        <span>Merge mode</span>
-        <select bind:value={mcpMergeMode} disabled={interactionDisabled} on:change={handleBoundEdit}>
-          <option value="safeMerge">Safe merge</option>
-          <option value="replaceManagedSection">Replace managed section</option>
-        </select>
-      </label>
-
-      <label class="checkbox-row" title="Write a .bak copy of each MCP config file before deploying changes">
-        <input bind:checked={mcpBackupBeforeWrite} disabled={interactionDisabled} on:change={handleBoundEdit} type="checkbox" />
-        <span>Create backup before MCP config write</span>
-      </label>
-
-      <label class="field">
-        <span>Memory-store backup copies</span>
-        <input
-          bind:value={experienceBackupDepth}
-          disabled={interactionDisabled}
-          min="1"
-          max="500"
-          on:change={handleBoundEdit}
-          placeholder="engine default"
-          type="number"
-        />
-        <span class="hint">
-          How many copies of the MEMORY STORE each resident keeps before evicting the
-          oldest — a different thing from the MCP config backups above, and far larger:
-          the store was measured at 37 MB, so ten copies is about 370 MB before
-          compression. Leave it empty to use the engine's own default; the engine is
-          where that number lives, so studio does not keep a second copy of it.
-        </span>
-      </label>
-
-      <label class="field">
-        <span>Story export folder</span>
-        <input
-          bind:value={experienceStoriesDir}
-          disabled={interactionDisabled}
-          on:change={handleBoundEdit}
-          placeholder="the store's own story folder"
-          type="text"
-        />
-        <span class="hint">
-          When you ACCEPT a piece of knowledge, the engine also writes it as a readable
-          markdown file — one file per entry, rewritten in place when the entry changes.
-          The memory store itself stays the source of truth: the folder is a mirror, so you
-          can read it, search it or keep it in git, and deleting it loses nothing. Leave
-          this empty to write into the store's own story folder — the one its stories were
-          loaded from. Type <code>off</code> to write no files.
-        </span>
-      </label>
-    </section>
-  </div>
+      </details>
+    </div>
+  </details>
 </section>
 
 <div class="panel settings-save-footer">

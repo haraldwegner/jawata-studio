@@ -36,6 +36,14 @@
   let storeMode = settings.experienceStoreMode ?? "shared";
   let memoryRoots: string[] = [...(settings.memoryRoots ?? [])];
   let autoSeedOnDeploy = settings.autoSeedOnDeploy ?? true;
+  // Moved here from Settings (his walkthrough, 2026-10-21): both are decisions about the memory store.
+  // An empty depth box is null and is sent as 0 (the resident's own default, stored as ABSENT, since the
+  // resident would floor a literal 0 to 1). An empty folder box is the store's own story folder.
+  // NUMBER, not string, and the type is load-bearing: Svelte coerces `bind:value` on an <input type="number">
+  // through its own `to_number` (an empty box is null, anything else a number). Declared as a string it
+  // type-checks and throws `.trim is not a function` on the first keystroke.
+  let experienceBackupDepth: number | null = settings.experienceBackupDepth ?? null;
+  let experienceStoriesDir = settings.experienceStoriesDir ?? "";
   let saveState: "idle" | "saving" | "saved" | "error" = "idle";
   let saveError = "";
 
@@ -43,7 +51,9 @@
   $: isDirty =
     storeMode !== (settings.experienceStoreMode ?? "shared") ||
     memoryRoots.join("\n") !== (settings.memoryRoots ?? []).join("\n") ||
-    autoSeedOnDeploy !== (settings.autoSeedOnDeploy ?? true);
+    autoSeedOnDeploy !== (settings.autoSeedOnDeploy ?? true) ||
+    (experienceBackupDepth ?? null) !== (settings.experienceBackupDepth ?? null) ||
+    experienceStoriesDir.trim() !== (settings.experienceStoriesDir ?? "").trim();
   $: footerStatusText =
     saveState === "saving"
       ? "Saving…"
@@ -993,7 +1003,9 @@
         releaseRepo: settings.releaseRepo,
         autoSeedOnDeploy,
         experienceStoreMode: storeMode.trim() || "shared",
-        memoryRoots: [...memoryRoots]
+        memoryRoots: [...memoryRoots],
+        experienceBackupDepth: experienceBackupDepth ?? 0,
+        experienceStoriesDir: experienceStoriesDir.trim()
       };
       await updateSettings(input);
       saveState = "saved";
@@ -1010,100 +1022,49 @@
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
+
+  /** What each lane of the store is, as the mouseover on its count. The resident names the lanes; studio keeps
+   * no list of them, so a lane not named here still shows, with the generic line. */
+  const LANE_HINTS: Record<string, string> = {
+    experience: "Something lived here: a lesson or a failure mode. It can be superseded by a later one.",
+    domain: "A fact that simply holds: a contract, a convention, how something works.",
+    patterns: "The architect's template library: design patterns it reaches for when a design question has no answer in what we have lived. Nothing in ordinary use removes one; a re-seed supersedes rows rather than deleting them.",
+    rules: "Standing guidance. A rule is versioned and retired, never deleted.",
+    code: "What each class member and package is for, written by the cataloguer.",
+    "(none)": "Entries whose type no lane rule covers. They are counted here, not filed under a default, so the gap stays visible."
+  };
+
+  /** Closes the "More" menu after one of its buttons was pressed. */
+  function closeMore(event: Event) {
+    (event.currentTarget as HTMLElement).closest("details")?.removeAttribute("open");
+  }
+
+  $: describedUnits = selectedRow?.described
+    ? Object.values(selectedRow.described).reduce((sum, count) => sum + count, 0)
+    : 0;
 </script>
 
 <!-- runtime-settings-root = the app-wide "scrollable middle + sticky footer" scroll
      container (the same mechanism Settings and Dashboard use). -->
 <section class="panel stack runtime-settings-root memory-root">
   <div>
-    <h2>Memory / Database</h2>
-    <p class="muted">
-      Your memory store behind the JAWATA push channel. Everything else — refresh, curation,
-      backups — runs automatically or by prompt.
-    </p>
+    <h2>Memory</h2>
+    {#if selectedRow}
+      <p
+        class="summary-line"
+        title={storeMode === "shared"
+          ? "One user-level store, shared by every workspace, so what is learned in one is recallable in all."
+          : "One store per workspace."}
+      >
+        <strong>{selectedRow.total ?? "–"} entries</strong> · {formatBytes(selectedRow.bytes)} ·
+        {storeMode === "shared" ? "shared by every workspace" : "one store per workspace"}
+      </p>
+    {:else if storeRows.length === 0}
+      <p class="summary-line">No workspaces, or their services are not reachable.</p>
+    {/if}
   </div>
 
-  <div class="settings-grid">
-    <!-- Memory sources FIRST — they feed the store below. -->
-    <section class="panel stack settings-section">
-      <div class="section-intro">
-        <h3>Memory sources</h3>
-        <p class="muted">
-          Where load finds your memory files. Auto-discovered: agent INSTRUCTION files
-          (CLAUDE.md, Claude project memory, Cursor/Copilot rules, AGENTS.md) — not your
-          documents. Add your knowledge folders (docs/, sprints, postmortems, ADRs) as
-          extra roots: every .md becomes recallable, anchored to the code it names.
-        </p>
-      </div>
-      <label class="field">
-        <span>Extra memory roots</span>
-        <div class="actions">
-          <button
-            type="button"
-            disabled={interactionDisabled}
-            on:click={addRoot}
-            title="Pick folder(s) to crawl in addition to the auto-discovered locations — subfolders and [[links]] are followed, unchanged files are skipped, so a folder also covers any single file in it"
-          >
-            Add…
-          </button>
-        </div>
-        {#if memoryRoots.length > 0}
-          <ul class="root-list">
-            {#each memoryRoots as root (root)}
-              <li title={root}>
-                <span class="mono">{root}</span>
-                <button
-                  type="button"
-                  class="danger"
-                  disabled={interactionDisabled}
-                  on:click={() => removeRoot(root)}
-                  title="Remove this root (does not delete anything on disk)"
-                >
-                  ✕
-                </button>
-              </li>
-            {/each}
-          </ul>
-        {:else}
-          <span class="hint">
-            None — load uses only the auto-discovered instruction set: layered CLAUDE.md,
-            every ~/.claude/projects/*/memory, .cursor/rules, .cursorrules, AGENTS.md,
-            copilot-instructions.md. Your own docs (sprints, postmortems) are NOT found
-            automatically — add their folders here.
-          </span>
-        {/if}
-      </label>
-      <label class="field">
-        <span>Store mode</span>
-        <select
-          bind:value={storeMode}
-          disabled={interactionDisabled}
-          title="Where the experience store lives — shared is one store for all your workspaces"
-        >
-          <option value="shared">shared — one user-level store (default)</option>
-          <option value="workspace">workspace — per-workspace store</option>
-        </select>
-        <span class="hint">“shared” makes your knowledge recallable from every workspace.</span>
-      </label>
-      <label
-        class="checkbox-row"
-        title="After every successful deploy, run load on each resident so the push channel has content from day one"
-      >
-        <input type="checkbox" bind:checked={autoSeedOnDeploy} disabled={interactionDisabled} />
-        <span>Auto-seed on deploy</span>
-      </label>
-    </section>
-
-    <!-- Store & Maintenance: actions apply to the selected store. -->
-    <section class="panel stack settings-section">
-      <div class="section-intro">
-        <h3>Store &amp; Maintenance</h3>
-        <p class="muted">
-          {storeRows.length === 1
-            ? "One user-level store — all workspaces share it."
-            : "Select the store to act on."}
-        </p>
-      </div>
+  <div class="stack">
       {#if storeRows.length === 0}
         <p class="hint">No workspaces (or residents unreachable).</p>
       {:else}
@@ -1148,263 +1109,95 @@
         </div>
       {/if}
 
-      <!-- Sprint 28f Stage 5: the lane split — what the store HOLDS, before what to do
-           about it. Rendered from the resident's own grouping; studio keeps no list of
-           lane names, which is why a lane with no entries is absent rather than zero. -->
-      {#if selectedRow?.lanes}
-        <div class="lane-split">
-          {#each Object.entries(selectedRow.lanes) as [lane, count] (lane)}
-            <span class="lane" class:lane-unclassified={lane.startsWith("(")}>
-              <strong>{count}</strong>
-              {lane === "(none)" ? "unclassified" : lane}
-            </span>
-          {/each}
-        </div>
-        <p class="hint">
-          Each lane is a lifecycle the store keeps apart: an experience was lived and can be
-          superseded, a domain fact simply holds, a rule is versioned and retired. A lane
-          with no entries is not listed. “Unclassified” is entries whose type no lane rule
-          covers — counted here rather than filed under a default, so the gap is visible.
-        </p>
-      {/if}
 
-      <!-- Sprint 28g D27: THE PATTERN CATALOGUE, as its own thing.
-
-           His ruling: "They are the pattern templates for the architect and not just
-           experiences… The value should even be higher than our own experiences." A
-           catalogue row carries a lane like any other row, so until now its entries were
-           folded into the strip above and the architect's template library was invisible
-           as a library. Its own block for the same reason the describing block has one. -->
-      {#if selectedRow?.catalogue}
-        <div class="lane-split">
-          <!-- C13's clause asks for the catalogue "counted as the panel counts them
-               (189 of 298)" — so the denominator is the row's OWN total, the same figure
-               the table above renders, never a literal. A hand-written 298 beside a
-               number the resident reports is the defect this sprint has recorded at
-               almost every checkpoint; `total` is undefined on an engine that cannot say,
-               and then the share is simply not claimed. -->
-          <span class="lane lane-catalogue">
-            <strong>{selectedRow.catalogue.entries}</strong>
-            {#if selectedRow.total !== undefined}
-              of {selectedRow.total}
-            {/if}
-            pattern rows
-          </span>
-          {#if selectedRow.catalogue.byNamespace}
-            {#each Object.entries(selectedRow.catalogue.byNamespace) as [ns, count] (ns)}
-              <span class="lane">
-                <strong>{count}</strong>
-                {ns}
-              </span>
-            {/each}
-          {/if}
-          {#if selectedRow.catalogue.curesDeclared !== undefined}
-            <span
-              class="lane"
-              class:lane-unclassified={selectedRow.catalogue.curesUnresolved !== 0}
+    <div class="actions">
+      <button
+        type="button"
+        disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
+        on:click={runLoad}
+        title={'Seed the store from your memory files — the auto-discovered instruction files plus your extra roots (docs folders and all). Runs on EVERY reachable workspace of this store. Idempotent: re-loading replaces, so this is also the re-initialize after a wipe. Say: "load my memory files"'}
+      >
+        Load
+      </button>
+      <button
+        type="button"
+        disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
+        on:click={runBackup}
+        title={'Take a copy of the whole store right now. Wipe, Clean up, Import and Restore each take their own automatically. Say: "back up the store"'}
+      >
+        Back up now
+      </button>
+      <button
+        type="button"
+        disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
+        on:click={runCleanUp}
+        title="One hygiene pass: prune aged rejected/superseded entries, merge duplicate groups and compact the store file. Each is also available by prompt."
+      >
+        Clean up
+      </button>
+        <details class="more-menu">
+          <summary title="Less common actions">More ▾</summary>
+          <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
+          <div class="more-menu-body" on:click={closeMore}>
+            <button
+              type="button"
+              disabled={statusLoading || interactionDisabled}
+              on:click={refreshStatus}
+              title="Re-read entry counts, store file and size from every resident (unreachable residents are retried automatically)"
             >
-              <strong>{selectedRow.catalogue.curesDeclared}</strong>
-              cures{selectedRow.catalogue.curesUnresolved
-                ? `, ${selectedRow.catalogue.curesUnresolved} unresolved`
-                : ", all resolved"}
-            </span>
-          {/if}
-        </div>
-        <p class="hint">
-          The architect's template library — patterns it reaches for when a design question
-          has no answer in what we have lived. <strong>These are different populations and
-          none stands for another</strong>: the first is how many of this store's rows are
-          patterns, shown against the store's whole count so the library's SHARE is legible
-          rather than a bare figure; a per-namespace number is what that source last SEEDED.
-          The held and the seeded counts drift apart
-          the moment a pattern is added here or retired upstream, so one number in place of
-          both would be wrong about one of them. Nothing in ordinary use removes a pattern —
-          a re-seed supersedes rows rather than deleting them, so the library only ever grows.
-          A namespace with no rows is absent rather than zero, as the lanes are.
-        </p>
-      {/if}
-
-      <!-- Sprint 28f Stage 7: how much of the CODE has been described. Its own block and
-           not folded into the lanes above: a lane count says what the store HOLDS, this
-           says how far a job has got, and one strip mixing the two reads as neither. -->
-      {#if selectedRow?.described}
-        <div class="lane-split">
-          {#each Object.entries(selectedRow.described) as [bundle, count] (bundle)}
-            <span class="lane" class:lane-unclassified={bundle === "unattributed"}>
-              <strong>{count}</strong>
-              {bundle}
-            </span>
-          {/each}
-        </div>
-        <p class="hint">
-          Source units the cataloguer has described, per bundle — <strong>described, not a
-          percentage</strong>. How many units a bundle holds is a question only a loaded
-          project can answer, so the share is shown where that is known:
-          <code>experience(kind=describe, action=next)</code> answers it as
-          <code>inScope</code>. “Unattributed” is units described before anything said whose
-          they were. A bundle nobody has described is not listed.
-          {#if selectedRow?.describedLost}
-            <strong>
-              {selectedRow.describedLost} bookkeeping write(s) were LOST</strong> — those
-            units will be offered again, and this count is why the figures above may be
-            lower than the work actually done.
-          {/if}
-        </p>
-      {/if}
-
-      <!-- Sprint 28f Stage 7: WHICH AREAS HAVE A SUMMARY WRITTEN. Its own block, because a
-           unit count and an area summary are different jobs: describing every unit in a
-           package leaves the package itself unsummarised, and that is the state this
-           names. The list is what the store holds; the complement is stated in WORDS
-           rather than enumerated, because enumerating it needs the set of packages, which
-           only a loaded project knows. A blank here would read as "there is nothing to
-           say", which is the one confusion this panel refuses everywhere else. -->
-      {#if selectedRow?.describedAreas}
-        {#if selectedRow.describedAreas.length > 0}
-          <div class="lane-split">
-            {#each selectedRow.describedAreas as area (area)}
-              <span class="lane">{area}</span>
-            {/each}
+              {statusLoading ? "Loading…" : "Reload status"}
+            </button>
+            <button
+              type="button"
+              disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
+              on:click={runExport}
+              title={'Write the whole store to a portable JSON file — opens the save dialog. Say: "export the store to a file"'}
+            >
+              Export…
+            </button>
+            <button
+              type="button"
+              disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
+              on:click={runImport}
+              title={'Re-ingest a previously exported JSON file (deduplicated by id) — opens the file picker. Say: "import the export file"'}
+            >
+              Import…
+            </button>
+            <button
+              type="button"
+              disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
+              on:click={showBackups}
+              title={'List the kept versions, newest first, and put one back. Say: "restore the store"'}
+            >
+              {backupsShown ? "Refresh versions" : "Restore…"}
+            </button>
+            <button
+              type="button"
+              disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
+              on:click={() => readCuration()}
+              title={'The standing RULES, and the entries nobody has vouched for yet — each with the one action its lane\'s lifecycle allows. Say: "list the rules" / "promote that entry"'}
+            >
+              {curationShown ? "Refresh curation" : "Curation…"}
+            </button>
+            <button
+              type="button"
+              class="danger"
+              disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
+              on:click={() =>
+                runVerb("wipe", {}, "wipe removes EVERY entry from this store. Continue?")}
+              title={'Delete everything in the selected store. Re-initialize afterwards with Load. Say: "wipe the store"'}
+            >
+              Wipe…
+            </button>
           </div>
-          <!-- 2026-10-08, the C14 architect watch: THE COMPLEMENT CLAUSE IS ONLY TRUE WHEN
-               THE READ WAS NOT TRUNCATED, and this panel asserted it unconditionally, in
-               bold, to a human. The producer caps that read and now says so in
-               `describedAreasTruncated`; nothing here read it. So the defect was the
-               missing half of the producer's own repair: one side of the wire learned to
-               admit a filter and the other side went on denying it. Where the note is
-               present the universal negative is REPLACED by it rather than printed beside
-               it — two sentences contradicting each other is worse than either alone. -->
-          <p class="hint">
-            Areas with a summary written — <strong
-              >{selectedRow.describedAreas.length} described</strong
-            >.
-            {#if selectedRow.describedAreasTruncated}
-              <strong>This list is not every described area.</strong>
-              {selectedRow.describedAreasTruncated}
-            {:else}
-              Any area not listed here is <strong>not described yet</strong>.
-            {/if}
-            Which areas those ARE cannot be answered from the store: it needs the set of
-            packages a project holds, so <code>experience(kind=describe, action=next)</code>
-            answers it against a loaded project, one row per package in scope — the same
-            place the share above gets its denominator.
-          </p>
-        {:else}
-          <p class="hint">
-            <strong>No area has been described yet.</strong> Units can be described without
-            the package that holds them being summarised, so this stays empty until the
-            cataloguer records an area — it is not a sign that there is nothing to say.
-            <code>experience(kind=describe, action=next)</code> names the packages waiting,
-            which needs a loaded project and is why this view cannot list them.
-          </p>
-        {/if}
+        </details>
+      {#if autoRetrying && !busyAction}
+        <span class="hint">resident starting — retrying automatically…</span>
       {/if}
-
-      <!-- Sprint 28f Stage 7: A SAMPLE OF WHAT WAS ACTUALLY WRITTEN. The counts above say
-           how much; this is the only thing on the panel that lets a reader judge whether
-           the work is any good. Listed by symbol because that is what a job row carries —
-           it has neither a bundle nor a package, so neither the resident nor this view can
-           group it, and grouping it anyway would be an attribution invented at the point
-           of display. -->
-      {#if selectedRow?.acceptedSample}
-        <ul class="sample">
-          {#each selectedRow.acceptedSample as row, i (row.symbol ?? i)}
-            <li>
-              {#if row.symbol}<code>{row.symbol}</code>{/if}
-              <span>{row.summary}</span>
-            </li>
-          {/each}
-        </ul>
-        <p class="hint">
-          A sample of what the cataloguer wrote and the admission gate accepted{#if selectedRow?.acceptedRows}
-            — {selectedRow.acceptedSample.length} of
-            {selectedRow.acceptedRows} rows{/if}. At most two rows share a class, so one
-          busy class cannot crowd out the rest. Read these to judge the work; the counts
-          above only say how much of it there is.
-        </p>
+      {#if busyAction}
+        <span class="hint">running “{busyAction}”…</span>
       {/if}
-      <div class="actions">
-        <button
-          type="button"
-          disabled={statusLoading || interactionDisabled}
-          on:click={refreshStatus}
-          title="Re-read entry counts, store file and size from every resident (unreachable residents are retried automatically)"
-        >
-          {statusLoading ? "Loading…" : "Reload status"}
-        </button>
-        {#if autoRetrying && !busyAction}
-          <span class="hint">resident starting — retrying automatically…</span>
-        {/if}
-        <button
-          type="button"
-          disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
-          on:click={runLoad}
-          title={'Seed the store from your memory files — the auto-discovered instruction files plus your extra roots (docs folders and all). Runs on EVERY reachable workspace of this store (each contributes its own project locations). Idempotent: re-loading replaces, so this is also the re-initialize after a wipe. Say: "load my memory files"'}
-        >
-          Load
-        </button>
-        <button
-          type="button"
-          disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
-          on:click={runCleanUp}
-          title="One hygiene pass: prune aged rejected/superseded entries + merge duplicate groups + compact the store file. Runs prune, dedup and compact — each also available by prompt."
-        >
-          Clean up
-        </button>
-        <button
-          type="button"
-          disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
-          on:click={runExport}
-          title={'Write the whole store to a portable JSON file — opens the save dialog. Say: "export the store to a file"'}
-        >
-          Export…
-        </button>
-        <button
-          type="button"
-          disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
-          on:click={runImport}
-          title={'Re-ingest a previously exported JSON file (deduplicated by id) — opens the file picker. Say: "import the export file"'}
-        >
-          Import…
-        </button>
-        <button
-          type="button"
-          disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
-          on:click={runBackup}
-          title={'Take a copy of the whole store right now — before something this product does not know about. Wipe, Clean up, Import and Restore each take their own automatically. Say: "back up the store"'}
-        >
-          Back up now
-        </button>
-        <button
-          type="button"
-          disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
-          on:click={showBackups}
-          title={'List the kept versions, newest first, and put one back. Say: "restore the store"'}
-        >
-          {backupsShown ? "Refresh versions" : "Restore…"}
-        </button>
-        <button
-          type="button"
-          disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
-          on:click={() => readCuration()}
-          title={'The standing RULES, and the entries nobody has vouched for yet — each with the one action its lane\'s lifecycle allows. Say: "list the rules" / "promote that entry"'}
-        >
-          {curationShown ? "Refresh curation" : "Curation…"}
-        </button>
-        <button
-          type="button"
-          class="danger"
-          disabled={!!busyAction || interactionDisabled || !selectedRow?.targets.length}
-          on:click={() =>
-            runVerb("wipe", {}, "wipe removes EVERY entry from this store. Continue?")}
-          title={'Delete everything in the selected store. Re-initialize afterwards with load. Say: "wipe the store"'}
-        >
-          Wipe
-        </button>
-        {#if busyAction}
-          <span class="hint">running “{busyAction}”…</span>
-        {/if}
-      </div>
+    </div>
 
       <!-- Sprint 28f D2: the versions, above the result panel, because choosing one IS
            the action here and the panel below reports what it did. -->
@@ -1590,8 +1383,182 @@
           <p class="hint">running…</p>
         {/if}
       </div>
-    </section>
   </div>
+
+  <details class="fold">
+    <summary title="What the store holds, how far the cataloguer has got, and where the pattern library stands.">What the store holds</summary>
+    <div class="fold-body">
+      {#if selectedRow?.lanes}
+        <div class="lane-split">
+          {#each Object.entries(selectedRow.lanes) as [lane, count] (lane)}
+            <span
+              class="lane"
+              class:lane-unclassified={lane.startsWith("(")}
+              title={LANE_HINTS[lane] ?? "A kind of entry the store keeps apart from the others."}
+            >
+              <strong>{count}</strong>
+              {lane === "(none)" ? "unclassified" : lane}
+            </span>
+          {/each}
+        </div>
+      {/if}
+
+      <!-- Sprint 28g D27, his ruling: the pattern library is shown as its own thing, as a share of the
+           whole store. Kept as one line; the namespace split and the reason the counts differ sit in the
+           mouseover. The denominator is the row's OWN total, never a literal (C13). -->
+      {#if selectedRow?.catalogue}
+        <p
+          class="summary-line"
+          title={`The architect's template library. The first figure is how many of this store's rows are patterns; a per-namespace figure is what that source last SEEDED, so the two drift apart when a pattern is added here or retired upstream. ${
+            selectedRow.catalogue.byNamespace
+              ? Object.entries(selectedRow.catalogue.byNamespace).map(([ns, count]) => `${ns}: ${count}`).join(" · ")
+              : ""
+          }`}
+        >
+          <strong>Pattern library:</strong>
+          {selectedRow.catalogue.entries}{#if selectedRow.total !== undefined} of {selectedRow.total}{/if}
+          rows{#if selectedRow.catalogue.curesDeclared !== undefined}
+            · {selectedRow.catalogue.curesDeclared} cures{selectedRow.catalogue.curesUnresolved
+              ? `, ${selectedRow.catalogue.curesUnresolved} unresolved`
+              : ", all resolved"}{/if}
+        </p>
+      {/if}
+
+      <!-- The complement clause ("any area not listed is not described") is only true when the read was
+           not truncated (the C14 architect watch), so a truncation note is shown, never dropped. -->
+      {#if selectedRow?.described || selectedRow?.describedAreas}
+        <p
+          class="summary-line"
+          class:attention={!!selectedRow?.describedLost || !!selectedRow?.describedAreasTruncated}
+          title={`Source units the cataloguer has described, per bundle: ${
+            selectedRow?.described
+              ? Object.entries(selectedRow.described).map(([bundle, count]) => `${bundle} ${count}`).join(", ")
+              : "none"
+          }. How many units a bundle holds only a loaded project can say, so no percentage is claimed. An area with a summary written is one the cataloguer recorded for a whole package; an area not listed is not described yet${
+            selectedRow?.describedAreasTruncated ? ", EXCEPT that this list is cut: " + selectedRow.describedAreasTruncated : ""
+          }.`}
+        >
+          <strong>Cataloguer:</strong>
+          {describedUnits} units described{#if selectedRow?.described}
+            in {Object.keys(selectedRow.described).length} bundles{/if}
+          {#if selectedRow?.describedAreas}
+            · {selectedRow.describedAreas.length > 0
+              ? `${selectedRow.describedAreas.length} areas summarised${selectedRow.describedAreasTruncated ? " (list cut)" : ""}`
+              : "no area summarised yet"}
+          {/if}
+          {#if selectedRow?.describedLost}
+            · <strong>{selectedRow.describedLost} bookkeeping write(s) LOST</strong>, so the figures may be lower than the work done
+          {/if}
+        </p>
+      {/if}
+    </div>
+  </details>
+
+  {#if selectedRow?.acceptedSample && selectedRow.acceptedSample.length > 0}
+    <details class="fold">
+      <summary
+        title={`A sample of what the cataloguer wrote and the admission gate accepted${
+          selectedRow?.acceptedRows ? ` — ${selectedRow.acceptedSample.length} of ${selectedRow.acceptedRows} rows` : ""
+        }. At most two rows share a class, so one busy class cannot crowd out the rest. Read these to judge the work.`}
+      >
+        What the cataloguer wrote ({selectedRow.acceptedSample.length}{#if selectedRow?.acceptedRows} of {selectedRow.acceptedRows}{/if})
+      </summary>
+      <div class="fold-body">
+        <ul class="sample">
+          {#each selectedRow.acceptedSample as row, i (row.symbol ?? i)}
+            <li>
+              {#if row.symbol}<code>{row.symbol}</code>{/if}
+              <span>{row.summary}</span>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    </details>
+  {/if}
+
+  <details class="fold">
+    <summary title="Where Load finds your memory files, which store it fills, and the store's own copies and story files.">Memory sources and store settings</summary>
+    <div class="fold-body">
+      <label class="field">
+        <span>Extra memory roots</span>
+        <div class="actions">
+          <button
+            type="button"
+            disabled={interactionDisabled}
+            on:click={addRoot}
+            title="Pick folder(s) to crawl in addition to the auto-discovered locations — subfolders and [[links]] are followed, unchanged files are skipped, so a folder also covers any single file in it"
+          >
+            Add…
+          </button>
+        </div>
+        {#if memoryRoots.length > 0}
+          <ul class="root-list">
+            {#each memoryRoots as root (root)}
+              <li title={root}>
+                <span class="mono">{root}</span>
+                <button
+                  type="button"
+                  class="danger"
+                  disabled={interactionDisabled}
+                  on:click={() => removeRoot(root)}
+                  title="Remove this root (does not delete anything on disk)"
+                >
+                  ✕
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <span
+            class="hint"
+            title="Found automatically: your layered CLAUDE.md files, every ~/.claude/projects/*/memory, .cursor/rules, .cursorrules, AGENTS.md and copilot-instructions.md. Your own documents (sprints, postmortems, ADRs) are NOT found automatically."
+          >
+            None — only the instruction files found automatically are loaded. Add your docs folders here.
+          </span>
+        {/if}
+      </label>
+      <label class="field">
+        <span>Store mode</span>
+        <select
+          bind:value={storeMode}
+          disabled={interactionDisabled}
+          title="Where the experience store lives. Shared makes your knowledge recallable from every workspace."
+        >
+          <option value="shared">shared — one user-level store (default)</option>
+          <option value="workspace">workspace — per-workspace store</option>
+        </select>
+      </label>
+      <label
+        class="checkbox-row"
+        title="After every successful deploy, run Load on each resident so the knowledge is there from day one"
+      >
+        <input type="checkbox" bind:checked={autoSeedOnDeploy} disabled={interactionDisabled} />
+        <span>Auto-seed on deploy</span>
+      </label>
+      <label class="field">
+        <span>Memory-store backup copies</span>
+        <input
+          bind:value={experienceBackupDepth}
+          disabled={interactionDisabled}
+          min="1"
+          max="500"
+          placeholder="engine default"
+          title="How many copies of the memory store each resident keeps before dropping the oldest. A copy is about 37 MB, so ten are about 370 MB before compression. Empty = the engine's own default. This is not the MCP config backup in Settings → Agents."
+          type="number"
+        />
+      </label>
+      <label class="field">
+        <span>Story export folder</span>
+        <input
+          bind:value={experienceStoriesDir}
+          disabled={interactionDisabled}
+          placeholder="the store's own story folder"
+          title="When you accept a piece of knowledge, the engine also writes it as a readable markdown file here, one file per entry. The store stays the source of truth; deleting the folder loses nothing. Empty = the store's own story folder. Type off to write no files."
+          type="text"
+        />
+      </label>
+    </div>
+  </details>
 </section>
 
 <div class="panel settings-save-footer">

@@ -102,6 +102,17 @@
       silenceBusy = false;
     }
   }
+  // The ONE sentence the view opens on: what, if anything, needs a look. Each condition is a figure the
+  // five-number strip used to show; the strip is gone and its figures are folded into this.
+  $: attention = [
+    (status?.badge ?? 0) > 0 ? `${status?.badge} failure shape${status?.badge === 1 ? "" : "s"} worth reporting` : "",
+    (status?.deadChannels.length ?? 0) > 0 ? `dead channel${status?.deadChannels.length === 1 ? "" : "s"}: ${status?.deadChannels.join(", ")}` : "",
+    canaryHealth === "degraded" ? "a resident is not answering" : "",
+    store?.health === "slow" ? "the knowledge store is slow" : "",
+    store?.health === "unavailable" ? "the knowledge store is not answering" : "",
+    unresolvedProjects.length > 0 ? `${unresolvedProjects.length} project${unresolvedProjects.length === 1 ? "" : "s"} need attention` : "",
+  ].filter((entry) => entry !== "");
+  $: shownShapes = allShapes.slice(0, 3);
   $: canaryWord =
     canaryHealth === "green"
       ? "answering"
@@ -136,16 +147,34 @@
 
 <section class="panel stack runtime-settings-root field-root">
   <div>
-    <!-- The tab says "Reporting" — what you DO here. The header names what is
-         ON the page — the recording itself. Repeating the tab word in the
-         header is chrome, not hierarchy. -->
     <h2>Field recording</h2>
     <p class="muted">
-      Shapes only — tool, kind, error code, counts, latency, client, version. No paths,
-      no symbol names, no message text. Nothing leaves this machine unless you send it:
+      Shapes only — no paths, symbol names or message text. Nothing leaves this machine unless you
       type <code>/report</code> in any client to file one from your own GitHub account.
     </p>
-    <label class="checkbox-row field-silence">
+    {#if loadError}
+      <p class="field-error">Could not read the field recording: {loadError}</p>
+    {:else if !status}
+      <p class="summary-line">Reading the recording…</p>
+    {:else if attention.length === 0}
+      <p
+        class="summary-line"
+        title={`${status.utilization.caveat ?? ""}`}
+      >
+        <strong>Nothing needs a look.</strong>
+        {#if sharePercent}
+          <span title={`${status.utilization.jawataCalls} tool calls went through JAWATA; ${status.utilization.shellFallbacks} pieces of Java work went to a shell text tool instead (${status.utilization.slips} declared fallbacks, ${status.utilization.ungroundedReads} reads with no lookup behind them).`}>
+            {sharePercent} of Java work went through JAWATA ·
+          </span>
+        {/if}
+        knowledge store {store?.word ?? "not checked yet"}{#if store && store.slowestMillis > 0} ({store.slowestMillis} ms){/if} · residents {canaryWord}
+      </p>
+    {:else}
+      <p class="summary-line attention">
+        <strong>Needs a look:</strong> {attention.join(" · ")}
+      </p>
+    {/if}
+    <label class="checkbox-row field-silence" title="Stops the periodic reminder that failures are piling up. The recording itself keeps running and this page still shows everything.">
       <input
         type="checkbox"
         checked={allSilenced}
@@ -153,7 +182,7 @@
         on:change={onGoSilent}
       />
       <span>
-        Go silent about failures — stop the periodic reminder
+        Go silent about failures
         {#if allSilenced}<em>(currently off by your choice)</em>{/if}
       </span>
     </label>
@@ -162,70 +191,12 @@
     {/if}
   </div>
 
-  {#if loadError}
-    <p class="field-error">Could not read the field recording: {loadError}</p>
-  {/if}
-
-  <div class="field-headline">
-    <div class="field-stat">
-      <span class="field-stat-value">{status?.badge ?? 0}</span>
-      <span class="field-stat-label">shapes worth reporting</span>
-    </div>
-    <div class="field-stat">
-      <span class="field-stat-value">{sharePercent ?? "—"}</span>
-      <span class="field-stat-label">went through JAWATA</span>
-    </div>
-    <div class="field-stat">
-      <span class="field-stat-value">{status?.deadChannels.length ?? 0}</span>
-      <span class="field-stat-label">dead channels</span>
-    </div>
-    <div class="field-stat" class:field-stat-degraded={canaryHealth === "degraded"}>
-      <span class="field-stat-value">{canaryHealth}</span>
-      <span class="field-stat-label">residents {canaryWord}</span>
-    </div>
-    <div
-      class="field-stat"
-      class:field-stat-degraded={store?.health === "slow" || store?.health === "unavailable"}
-    >
-      <span class="field-stat-value">{store?.word ?? "not checked yet"}</span>
-      <span class="field-stat-label">
-        knowledge store{#if store && store.slowestMillis > 0} · {store.slowestMillis} ms{/if}
-      </span>
-    </div>
-  </div>
-
-  <div class="settings-grid">
-    <section class="panel stack settings-section">
-      <div class="section-intro">
-        <h3>JAWATA vs the shell</h3>
-        <p class="muted">
-          {#if sharePercent}
-            {status?.utilization.jawataCalls} tool calls went through JAWATA;
-            {status?.utilization.shellFallbacks} pieces of Java work went to a shell text
-            tool instead ({status?.utilization.slips} declared fallbacks,
-            {status?.utilization.ungroundedReads} reads with no lookup behind them).
-          {:else}
-            Nothing observed yet — an empty denominator is not a perfect score.
-          {/if}
-        </p>
-      </div>
-      <p class="field-caveat">{status?.utilization.caveat ?? ""}</p>
-      {#if utilization && !utilization.observerPresent}
-        <p class="muted">
-          No observer has written here, so this counts JAWATA's half and nothing against it.
-        </p>
-      {/if}
-    </section>
-
-    {#if unresolvedProjects.length > 0}
-      <section class="panel stack settings-section">
-        <div class="section-intro">
-          <h3>Projects needing attention</h3>
-          <p class="muted">
-            A project here either resolved fewer dependencies than it asked for — so its
-            errors may be the classpath rather than the code — or cannot be read at all.
-          </p>
-        </div>
+  {#if unresolvedProjects.length > 0}
+    <details class="fold" open>
+      <summary title="A project here either resolved fewer dependencies than it asked for, so its errors may be the classpath rather than the code, or cannot be read at all.">
+        Projects needing attention ({unresolvedProjects.length})
+      </summary>
+      <div class="fold-body">
         {#each unreadableWorkspaces as w (w.workspace)}
           {#if w.warning}
             <p class="muted">{w.warning}</p>
@@ -251,134 +222,16 @@
             </li>
           {/each}
         </ul>
-      </section>
-    {/if}
-
-    <section class="panel stack settings-section">
-      <div class="section-intro">
-        <h3>Recalled knowledge</h3>
-        <p class="muted">
-          {#if recall && recall.present}
-            What the agent did with what it was given.
-          {:else}
-            Nothing observed yet.
-          {/if}
-        </p>
       </div>
-      <!--
-        Each figure carries its own state. The heading above already says "Nothing
-        observed yet", and that was not enough: the list went on printing six zeros,
-        each of which reads as a measurement — "0 applied" says the agent was handed
-        knowledge and used none of it, which is a damning claim about an agent nobody
-        watched. D4 asks for the figure to be shown as observed or labelled as
-        un-observed AT THE POINT OF DISPLAY, not in a caveat one paragraph away.
-      -->
-      <ul class="recall-counts">
-        <li>
-          {#if recall && recall.present}<span>{recall.applied}</span>{:else}<span
-              class="recall-unobserved">not observed</span>{/if} applied
-        </li>
-        <li>
-          {#if recall && recall.present}<span>{recall.rejected}</span>{:else}<span
-              class="recall-unobserved">not observed</span>{/if} judged and rejected
-        </li>
-        <!-- and the warning colour is gated too: a red zero is a false alarm. -->
-        <li class:recall-bad={!!recall && recall.present && recall.skipped > 0}>
-          {#if recall && recall.present}<span>{recall.skipped}</span>{:else}<span
-              class="recall-unobserved">not observed</span>{/if} taken and never answered
-        </li>
-        <li>
-          {#if recall && recall.present}<span>{recall.wouldBlock}</span>{:else}<span
-              class="recall-unobserved">not observed</span>{/if} would block
-        </li>
-        <li>
-          {#if recall && recall.present}<span>{recall.blocked}</span>{:else}<span
-              class="recall-unobserved">not observed</span>{/if} blocked
-        </li>
-        <li>
-          {#if recall && recall.present}<span>{recall.unavailable}</span>{:else}<span
-              class="recall-unobserved">not observed</span>{/if} store unavailable
-        </li>
-      </ul>
-      <p class="field-caveat">{recall?.coverage ?? ""}</p>
-      {#if store && (store.health === "slow" || store.health === "unavailable")}
-        <p class="field-caveat">
-          {store.worstWorkspace}: {store.why} (over {store.slowAboveMillis} ms)
-        </p>
-      {/if}
-    </section>
+    </details>
+  {/if}
 
-    <section class="panel stack settings-section">
-      <div class="section-intro">
-        <h3>Top failure shapes</h3>
-        <p class="muted">
-          Ranked by repeats. Three or more, unfiled, is what the count above counts.
-        </p>
-      </div>
-      {#if allShapes.length === 0}
-        <p class="muted">No failures recorded.</p>
-      {:else}
-        <ul class="shape-list">
-          {#each allShapes as shape (shape.workspace + shape.shape)}
-            <li>
-              <code>{shape.shape}</code>
-              <span class="shape-count">{shape.count}x</span>
-              {#if shape.posted}<span class="shape-flag">filed</span>{/if}
-              <span class="muted">{shape.workspace}</span>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </section>
-
-    <section class="panel stack settings-section">
-      <div class="section-intro">
-        <h3>Channel reach</h3>
-        <p class="muted">
-          DEAD = the store answered and nothing reached the session. Quiet is not dead —
-          nothing to say, or this client cannot inject, is listed separately.
-        </p>
-      </div>
-      {#if (status?.silenceLogsRead.length ?? 0) === 0}
-        <p class="muted">
-          No hook has ever run here — a finding, not a healthy zero.
-        </p>
-      {:else}
-        {#if status && status.deadChannels.length > 0}
-          <p class="field-dead">Dead: {status.deadChannels.join(", ")}</p>
-        {:else}
-          <p class="muted">No dead channels.</p>
-        {/if}
-        {#if status && status.legitimatelyQuietChannels.length > 0}
-          <p class="muted">
-            Quiet by design: {status.legitimatelyQuietChannels.join(", ")}
-          </p>
-        {/if}
-        <ul class="shape-list">
-          {#each status?.channels ?? [] as channel (channel.role)}
-            <li>
-              <code>{channel.role}</code>
-              <span class="muted">
-                {channel.emitted} of {channel.fired} reached the session
-              </span>
-              {#if channel.dead}<span class="shape-flag">dead</span>{/if}
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </section>
-
-    <section class="panel stack settings-section">
-      <div class="section-intro">
-        <h3>Resident canary</h3>
-        <p class="muted">
-          Each resident is asked one real recall and one real compiler question.
-          Failing either turns this amber and tints the tray — nothing more.
-        </p>
-      </div>
-      {#if (status?.canary.length ?? 0) === 0}
-        <p class="muted">Not checked yet.</p>
-      {:else}
+  {#if canaryHealth === "degraded"}
+    <details class="fold" open>
+      <summary title="Each resident is asked one real recall and one real compiler question. Failing either turns this amber and tints the tray.">
+        Residents not answering
+      </summary>
+      <div class="fold-body">
         <ul class="shape-list">
           {#each status?.canary ?? [] as probe (probe.workspace)}
             <li class:field-dead={!probe.green}>
@@ -389,14 +242,117 @@
             </li>
           {/each}
         </ul>
-      {/if}
-    </section>
-  </div>
+      </div>
+    </details>
+  {/if}
 
-  <!-- The seat lane left this page (Harald, 2026-08-18): seats get their own
-       menu item in Sprint 28f. The go-silent switch and the /report mention
-       moved into the header above; the no-nudges switch is parked until 28f,
-       its on-disk state untouched. -->
+  <details class="fold">
+    <summary title="The figures behind the sentence above.">Details</summary>
+    <div class="fold-body">
+      <section class="stack">
+        <h3 title="What the agent did with the knowledge it was handed. 'Taken and never answered' means the knowledge store was asked and its answer was not used.">Recalled knowledge</h3>
+        <!--
+          Each figure carries its own state. "Nothing observed yet" in a heading was not enough: a list
+          of zeros reads as a measurement. D4 asks for the figure shown as observed or labelled
+          un-observed AT THE POINT OF DISPLAY.
+        -->
+        <ul class="recall-counts">
+          <li>
+            {#if recall && recall.present}<span>{recall.applied}</span>{:else}<span
+                class="recall-unobserved">not observed</span>{/if} applied
+          </li>
+          <li>
+            {#if recall && recall.present}<span>{recall.rejected}</span>{:else}<span
+                class="recall-unobserved">not observed</span>{/if} judged and rejected
+          </li>
+          <li class:recall-bad={!!recall && recall.present && recall.skipped > 0}>
+            {#if recall && recall.present}<span>{recall.skipped}</span>{:else}<span
+                class="recall-unobserved">not observed</span>{/if} taken and never answered
+          </li>
+          <li>
+            {#if recall && recall.present}<span>{recall.wouldBlock}</span>{:else}<span
+                class="recall-unobserved">not observed</span>{/if} would block
+          </li>
+          <li>
+            {#if recall && recall.present}<span>{recall.blocked}</span>{:else}<span
+                class="recall-unobserved">not observed</span>{/if} blocked
+          </li>
+          <li>
+            {#if recall && recall.present}<span>{recall.unavailable}</span>{:else}<span
+                class="recall-unobserved">not observed</span>{/if} store unavailable
+          </li>
+        </ul>
+        <p class="field-caveat">{recall?.coverage ?? ""}</p>
+        {#if store && (store.health === "slow" || store.health === "unavailable")}
+          <p class="field-caveat">
+            {store.worstWorkspace}: {store.why} (over {store.slowAboveMillis} ms)
+          </p>
+        {/if}
+      </section>
+
+      <section class="stack">
+        <h3 title="Ranked by repeats. Three or more repeats that nobody has filed are what the count in the sentence above counts.">Top failure shapes</h3>
+        {#if allShapes.length === 0}
+          <p class="muted">No failures recorded.</p>
+        {:else}
+          <ul class="shape-list">
+            {#each shownShapes as shape (shape.workspace + shape.shape)}
+              <li>
+                <code>{shape.shape}</code>
+                <span class="shape-count">{shape.count}x</span>
+                {#if shape.posted}<span class="shape-flag">filed</span>{/if}
+                <span class="muted">{shape.workspace}</span>
+              </li>
+            {/each}
+          </ul>
+          {#if allShapes.length > shownShapes.length}
+            <details class="fold">
+              <summary>{allShapes.length - shownShapes.length} more</summary>
+              <div class="fold-body">
+                <ul class="shape-list">
+                  {#each allShapes.slice(shownShapes.length) as shape (shape.workspace + shape.shape)}
+                    <li>
+                      <code>{shape.shape}</code>
+                      <span class="shape-count">{shape.count}x</span>
+                      {#if shape.posted}<span class="shape-flag">filed</span>{/if}
+                      <span class="muted">{shape.workspace}</span>
+                    </li>
+                  {/each}
+                </ul>
+              </div>
+            </details>
+          {/if}
+        {/if}
+      </section>
+
+      <section class="stack">
+        <h3 title="DEAD means the store answered and nothing reached the session. Quiet is not dead: a channel with nothing to say, or on a client that cannot inject text, is not counted.">Channel reach</h3>
+        {#if (status?.silenceLogsRead.length ?? 0) === 0}
+          <p class="muted">No hook has ever run here — a finding, not a healthy zero.</p>
+        {:else}
+          {#if status && status.deadChannels.length > 0}
+            <p class="field-dead">Dead: {status.deadChannels.join(", ")}</p>
+          {:else}
+            <p class="muted">No dead channels.</p>
+          {/if}
+          {#if status && status.legitimatelyQuietChannels.length > 0}
+            <p class="muted">Quiet by design: {status.legitimatelyQuietChannels.join(", ")}</p>
+          {/if}
+          <ul class="shape-list">
+            {#each status?.channels ?? [] as channel (channel.role)}
+              <li>
+                <code>{channel.role}</code>
+                <span class="muted">
+                  {channel.emitted} of {channel.fired} reached the session
+                </span>
+                {#if channel.dead}<span class="shape-flag">dead</span>{/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </section>
+    </div>
+  </details>
 </section>
 
 <style>
@@ -406,29 +362,6 @@
      band between the two. */
   .field-silence {
     margin-top: 0.9rem;
-  }
-  .field-headline {
-    margin-top: 0.4rem;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1.5rem;
-  }
-  .field-stat {
-    display: flex;
-    flex-direction: column;
-    min-width: 9rem;
-  }
-  .field-stat-value {
-    font-size: 1.6rem;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-  }
-  .field-stat-label {
-    font-size: 0.85rem;
-    opacity: 0.75;
-  }
-  .field-stat-degraded .field-stat-value {
-    color: #a8621a;
   }
   .recall-counts {
     list-style: none;
