@@ -12,8 +12,9 @@
 //! inside the JAWATA product (Option B — version-locked to the product's own
 //! JDT, not the analyzed project's compile version).
 //!
-//! Mirror of the fork's source-only `LombokDetector` (different runtime: Rust
-//! here, Java there) — keep the two detection heuristics in sync.
+//! Not a mirror of the engine's `LombokDetector`: that one finds Lombok use per
+//! source file, by import, for the removal tools; this one decides per workspace,
+//! from build files and `lombok.config`, whether the JVM needs the agent at start.
 
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
