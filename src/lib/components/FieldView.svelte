@@ -338,17 +338,24 @@
           {#if status && status.legitimatelyQuietChannels.length > 0}
             <p class="muted">Quiet by design: {status.legitimatelyQuietChannels.join(", ")}</p>
           {/if}
-          <ul class="shape-list">
-            {#each status?.channels ?? [] as channel (channel.role)}
-              <li>
-                <code>{channel.role}</code>
-                <span class="muted">
-                  {channel.emitted} of {channel.fired} reached the session
-                </span>
-                {#if channel.dead}<span class="shape-flag">dead</span>{/if}
-              </li>
-            {/each}
-          </ul>
+          <details class="fold">
+            <summary title="How often each hook ran and how often it put text into the session. A hook that runs and says nothing is not dead: it had nothing to say.">
+              Every channel ({status?.channels.length ?? 0})
+            </summary>
+            <div class="fold-body">
+              <ul class="shape-list">
+                {#each status?.channels ?? [] as channel (channel.role)}
+                  <li>
+                    <code>{channel.role}</code>
+                    <span class="muted">
+                      ran {channel.fired} times, put text into the session {channel.emitted} times
+                    </span>
+                    {#if channel.dead}<span class="shape-flag">dead</span>{/if}
+                  </li>
+                {/each}
+              </ul>
+            </div>
+          </details>
         {/if}
       </section>
     </div>

@@ -13,7 +13,6 @@
   import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
   import { createAppStore } from "./lib/stores/app";
   import {
-    type AddProjectInput,
     performQuitAction,
     type UpdateSettingsInput
   } from "./lib/api/tauri";
@@ -287,10 +286,6 @@
     }
   }
 
-  function handleProjectSubmit(event: CustomEvent<AddProjectInput>) {
-    appStore.addProjectEntry(event.detail);
-  }
-
   function handleSettingsSave(event: CustomEvent<UpdateSettingsInput>) {
     appStore.updateManagerSettings(event.detail);
   }
@@ -507,7 +502,6 @@
               ready={!!$appStore.settings}
               activeWorkspaceName={activeWorkspaceName}
               disabled={$appStore.isBusy}
-              on:submit={handleProjectSubmit}
               on:imported={() => appStore.load()}
             />
           </div>

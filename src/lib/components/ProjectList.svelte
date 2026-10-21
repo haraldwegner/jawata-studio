@@ -1018,13 +1018,12 @@
                         <button
                           class="select"
                           on:click={() => onSelect(project.id)}
-                          title="Select this project (right-click for actions)"
+                          title={`${project.projectPath}\nRight-click for rename, move and delete.`}
                           type="button"
                         >
                           <h3>{project.name}</h3>
                         </button>
                       {/if}
-                      <p class="path" title={project.projectPath}>{project.projectPath}</p>
                     </div>
 
                     <div class="project-right">

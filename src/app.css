@@ -1771,3 +1771,33 @@ dd {
   text-align: left;
   white-space: nowrap;
 }
+
+/* Settings → Agents, one row per agent (S19 dogfood). */
+.agents-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.agents-table th,
+.agents-table td {
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+.agents-table th {
+  color: #94a3b8;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.agents-table .agent-path > summary {
+  cursor: pointer;
+  word-break: break-all;
+  color: #cbd5e1;
+}
+
+.agents-table .agent-path .field-row {
+  margin-top: 0.4rem;
+}

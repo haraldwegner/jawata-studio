@@ -11,7 +11,7 @@ Hover any control for what it does. Each tab below says what it is for and what 
 Where you set up and run workspaces.
 
 - **Workspaces (left)** — pick the workspace new projects join; create, rename or delete one.
-- **Add projects (left)** — add one project by folder, or let the folder scan find every Java project under it, or import the projects of a `.code-workspace` file. It is open while you have no project and folded afterwards.
+- **Add projects (left)** — pick a folder: the Java project in it, or every project under it, is listed and you import the ones you tick. Or import the projects of a `.code-workspace` file. It is open while you have no project and folded afterwards.
 - **Managed Projects (right)** — one card per workspace. Start or stop a workspace or a single project; open a card to see its projects. Right-click a project or a workspace for rename, move and delete. Drag projects between workspaces. The status badge shows the phase; hover it for the detail and the process id.
 - **Deploy to agents** — writes the jawata entries into the config files of the agents you tick. **Remove from agents** takes exactly those entries out again. Neither starts or stops anything. Which agents are offered is set in Settings → Agents.
 

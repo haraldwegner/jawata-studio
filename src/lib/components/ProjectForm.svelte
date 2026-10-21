@@ -5,7 +5,6 @@
     discoverWorkspaceProjects,
     importWorkspaceProjects,
     scanFolderForProjects,
-    type AddProjectInput,
     type WorkspaceProjectCandidate
   } from "../api/tauri";
 
@@ -30,13 +29,10 @@
   export let activeWorkspaceName: string = "";
 
   const dispatch = createEventDispatcher<{
-    submit: AddProjectInput;
     imported: void;
   }>();
 
-  let name = "";
   let projectPath = "";
-  let lastSuggestedName = "";
   let workspaceFile = "";
   let candidates: WorkspaceProjectCandidate[] = [];
   let selectedPaths: string[] = [];
@@ -44,14 +40,9 @@
   let isImporting = false;
   let lastDiscoveredFile = "";
 
-  /* Sprint 16 autoscan: one checkbox under Project path. Checked, the
-   * form flips to discovery — Browse autoscans the picked folder, the
-   * submit button relabels to "Discover" (hand-typed paths / rescans),
-   * and results unfold into the shared candidate list below. The
-   * candidate/selection/import machinery is shared with the VSCode
-   * workspace flow; candidateSource records which flow filled it so the
-   * two never fight. */
-  let autoscan = false;
+  /* Sprint 16 autoscan, ALWAYS ON since the S19 dogfood (2026-10-21): Browse searches the picked
+   * folder and the results unfold into the candidate list, which is shared with the
+   * .code-workspace flow; candidateSource records which flow filled it so the two never fight. */
   let isScanning = false;
   /** studio#27: true while a .code-workspace is being walked for projects. */
   let isDiscovering = false;
@@ -73,11 +64,6 @@
   $: canImportSelected =
     !disabled && !isImporting && selectedPaths.length > 0 && activeWorkspaceName.length > 0;
 
-  $: canSubmit =
-    name.trim().length > 0 &&
-    projectPath.trim().length > 0 &&
-    activeWorkspaceName.length > 0;
-
   // Sprint 16.1 (bugs.md #19): the current path is "already scanned" when
   // folder results are showing for exactly this path. Discover hides then;
   // it returns if the path is edited (≠ scannedFolder) or while scanning.
@@ -98,45 +84,16 @@
     /* no-op */
   });
 
-  function inferNameFromPath(path: string): string {
-    const trimmed = path.trim().replace(/[\\/]+$/, "");
-    if (!trimmed) {
-      return "";
-    }
-
-    const parts = trimmed.split(/[\\/]/);
-    return parts[parts.length - 1] ?? "";
-  }
-
-  function maybeAdoptSuggestedName(projectFolderName: string) {
-    if (!projectFolderName) {
-      return;
-    }
-
-    if (!name.trim() || name.trim() === lastSuggestedName) {
-      name = projectFolderName;
-      lastSuggestedName = projectFolderName;
-    }
-  }
-
   async function chooseProjectFolder() {
     const selected = await open({
       directory: true,
       multiple: false,
-      title: autoscan
-        ? "Select folder to scan for Java projects"
-        : "Select Java project folder"
+      title: "Select a Java project, or a folder that holds several"
     });
 
     if (typeof selected === "string") {
       projectPath = selected;
-      if (autoscan) {
-        // Autoscan-on-Browse: picking the folder IS the trigger in the
-        // common case; the Discover button covers hand-typed paths.
-        await scanProjectFolder();
-      } else {
-        maybeAdoptSuggestedName(inferNameFromPath(selected));
-      }
+      await scanProjectFolder();
     }
   }
 
@@ -167,19 +124,6 @@
       scannedFolder = "";
     } finally {
       isScanning = false;
-    }
-  }
-
-  function toggleAutoscan() {
-    autoscan = !autoscan;
-    scanMessage = "";
-    if (!autoscan && candidateSource === "folder") {
-      // Leaving autoscan mode: retire the folder-sourced results so the
-      // single-project flow returns exactly to its pre-checkbox state.
-      candidates = [];
-      selectedPaths = [];
-      candidateSource = "";
-      scannedFolder = "";
     }
   }
 
@@ -288,24 +232,11 @@
     }
   }
 
-  function handleSubmit() {
-    dispatch("submit", {
-      name,
-      projectPath,
-      workspaceName: activeWorkspaceName
-    });
-
-    name = "";
-    projectPath = "";
-    // activeWorkspaceName persists across submits — owned by the parent
-    // and shared with the Workspaces card. The user is likely adding
-    // multiple projects to the same workspace.
-  }
 </script>
 
-<form class="panel stack" on:submit|preventDefault={handleSubmit}>
+<form class="panel stack" on:submit|preventDefault={scanProjectFolder}>
 <details class="fold" open={startOpen}>
-<summary title="Register one project by folder, find every Java project under a folder, or import the projects of a .code-workspace file. Open while you have no project yet.">Add projects</summary>
+<summary title="Pick a folder: the Java project in it, or every project under it, is listed for you to import. Or import the projects of a .code-workspace file. Open while you have no project yet.">Add projects</summary>
 <div class="fold-body">
   <section class="stack">
     <div class="section-intro">
@@ -320,76 +251,34 @@
     </div>
 
     <label class="field">
-      <span>Name</span>
-      <input
-        bind:value={name}
-        disabled={disabled || !activeWorkspaceName || autoscan}
-        placeholder={autoscan
-          ? "Names come from discovered projects"
-          : "Defaults to the selected folder name"}
-        required={!autoscan}
-        title={autoscan
-          ? "Disabled while autoscan is on — each discovered project keeps its folder name."
-          : "Display name shown in the Dashboard. Auto-fills from the folder if left blank."}
-      />
-    </label>
-
-    <label class="field">
-      <span>Project path</span>
+      <span>Folder</span>
       <div class="field-row">
         <input
           bind:value={projectPath}
           disabled={disabled || !activeWorkspaceName || isScanning}
-          placeholder={autoscan ? "/folder/to/scan/recursively" : "/path/to/java/project"}
+          placeholder="/a/java/project, or a folder that holds several"
           required
-          title={autoscan
-            ? "Folder to scan recursively (depth ≤ 6) for Java projects."
-            : "Absolute path to the Java project root (the folder containing pom.xml, build.gradle, or .project)."}
+          title="A Java project's folder, or a folder that holds several: it is searched (depth up to 6) and every Maven, Gradle or Eclipse project in it is listed, the folder itself included. Each keeps its folder name; rename one later with a right-click."
         />
         <button
           disabled={disabled || !activeWorkspaceName || isScanning}
           on:click={chooseProjectFolder}
-          title={autoscan
-            ? "Pick a folder — scanning starts immediately"
-            : "Open a folder picker to choose the Java project root"}
+          title="Pick a folder; the search starts at once"
           type="button"
         >Browse</button>
       </div>
     </label>
 
-    <label class="checkbox-row">
-      <input
-        checked={autoscan}
-        disabled={disabled || !activeWorkspaceName || isScanning || isImporting}
-        on:change={toggleAutoscan}
-        title="When checked, Browse scans the picked folder recursively for Java projects and lists them for import"
-        type="checkbox"
-      />
-      <span>Recursive search (autoscan)</span>
-    </label>
-
-    {#if autoscan}
-      {#if showDiscover}
-        <!-- Sprint 16.1 (bugs.md #19): Browse auto-scans, so Discover is
-             only shown when the current path hasn't been scanned yet (a
-             hand-typed path, or one edited since the last scan). Once
-             results are showing for this path the button is redundant
-             and hides. -->
-        <button
-          class:primary={canScan}
-          disabled={!canScan}
-          on:click={scanProjectFolder}
-          title="Scan the folder above recursively (depth ≤ 6) for Java projects"
-          type="button"
-        >{isScanning ? "Scanning…" : "Discover"}</button>
-      {/if}
-    {:else}
+    {#if showDiscover}
+      <!-- Sprint 16.1 (bugs.md #19): Browse searches at once, so this shows only for a
+           hand-typed path, or one edited since the last search. -->
       <button
-        class:primary={!disabled && canSubmit}
-        disabled={disabled || !canSubmit}
-        title="Add this project to the selected workspace"
-        type="submit"
-      >Save project</button>
+        class:primary={canScan}
+        disabled={!canScan}
+        on:click={scanProjectFolder}
+        title="Search the folder above (depth up to 6) for Java projects"
+        type="button"
+      >{isScanning ? "Searching…" : "Find projects"}</button>
     {/if}
 
     {#if candidateSource === "folder" && candidates.length > 0}

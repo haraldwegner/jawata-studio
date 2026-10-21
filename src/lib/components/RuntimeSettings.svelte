@@ -727,77 +727,76 @@
           Redetect defaults
         </button>
       </div>
-      <div class="mcp-clients-scroll">
-      {#each [
-        ["cursor", "Cursor"],
-        ["claude", "Claude Code"],
-        ["codex", "Codex"],
-        ["copilotCli", "Copilot CLI"],
-        ["vscode", "VS Code"],
-        ["grok", "Grok"]
-      ] as [clientKey, clientLabel]}
-        {@const key = clientKey as keyof McpClientPaths}
-        {@const entry = mcpClientPaths[key]}
-        <!-- Sprint 28a 2b (Harald's design): ONE switch per agent. Checked =
-             in play (appears in the dashboard picker, pre-ticked). Unchecked =
-             complete skip — greyed here, absent from the picker entirely. The
-             picker stays the per-run override for agents in play. -->
-        <div
-          class="stack mcp-client-card compact"
-          class:mcp-client-off={!deployTargets[key as keyof DeployTargetFlags]}
-        >
-          <div class="mcp-client-heading">
-            <div class="mcp-client-title-row">
-              <strong>{clientLabel}</strong>
-              <div class="mcp-client-title-controls">
-                <label
-                  class="checkbox-row compact mcp-deploy-checkbox"
+      <!-- S19 dogfood (his walkthrough: "Settings confusing"): ONE table, one row per agent. The
+           switch is the Sprint 28a 2b design (checked = offered in the deploy picker, pre-ticked;
+           unchecked = skipped entirely); the path override opens per row, because it is changed
+           only when a file is not where the agent normally keeps it. -->
+      <table class="agents-table">
+        <thead>
+          <tr>
+            <th title="Checked: offered in the dashboard deploy picker, pre-ticked. Unchecked: skipped entirely.">Deploy</th>
+            <th>Agent</th>
+            <th title="The file Deploy writes for this agent. Hover a path for where it came from.">Config file</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each [
+            ["cursor", "Cursor"],
+            ["claude", "Claude Code"],
+            ["codex", "Codex"],
+            ["copilotCli", "Copilot CLI"],
+            ["vscode", "VS Code"],
+            ["grok", "Grok"]
+          ] as [clientKey, clientLabel]}
+            {@const key = clientKey as keyof McpClientPaths}
+            {@const entry = mcpClientPaths[key]}
+            <tr class:mcp-client-off={!deployTargets[key as keyof DeployTargetFlags]}>
+              <td>
+                <input
+                  aria-label={`Deploy to ${clientLabel}`}
+                  bind:checked={deployTargets[key as keyof DeployTargetFlags]}
+                  disabled={interactionDisabled}
+                  on:change={handleBoundEdit}
                   title="Checked: offered in the dashboard deploy picker, pre-ticked. Unchecked: skipped entirely."
-                >
-                  <input
-                    bind:checked={deployTargets[key as keyof DeployTargetFlags]}
-                    disabled={interactionDisabled}
-                    on:change={handleBoundEdit}
-                    type="checkbox"
-                  />
-                  <span>Include in deploys</span>
-                </label>
-                <span class={`mcp-source-badge ${mcpPathSource(entry)}`}>{mcpPathSourceLabel(entry)}</span>
-              </div>
-            </div>
-          </div>
-          <p class="hint mcp-current-path" title={effectivePath(entry)}>
-            <strong>Current:</strong> {effectivePath(entry)}
-          </p>
-          {#if shouldShowDetectedHint(entry)}
-            <p class="hint" title={entry?.autoDetectedPath ?? undefined}>
-              Detected default: {entry?.autoDetectedPath}
-            </p>
-          {/if}
-          <div class="field-row">
-            <input
-              disabled={interactionDisabled}
-              on:input={(event) => setManualMcpPath(key, (event.currentTarget as HTMLInputElement).value)}
-              placeholder="Manual override path"
-              title="Manual override for this client's MCP config file (leave empty to use the auto-detected default)"
-              value={entry?.manualOverridePath ?? ""}
-            />
-            <button
-              disabled={interactionDisabled}
-              on:click={() => chooseMcpPath(key)}
-              title="Open a file picker to choose this client's MCP config file"
-              type="button"
-            >Browse</button>
-            <button
-              disabled={interactionDisabled}
-              on:click={() => clearManualMcpPath(key)}
-              title="Clear the manual override and fall back to the auto-detected path"
-              type="button"
-            >Clear</button>
-          </div>
-        </div>
-      {/each}
-      </div>
+                  type="checkbox"
+                />
+              </td>
+              <td><strong>{clientLabel}</strong></td>
+              <td>
+                <details class="agent-path">
+                  <summary
+                    class="mono"
+                    title={`${mcpPathSourceLabel(entry)}${shouldShowDetectedHint(entry) ? ` · detected default: ${entry?.autoDetectedPath}` : ""}. Open to change it.`}
+                  >
+                    {effectivePath(entry)}
+                  </summary>
+                  <div class="field-row">
+                    <input
+                      disabled={interactionDisabled}
+                      on:input={(event) => setManualMcpPath(key, (event.currentTarget as HTMLInputElement).value)}
+                      placeholder="another file for this agent"
+                      title="Only if this agent keeps its configuration somewhere unusual. Empty = the detected default."
+                      value={entry?.manualOverridePath ?? ""}
+                    />
+                    <button
+                      disabled={interactionDisabled}
+                      on:click={() => chooseMcpPath(key)}
+                      title="Open a file picker to choose this agent's config file"
+                      type="button"
+                    >Browse</button>
+                    <button
+                      disabled={interactionDisabled}
+                      on:click={() => clearManualMcpPath(key)}
+                      title="Back to the detected default"
+                      type="button"
+                    >Clear</button>
+                  </div>
+                </details>
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
 
       <details class="fold">
         <summary title="Rarely changed. Safe merge touches only what the manager owns; the backup is a .bak copy written next to each config before a change.">Advanced</summary>
