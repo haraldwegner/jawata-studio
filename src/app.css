@@ -924,7 +924,7 @@ button:disabled {
   border-color: rgba(96, 165, 250, 0.45);
   background: rgba(37, 99, 235, 0.16);
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   width: 100%;
 }
 
@@ -1746,4 +1746,101 @@ dd {
   .mcp-locations-section {
     height: auto;
   }
+}
+
+/* UX overhaul 2026-10-21 (his walkthrough of 4.4.7): a view opens on ONE summary line and keeps its
+   detail folded. `.fold` is a native <details>, so it needs no script and keeps its own state. */
+.summary-line {
+  margin: 0;
+  color: #cbd5e1;
+  font-size: 0.95rem;
+}
+
+.summary-line strong {
+  color: #f1f5f9;
+}
+
+.summary-line.attention strong {
+  color: #fbbf24;
+}
+
+.fold {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.fold > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.fold > summary::before {
+  content: "▸";
+  color: #94a3b8;
+  transition: transform 0.12s;
+}
+
+.fold[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.fold > .fold-body {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0 0.9rem 0.9rem;
+}
+
+.fold .fold {
+  background: transparent;
+}
+
+/* The "More ▾" menu: a <details> whose body floats under its summary. */
+.more-menu {
+  position: relative;
+  display: inline-block;
+}
+
+.more-menu > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 0.45rem 0.8rem;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 10px;
+  background: rgba(30, 41, 59, 0.85);
+  color: #e2e8f0;
+  white-space: nowrap;
+}
+
+.more-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.more-menu-body {
+  position: absolute;
+  right: 0;
+  z-index: 30;
+  display: grid;
+  gap: 0.25rem;
+  min-width: 11rem;
+  margin-top: 0.3rem;
+  padding: 0.4rem;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 10px;
+  background: #0f172a;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.more-menu-body button {
+  text-align: left;
+  white-space: nowrap;
 }

@@ -92,6 +92,16 @@ if [ "$TYPES" -ne 0 ]; then
 fi
 
 echo
+echo "=== gate: the Help page names every tab ==="
+# 2026-10-21, his walkthrough: Help never mentioned Reporting or Seats. Exit 2 is "nothing was checked".
+"$ROOT/build/help-gate.sh"
+HELP=$?
+if [ "$HELP" -ne 0 ]; then
+    echo "FAILED: the help gate (exit $HELP). A tab the app has must have a section in src/assets/help.md."
+    exit "$HELP"
+fi
+
+echo
 echo "=== gate: every architect report carries its D4 section ==="
 # Sprint 28g Stage 6. Exit 2 is "nothing was checked", which is not a pass.
 "$ROOT/build/architect-d4-gate.sh"

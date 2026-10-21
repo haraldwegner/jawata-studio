@@ -103,7 +103,6 @@
     globalContextMenu = { x: event.clientX, y: event.clientY, items };
   }
 
-  $: selectedProject = $appStore.projects?.find((project) => project.id === $appStore.selectedProjectId);
   $: workspacesWithProjects = Array.from(
     new Set(($appStore.projects ?? []).map((p) => p.workspaceName))
   ).sort();
@@ -165,9 +164,6 @@
         `To only change agent deployment, use the deploy controls instead.`,
     );
   }
-  $: selectedStatus = selectedProject
-    ? $appStore.runtimeStatuses?.[selectedProject.id]
-    : undefined;
   $: runtimeSource = $appStore.settings?.globalRuntimeSource;
   $: runtimeSubtitle = (() => {
     const ver =
@@ -507,6 +503,7 @@
               runtimeStatuses={$appStore.runtimeStatuses ?? {}}
             />
             <ProjectForm
+              projectCount={($appStore.projects ?? []).length}
               activeWorkspaceName={activeWorkspaceName}
               disabled={$appStore.isBusy}
               on:submit={handleProjectSubmit}
@@ -525,7 +522,6 @@
           <div class="dashboard-column">
             <ProjectList
               disabled={$appStore.isBusy}
-              onRefresh={(projectId) => appStore.refreshProjectStatus(projectId)}
               onSelect={(projectId) => appStore.selectProject(projectId)}
               onStart={(projectId) => appStore.startProject(projectId)}
               onStartAll={() => appStore.startAllProjects()}
@@ -590,53 +586,6 @@
         </section>
       </section>
 
-      {#if ($appStore.projects ?? []).length > 0}
-        <section class="panel detail-panel dashboard-footer-panel">
-          <div class="detail-header">
-            <h2>Selected Project Status</h2>
-            {#if selectedProject}
-              <button
-                aria-label={`Refresh status for ${selectedProject.name}`}
-                class="icon-refresh"
-                on:click={() => appStore.refreshProjectStatus(selectedProject.id)}
-                title="Refresh status"
-                type="button"
-              >
-                ↻
-              </button>
-            {/if}
-          </div>
-
-          {#if selectedProject && selectedStatus}
-            <dl class="detail-grid">
-              <div>
-                <dt>Name</dt>
-                <dd>{selectedProject.name}</dd>
-              </div>
-              <div>
-                <dt>Project path</dt>
-                <dd title={selectedProject.projectPath}>{selectedProject.projectPath}</dd>
-              </div>
-              <div>
-                <dt>Workspace</dt>
-                <dd>{selectedProject.workspaceName}</dd>
-              </div>
-              <div>
-                <dt>PID</dt>
-                <dd>{selectedStatus.pid ?? "Not running"}</dd>
-              </div>
-              <div>
-                <dt>Phase / Health</dt>
-                <dd title={selectedStatus.detail}>
-                  {selectedStatus.phase} - {selectedStatus.detail}
-                </dd>
-              </div>
-            </dl>
-          {:else}
-            <p class="muted">Choose a project to inspect runtime and health details.</p>
-          {/if}
-        </section>
-      {/if}
     </section>
   {:else if currentView === 'settings'}
     <section class="dashboard-main">

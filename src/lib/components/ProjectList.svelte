@@ -30,7 +30,6 @@
   export let onStart: (projectId: string) => void;
   export let onStop: (projectId: string) => void;
   export let onDelete: (projectId: string) => void;
-  export let onRefresh: (projectId: string) => void;
   export let onStartAll: () => void;
   export let onStopAll: () => void;
   /** Sprint 14 (v0.14.0): stop every workspace, wait for each to
@@ -417,10 +416,7 @@
   }
 
   function runActionLabel(mode: DeployMode): string {
-    if (mode === "delete") {
-      return "Delete selected";
-    }
-    return `Run ${mode}`;
+    return mode === "delete" ? "Remove from selected" : "Deploy to selected";
   }
 
   function extractProjectError(status?: RuntimeStatusRecord): string | null {
@@ -653,13 +649,13 @@
           {aggregateLabel}
         </span>
       </h2>
-      <p class="muted">Project services managed by the manager, grouped by workspace.</p>
-      <div class="project-summary-metrics">
-        <span class="metric-pill">Workspaces {totalWorkspaces}</span>
-        <span class="metric-pill running">Running {runningWorkspaces}</span>
-        <span class="metric-pill stopped">Stopped {stoppedWorkspaces}</span>
-        <span class="metric-pill">Projects {totalProjects}</span>
-      </div>
+      <p
+        class="summary-line"
+        title="A workspace is running when every project in it is running."
+      >
+        <strong>{runningWorkspaces} of {totalWorkspaces}</strong> workspaces running ·
+        {totalProjects} projects
+      </p>
     </div>
     <div class="project-list-toolbar segmented-actions">
       <button
@@ -686,14 +682,20 @@
       >
         Reload all
       </button>
-      <button
-        disabled={disabled || projects.length === 0}
-        on:click={handleDeleteAll}
-        title="Remove every project and workspace from the manager"
-        type="button"
-      >
-        Delete all
-      </button>
+      <details class="more-menu">
+        <summary title="Less common actions">More ▾</summary>
+        <div class="more-menu-body">
+          <button
+            class="danger"
+            disabled={disabled || projects.length === 0}
+            on:click={handleDeleteAll}
+            title="Remove every project and workspace from the manager. Your project files on disk are not deleted."
+            type="button"
+          >
+            Delete all workspaces…
+          </button>
+        </div>
+      </details>
     </div>
   </div>
 
@@ -704,44 +706,26 @@
       class:active={highlightedDeployMode === "deploy"}
       disabled={disabled || deployBusy}
       on:click={() => openDeployTargetPicker("deploy")}
-      title="Write managed MCP server entries into selected agent config files"
+      title="Write the jawata entry of every workspace into the config files of the agents you tick next. Run it again after adding or renaming a workspace; it rewrites only what differs."
       type="button"
     >
-      {deployBusy ? "Deploying..." : "Deploy to Agents"}
-    </button>
-    <button
-      class:active={highlightedDeployMode === "dryRun"}
-      disabled={disabled || deployBusy}
-      on:click={() => openDeployTargetPicker("dryRun")}
-      title="Preview the changes that Deploy would make, without writing"
-      type="button"
-    >
-      Dry run
-    </button>
-    <button
-      class:active={highlightedDeployMode === "regenerate"}
-      disabled={disabled || deployBusy}
-      on:click={() => openDeployTargetPicker("regenerate")}
-      title="Force-rewrite the managed section even if unchanged"
-      type="button"
-    >
-      Regenerate
+      {deployBusy ? "Deploying..." : "Deploy to agents"}
     </button>
     <button
       class:active={highlightedDeployMode === "delete"}
       disabled={disabled || deployBusy}
       on:click={() => openDeployTargetPicker("delete")}
-      title="Remove the manager's MCP entries from the selected agent config files"
+      title="Remove exactly the entries Deploy wrote from the selected agents' config files. Nothing is stopped and no project is removed."
       type="button"
     >
-      Delete
+      Remove from agents
     </button>
     </div>
   </div>
 
   {#if showDeployTargetPicker}
     <div class="deploy-target-picker">
-      <p class="hint"><strong>Targets for {pendingDeployMode}</strong></p>
+      <p class="hint"><strong>{pendingDeployMode === "delete" ? "Remove from which agents?" : "Deploy to which agents?"}</strong></p>
       <div class="deploy-target-grid">
         {#each deployTargetOptions.filter((option) => deployTargetDefaults[option.key]) as option}
           <label class="checkbox-row compact">
@@ -878,7 +862,7 @@
   {:else}
     <div class="stack project-list-scroll">
       {#each groupedWorkspaces as workspace (workspace.name)}
-        {@const collapsed = collapsedWorkspaces[workspace.name] ?? (workspace.phase === "stopped")}
+        {@const collapsed = collapsedWorkspaces[workspace.name] ?? (groupedWorkspaces.length > 1 || workspace.phase === "stopped")}
         {@const isRenaming = renamingWorkspace === workspace.name}
         <article class="workspace-card" on:contextmenu={(e) => openWorkspaceContextMenu(e, workspace)}>
           <header
@@ -958,14 +942,6 @@
               >
                 Stop workspace
               </button>
-              <button
-                disabled={disabled}
-                on:click={() => handleDeleteWorkspace(workspace.name, workspace.projects.length)}
-                title="Delete this workspace and remove its projects from the manager"
-                type="button"
-              >
-                Delete workspace
-              </button>
             </div>
           </header>
           {#if isRenaming && renameError}
@@ -1027,17 +1003,10 @@
 
                     <div class="project-right">
                       <div class="status-actions">
-                        <button
-                          aria-label={`Refresh status for ${project.name}`}
-                          class="icon-refresh"
-                          disabled={disabled}
-                          on:click={() => onRefresh(project.id)}
-                          title="Refresh status from runtime"
-                          type="button"
+                        <span
+                          class={`badge ${status?.phase ?? "stopped"}`}
+                          title={`${status?.detail ?? "stopped"}${status?.pid ? `\nprocess id ${status.pid}` : ""}\nRight-click the project for rename, move and delete.`}
                         >
-                          ↻
-                        </button>
-                        <span class={`badge ${status?.phase ?? "stopped"}`}>
                           <span class={`status-lamp ${status?.phase ?? "stopped"}`}></span>
                           {status?.phase ?? "stopped"}
                         </span>
@@ -1072,14 +1041,6 @@
                           type="button"
                         >
                           Stop
-                        </button>
-                        <button
-                          disabled={disabled}
-                          on:click={() => onDelete(project.id)}
-                          title="Remove this project from the manager"
-                          type="button"
-                        >
-                          Delete
                         </button>
                       </div>
                     </div>

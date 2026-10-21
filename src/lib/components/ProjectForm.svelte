@@ -9,6 +9,8 @@
     type WorkspaceProjectCandidate
   } from "../api/tauri";
 
+  /** Open the panel while there is nothing registered yet; fold it once there is. */
+  export let projectCount = 0;
   export let disabled = false;
   /** Sprint 10 v0.10.4: the workspace this form's submit will add the
    * project to. Owned by the parent (App.svelte) and shared with the
@@ -292,9 +294,12 @@
 </script>
 
 <form class="panel stack" on:submit|preventDefault={handleSubmit}>
+<details class="fold" open={projectCount === 0}>
+<summary title="Register one project by folder, find every Java project under a folder, or import the projects of a .code-workspace file. Open while you have no project yet.">Add projects</summary>
+<div class="fold-body">
   <section class="stack">
     <div class="section-intro">
-      <h2>Register Project</h2>
+      <h3>From a folder</h3>
       <p class="muted">
         {#if activeWorkspaceName}
           Adding to <strong>{activeWorkspaceName}</strong>. Pick a different workspace above to change.
@@ -413,7 +418,7 @@
 
   <section class="stack">
     <div class="section-intro">
-      <h2>Import from VSCode Workspace</h2>
+      <h3>From a .code-workspace file</h3>
       <p class="muted">
         {#if activeWorkspaceName}
           Discover Maven/Gradle and Eclipse/PDE Java projects from a .code-workspace file. Selected projects join <strong>{activeWorkspaceName}</strong>.
@@ -481,4 +486,6 @@
       <p class="muted">{importMessage}</p>
     {/if}
   </section>
+</div>
+</details>
 </form>

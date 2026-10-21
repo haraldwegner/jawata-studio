@@ -165,7 +165,7 @@
   }
 
   const FIRES_HINT = "When this seat is meant to be used: the point in your work at which an agent is sent to it.";
-  const BRAIN_HINT = "The agent program, and the model, that a hire of this seat starts — logged in with your account on this machine. Choosing one first runs a one-word test through it (Claude Code: under a cent, measured) and is saved only if it answers. The list is read from the programs installed here.";
+  const BRAIN_HINT = "Typed as a command, a seat runs on your own agent; this is the brain a HIRE of it starts: the agent program, and the model, — logged in with your account on this machine. Choosing one first runs a one-word test through it (Claude Code: under a cent, measured) and is saved only if it answers. The list is read from the programs installed here.";
   const RESET_HINT = "Discards your changes to this seat and takes the version this studio ships. Your changed file is kept beside it as a backup.";
   const CLIENTS_HINT = "Which of your agents get this seat's command.";
 
@@ -184,6 +184,35 @@
   }
 
   onMount(load);
+
+  /** The first sentence of a seat's purpose: the whole of it sits in the folded row. */
+  function firstSentence(text: string): string {
+    const end = text.search(/[.!?](\s|$)/);
+    return end < 0 ? text : text.slice(0, end + 1);
+  }
+
+  // Three groups by how a person reaches a seat — the question the view answers first. A seat
+  // with a command is typed; one that is a step of /sprint has no command of its own; the rest
+  // are hired by another seat and only their brain is the person's to choose.
+  $: groups = view
+    ? [
+        {
+          title: "You type these",
+          hint: "Each has a command you type in your agent's chat. The On switch adds or removes that command in your agents.",
+          seats: view.seats.filter((seat) => seat.command),
+        },
+        {
+          title: "Another seat hires these",
+          hint: "They have no command. A seat hires one for a job, gives it a brief and checks what comes back. You choose only which brain they use.",
+          seats: view.seats.filter((seat) => !seat.command && !seat.pipeline),
+        },
+        {
+          title: "Inside /sprint",
+          hint: "The two steps of /sprint. They have no command of their own.",
+          seats: view.seats.filter((seat) => !seat.command && seat.pipeline),
+        },
+      ].filter((group) => group.seats.length > 0)
+    : [];
 </script>
 
 <!-- The app's own view skeleton, copied from the Memory and Reporting views rather than styled
@@ -193,6 +222,16 @@
      `settings-grid`; seats are of similar height, so the pairs line up. -->
 <section class="panel stack runtime-settings-root seats-root">
   <h2>Seats</h2>
+  {#if view}
+    <p
+      class="summary-line"
+      title="A seat is a narrow engineering role an agent can take. Open a row for when it is used, its brain and which of your agents get its command."
+    >
+      <strong>{view.seats.filter((seat) => seat.command).length}</strong> you type ·
+      {view.seats.filter((seat) => !seat.command && !seat.pipeline).length} hired by other seats ·
+      {view.seats.filter((seat) => !seat.command && seat.pipeline).length} inside /sprint
+    </p>
+  {/if}
 
   {#if loadError}
     <p class="project-error">{loadError}</p>
@@ -207,108 +246,142 @@
   {/if}
 
   {#if view}
-    <div class="settings-grid">
-      {#each view.seats as seat (seat.name)}
-        <section class="panel stack settings-section" class:seat-off={!seat.enabled}>
-          <div class="section-intro">
-            <h3 title={invocationHint(seat)}>{seat.name} ({invocation(seat)})</h3>
-            <p class="seat-purpose">{seat.purpose}</p>
-          </div>
-
-          {#if seat.deployable}
-            <label class="checkbox-row" title={onHint(seat)}>
-              <input
-                checked={seat.enabled}
-                disabled={disabled || busy}
-                on:change={(e) =>
-                  apply(seat, { setting: "enabled", value: e.currentTarget.checked })}
-                type="checkbox"
-              />
-              <span>On</span>
-            </label>
-          {/if}
-
-          <!-- The one local style: the shared sheet has no label/value list, and its global
-               `dd` clamps every value to one line. -->
-          <dl class="seat-facts">
-            <dt title={FIRES_HINT}>When</dt>
-            <dd title={FIRES_HINT}>{seat.fires}</dd>
-            <dt title={BRAIN_HINT}>Brain</dt>
-            <dd title={BRAIN_HINT}>
-              {#if brains.length === 0}
-                {brainsChecking ? "checking which brains this machine has…" : brainLabel(seat.brain)}
-              {:else}
-                {@const status = brains.find((b) => b.id === seat.brain)}
-                <select
-                  class="seat-brain"
-                  value={`${seat.brain}|${seat.model ?? ""}`}
-                  disabled={disabled || busy || testing[seat.name]}
-                  on:change={(e) => chooseBrain(seat, e.currentTarget)}
-                >
-                  {#each brainOptions(seat) as option (option.value)}
-                    <option value={option.value}>{option.label}</option>
-                  {/each}
-                </select>
-                {#if seat.runsInAgent}
-                  <span class="muted seat-note">Typed as {seat.command ?? "part of /sprint"}, it runs on your own agent; this is the brain a hire starts.</span>
-                {/if}
-                {#if testing[seat.name]}
-                  <span class="seat-note">Testing — one word through the brain…</span>
-                {:else if lastTest[seat.name]}
-                  {@const t = lastTest[seat.name]}
-                  {#if t.ok}
-                    <span class="seat-note">
-                      Tested: answered “{t.answer}” in {t.seconds.toFixed(1)} s{#if t.modelsUsed.length > 0} · {t.modelsUsed[0]}{/if}{#if t.costUsd !== null} · ${t.costUsd.toFixed(3)}{/if}
-                    </span>
-                  {:else}
-                    <span class="project-error seat-note">{brainLabel(t.brain)} did not answer: {t.error}</span>
-                    <span class="seat-note">To log in, run <code>{t.loginCommand}</code> in a terminal, then choose it again. The previous choice is kept.</span>
-                  {/if}
-                {:else if status && status.installed && status.login === "notLoggedIn"}
-                  <span class="project-error seat-note">{status.label} is not logged in: {status.reason}</span>
-                  <span class="seat-note">To log in, run <code>{status.loginCommand}</code> in a terminal, then open this tab again.</span>
-                {:else if status && !status.installed}
-                  <span class="project-error seat-note">{status.reason}</span>
-                {/if}
+    {#each groups as group (group.title)}
+      <section class="seat-group">
+        <h3 title={group.hint}>{group.title}</h3>
+        {#each group.seats as seat (seat.name)}
+          <details class="fold seat-row" class:seat-off={!seat.enabled}>
+            <summary>
+              <span class="seat-name" title={invocationHint(seat)}>
+                {seat.name}{#if seat.command} <span class="seat-command">({seat.command})</span>{/if}
+              </span>
+              {#if seat.deployable}
+                <label class="checkbox-row seat-on" title={onHint(seat)}>
+                  <input
+                    checked={seat.enabled}
+                    disabled={disabled || busy}
+                    on:change={(e) =>
+                      apply(seat, { setting: "enabled", value: e.currentTarget.checked })}
+                    type="checkbox"
+                  />
+                  <span>On</span>
+                </label>
               {/if}
-            </dd>
-            {#if seat.deployable && view.clients.length >= 2}
-              <dt title={CLIENTS_HINT}>Clients</dt>
-              <dd title={CLIENTS_HINT}>
-                {#each view.clients as client (client.id)}
-                  <label class="checkbox-row">
-                    <input
-                      checked={onClient(seat, client.id)}
-                      disabled={disabled || busy}
-                      on:change={(e) => toggleClient(seat, client.id, e.currentTarget.checked)}
-                      type="checkbox"
-                    />
-                    <span>{client.label}</span>
-                  </label>
-                {/each}
-              </dd>
-            {/if}
-          </dl>
+              <span class="seat-first muted">{firstSentence(seat.purpose)}</span>
+            </summary>
 
-          {#if seat.customised}
-            <button
-              disabled={disabled || busy}
-              on:click={() => apply(seat, { setting: "reset" })}
-              title={RESET_HINT}
-              type="button"
-            >
-              Reset to shipped
-            </button>
-          {/if}
-        </section>
-      {/each}
-    </div>
+            <div class="fold-body">
+              <p class="seat-purpose">{seat.purpose}</p>
+              <!-- The one local style: the shared sheet has no label/value list, and its global
+                   `dd` clamps every value to one line. -->
+              <dl class="seat-facts">
+                <dt title={FIRES_HINT}>When</dt>
+                <dd title={FIRES_HINT}>{seat.fires}</dd>
+                <dt title={BRAIN_HINT}>Brain</dt>
+                <dd title={BRAIN_HINT}>
+                  {#if brains.length === 0}
+                    {brainsChecking ? "checking which brains this machine has…" : brainLabel(seat.brain)}
+                  {:else}
+                    {@const status = brains.find((b) => b.id === seat.brain)}
+                    <select
+                      class="seat-brain"
+                      value={`${seat.brain}|${seat.model ?? ""}`}
+                      disabled={disabled || busy || testing[seat.name]}
+                      on:change={(e) => chooseBrain(seat, e.currentTarget)}
+                    >
+                      {#each brainOptions(seat) as option (option.value)}
+                        <option value={option.value}>{option.label}</option>
+                      {/each}
+                    </select>
+                    {#if testing[seat.name]}
+                      <span class="seat-note">Testing — one word through the brain…</span>
+                    {:else if lastTest[seat.name]}
+                      {@const t = lastTest[seat.name]}
+                      {#if t.ok}
+                        <span class="seat-note">
+                          Tested: answered “{t.answer}” in {t.seconds.toFixed(1)} s{#if t.modelsUsed.length > 0} · {t.modelsUsed[0]}{/if}{#if t.costUsd !== null} · ${t.costUsd.toFixed(3)}{/if}
+                        </span>
+                      {:else}
+                        <span class="project-error seat-note">{brainLabel(t.brain)} did not answer: {t.error}</span>
+                        <span class="seat-note">To log in, run <code>{t.loginCommand}</code> in a terminal, then choose it again. The previous choice is kept.</span>
+                      {/if}
+                    {:else if status && status.installed && status.login === "notLoggedIn"}
+                      <span class="project-error seat-note">{status.label} is not logged in: {status.reason}</span>
+                      <span class="seat-note">To log in, run <code>{status.loginCommand}</code> in a terminal, then open this tab again.</span>
+                    {:else if status && !status.installed}
+                      <span class="project-error seat-note">{status.reason}</span>
+                    {/if}
+                  {/if}
+                </dd>
+                {#if seat.deployable && view.clients.length >= 2}
+                  <dt title={CLIENTS_HINT}>Clients</dt>
+                  <dd title={CLIENTS_HINT}>
+                    {#each view.clients as client (client.id)}
+                      <label class="checkbox-row">
+                        <input
+                          checked={onClient(seat, client.id)}
+                          disabled={disabled || busy}
+                          on:change={(e) => toggleClient(seat, client.id, e.currentTarget.checked)}
+                          type="checkbox"
+                        />
+                        <span>{client.label}</span>
+                      </label>
+                    {/each}
+                  </dd>
+                {/if}
+              </dl>
+
+              {#if seat.customised}
+                <button
+                  disabled={disabled || busy}
+                  on:click={() => apply(seat, { setting: "reset" })}
+                  title={RESET_HINT}
+                  type="button"
+                >
+                  Reset to shipped
+                </button>
+              {/if}
+            </div>
+          </details>
+        {/each}
+      </section>
+    {/each}
   {:else if !loadError}
     <p class="muted">Loading seats...</p>
   {/if}
 </section>
 
 <style>
+  .seat-group {
+    display: grid;
+    gap: 0.5rem;
+  }
+  .seat-group h3 {
+    margin: 0.6rem 0 0;
+    color: #cbd5e1;
+  }
+  /* One row per seat: name and command, the On switch, then what it is for in one sentence. The
+     sentence wraps rather than being cut, so nothing in it is hidden behind an ellipsis. */
+  .seat-row > summary {
+    flex-wrap: wrap;
+    row-gap: 0.2rem;
+  }
+  .seat-name {
+    min-width: 13rem;
+    font-weight: 600;
+  }
+  .seat-command {
+    color: #93c5fd;
+    font-weight: 500;
+  }
+  .seat-on {
+    margin: 0;
+    font-weight: 400;
+  }
+  .seat-first {
+    flex: 1 1 22rem;
+    font-weight: 400;
+  }
   .seat-off {
     opacity: 0.6;
   }

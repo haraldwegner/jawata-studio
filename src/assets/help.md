@@ -1,329 +1,64 @@
 # jawata-studio Help
 
-**jawata-studio** is the desktop control plane for **JAWATA** — it lets you create **named workspaces** of one-or-more Java projects, runs a single shared JAWATA MCP service per workspace, and **deploys** the connection details into your AI tools (Cursor, Claude Code, Codex, GitHub Copilot CLI, VS Code, Grok).
+**jawata-studio** runs one JAWATA service per **workspace** (a named group of Java projects) and writes the connection into your AI agents (Cursor, Claude Code, Codex, GitHub Copilot CLI, VS Code, Grok), so they get compiler-accurate understanding of your code.
 
-The point: it gives your AI agents the same IDE-grade understanding of a Java codebase that a human developer gets in Eclipse or IntelliJ — call hierarchies, type hierarchies, references, refactorings, build classpath, JDK semantics. **Java agents on steroids.**
-
-Use **Dashboard** for day-to-day work, **Settings** for runtime paths and agent config files, and **Help** (this page) for orientation.
-
-## Installation & Updates
-
-**Linux** — the install script downloads the latest `.AppImage` from GitHub Releases (matching your architecture, x86_64 or aarch64), verifies its checksum, and registers a desktop entry:
-
-```bash
-curl -sSL https://raw.githubusercontent.com/haraldwegner/jawata-studio/main/install.sh | bash
-```
-
-For `.deb` packages, see the [GitHub Releases page](https://github.com/haraldwegner/jawata-studio/releases).
-
-**macOS** (Apple Silicon) — download the `_aarch64.dmg`; unsigned, so clear the Gatekeeper quarantine once (`xattr -d com.apple.quarantine /Applications/jawata-studio.app`).
-
-**Windows** (x64 and ARM64) — download the `.msi` or `-setup.exe`; unsigned, so the first launch needs a one-time SmartScreen **More info → Run anyway**.
-
-Per-platform detail and the bypass steps are in the [README](https://github.com/haraldwegner/jawata-studio#installation).
-
----
-
-## Workspaces — the core concept
-
-A **workspace** is a named group of Java projects loaded into one JAWATA process and exposed to agents as **one MCP service** (`jawata-<workspace-name>`). The agent sees the combined symbol set of every project in the workspace; cross-project navigation, find-references, and refactorings work across the whole group.
-
-- **One workspace per cohesive task.** A bundle/multi-module application (e.g. an Eclipse RCP product with 12 OSGi bundles), a monorepo, or a single project that you want isolated — each gets its own workspace.
-- **Live updates.** Add or remove a project from a workspace and the running JAWATA picks it up within ~1 second through a `workspace.json` file watcher. No MCP-client restart, no agent-session reload.
-- **No ports.** Workspaces are identified by name. There is no port range, no per-project port allocation, no port conflicts.
-- **Tool budget.** Each workspace contributes **a few dozen tools** toward whatever cap your agent applies (the exact number is on **Settings → Exposed Services → Test Services**), so every additional active workspace adds that many again before the client's own tools are counted. Cursor rejects past **40**; an IDE-hosted agent may arrive with dozens of its own. If tools go missing, this is the first thing to suspect.
-
----
+Hover any control for what it does. Each tab below says what it is for and what you do there.
 
 ## Dashboard
 
-![Dashboard — top half: Workspaces card, Register Project, Managed Projects header](/help/dashboard-top.png)
+Where you set up and run workspaces.
 
-![Dashboard — bottom half: Managed Projects rows + Selected Project Status strip](/help/dashboard-bottom.png)
-
-*Workspaces card and Register Project on the left; grouped Managed Projects with the Agent deploy strip on the right; selected project status across the bottom.*
-
-The Dashboard splits into three areas:
-- **Left column** — the **Workspaces** card (pick / create / rename / delete) and the **Register Project / Import VSCode Workspace** forms below it.
-- **Right column** — the **Managed Projects** view grouped by workspace, the **Agent deploy** toolbar, and the bulk-action bar that appears when you select projects.
-- **Bottom strip** — full-width **Selected Project Status** for the row you most recently picked.
-
-### Workspaces card (left)
-
-Each row in the Workspaces card shows a workspace name, a colored **status lamp**, and the project count.
-
-- **Status lamp colors** — slate (stopped), amber (starting / mixed), emerald (running), coral (failed). The color reflects the workspace's aggregate runtime phase, derived from its members.
-- **Click** a row to make that workspace the **active** one — newly registered projects join it, and the Register Project / Import forms update their hint accordingly.
-- **+ New workspace…** — inline-creates an empty workspace. It pins until either you add a project to it or you delete it.
-- **Hover** a row to reveal the rename ✎ and delete ✕ icons. **Right-click** for a context menu with Rename / Delete.
-
-### Register Project
-
-1. **Name** — Required. Browsing for a folder fills this in from the folder's last segment (you can edit it).
-2. **Project path** — The root directory of a Java/Maven/Gradle (or Eclipse PDE) project.
-3. **Workspace** — Implicitly the active workspace from the left card. Pick a different one in the Workspaces card to switch.
-4. **Save project** — Registers the project. The manager updates the workspace's `workspace.json` and any running JAWATA picks up the new project immediately.
-
-#### Recursive search (autoscan)
-
-Tick the **Recursive search (autoscan)** checkbox under Project path to flip the form into discovery mode: **Browse** then scans the picked folder recursively (depth ≤ 6) for Maven/Gradle and Eclipse/PDE projects and unfolds the results right in the card — tick the ones you want, **Import selected**, and they all join the active workspace. The button reads **Discover** for hand-typed paths or rescans; the Name field is disabled (each discovered project keeps its folder name). Point it at a parent folder like `~/Projects` — no `.code-workspace` file needed.
-
-### Import VSCode Workspace
-
-Pick a `.code-workspace` file (**Browse**), then **Discover** to enumerate Maven/Gradle and Eclipse/PDE Java projects. Tick the rows you want and click **Import selected** — every imported project joins the currently active workspace.
-
-### Managed Projects (grouped view)
-
-The right pane shows one **workspace card** per workspace, with project rows nested inside. Each card has a header with the workspace name, status badge, project count, and per-workspace **Start workspace / Stop workspace / Delete workspace** actions. Click the chevron to collapse or expand the card.
-
-Each project row inside a workspace card has:
-- A **selection checkbox** on the left (see "Bulk actions" below).
-- The **project name** (click to make it the *Selected project* shown in the bottom strip; click again to inline-rename).
-- The **project path** below the name.
-- **Refresh / Status badge / Start / Stop / Delete** on the right.
-- **Right-click** for a context menu: Start project / Stop project / Rename project / Move to workspace… / Delete project.
-
-At the very top of the pane, a metric strip shows totals: workspaces, running, stopped, projects.
-
-### Bulk actions (multi-select)
-
-Use the per-row checkboxes to build a **cross-workspace** selection set. Shift-click to extend a range; ctrl/cmd-click toggles a single row.
-
-When at least one row is selected, a **bulk-action bar** appears above the workspace cards:
-- **Move to workspace ▾** — move every selected project to a chosen (existing or new) workspace in one go.
-- **Start selected** / **Stop selected** — fan the per-project start/stop out over the selection.
-- **✕** — clear the selection.
-
-### Drag-and-drop
-
-Project rows are draggable. Grab any row and drop it on:
-- A **workspace card header** in the right pane, or
-- A **workspace row** in the left Workspaces list (handy when the destination card is collapsed or out of view).
-
-If the row you grab is part of an active selection, the **whole selection** moves with it. Dragging an unselected row carries just that one row and leaves the selection intact. The source row dims and the drop target outlines while you drag; Esc cancels.
-
-### Agent deploy
-
-The **Agent deploy** strip contains **Deploy to Agents**, **Dry run**, **Regenerate**, and **Delete**. These actions do **not** start or stop JAWATA — they rebuild MCP entries from your workspaces and read or write **MCP client config files** on disk (see Settings → MCP Config Locations).
-
-- **Deploy to Agents** — Writes manager-owned MCP server entries (one per workspace, keyed `jawata-<workspace-name>`) into the selected clients' configs, plus the rule blocks the manager maintains. Each client receives the entry shape its own tooling writes, which is not the same for any two of them: **Cursor / Claude Code / Copilot CLI** take `{ "type": "http", "url": …, "headers": … }` under `mcpServers`; **VS Code** uses the same entry but under **`servers`**, not `mcpServers`; **Codex** and **Grok** are **TOML**, not JSON — `[mcp_servers.<id>]` with `url`, and "off" spelled `enabled = false` rather than `disabled = true`. Even those two differ from each other: Codex keeps the bearer token in an inline `http_headers` table, Grok in a `headers` sub-table. Comments and settings already in a Codex or VS Code file survive a deploy, and a file that cannot be parsed is refused rather than overwritten. Workspace add / rename / delete automatically refresh clients you have already deployed to (never-deployed clients stay untouched), and any workspace that cannot be resolved at deploy time is reported in the result instead of being silently omitted.
-- **Dry run** — Same validation and diff output as Deploy, but no files are written.
-- **Regenerate** — Force-rewrites the manager-managed sections, even if nothing has changed since the last write. Useful after manual edits.
-- **Delete** — Removes only the manager-injected MCP servers and rule blocks from the selected clients. It does not uninstall JAWATA or remove your projects.
-
-Each of these opens a **target picker**: tick the clients you want for that run only. Defaults come from each client's **Deploy** toggle under Settings → MCP Config Locations.
-
-**Cursor (length limit):** Cursor rejects tools when `serverName + ":" + toolName` exceeds about **59–60** characters. The manager keeps the generated `jawata-` ids short so the longest JAWATA tool names still fit. Other clients cap the total *number* of tools instead, which is a different constraint and the main reason to keep concurrent workspaces small. A client that truncates a tool list keeps the first N, so a workspace that looks connected can still be missing the tools you want.
-
-### How JAWATA works — a compiler-grounded loop, not a bag of tools
-
-JAWATA is one **Java vertical over your whole workspace**, not a per-project add-on sitting beside ten per-language shims. Its tools are **parametric front doors** — a `kind`/`action` parameter folds what would otherwise be a hundred narrow tools into a handful, which is what keeps a multi-workspace setup inside a client's tool cap at all. But the point isn't the list; it's the **loop the tools compose into**:
-
-- **Detect** — `find_quality_issue` / `find_modernization` surface Fowler smells, SOLID and Kerievsky violations, and modernization candidates — all compiler-resolved, so no regex false positives.
-- **Goal** — `refactor_to_pattern` names the target state: a design pattern to move *toward* (state / command / template method / visitor / compose method) or *away from* (inline singleton).
-- **How** — `refactoring(action=plan → apply_plan)` executes that goal as **atomic, parity-gated steps**. It compiles to zero errors after every step and runs a **purity check** — a step that smuggles in a new return/throw/branch or a relocated side-effect is *flagged, not silently applied* — and on any red it **rolls back** to the last good state. This is the machinery that makes autonomous refactoring risk-free: a fallible agent cannot leave your tree half-migrated.
-
-Two supporting ideas ship with that loop:
-
-- **Reuse over reinvent.** When an agent needs a near-duplicate class, letting the **compiler** derive it — `generate(kind=copy_class)` then `extract(kind=superclass)` — is cheaper and safer than the model re-authoring the code by hand. The tools exist so the agent writes *less* code, not more.
-- **Health-gated honesty.** The deployed rule block (and, on Claude Code, a `PreToolUse` hook) instructs the agent: on Java work, when JAWATA is unreachable, **ask — don't silently fall back to grep**. When the service is up, text search over `.java` is redirected to JAWATA's compiler-accurate tools. Non-Java work is untouched.
-
-Every mutating tool applies its change directly and returns `{ filesModified, diff, undoChangeId }` — verify with `compile_workspace`, revert with `refactoring(action=undo, undoChangeId=…)`, or pass `auto_apply: false` to stage a preview-then-commit. Detect tools carry MCP `readOnlyHint`, so a restricted client mode (e.g. Cursor Ask) can analyze without write permission.
-
-### The tool surface (live — not enumerated here)
-
-The authoritative, always-current list of tools and their descriptions is the running service itself. Open **Settings → Exposed Services → Test Services**: it performs a live MCP handshake and lists every tool name and description the service exposes, with a count and probe duration. Agents discover the same surface through `tools/list`, where each parametric tool's `kind`/`action` is a typed enum with per-kind descriptions. A hand-maintained copy in this help would only drift out of date after each release — so it is deliberately not kept here.
-
-### Selected Project Status
-
-When you click a project row, the bottom strip shows **Name**, **Project path**, **Workspace**, the **PID** of that workspace's JAWATA process (if running), and the **Phase / Health** detail from the runtime. Multiple projects in the same workspace share a PID. Use the refresh icon on that strip to re-query without switching views.
-
----
+- **Workspaces (left)** — pick the workspace new projects join; create, rename or delete one.
+- **Add projects (left)** — add one project by folder, or let the folder scan find every Java project under it, or import the projects of a `.code-workspace` file. It is open while you have no project and folded afterwards.
+- **Managed Projects (right)** — one card per workspace. Start or stop a workspace or a single project; open a card to see its projects. Right-click a project or a workspace for rename, move and delete. Drag projects between workspaces. The status badge shows the phase; hover it for the detail and the process id.
+- **Deploy to agents** — writes the jawata entries into the config files of the agents you tick. **Remove from agents** takes exactly those entries out again. Neither starts or stops anything. Which agents are offered is set in Settings → Agents.
 
 ## Memory
 
-![Memory — Memory sources and Store & Maintenance panels, results under the actions](/help/memory.png)
+The knowledge store behind the recall your agents receive. One shared store by default.
 
-*Memory sources on the left; the store with its five actions and inline results on the right.*
+- **Summary line and buttons** — **Load** reads your memory files into the store (safe to repeat), **Back up now** takes a copy, **Clean up** drops aged discarded entries, merges duplicates and shrinks the file. **More** holds Export, Import, Restore, Curation and Wipe.
+- **Memory sources** — the folders **Load** reads. Instruction files (`CLAUDE.md`, rules files, `AGENTS.md`) are found automatically; add your own `docs/` folders here.
+- **What the store holds** — counts per kind. Hover a count for what that kind is.
+- **What the cataloguer wrote** — a sample of the descriptions of your code, to judge their quality.
+- **Rules and entries** — shown by **Curation**: retire a rule, accept a candidate entry, or promote ticked entries into a rule.
 
-Your JAWATA memory store — the knowledge behind the push channel that primes and steers
-agents. One user-level database by default, shared by every workspace, living at
-`~/.local/share/jawata/`. The view has two panels:
+## Reporting
 
-- **Memory sources** — where **Load** finds your memory files. Auto-discovered are the
-  agent INSTRUCTION files only: your layered `CLAUDE.md` files, every Claude project
-  memory folder, Cursor rules (`.cursor/rules`, `.cursorrules`), `AGENTS.md`, Copilot
-  instructions. Your own documents are **not** found automatically — add your knowledge
-  folders (`docs/`, sprint docs, postmortems, ADRs) as extra roots; that's where most
-  of a team's real corpus lives (see "Memory from Cursor" below). **Store mode**
-  chooses between the shared user-level store (default — your knowledge is recallable
-  from every workspace) and a per-workspace store. **Auto-seed on deploy** loads your
-  memory into fresh residents automatically after every deploy.
-- **Store & Maintenance** — the store, its size and entry count, and the actions:
-  **Load** (pick up new and changed memory files — unchanged files are skipped, so
-  re-loading is always safe), **Clean up** (one hygiene pass: drop aged discarded
-  entries, merge duplicates, shrink the file), **Export…/Import…** (portable JSON via
-  the file dialogs), and **Wipe** (delete all entries — the database itself stays; Load
-  re-fills it). Results appear right below the actions, with the raw response one click
-  away.
+What jawata recorded about itself on this machine: shapes only (tool, error code, counts, timing), never paths or message text. The sentence at the top says whether anything needs a look; open **Details** for the figures behind it. Type `/report` in any agent to file a bug report from your own GitHub account. The switch there stops the periodic failure reminder.
 
-Everything else — re-checking stale Java references, curating candidate entries,
-backups — happens automatically or by prompt: every action here can also be asked for
-in plain words in your agent session ("load my memory files", "wipe the store"). Hover
-any control for its prompt phrase.
+## Seats
 
-### Memory from Cursor (and other clients)
+A seat is a narrow engineering role an agent can take, typed as a command such as `/refactor` or `/debug`.
 
-This store is your **cross-client memory**: the same entries answer in Cursor, Claude
-Code, and any MCP client. The tools are identical on every client; the **enforcement
-guard runs on Claude Code and Cursor** (the clients with a hook surface — see the
-client table above). Every other client holds jawata's guidance **in-band**: the MCP
-connection itself carries the instructions (naming which workspace each server
-serves), and every tool result carries steering — no rule file is written for them,
-and jawata never writes guidance into your own repository; adding an `AGENTS.md` or
-Copilot-instructions entry there is a choice you make yourself. What differs beyond
-that is memory *delivery*. **Claude Code: full auto-push** (session primer,
-prompt-boundary recall, recall on edits and before refactor tools). **Cursor:
-best-effort push** — the deploy writes Cursor's hooks too, but Cursor's hook surface
-cannot inject context at every seam (it may drop the session primer), so there the
-knowledge reaches the agent through the deployed rule block and the steering that rides
-on every JAWATA tool result. **Any other MCP client:** ask. Three phrases cover it
-everywhere:
-
-- *"What do we know about `freeSlot`?"* — the agent runs a symbol/symptom **recall**;
-  a match returns the closed set of known lessons for exactly that code.
-- *"Record this as a lesson anchored to `pipeline.SlotManager`."* — the agent writes a
-  **record** entry; it's recallable by symbol from every client afterwards.
-- *"Prime yourself from the memory store."* — at the start of a session, the agent
-  pulls the domain **primer** Claude Code would have received automatically.
-
-And you don't need an agent to write memory at all: **any markdown file is memory —
-and you probably already have a corpus.** Sprint docs, postmortems, ADRs, design
-notes: add your `docs/` folder once under **Memory sources**, hit **Load**, and every
-`.md` in it becomes agent knowledge — new and changed files on every Load, unchanged
-ones skipped. The loader does the heavy lifting: each section becomes one recallable
-fact, headings/bold/backticked terms become search cues, and a document whose text
-names its code (`` `SlotManager.freeSlot` ``) is anchored to that symbol
-automatically, no frontmatter needed — the next agent that touches `freeSlot` can be
-handed the postmortem that was written about it.
-
-One warning: if a Cursor agent says "I'll remember that" **without** calling JAWATA, it
-is remembering into Cursor's own chat memory — opaque, not listable, not exportable,
-and invisible to every other tool. Durable memory is the one you can see in this view.
-
----
+- **You type these** — each has an On switch (off removes its command from your agents) and a one-line purpose. Open a row for when it is meant to be used, which agent program and model a hire of it starts, which of your agents get its command, and **Reset to shipped**.
+- **Another seat hires these** and **Inside /sprint** — no command of their own; you choose only their brain.
 
 ## Settings
 
-![Settings — JAWATA Runtime and Exposed Services](/help/settings-top.png)
+- **Engine** — where the jawata engine comes from and whether it updates itself. **Test services** checks that it answers.
+- **Agents** — which agents deploy writes to, and the config file of each (change it only if it is not in the usual place). Under **Advanced**: merge mode and a backup before each write.
+- **This machine** — the manager's data folder, tray, autostart, and per workspace a memory limit and an opt-in debugging switch. Paths and cleanup buttons are folded.
 
-*Top half of the Settings page: JAWATA Runtime and Exposed Services.*
-
-![Settings — Machine controls and MCP locations](/help/settings-bottom.png)
-
-*Bottom half: Machine Runtime Controls (with Diagnostics workspace counts) and MCP Config Locations.*
-
-Settings is a **two-by-two grid**: JAWATA Runtime and Exposed Services on the first row, Machine Runtime Controls and MCP Config Locations on the second. The page can be taller than the window — scroll to reach **Save settings** at the bottom.
-
-### JAWATA Runtime
-
-Controls how the global JAWATA binary is sourced and updated:
-
-- **Release source** — `haraldwegner/jawata-mcp` (default) or upstream / custom. Switching saves and downloads the latest release from the new source.
-- **Global JAWATA Source** — **Managed runtime** uses the binary the manager downloads and tracks; **Local JAR fallback** points at a specific `jawata.jar` on disk.
-- **Active** — Version of the managed runtime, when applicable.
-- **Update policy** — *Ask before updating* vs *Always keep latest*.
-- **Auto-check release source on dashboard load** — When enabled, the manager checks for newer releases when you open the Dashboard.
-- **Download update** — Appears when an update is available; fetches and installs it.
-
-### Exposed Services
-
-**Test Services** runs a live MCP handshake against JAWATA and lists the tool names and descriptions the server exposes (count and duration appear after a successful probe). Use this to confirm the runtime is reachable and that the tool surface matches expectations after a version change.
-
-If a probe fails, fix connectivity or runtime issues before relying on **Deploy to Agents**.
-
-### Machine Runtime Controls
-
-- **Manager data root** — Base directory for caches, logs, and JDT workspace indexes. Each workspace's data lives under `<data_root>/workspaces/<workspace-name>/` (which is also where `workspace.json` is written).
-- **Use system tray** — When enabled, closing the window keeps the manager running in the system tray. The tray menu lets you drive workspace lifecycle without opening the window:
-
-  ![Tray menu — Open dashboard, per-workspace rows with monochrome status bullets, Start all / Reload all / Stop all services, Autostart on boot checkable, Quit](/help/tray-menu.png)
-
-  - **Open dashboard** — raises the main manager window (its default view is the dashboard).
-  - **Workspaces** — one row per workspace with a monochrome status bullet:
-    - `●` running
-    - `◐` starting / stopping
-    - `○` stopped
-    - `✗` failed
-    Click a row to **toggle** that workspace: stopped/failed → start, running → stop. The bullet refreshes within ~1 s of any state change (rename in the dashboard, external `kill` of a jawata process, manual start/stop in the main window).
-  - **Start all services** / **Reload all services** / **Stop all services** — fan out across every loaded workspace. *Reload all* is a sequenced stop-then-start (30 s deadline) — single click for a clean restart that doesn't race the shutdown sequence.
-  - **Autostart on boot** ✓ — checkable item. When set, the manager auto-launches at session login. Synced with the **Settings → System Settings → Autostart on boot** checkbox — toggle from either surface and the other reflects within ~1 s.
-  - **Quit** — opens the quit prompt.
-
-  *Why monochrome bullets?* GNOME's `gnome-shell-extension-appindicator` strips per-menu-item images at the D-Bus boundary, so colored status disks never reach the user. Monochrome unicode shapes render in the menu's own font (1× line height) and survive the appindicator pipe across every Linux desktop we ship to.
-
-  *Linux note:* the tray relies on a StatusNotifierItem / AppIndicator host. Pop!_OS, Ubuntu 22.04+, KDE / XFCE / Cinnamon / MATE work out of the box; vanilla GNOME (Fedora Workstation, Debian GNOME) needs `gnome-shell-extension-appindicator` installed once. See the [README](https://github.com/haraldwegner/jawata-studio#system-tray-on-linux) for distro-specific install commands.
-- **Autostart on boot** — Start the manager automatically at session login AND restore the workspaces that were running at last shutdown. Per-OS plumbing for the manager launch: Linux writes `~/.config/autostart/*.desktop`, macOS registers a LaunchAgent, Windows touches the registry Run key. Default is opt-in (off). Mirrored in the tray menu as a checkable item — toggling from either surface updates the other. **Session restoration semantics:** if you Quit from the tray (or close-to-tray then Quit) the running workspaces stay marked Running in the manager's snapshot, and the next launch restores them ~2 s after the UI is up. If you choose **Stop and Quit**, every workspace is cleanly stopped — next launch starts none. Workspaces that were `Failed` at shutdown count as "user wanted this running" and get retried.
-- **Diagnostics** — Read-only summary: paths for the projects store, settings file, state directory, and resolved data root. **Workspaces** and **Project count** mirror the Dashboard totals, useful when reporting issues.
-- **Clean logs** — Removes manager runtime logs (workspaces and settings stay).
-- **Clean workspaces** — Removes JDT workspace caches (forces re-index next start).
-- **Start from scratch** — Runs both cleanups; stop runtimes first.
-
-### MCP Config Locations
-
-For each supported client (**Cursor**, **Claude Code**, **Codex**, **Copilot CLI**, **VS Code**, **Grok**):
-
-- **Deploy** — When checked, the client is included in the *default* set of the deploy target picker. Override per run if you need to.
-- **Current** — Effective path the manager will use (auto-detected, or your manual override).
-- **Manual override path** — Use when the config file lives somewhere non-standard.
-
-**Redetect defaults** re-runs auto-detection. Where each client keeps its configuration:
-
-| Client | File |
+| Agent | Config file |
 |---|---|
 | Cursor | `~/.cursor/mcp.json` |
 | Claude Code | `~/.claude.json` |
-| Codex | `~/.codex/config.toml` — one file serves the command line, the VS Code extension, Desktop and Cloud |
+| Codex | `~/.codex/config.toml` |
 | Copilot CLI | `~/.copilot/mcp-config.json` |
 | VS Code | `<config dir>/Code/User/mcp.json` |
-| Grok | `~/.grok/config.toml` — shares the file with Grok's own settings, which the deploy preserves |
+| Grok | `~/.grok/config.toml` |
 
-`<config dir>` is `~/.config` on Linux, `~/Library/Application Support` on macOS and `%APPDATA%` on Windows.
+`<config dir>` is `~/.config` on Linux, `~/Library/Application Support` on macOS and `%APPDATA%` on Windows. Grok receives jawata's tools but not its guard. Antigravity cannot connect jawata and is not supported.
 
-**IntelliJ is not a deploy target, and does not need to be.** It hosts Claude Code, Cursor, Codex and Copilot as agents that read the files above, so deploying those already reaches it. **Antigravity** is listed but **not supported**: its command-line tool has no mechanism to connect jawata at all.
+## Installation and updates
 
-**Merge mode**:
-- **Safe merge** — inserts or updates only the manager-owned blocks, preserving unrelated entries.
-- **Replace managed section** — replaces the entire manager-delimited section. Stronger reset, still scoped to what the manager owns.
+- **Linux** — `curl -sSL https://raw.githubusercontent.com/haraldwegner/jawata-studio/main/install.sh | bash`, or a `.deb` from the Releases page.
+- **macOS** (Apple Silicon) — the `_aarch64.dmg`; clear the quarantine once with `xattr -d com.apple.quarantine /Applications/jawata-studio.app`.
+- **Windows** (x64 and ARM64) — the `.msi` or `-setup.exe`; the first launch needs SmartScreen → More info → Run anyway.
 
-**Create backup before MCP config write** writes a timestamped backup next to each config before changes. Recommended while you're experimenting.
+The tray needs a StatusNotifierItem host on Linux; vanilla GNOME needs `gnome-shell-extension-appindicator` once. Per-platform detail is in the [README](https://github.com/haraldwegner/jawata-studio#installation).
 
----
+## If something fails
 
-## Quick reference
-
-| Goal | Where to go |
-|------|------------------|
-| Create or rename a workspace | Dashboard → Workspaces card (left) |
-| Register or import projects | Dashboard left column |
-| Move a project to another workspace | Right-click row → *Move to workspace…* OR drag the row onto a workspace |
-| Bulk-move projects | Tick checkboxes → *Move to workspace ▾* |
-| Start/stop a workspace's JAWATA | Workspace header in Managed Projects |
-| Push MCP entries into your agent tools | Dashboard → **Agent deploy** |
-| Change data root or system-tray behavior | Settings → **Machine Runtime Controls** |
-| Point deploy at custom MCP config paths | Settings → **MCP Config Locations** |
-| Verify JAWATA exposes MCP tools | Settings → **Exposed Services** → **Test Services** |
-| Find logs / settings files for a bug report | Settings → **Diagnostics** |
-
-If something fails: check Diagnostics for paths, run **Dry run** before **Deploy**, and keep **Create backup before MCP config write** on until you trust your layout.
-
-### Grok — tools, not the guard
-
-Grok receives jawata's **tools**. It does not receive the guard: this version's
-command line exposes no hook mechanism, and the hook surface on record belongs to
-Grok's editor extension, which has not been checked. The capability matrix says
-tools-only for Grok rather than implying an enforcement layer that is not there.
-
-Deploying a configuration a person then uses interactively is not automation, and
-is unaffected by any restriction on sending Grok an automated prompt — that is a
-question about how you drive it, not about connecting it to your code.
+Settings → This machine → Paths shows where the settings and logs are. Remove from agents and Deploy again to rewrite the entries. Keep **backup before MCP config write** on until you trust your layout.
