@@ -1576,11 +1576,6 @@ dd {
     grid-template-rows: none;
     height: auto;
   }
-
-  .machine-section,
-  .mcp-locations-section {
-    height: auto;
-  }
 }
 
 /* UX overhaul 2026-10-21 (his walkthrough of 4.4.7): a view opens on ONE summary line and keeps its
