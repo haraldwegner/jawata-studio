@@ -1,7 +1,6 @@
 import { writable } from "svelte/store";
 import { listen } from "@tauri-apps/api/event";
 import {
-  addProject,
   cleanGeneratedData,
   cleanLogs,
   cleanWorkspaces,
@@ -26,7 +25,6 @@ import {
   setWorkspaceDebuggable as setWorkspaceDebuggableApi,
   renameProject as renameProjectApi,
   updateSettings,
-  type AddProjectInput,
   type CleanupSummary,
   type DeployMode,
   type DeployToAgentsResult,
@@ -136,21 +134,6 @@ export function createAppStore() {
           settingsChangedListenerAttached = false;
         });
       }
-    } catch (error) {
-      update((state) => ({
-        ...state,
-        isBusy: false,
-        error: normalizeError(error)
-      }));
-    }
-  }
-
-  async function addProjectEntry(input: AddProjectInput) {
-    update((state) => ({ ...state, isBusy: true, error: undefined }));
-
-    try {
-      await addProject(input);
-      syncDashboard(await getDashboard());
     } catch (error) {
       update((state) => ({
         ...state,
@@ -695,7 +678,6 @@ export function createAppStore() {
   return {
     subscribe,
     load,
-    addProjectEntry,
     setProjectWorkspaceEntry,
     renameWorkspaceEntry,
     deleteWorkspaceEntry,

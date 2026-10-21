@@ -2,6 +2,7 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { createEventDispatcher, onMount } from "svelte";
   import {
+    addProject,
     discoverWorkspaceProjects,
     importWorkspaceProjects,
     scanFolderForProjects,
@@ -116,7 +117,7 @@
       candidateSource = "folder";
       scannedFolder = folder;
       if (candidates.length === 0) {
-        scanMessage = `No Java projects found under ${folder}.`;
+        scanMessage = `No Maven, Gradle or Eclipse project found under ${folder}.`;
       }
     } catch (error) {
       scanMessage = String(error);
@@ -124,6 +125,41 @@
       scannedFolder = "";
     } finally {
       isScanning = false;
+    }
+  }
+
+  /* The search finds only projects with a build or Eclipse file. A plain source folder is still a
+   * project jawata can load, so when the search comes back empty the folder itself can be added. */
+  $: canRegisterFolder =
+    candidateSource === "folder" &&
+    candidates.length === 0 &&
+    projectPath.trim() === scannedFolder &&
+    !disabled &&
+    !isImporting &&
+    activeWorkspaceName.length > 0;
+
+  async function registerFolderAsProject() {
+    const folder = scannedFolder;
+    const name = folder.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || folder;
+    isImporting = true;
+    try {
+      await addProject({ name, projectPath: folder, workspaceName: activeWorkspaceName });
+      scanMessage = `Added ${name}.`;
+      projectPath = "";
+      candidateSource = "";
+      scannedFolder = "";
+      dispatch("imported");
+    } catch (error) {
+      scanMessage = String(error);
+    } finally {
+      isImporting = false;
+    }
+  }
+
+  function onEnter(event: KeyboardEvent, action: () => void) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      action();
     }
   }
 
@@ -256,6 +292,7 @@
         <input
           bind:value={projectPath}
           disabled={disabled || !activeWorkspaceName || isScanning}
+          on:keydown={(event) => onEnter(event, () => canScan && scanProjectFolder())}
           placeholder="/a/java/project, or a folder that holds several"
           required
           title="A Java project's folder, or a folder that holds several: it is searched (depth up to 6) and every Maven, Gradle or Eclipse project in it is listed, the folder itself included. Each keeps its folder name; rename one later with a right-click."
@@ -311,6 +348,14 @@
     {#if scanMessage}
       <p class="muted">{scanMessage}</p>
     {/if}
+
+    {#if canRegisterFolder}
+      <button
+        on:click={registerFolderAsProject}
+        title={`Add ${scannedFolder} to ${activeWorkspaceName} as one project, although it has no Maven, Gradle or Eclipse file. jawata loads its Java sources as they are.`}
+        type="button"
+      >Add this folder as a project</button>
+    {/if}
   </section>
 
   <hr class="section-divider" />
@@ -333,6 +378,7 @@
         <input
           bind:value={workspaceFile}
           disabled={disabled || isImporting}
+          on:keydown={(event) => onEnter(event, () => canDiscover && discoverFromWorkspace())}
           placeholder="/path/to/workspace.code-workspace"
           title="Path to a VSCode .code-workspace file describing the projects to import"
         />

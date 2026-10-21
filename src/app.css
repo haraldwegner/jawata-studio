@@ -645,81 +645,6 @@ button {
   border-color: rgba(248, 113, 113, 0.35);
 }
 
-/* Sprint 10 v0.10.4: cap the MCP-clients list height so the right
-   column doesn't grow taller than the left. ~2 cards visible at once;
-   the rest scroll. */
-.mcp-clients-scroll {
-  display: grid;
-  gap: 0.75rem;
-  max-height: 360px;
-  overflow-y: auto;
-  padding-right: 0.25rem;
-}
-
-.mcp-client-card {
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  border-radius: 12px;
-  padding: 0.55rem;
-  background: rgba(15, 23, 42, 0.45);
-}
-
-/* Sprint 28a 2b: an agent switched out of deploys reads as switched off. */
-.mcp-client-card.mcp-client-off {
-  opacity: 0.55;
-}
-
-.mcp-client-card.compact {
-  gap: 0.35rem;
-}
-
-.mcp-client-card .field-row {
-  grid-template-columns: minmax(0, 1fr) auto auto;
-}
-
-.mcp-section-intro {
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-}
-
-.machine-section,
-.mcp-locations-section {
-  min-height: 100%;
-  height: 100%;
-}
-
-.machine-section {
-  grid-template-rows: auto minmax(0, 1fr);
-}
-
-.mcp-client-heading {
-  display: block;
-}
-
-.mcp-client-title-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.mcp-client-title-controls {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-}
-
-.mcp-deploy-checkbox {
-  margin: 0;
-  font-size: 0.74rem;
-  color: #cbd5e1;
-  gap: 0.25rem;
-  white-space: nowrap;
-}
-
-.mcp-current-path {
-  word-break: break-all;
-}
-
 .mcp-source-badge {
   display: inline-flex;
   align-items: center;
@@ -1331,15 +1256,6 @@ button:disabled {
   gap: 0.35rem;
 }
 
-.path {
-  margin-top: 0.02rem;
-  color: #94a3b8;
-  font-size: 0.74rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 42vw;
-}
 
 .meta,
 .actions {
@@ -1634,18 +1550,10 @@ dd {
     justify-items: start;
   }
 
-  .path {
-    max-width: 100%;
-  }
-
   .app-shell {
     padding: 1rem;
   }
 
-  .mcp-section-intro {
-    grid-template-columns: 1fr;
-    align-items: start;
-  }
 
   .settings-save-footer {
     padding-top: 0.5rem;
@@ -1800,4 +1708,13 @@ dd {
 
 .agents-table .agent-path .field-row {
   margin-top: 0.4rem;
+}
+
+/* An agent switched out of deploys reads as switched off. */
+.agents-table tr.mcp-client-off td:not(:first-child) {
+  opacity: 0.55;
+}
+
+.agents-table .mcp-source-badge {
+  margin-left: 0.4rem;
 }

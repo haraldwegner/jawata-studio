@@ -769,6 +769,14 @@
                     title={`${mcpPathSourceLabel(entry)}${shouldShowDetectedHint(entry) ? ` · detected default: ${entry?.autoDetectedPath}` : ""}. Open to change it.`}
                   >
                     {effectivePath(entry)}
+                    {#if mcpPathSource(entry) !== "auto"}
+                      <span
+                        class="mcp-source-badge {mcpPathSource(entry)}"
+                        title={mcpPathSource(entry) === "manual"
+                          ? "You set this file by hand; Clear goes back to the detected one."
+                          : "No config file was found for this agent, so Deploy skips it until you name one."}
+                      >{mcpPathSourceLabel(entry)}</span>
+                    {/if}
                   </summary>
                   <div class="field-row">
                     <input

@@ -1182,7 +1182,7 @@ impl RuntimeManager {
             crate::lombok::AgentDecision::NoJar => eprintln!(
                 "[jawata-studio] workspace '{}' uses Lombok, but this engine ships no lombok.jar beside {}: \
                  it starts WITHOUT the Lombok agent, so Lombok-generated members (getters, LOGGER, \
-                 constructors) will read as compile errors. Engine 4.4.13 and later ship the jar.",
+                 constructors) will read as compile errors. Update the engine to one that ships the jar.",
                 reference.workspace_name, reference.resolved_jar_path
             ),
             crate::lombok::AgentDecision::NotUsed => {}
