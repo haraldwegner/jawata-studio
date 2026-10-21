@@ -1165,12 +1165,27 @@ impl RuntimeManager {
 
         // Sprint 15 B5c: conditional Lombok comprehension agent. JVM options
         // (`-javaagent`) MUST precede `-jar`, so this goes first. Only added
-        // when the project uses Lombok AND the product ships lombok.jar.
-        if let Some(agent) = crate::lombok::javaagent_arg(
-            &[std::path::PathBuf::from(&launch_request.project_path)],
+        // when a project of the workspace uses Lombok AND the product ships
+        // lombok.jar. S19 dogfood (2026-10-21): every project the resident will
+        // load is asked, not only the one this launch was made for, and an
+        // engine without the jar is SAID, because a resident started without the
+        // agent reports every Lombok-generated member as a compile error.
+        let project_roots = crate::lombok::workspace_project_roots(
+            std::path::Path::new(&reference.workspace_dir),
+            std::path::Path::new(&launch_request.project_path),
+        );
+        match crate::lombok::decide(
+            &project_roots,
             std::path::Path::new(&reference.resolved_jar_path),
         ) {
-            args.push(agent);
+            crate::lombok::AgentDecision::Add(agent) => args.push(agent),
+            crate::lombok::AgentDecision::NoJar => eprintln!(
+                "[jawata-studio] workspace '{}' uses Lombok, but this engine ships no lombok.jar beside {}: \
+                 it starts WITHOUT the Lombok agent, so Lombok-generated members (getters, LOGGER, \
+                 constructors) will read as compile errors. Engine 4.4.13 and later ship the jar.",
+                reference.workspace_name, reference.resolved_jar_path
+            ),
+            crate::lombok::AgentDecision::NotUsed => {}
         }
 
         // studio#28: the heap ceiling. Like every JVM option it MUST precede

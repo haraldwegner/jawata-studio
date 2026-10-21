@@ -2,6 +2,8 @@
 
 **jawata-studio** runs one JAWATA service per **workspace** (a named group of Java projects) and writes the connection into your AI agents (Cursor, Claude Code, Codex, GitHub Copilot CLI, VS Code, Grok), so they get compiler-accurate understanding of your code.
 
+Every change an agent makes through jawata comes back with an undo handle: ask it to run `refactoring(action=undo, undoChangeId=…)` to put the code back.
+
 Hover any control for what it does. Each tab below says what it is for and what you do there.
 
 ## Dashboard

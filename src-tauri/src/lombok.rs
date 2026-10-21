@@ -55,8 +55,23 @@ pub fn project_uses_lombok(project_root: &Path) -> bool {
             _ => {}
         }
     }
-    false
+    // And UP: a module of a multi-module build usually inherits Lombok from its parent pom, and
+    // Lombok itself looks for lombok.config in every directory above a source file. Only the
+    // marker files of each ancestor are read, never a tree.
+    project_root
+        .ancestors()
+        .skip(1)
+        .take(UPWARD_DEPTH)
+        .any(|dir| {
+            dir.join("lombok.config").is_file()
+                || ["pom.xml", "build.gradle", "build.gradle.kts"]
+                    .iter()
+                    .any(|file| file_mentions_lombok(&dir.join(file)))
+        })
 }
+
+/// How many directories above a project to look for a parent build file or a lombok.config.
+const UPWARD_DEPTH: usize = 4;
 
 fn file_mentions_lombok(path: &Path) -> bool {
     std::fs::read_to_string(path)
@@ -83,19 +98,48 @@ pub fn bundled_lombok_jar(resolved_jar_path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// The `-javaagent:<lombok.jar>` argument to prepend to the resident JVM, or
-/// `None` when comprehension should not be enabled.
-///
-/// Enabled only when BOTH hold: at least one project in the workspace uses
-/// Lombok, AND the product actually ships a `lombok.jar`. A missing jar (e.g. an
-/// older runtime that predates Option B) degrades gracefully to no agent rather
-/// than a launch failure.
-pub fn javaagent_arg(project_roots: &[PathBuf], resolved_jar_path: &Path) -> Option<String> {
+/// What to do about the Lombok agent for one resident launch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentDecision {
+    /// Lombok is used and the engine ships the jar: the `-javaagent:` argument to add.
+    Add(String),
+    /// No project of the workspace uses Lombok.
+    NotUsed,
+    /// Lombok is used but this engine ships no `lombok.jar`. The resident starts without the
+    /// agent, so every Lombok-generated member reads as a compile error; the caller must SAY so
+    /// (S19 dogfood: the 4.4.x distribution lost the jar and nothing noticed).
+    NoJar,
+}
+
+/// The agent decision for a workspace whose projects are `project_roots`.
+pub fn decide(project_roots: &[PathBuf], resolved_jar_path: &Path) -> AgentDecision {
     if !project_roots.iter().any(|p| project_uses_lombok(p)) {
-        return None;
+        return AgentDecision::NotUsed;
     }
-    let jar = bundled_lombok_jar(resolved_jar_path)?;
-    Some(format!("-javaagent:{}", jar.display()))
+    match bundled_lombok_jar(resolved_jar_path) {
+        Some(jar) => AgentDecision::Add(format!("-javaagent:{}", jar.display())),
+        None => AgentDecision::NoJar,
+    }
+}
+
+/// Every project root the resident will load: the `projects` of `<workspace_dir>/workspace.json`,
+/// which the manager writes before every spawn. Falls back to the launch project alone when the
+/// file is missing or unreadable, so the answer is never an empty list.
+pub fn workspace_project_roots(workspace_dir: &Path, launch_project: &Path) -> Vec<PathBuf> {
+    let listed: Vec<PathBuf> = std::fs::read_to_string(workspace_dir.join("workspace.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|json| {
+            json["projects"].as_array().map(|rows| {
+                rows.iter().filter_map(|row| row.as_str().map(PathBuf::from)).collect()
+            })
+        })
+        .unwrap_or_default();
+    if listed.is_empty() {
+        vec![launch_project.to_path_buf()]
+    } else {
+        listed
+    }
 }
 
 #[cfg(test)]
@@ -182,27 +226,69 @@ mod tests {
         assert_eq!(bundled_lombok_jar(&launcher), Some(product.join("lombok.jar")));
     }
 
+    /// S19 dogfood, 2026-10-21: java-design-patterns declares Lombok in its PARENT pom and a root
+    /// lombok.config; a module's own pom never names it. Walking only down from the module missed it,
+    /// so the agent would not have been added even with the jar shipped.
     #[test]
-    fn javaagent_arg_requires_both_lombok_and_jar() {
+    fn detects_lombok_declared_above_the_project() {
+        let parent = tmp();
+        fs::write(
+            parent.join("pom.xml"),
+            "<project><dependencies><dependency><groupId>org.projectlombok</groupId></dependency></dependencies></project>",
+        )
+        .unwrap();
+        let module = parent.join("singleton");
+        fs::create_dir_all(&module).unwrap();
+        fs::write(module.join("pom.xml"), "<project><parent><artifactId>java-design-patterns</artifactId></parent></project>").unwrap();
+        assert!(project_uses_lombok(&module), "a parent pom that declares Lombok counts");
+
+        let configured = tmp();
+        fs::write(configured.join("lombok.config"), "lombok.log.fieldName = LOGGER").unwrap();
+        let deep = configured.join("a").join("b");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("pom.xml"), "<project/>").unwrap();
+        assert!(project_uses_lombok(&deep), "a lombok.config above the project counts");
+    }
+
+    /// The same dogfood: detection asked ONE project, the one the launch was made for, while the
+    /// resident loads every project of the workspace. Any one of them using Lombok needs the agent.
+    #[test]
+    fn every_project_of_the_workspace_is_asked() {
+        let plain = tmp();
+        fs::write(plain.join("pom.xml"), "<project/>").unwrap();
+        let lombok = tmp();
+        fs::write(lombok.join("lombok.config"), "x").unwrap();
+        let ws = tmp();
+        fs::write(
+            ws.join("workspace.json"),
+            serde_json::json!({ "version": 1, "name": "w", "projects": [plain, lombok] }).to_string(),
+        )
+        .unwrap();
+        let roots = workspace_project_roots(&ws, &plain);
+        assert_eq!(roots, vec![plain.clone(), lombok.clone()]);
+
+        // No readable workspace.json: the launch project alone, never an empty list.
+        assert_eq!(workspace_project_roots(&tmp(), &plain), vec![plain.clone()]);
+    }
+
+    /// A Lombok workspace on an engine that ships no lombok.jar must be NAMED, not quietly started
+    /// without the agent: every generated member then reads as a compile error and nothing says why.
+    #[test]
+    fn a_lombok_workspace_without_the_jar_is_named_not_silent() {
         let product = tmp();
         let jar = product.join("jawata.jar");
         fs::write(&jar, "x").unwrap();
+        let lombok = tmp();
+        fs::write(lombok.join("lombok.config"), "x").unwrap();
+        let plain = tmp();
+        fs::write(plain.join("pom.xml"), "<project/>").unwrap();
 
-        let lombok_proj = tmp();
-        fs::write(lombok_proj.join("lombok.config"), "x").unwrap();
-        let plain_proj = tmp();
-        fs::write(plain_proj.join("pom.xml"), "<project/>").unwrap();
-
-        // Lombok project but no bundled jar → None.
-        assert!(javaagent_arg(&[lombok_proj.clone()], &jar).is_none());
-
-        // Add the jar → enabled, well-formed arg.
+        assert_eq!(decide(&[plain.clone()], &jar), AgentDecision::NotUsed);
+        assert_eq!(decide(&[lombok.clone()], &jar), AgentDecision::NoJar);
         fs::write(product.join("lombok.jar"), "x").unwrap();
-        let arg = javaagent_arg(&[lombok_proj], &jar).expect("agent expected");
-        assert!(arg.starts_with("-javaagent:"));
-        assert!(arg.ends_with("lombok.jar"));
-
-        // Plain project → None even with the jar present.
-        assert!(javaagent_arg(&[plain_proj], &jar).is_none());
+        match decide(&[plain, lombok], &jar) {
+            AgentDecision::Add(arg) => assert!(arg.starts_with("-javaagent:") && arg.ends_with("lombok.jar")),
+            other => panic!("expected the agent: {other:?}"),
+        }
     }
 }
