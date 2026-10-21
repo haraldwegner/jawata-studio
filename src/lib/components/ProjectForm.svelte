@@ -11,9 +11,16 @@
 
   /** Open the panel while there is nothing registered yet; fold it once there is. */
   export let projectCount = 0;
-  // Decided once, when the panel is first shown. Binding `open` to the live count would fold the panel the
+  /** False until the project list has been read; before that the count is 0 whatever is registered. */
+  export let ready = true;
+  // Decided ONCE, as soon as the list is known. Binding `open` to the live count would fold the panel the
   // moment the first project is added, cutting off the result of an import that is still being reported.
-  const startOpen = projectCount === 0;
+  let startOpen = false;
+  let decided = false;
+  $: if (!decided && ready) {
+    startOpen = projectCount === 0;
+    decided = true;
+  }
   export let disabled = false;
   /** Sprint 10 v0.10.4: the workspace this form's submit will add the
    * project to. Owned by the parent (App.svelte) and shared with the

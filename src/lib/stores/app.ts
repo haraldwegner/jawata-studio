@@ -507,25 +507,6 @@ export function createAppStore() {
     }
   }
 
-  async function refreshProjectStatus(projectId: string) {
-    try {
-      const status = await getRuntimeStatus(projectId);
-      update((state) => ({
-        ...state,
-        runtimeStatuses: {
-          ...(state.runtimeStatuses ?? {}),
-          [projectId]: status
-        }
-      }));
-      clearProjectError(projectId);
-    } catch (error) {
-      update((state) => ({
-        ...state,
-        error: normalizeError(error)
-      }));
-    }
-  }
-
   async function refreshAllProjectStatuses() {
     if (pollInFlight || typeof document === "undefined" || document.hidden) {
       return;
@@ -732,7 +713,6 @@ export function createAppStore() {
     stopAllProjects,
     reloadAllProjects,
     stopProject,
-    refreshProjectStatus,
     selectProject,
     clearError,
     cleanAllLogs,

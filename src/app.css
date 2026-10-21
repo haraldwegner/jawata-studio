@@ -782,8 +782,7 @@ h3 {
   font-size: 0.82rem;
 }
 
-.bootstrap-grid,
-.detail-grid {
+.bootstrap-grid {
   display: grid;
   gap: 0.6rem;
 }
@@ -792,8 +791,7 @@ h3 {
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
 }
 
-.bootstrap-grid strong,
-.detail-grid dd {
+.bootstrap-grid strong {
   display: block;
   margin-top: 0.2rem;
   word-break: break-word;
@@ -1621,10 +1619,6 @@ dd {
   .dashboard-column > .panel {
     height: auto;
     overflow: auto;
-  }
-
-  .detail-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .project-list-header {

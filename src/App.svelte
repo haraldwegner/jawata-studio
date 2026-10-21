@@ -504,6 +504,7 @@
             />
             <ProjectForm
               projectCount={($appStore.projects ?? []).length}
+              ready={!!$appStore.settings}
               activeWorkspaceName={activeWorkspaceName}
               disabled={$appStore.isBusy}
               on:submit={handleProjectSubmit}
