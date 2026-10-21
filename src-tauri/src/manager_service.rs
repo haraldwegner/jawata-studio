@@ -11997,6 +11997,31 @@ judge was never told to give"
         assert!(derive_agents_dir("cursor", &display_path(&cfg)).is_none());
     }
 
+    /// 2026-10-21: twice in twenty minutes a Cursor window froze for 15 s and was torn down, both
+    /// times one second after the judge Read its session's 192 MB transcript — the Claude extension
+    /// asks the EDITOR to open a file before it reads it, and the editor cannot hold that much. A
+    /// stance sentence alone is a request; leaving Read out of the judge's tools makes it impossible.
+    #[test]
+    fn the_stop_judge_cannot_open_a_transcript_in_the_editor() {
+        let front = AUTOCONTINUE_AGENT
+            .split("---")
+            .nth(1)
+            .expect("the definition opens with front matter");
+        let tools = front
+            .lines()
+            .find(|line| line.trim_start().starts_with("tools:"))
+            .expect("the front matter names the judge's tools");
+        assert!(
+            !tools.contains("Read"),
+            "the judge must not have the Read tool, which opens the transcript in the editor: {tools}"
+        );
+        assert!(tools.contains("Bash"), "it still reads, through the shell: {tools}");
+        assert!(
+            AUTOCONTINUE_AGENT.contains("tail -c"),
+            "the stance tells it how: the END of the transcript, through the shell"
+        );
+    }
+
     /// The probe the "left by an earlier run" half rides on, against a real
     /// directory rather than a flag — with the absent case first, so a probe
     /// that answered `true` unconditionally could not pass.
