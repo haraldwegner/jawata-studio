@@ -250,23 +250,26 @@
       <section class="seat-group">
         <h3 title={group.hint}>{group.title}</h3>
         {#each group.seats as seat (seat.name)}
-          <details class="fold seat-row" class:seat-off={!seat.enabled}>
+          <div class="seat-line" class:seat-off={!seat.enabled}>
+            {#if seat.deployable}
+              <label class="checkbox-row seat-on" title={onHint(seat)}>
+                <input
+                  checked={seat.enabled}
+                  disabled={disabled || busy}
+                  on:change={(e) =>
+                    apply(seat, { setting: "enabled", value: e.currentTarget.checked })}
+                  type="checkbox"
+                />
+                <span>On</span>
+              </label>
+            {:else}
+              <span class="seat-on"></span>
+            {/if}
+          <details class="fold seat-row">
             <summary>
               <span class="seat-name" title={invocationHint(seat)}>
                 {seat.name}{#if seat.command} <span class="seat-command">({seat.command})</span>{/if}
               </span>
-              {#if seat.deployable}
-                <label class="checkbox-row seat-on" title={onHint(seat)}>
-                  <input
-                    checked={seat.enabled}
-                    disabled={disabled || busy}
-                    on:change={(e) =>
-                      apply(seat, { setting: "enabled", value: e.currentTarget.checked })}
-                    type="checkbox"
-                  />
-                  <span>On</span>
-                </label>
-              {/if}
               <span class="seat-first muted">{firstSentence(seat.purpose)}</span>
             </summary>
 
@@ -343,6 +346,7 @@
               {/if}
             </div>
           </details>
+          </div>
         {/each}
       </section>
     {/each}
@@ -374,8 +378,20 @@
     color: #93c5fd;
     font-weight: 500;
   }
+  /* The switch sits BESIDE the fold, not inside its <summary>: a control inside a summary can toggle the
+     fold as well as itself in some engines. */
+  .seat-line {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+  }
+  .seat-line .seat-row {
+    flex: 1;
+    min-width: 0;
+  }
   .seat-on {
-    margin: 0;
+    flex: 0 0 3.6rem;
+    margin: 0.65rem 0 0;
     font-weight: 400;
   }
   .seat-first {

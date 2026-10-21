@@ -11,6 +11,9 @@
 
   /** Open the panel while there is nothing registered yet; fold it once there is. */
   export let projectCount = 0;
+  // Decided once, when the panel is first shown. Binding `open` to the live count would fold the panel the
+  // moment the first project is added, cutting off the result of an import that is still being reported.
+  const startOpen = projectCount === 0;
   export let disabled = false;
   /** Sprint 10 v0.10.4: the workspace this form's submit will add the
    * project to. Owned by the parent (App.svelte) and shared with the
@@ -294,7 +297,7 @@
 </script>
 
 <form class="panel stack" on:submit|preventDefault={handleSubmit}>
-<details class="fold" open={projectCount === 0}>
+<details class="fold" open={startOpen}>
 <summary title="Register one project by folder, find every Java project under a folder, or import the projects of a .code-workspace file. Open while you have no project yet.">Add projects</summary>
 <div class="fold-body">
   <section class="stack">

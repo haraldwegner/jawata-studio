@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { closeOnOutside } from "../menu";
   import { afterUpdate } from "svelte";
   import type {
     DeployTargetFlags,
@@ -687,7 +688,7 @@
       >
         Reload all
       </button>
-      <details class="more-menu">
+      <details class="more-menu" use:closeOnOutside>
         <summary title="Less common actions">More ▾</summary>
         <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
         <div class="more-menu-body" on:click={closeMore}>
@@ -868,7 +869,17 @@
   {:else}
     <div class="stack project-list-scroll">
       {#each groupedWorkspaces as workspace (workspace.name)}
-        {@const collapsed = collapsedWorkspaces[workspace.name] ?? (groupedWorkspaces.length > 1 || workspace.phase === "stopped")}
+        {@const needsLook =
+          workspace.unreadable ||
+          workspace.projects.some(
+            (p) =>
+              projectUnhealthy[projectPathKey(p.projectPath)] ||
+              projectErrors[p.id] ||
+              extractProjectError(runtimeStatuses[p.id])
+          )}
+        {@const collapsed =
+          collapsedWorkspaces[workspace.name] ??
+          ((groupedWorkspaces.length > 1 || workspace.phase === "stopped") && !needsLook)}
         {@const isRenaming = renamingWorkspace === workspace.name}
         <article class="workspace-card" on:contextmenu={(e) => openWorkspaceContextMenu(e, workspace)}>
           <header

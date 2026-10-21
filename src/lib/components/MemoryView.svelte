@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { closeOnOutside } from "../menu";
   // Sprint 21b: the Memory / Database view — GOALS in the UI, verbs at the prompt.
   // Review round 2 (Harald, 2026-07-06): sources BEFORE the store panel · no "memory"
   // store mode · a shared store renders as ONE row (grouped by store file) · export/
@@ -52,7 +53,7 @@
     storeMode !== (settings.experienceStoreMode ?? "shared") ||
     memoryRoots.join("\n") !== (settings.memoryRoots ?? []).join("\n") ||
     autoSeedOnDeploy !== (settings.autoSeedOnDeploy ?? true) ||
-    (experienceBackupDepth ?? null) !== (settings.experienceBackupDepth ?? null) ||
+    (experienceBackupDepth ?? 0) !== (settings.experienceBackupDepth ?? 0) ||
     experienceStoriesDir.trim() !== (settings.experienceStoriesDir ?? "").trim();
   $: footerStatusText =
     saveState === "saving"
@@ -986,6 +987,14 @@
   }
 
   async function saveMemorySettings() {
+    if (
+      experienceBackupDepth !== null &&
+      (!Number.isInteger(experienceBackupDepth) || experienceBackupDepth < 1 || experienceBackupDepth > 500)
+    ) {
+      saveState = "error";
+      saveError = "Backup copies must be a whole number from 1 to 500, or empty for the engine's default.";
+      return;
+    }
     saveState = "saving";
     saveError = "";
     try {
@@ -1059,6 +1068,19 @@
         <strong>{selectedRow.total ?? "–"} entries</strong> · {formatBytes(selectedRow.bytes)} ·
         {storeMode === "shared" ? "shared by every workspace" : "one store per workspace"}
       </p>
+      <!-- The two conditions the old view printed in the open and a fold must not bury (the S17 audit):
+           the cataloguer's bookkeeping lost writes, and an areas list the resident cut. -->
+      {#if selectedRow.describedLost}
+        <p class="summary-line attention">
+          <strong>{selectedRow.describedLost} cataloguer bookkeeping write(s) were LOST</strong> —
+          those units will be offered again, so the cataloguer's figures may be lower than the work done.
+        </p>
+      {/if}
+      {#if selectedRow.describedAreasTruncated}
+        <p class="summary-line attention">
+          <strong>The list of described areas is cut:</strong> {selectedRow.describedAreasTruncated}
+        </p>
+      {/if}
     {:else if storeRows.length === 0}
       <p class="summary-line">No workspaces, or their services are not reachable.</p>
     {/if}
@@ -1135,7 +1157,7 @@
       >
         Clean up
       </button>
-        <details class="more-menu">
+        <details class="more-menu" use:closeOnOutside>
           <summary title="Less common actions">More ▾</summary>
           <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
           <div class="more-menu-body" on:click={closeMore}>
@@ -1436,7 +1458,7 @@
               : "none"
           }. How many units a bundle holds only a loaded project can say, so no percentage is claimed. An area with a summary written is one the cataloguer recorded for a whole package; an area not listed is not described yet${
             selectedRow?.describedAreasTruncated ? ", EXCEPT that this list is cut: " + selectedRow.describedAreasTruncated : ""
-          }.`}
+          }. Which areas are still missing needs a loaded project: experience(kind=describe, action=next) answers it, one row per package in scope.`}
         >
           <strong>Cataloguer:</strong>
           {describedUnits} units described{#if selectedRow?.described}
@@ -1447,7 +1469,7 @@
               : "no area summarised yet"}
           {/if}
           {#if selectedRow?.describedLost}
-            · <strong>{selectedRow.describedLost} bookkeeping write(s) LOST</strong>, so the figures may be lower than the work done
+            · <strong>{selectedRow.describedLost} writes LOST</strong>
           {/if}
         </p>
       {/if}

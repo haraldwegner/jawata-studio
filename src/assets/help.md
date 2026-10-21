@@ -18,14 +18,14 @@ Where you set up and run workspaces.
 The knowledge store behind the recall your agents receive. One shared store by default.
 
 - **Summary line and buttons** — **Load** reads your memory files into the store (safe to repeat), **Back up now** takes a copy, **Clean up** drops aged discarded entries, merges duplicates and shrinks the file. **More** holds Export, Import, Restore, Curation and Wipe.
-- **Memory sources** — the folders **Load** reads. Instruction files (`CLAUDE.md`, rules files, `AGENTS.md`) are found automatically; add your own `docs/` folders here.
+- **Memory sources and store settings** — the folders **Load** reads (instruction files such as `CLAUDE.md`, rules files and `AGENTS.md` are found automatically; add your own `docs/` folders here), the store mode (one shared store or one per workspace), auto-seed on deploy, how many backup copies of the store are kept, and the folder the engine writes accepted entries to as readable markdown files.
 - **What the store holds** — counts per kind. Hover a count for what that kind is.
 - **What the cataloguer wrote** — a sample of the descriptions of your code, to judge their quality.
-- **Rules and entries** — shown by **Curation**: retire a rule, accept a candidate entry, or promote ticked entries into a rule.
+- **Curation** (under **More**) — lists the **Rules**, where you can retire one, and the **Entries**, where you can accept a candidate or promote ticked entries into a rule.
 
 ## Reporting
 
-What jawata recorded about itself on this machine: shapes only (tool, error code, counts, timing), never paths or message text. The sentence at the top says whether anything needs a look; open **Details** for the figures behind it. Type `/report` in any agent to file a bug report from your own GitHub account. The switch there stops the periodic failure reminder.
+The page is titled **Field recording**. It shows what jawata recorded about itself on this machine: shapes only (tool, error code, counts, timing), never paths or message text. The sentence at the top says whether anything needs a look; open **Details** for the figures behind it. Type `/report` in any agent to file a bug report from your own GitHub account. The switch there stops the periodic failure reminder.
 
 ## Seats
 
