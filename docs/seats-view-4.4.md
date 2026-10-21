@@ -273,3 +273,26 @@ it standing in the one section the clause says must be answered plainly.
 workspace and FAILS if two share one."* It is code, and a paragraph about a test makes a document
 look like a gate. The test is `workspace_two_distinct_workspaces_have_independent_processes`; it
 existed before this stage, and it goes red when the join ignores the workspace key (measured).
+
+
+## Every studio view: who reads it, and what they do next (C17, 2026-10-21)
+
+Written after his walkthrough of the installed 4.4.7 / engine 4.4.12. His cuts are applied; nothing is argued.
+A view opens on one line saying what is true now; everything else is folded.
+
+| View | Who reads it, in what situation | What they do next | What was cut |
+|---|---|---|---|
+| Dashboard | the person setting up or restarting the workspaces their agents use | start or stop a workspace or one project; add projects; deploy to or remove from their agents | **Dry run** (its preview was returned by the engine and shown nowhere), **Regenerate** (only skips "file already identical"), the four count pills, the hint sentence, the per-project refresh and Delete buttons, the per-card Delete workspace button (right-click keeps it), the "Selected Project Status" strip (its detail is the status badge's mouseover); the two registration forms became one folded "Add projects" panel; **Delete all** moved under "More" |
+| Memory | the person keeping the knowledge store healthy, who has just seen a recall miss or wants a copy before a risky action | Load, Back up now, Clean up; under More: export, import, restore, curate rules, wipe | five explanation paragraphs (they are mouseovers now), the 54 area chips and the per-bundle chips (one line), the Settings fields for store backup copies and the story folder moved here |
+| Reporting | the person asking "is anything wrong with jawata on this machine?" | open Details, then type `/report`; or switch off the periodic reminder | the five-figure strip and the shell-usage and canary cards (their figures are the opening sentence, the canary shows when a resident is not answering), failure shapes beyond the top three (folded) |
+| Seats | the person deciding which seats their agents may use and which brain a hire runs on | On/Off per typed seat; choose a brain; choose which agents get a command | the repeated "Typed as /x" sentence (a mouseover on Brain), the full purpose and When, Brain, Clients (folded under each row), 18 two-column cards (now three groups) |
+| Settings | the person changing how the engine updates, which agents deploy writes to, or where the manager keeps its data | choose the update policy; tick the agents; change a path, memory limit or debugging switch; clean up | the tool list of Test Services (a count and a result), the Antigravity row (unsupported; stated in Help), the two memory-store fields (moved to Memory); merge mode and backup-before-write sit under Advanced; Diagnostics paths and the cleanup buttons are folded |
+| Help | a person setting up a machine or finding what a tab is for | read one section per tab | the per-button reference and the tool surface (they go stale; hover text carries them), the stale screenshots; a gate (`build/help-gate.sh`) fails when a tab has no section |
+
+**Decisions this overhaul made without asking him, recorded so he can overrule them.**
+- The pattern library (D27, his ruling that it is shown as its own thing) stays a block of its own inside "What the store holds": one line with its share and cures, the namespace split in the mouseover.
+- The Antigravity row is gone from Settings; its reason is in Help.
+- The overhaul is homed in 28g, as the S17 deliverable, because C17 says his cuts are applied here.
+
+**Not proven yet.** Whether the folded views read well on the installed window is judged by him on the next install. A frontend render harness (`build/ux-render/`) is waiting for his word.
+
