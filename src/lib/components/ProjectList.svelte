@@ -316,13 +316,23 @@
     }
   }
 
+  /** Where a context menu goes. The menu key or Shift+F10 on a focused control fires `contextmenu` with no
+   * pointer, and some engines then report (0, 0), which would drop the menu in the window's corner; place it
+   * under the focused element instead. */
+  function menuPosition(event: MouseEvent): { x: number; y: number } {
+    if (event.clientX === 0 && event.clientY === 0 && event.currentTarget instanceof HTMLElement) {
+      const box = event.currentTarget.getBoundingClientRect();
+      return { x: box.left + 16, y: box.bottom };
+    }
+    return { x: event.clientX, y: event.clientY };
+  }
+
   function openProjectContextMenu(event: MouseEvent, project: ProjectRecord) {
     event.preventDefault();
     event.stopPropagation();
     if (disabled) return;
     contextMenu = {
-      x: event.clientX,
-      y: event.clientY,
+      ...menuPosition(event),
       items: [
         { label: "Start project", onSelect: () => onStart(project.id) },
         { label: "Stop project", onSelect: () => onStop(project.id) },
@@ -345,8 +355,7 @@
     event.stopPropagation();
     if (disabled) return;
     contextMenu = {
-      x: event.clientX,
-      y: event.clientY,
+      ...menuPosition(event),
       items: [
         { label: "Start workspace", onSelect: () => startWorkspace(workspace.projects) },
         { label: "Stop workspace", onSelect: () => stopWorkspace(workspace.projects) },
