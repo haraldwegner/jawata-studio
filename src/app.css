@@ -216,6 +216,46 @@ button {
   border-color: rgba(148, 163, 184, 0.55);
 }
 
+/* Memory's four actions are one size, the More menu's summary included (his "should have equally",
+   2026-10-22). */
+.memory-root .actions {
+  align-items: center;
+}
+
+/* One box for all four: the same height, width, padding and type, so the More menu's summary (a
+   <summary>, not a <button>) cannot come out a different size. */
+.memory-root .actions > button,
+.memory-root .actions > .more-menu > summary {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 2.4rem;
+  min-width: 7.5rem;
+  padding: 0 0.8rem;
+  font-size: 0.9rem;
+  line-height: 1;
+  border-radius: 10px;
+}
+
+/* A project row's path, under its name (restored 2026-10-22). */
+.path {
+  margin-top: 0.02rem;
+  color: #94a3b8;
+  font-size: 0.74rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 42vw;
+}
+
+/* Delete all sits under the workspaces it removes, quieter than the actions above it. */
+.workspace-delete-all {
+  justify-self: start;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.85rem;
+}
+
 .empty-hint {
   margin: 0;
 }
@@ -427,6 +467,10 @@ button {
   overflow: auto;
   min-height: 0;
   position: relative;
+  /* The root is as tall as the window and a grid by default shares that height out among its
+     rows, so every closed fold was drawn as a tall empty box (his "quite empty", "wastes space",
+     2026-10-22). Rows take their content's height and stack from the top. */
+  align-content: start;
 }
 
 .settings-save-footer {

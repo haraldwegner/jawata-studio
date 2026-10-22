@@ -4,43 +4,42 @@
 
 Every change an agent makes through jawata comes back with an undo handle: ask it to run `refactoring(action=undo, undoChangeId=…)` to put the code back.
 
-Hover any control for what it does. Each tab below says what it is for and what you do there.
+Hover any control for what it does.
+
+## Build a workspace
+
+This is the job the studio is for. Five steps, all on the Dashboard:
+
+1. **Create the workspace.** In **Workspaces** (left), click **+ New workspace…**, type a name, press Enter. Click a workspace to make it the one new projects join; it is highlighted.
+2. **Add its projects.** Open **Add projects** (left).
+   - **From a folder:** type or **Browse** to a Java project's folder, or a folder that holds several. The search starts at once (Enter also starts it) and lists every Maven, Gradle or Eclipse project under it, the folder itself included. Untick what you do not want, then **Import selected**.
+   - **A plain source folder** with no Maven, Gradle or Eclipse file is not found by the search. Then **Add this folder as a project** adds it as it is.
+   - **From a `.code-workspace` file:** **Browse** to the file, **Discover**, then **Import selected**.
+3. **Check what landed.** In **Managed Projects** (right), open the workspace's card: each project shows its name and its folder. Drag a project onto another workspace on the left to move it. Right-click a project to start, stop, rename, move or delete it; right-click a workspace to start, stop, rename or delete it.
+4. **Start it.** **Start workspace** on its card, or **Start all**. The badge turns **RUNNING** once the service has loaded every project; hover it for the detail.
+5. **Connect your agents.** **Deploy to agents** writes the jawata entries into the agents' config files. Restart or reload an agent to pick them up. **Remove from agents** takes exactly those entries out again.
+
+**Deleting.** Every delete asks first and names what it removes; your source files on disk are never deleted. A running or starting workspace cannot be deleted, and neither can one of its projects: stop the workspace first. **Delete all workspaces** is at the bottom of the Workspaces panel.
 
 ## Dashboard
 
-Where you set up and run workspaces.
-
-- **Workspaces (left)** — pick the workspace new projects join; create, rename or delete one.
-- **Add projects (left)** — pick a folder: the Java project in it, or every project under it, is listed and you import the ones you tick. The search knows a project by its Maven, Gradle or Eclipse file; when it finds none, **Add this folder as a project** adds the folder itself. Or import the projects of a `.code-workspace` file. It is open while you have no project and folded afterwards.
-- **Managed Projects (right)** — one card per workspace. Start or stop a workspace or a single project; open a card to see its projects. Right-click a project or a workspace for rename, move and delete. Drag projects between workspaces. The status badge shows the phase; hover it for the detail and the process id.
-- **Deploy to agents** — writes the jawata entries into the config files of the agents you tick. **Remove from agents** takes exactly those entries out again. Neither starts or stops anything. Which agents are offered is set in Settings → Agents.
+Everything above. **Reload all** stops every service and starts it again.
 
 ## Memory
 
-The knowledge store behind the recall your agents receive. One shared store by default.
-
-- **Summary line and buttons** — **Load** reads your memory files into the store (safe to repeat), **Back up now** takes a copy, **Clean up** drops aged discarded entries, merges duplicates and shrinks the file. **More** holds Export, Import, Restore, Curation and Wipe.
-- **Memory sources and store settings** — the folders **Load** reads (instruction files such as `CLAUDE.md`, rules files and `AGENTS.md` are found automatically; add your own `docs/` folders here), the store mode (one shared store or one per workspace), auto-seed on deploy, how many backup copies of the store are kept, and the folder the engine writes accepted entries to as readable markdown files.
-- **What the store holds** — counts per kind. Hover a count for what that kind is.
-- **What the cataloguer wrote** — a sample of the descriptions of your code, to judge their quality.
-- **Curation** (under **More**) — lists the **Rules**, where you can retire one, and the **Entries**, where you can accept a candidate or promote ticked entries into a rule.
+The knowledge store behind what your agents recall. **Load** reads your memory files into it, **Back up now** takes a copy, **Clean up** drops aged discarded entries and merges duplicates; **More** holds Reload status, Export, Import, Restore, Curation and Wipe. **Status** says what the last action did. **Memory sources and store settings** sets which folders Load reads and how many backups are kept.
 
 ## Reporting
 
-The page is titled **Field recording**. It shows what jawata recorded about itself on this machine: shapes only (tool, error code, counts, timing), never paths or message text. The sentence at the top says whether anything needs a look; open **Details** for the figures behind it. Type `/report` in any agent to file a bug report from your own GitHub account. The switch there stops the periodic failure reminder.
+What jawata recorded about itself on this machine: shapes only (tool, error code, counts), never paths or text. The sentence on top says whether anything needs a look; **Details** lists the failures behind it. Type `/report` in any agent to file one from your own GitHub account.
 
 ## Seats
 
-A seat is a narrow engineering role an agent can take, typed as a command such as `/refactor` or `/debug`.
-
-- **You type these** — each has an On switch (off removes its command from your agents) and a one-line purpose. Open a row for when it is meant to be used, which agent program and model a hire of it starts, which of your agents get its command, and **Reset to shipped**.
-- **Another seat hires these** and **Inside /sprint** — no command of their own; you choose only their brain.
+A seat is a narrow role an agent takes when you type its command, such as `/refactor` or `/debug`. The switch beside each takes its command out of your agents. Open a row for when it is meant to be used, which agent program and model a hire of it starts, which of your agents get its command, and **Reset to shipped**.
 
 ## Settings
 
-- **Engine** — where the jawata engine comes from and whether it updates itself. **Test services** checks that it answers.
-- **Agents** — which agents deploy writes to, and the config file of each (change it only if it is not in the usual place). Under **Advanced**: merge mode and a backup before each write.
-- **This machine** — the manager's data folder, tray, autostart, and per workspace a memory limit and an opt-in debugging switch. Paths and cleanup buttons are folded.
+**Engine**: where the jawata engine comes from and whether it updates itself; **Test services** checks that it answers. **Agents**: which agents Deploy writes to, and each one's config file (under **Advanced**: merge mode and a backup before each write):
 
 | Agent | Config file |
 |---|---|
@@ -51,16 +50,16 @@ A seat is a narrow engineering role an agent can take, typed as a command such a
 | VS Code | `<config dir>/Code/User/mcp.json` |
 | Grok | `~/.grok/config.toml` |
 
-`<config dir>` is `~/.config` on Linux, `~/Library/Application Support` on macOS and `%APPDATA%` on Windows. Grok receives jawata's tools but not its guard. Antigravity cannot connect jawata and is not supported.
+`<config dir>` is `~/.config` on Linux, `~/Library/Application Support` on macOS and `%APPDATA%` on Windows. Grok receives jawata's tools but not its guard. Antigravity cannot connect jawata and is not supported. **This machine**: the data folder, tray, autostart, per-workspace memory limits, and cleanup.
 
 ## Installation and updates
 
-- **Linux** — `curl -sSL https://raw.githubusercontent.com/haraldwegner/jawata-studio/main/install.sh | bash`, or a `.deb` from the Releases page.
-- **macOS** (Apple Silicon) — the `_aarch64.dmg`; clear the quarantine once with `xattr -d com.apple.quarantine /Applications/jawata-studio.app`.
-- **Windows** (x64 and ARM64) — the `.msi` or `-setup.exe`; the first launch needs SmartScreen → More info → Run anyway.
+- **Linux**: `curl -sSL https://raw.githubusercontent.com/haraldwegner/jawata-studio/main/install.sh | bash`, or a `.deb` from the Releases page.
+- **macOS** (Apple Silicon): the `_aarch64.dmg`; clear the quarantine once with `xattr -d com.apple.quarantine /Applications/jawata-studio.app`.
+- **Windows** (x64 and ARM64): the `.msi` or `-setup.exe`; the first launch needs SmartScreen → More info → Run anyway.
 
-The tray needs a StatusNotifierItem host on Linux; vanilla GNOME needs `gnome-shell-extension-appindicator` once. Per-platform detail is in the [README](https://github.com/haraldwegner/jawata-studio#installation).
+The tray needs a StatusNotifierItem host on Linux; vanilla GNOME needs `gnome-shell-extension-appindicator` once. The tray menu shows the studio and engine versions above Quit. Per-platform detail is in the [README](https://github.com/haraldwegner/jawata-studio#installation).
 
 ## If something fails
 
-Settings → This machine → Paths shows where the settings and logs are. Remove from agents and Deploy again to rewrite the entries. Keep **backup before MCP config write** on until you trust your layout.
+Settings → This machine shows where the settings and logs are. **Remove from agents** and **Deploy to agents** again rewrite the entries. Keep **backup before MCP config write** on until you trust your layout.

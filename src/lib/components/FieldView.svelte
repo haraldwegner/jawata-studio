@@ -246,7 +246,9 @@
     </details>
   {/if}
 
-  <details class="fold">
+  <!-- Open: folded, the tab read as empty (his "looks now very empty", 2026-10-22), and its top
+       failure shapes are the list the "worth reporting" count stands for. -->
+  <details class="fold" open>
     <summary title="The figures behind the sentence above.">Details</summary>
     <div class="fold-body">
       <section class="stack">

@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { closeOnOutside } from "../menu";
   import { afterUpdate } from "svelte";
   import type {
     DeployTargetFlags,
@@ -37,7 +36,6 @@
    * settle, then start them all again — single click that gives a
    * clean restart instead of racing stop/start. */
   export let onReloadAll: () => void;
-  export let onDeleteAll: () => void;
   /** Sprint 10 v0.10.4: move a project to a different (existing or new) workspace. */
   export let onSetWorkspace: (projectId: string, workspaceName: string) => void;
   export let onRenameProject: (projectId: string, name: string) => void;
@@ -331,6 +329,11 @@
     event.preventDefault();
     event.stopPropagation();
     if (disabled) return;
+    const projectWorkspaceLive = projects.some(
+      (p) =>
+        p.workspaceName === project.workspaceName &&
+        ["running", "starting"].includes(runtimeStatuses[p.id]?.phase ?? ""),
+    );
     contextMenu = {
       ...menuPosition(event),
       items: [
@@ -339,8 +342,10 @@
         { label: "Rename project", onSelect: () => startRenameProject(project) },
         { label: "Move to workspace…", onSelect: () => openMoveDropdown(project) },
         {
-          label: "Delete project",
+          // A project leaves only a stopped workspace (his rule on running workspaces, 2026-10-22).
+          label: projectWorkspaceLive ? "Delete project (stop its workspace first)" : "Delete project",
           danger: true,
+          disabled: projectWorkspaceLive,
           onSelect: () => onDelete(project.id),
         },
       ],
@@ -354,6 +359,7 @@
     event.preventDefault();
     event.stopPropagation();
     if (disabled) return;
+    const workspaceRuns = workspace.projects.some((p) => ["running", "starting"].includes(runtimeStatuses[p.id]?.phase ?? ""));
     contextMenu = {
       ...menuPosition(event),
       items: [
@@ -361,8 +367,10 @@
         { label: "Stop workspace", onSelect: () => stopWorkspace(workspace.projects) },
         { label: "Rename workspace", onSelect: () => startRenameWorkspace(workspace.name) },
         {
-          label: "Delete workspace",
+          // A running workspace cannot be deleted (his ruling 2026-10-22): stop it first.
+          label: workspaceRuns ? "Delete workspace (stop it first)" : "Delete workspace",
           danger: true,
+          disabled: workspaceRuns,
           onSelect: () => handleDeleteWorkspace(workspace.name, workspace.projects.length),
         },
       ],
@@ -380,16 +388,6 @@
         delete rowRefs[projectId];
       }
     };
-  }
-
-  /** Closes the "More" menu after one of its buttons was pressed. */
-  function closeMore(event: Event) {
-    (event.currentTarget as HTMLElement).closest("details")?.removeAttribute("open");
-  }
-
-  function handleDeleteAll() {
-    // Finding #8: App's onDeleteAll raises the single native confirm.
-    onDeleteAll();
   }
 
   function deploySummary(result: DeployToAgentsResult): string {
@@ -697,21 +695,6 @@
       >
         Reload all
       </button>
-      <details class="more-menu" use:closeOnOutside>
-        <summary title="Less common actions">More ▾</summary>
-        <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
-        <div class="more-menu-body" on:click={closeMore}>
-          <button
-            class="danger"
-            disabled={disabled || projects.length === 0}
-            on:click={handleDeleteAll}
-            title="Remove every project and workspace from the manager. Your project files on disk are not deleted."
-            type="button"
-          >
-            Delete all workspaces…
-          </button>
-        </div>
-      </details>
     </div>
   </div>
 
@@ -1018,12 +1001,15 @@
                         <button
                           class="select"
                           on:click={() => onSelect(project.id)}
-                          title={`${project.projectPath}\nRight-click for rename, move and delete.`}
+                          title="Right-click for rename, move and delete."
                           type="button"
                         >
                           <h3>{project.name}</h3>
                         </button>
                       {/if}
+                      <!-- The path is shown, not hidden in a mouseover: it is what he reads when he sets a
+                           workspace up (his ruling 2026-10-22, undoing S19 F2). -->
+                      <p class="path" title={project.projectPath}>{project.projectPath}</p>
                     </div>
 
                     <div class="project-right">

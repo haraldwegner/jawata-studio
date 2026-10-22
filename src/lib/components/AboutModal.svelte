@@ -1,6 +1,8 @@
 <script lang="ts">
   import { createEventDispatcher, onMount } from "svelte";
   import { formatManagerVersionForUi, getManagerAppVersion } from "../appVersion";
+  /** The engine the studio starts, as the header names it: a version, "local jar", or "" when none is installed. */
+  export let engineVersion = "";
 
   const dispatch = createEventDispatcher<{
     close: void;
@@ -44,6 +46,10 @@
           {:else}
             Loading version…
           {/if}
+        </div>
+        <!-- The engine it starts, beside its own version (his request, 2026-10-22). -->
+        <div class="app-version muted">
+          {engineVersion ? `JAWATA engine ${engineVersion}` : "JAWATA engine not installed yet"}
         </div>
       </div>
 

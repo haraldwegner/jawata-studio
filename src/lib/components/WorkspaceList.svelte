@@ -20,6 +20,9 @@
   /** Optional: delete a workspace on the left. When omitted the icon
    * is hidden. */
   export let onDelete: ((name: string) => void) | undefined = undefined;
+  /** Optional: delete every workspace. Lives here, beside the workspaces it removes
+   * (his ruling 2026-10-22), and is greyed while any workspace runs. */
+  export let onDeleteAll: (() => void) | undefined = undefined;
   /** Optional: drop handler for projects dragged from ProjectList onto
    * a workspace row. When omitted the rows are not drop targets. */
   export let onProjectsDropped:
@@ -95,19 +98,25 @@
   $: workspaceSummary = (() => {
     const byName: Record<
       string,
-      { count: number; running: number }
+      { count: number; running: number; live: number }
     > = {};
     for (const name of knownWorkspaces) {
-      byName[name] = { count: 0, running: 0 };
+      byName[name] = { count: 0, running: 0, live: 0 };
     }
     for (const project of projects) {
       const name = project.workspaceName || "workspace-default";
       if (!byName[name]) {
-        byName[name] = { count: 0, running: 0 };
+        byName[name] = { count: 0, running: 0, live: 0 };
       }
       byName[name].count += 1;
-      if (runtimeStatuses[project.id]?.phase === "running") {
+      const phase = runtimeStatuses[project.id]?.phase;
+      if (phase === "running") {
         byName[name].running += 1;
+      }
+      // LIVE = running or starting: a starting workspace (a cold import can take minutes) is as
+      // undeletable as a running one (the S19 round-2 audit).
+      if (phase === "running" || phase === "starting") {
+        byName[name].live += 1;
       }
     }
     return Object.keys(byName)
@@ -116,9 +125,12 @@
         name,
         count: byName[name].count,
         running: byName[name].running,
+        live: byName[name].live,
         phase: derivePhase(byName[name].count, byName[name].running),
       }));
   })();
+
+  $: anyRunning = workspaceSummary.some((ws) => ws.live > 0);
 
   function startCreate() {
     isCreating = true;
@@ -171,7 +183,7 @@
 
   function openWorkspaceContextMenu(
     event: MouseEvent,
-    ws: { name: string; count: number },
+    ws: { name: string; count: number; live: number },
   ) {
     event.preventDefault();
     event.stopPropagation();
@@ -182,8 +194,9 @@
     }
     if (onDelete) {
       items.push({
-        label: "Delete workspace",
+        label: ws.live > 0 ? "Delete workspace (stop it first)" : "Delete workspace",
         danger: true,
+        disabled: ws.live > 0,
         onSelect: () => confirmDelete(ws.name, ws.count),
       });
     }
@@ -249,9 +262,11 @@
               <button
                 aria-label={`Delete ${ws.name}`}
                 class="workspace-row-icon danger"
-                disabled={disabled}
+                disabled={disabled || ws.live > 0}
                 on:click|stopPropagation={() => confirmDelete(ws.name, ws.count)}
-                title="Delete workspace"
+                title={ws.live > 0
+                  ? "A running or starting workspace cannot be deleted. Stop it first."
+                  : "Delete this workspace: its service, its projects' registration and their analysis data. Your source files stay. Asks first."}
                 type="button"
               >
                 ✕
@@ -295,6 +310,20 @@
       type="button"
     >
       + New workspace…
+    </button>
+  {/if}
+
+  {#if onDeleteAll && workspaceSummary.length > 0}
+    <button
+      class="workspace-delete-all danger"
+      disabled={disabled || anyRunning}
+      on:click={onDeleteAll}
+      title={anyRunning
+        ? "Running workspaces cannot be deleted. Stop all services first."
+        : "Delete every workspace: services, project registrations and analysis data. Your source files stay. Asks first, naming each one."}
+      type="button"
+    >
+      Delete all workspaces…
     </button>
   {/if}
 </section>

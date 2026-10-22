@@ -15,10 +15,13 @@
   export let ready = true;
   // Decided ONCE, as soon as the list is known. Binding `open` to the live count would fold the panel the
   // moment the first project is added, cutting off the result of an import that is still being reported.
-  let startOpen = false;
+  // BOUND, not a one-way `open={…}`: a one-way value is written back on the element's next
+  // update, so picking a .code-workspace file (which changes the Discover button) folded the
+  // panel shut under him (2026-10-22). Bound, the panel stays the way he left it.
+  let foldOpen = false;
   let decided = false;
   $: if (!decided && ready) {
-    startOpen = projectCount === 0;
+    foldOpen = projectCount === 0;
     decided = true;
   }
   export let disabled = false;
@@ -271,7 +274,7 @@
 </script>
 
 <form class="panel stack" on:submit|preventDefault={scanProjectFolder}>
-<details class="fold" open={startOpen}>
+<details class="fold" bind:open={foldOpen}>
 <summary title="Pick a folder: the Java project in it, or every project under it, is listed for you to import. Or import the projects of a .code-workspace file. Open while you have no project yet.">Add projects</summary>
 <div class="fold-body">
   <section class="stack">

@@ -1299,14 +1299,15 @@ fn tray_verdict_row(words: Option<&str>) -> Option<String> {
 /// What decides whether the menu must be rebuilt: the workspaces' phases, the autostart
 /// checkmark, and — since REL44-11 — the verdict words, so a change in WHY the tray is amber
 /// reaches the menu and is not held back by an unchanged workspace list.
-type TrayMenuKey = (Vec<(String, RuntimePhase)>, bool, Option<String>);
+type TrayMenuKey = (Vec<(String, RuntimePhase)>, bool, Option<String>, Option<String>);
 
 fn tray_menu_key(
     workspaces: Vec<(String, RuntimePhase)>,
     autostart_on_boot: bool,
     words: Option<&str>,
+    versions: Option<&str>,
 ) -> TrayMenuKey {
-    (workspaces, autostart_on_boot, tray_verdict_row(words))
+    (workspaces, autostart_on_boot, tray_verdict_row(words), versions.map(str::to_string))
 }
 
 /// One row of the tray menu, before any platform builds it.
@@ -1326,6 +1327,7 @@ fn tray_menu_rows(
     words: Option<&str>,
     workspaces: &[(String, RuntimePhase)],
     autostart_on_boot: bool,
+    versions: Option<&str>,
 ) -> Vec<TrayRow> {
     let item = |id: &str, label: &str, enabled: bool| TrayRow::Item {
         id: id.to_string(),
@@ -1363,8 +1365,36 @@ fn tray_menu_rows(
         checked: autostart_on_boot,
     });
     rows.push(TrayRow::Separator);
+    // His request, 2026-10-22: the versions of the studio and the engine, readable without
+    // opening the window. A statement, so greyed.
+    if let Some(versions) = versions {
+        rows.push(item("tray_versions", versions, false));
+    }
     rows.push(item("tray_quit", "Quit", true));
     rows
+}
+
+/// `studio <v> · engine <v>` for the tray, from the running studio and the engine it starts.
+fn tray_versions_row<R: Runtime>(app: &AppHandle<R>) -> String {
+    // The tray refreshes every second, and the engine's version is a directory read plus a manifest
+    // parse per installed engine (the S19 round-2 audit). It changes only on an engine update, so it
+    // is read at most every 30 s.
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, String)>> = std::sync::Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap();
+    let fresh = cache
+        .as_ref()
+        .filter(|(at, _)| at.elapsed() < std::time::Duration::from_secs(30))
+        .map(|(_, label)| label.clone());
+    let engine = fresh.unwrap_or_else(|| {
+        let label = app
+            .state::<AppState>()
+            .manager_service
+            .engine_version_label()
+            .unwrap_or_else(|| "not installed".to_string());
+        *cache = Some((std::time::Instant::now(), label.clone()));
+        label
+    });
+    format!("studio {} · engine {}", app.package_info().version, engine)
 }
 
 fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
@@ -1389,8 +1419,9 @@ fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .autostart_on_boot;
     let words = TRAY_VERDICT_WORDS.lock().unwrap().clone();
 
+    let versions = tray_versions_row(app);
     let mut builder = MenuBuilder::new(app);
-    for row in tray_menu_rows(words.as_deref(), &workspaces, autostart_on_boot) {
+    for row in tray_menu_rows(words.as_deref(), &workspaces, autostart_on_boot, Some(&versions)) {
         builder = match row {
             TrayRow::Item { id, label, enabled } => {
                 let item = MenuItemBuilder::new(label).id(id).enabled(enabled).build(app)?;
@@ -1456,7 +1487,8 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) {
         .get_settings()
         .autostart_on_boot;
     let words = TRAY_VERDICT_WORDS.lock().unwrap().clone();
-    let snapshot = tray_menu_key(workspace_snapshot, autostart_on_boot, words.as_deref());
+    let versions = tray_versions_row(app);
+    let snapshot = tray_menu_key(workspace_snapshot, autostart_on_boot, words.as_deref(), Some(&versions));
 
     {
         let last = LAST.lock().unwrap();
@@ -1634,7 +1666,7 @@ mod tray_icon_tests {
         let words = field_view::canary_tooltip(field_view::canary_health(&board, 0), &board, &[], 0);
         let workspaces = vec![("orb-strategy".to_string(), RuntimePhase::Running)];
 
-        let rows = tray_menu_rows(Some(&words), &workspaces, false);
+        let rows = tray_menu_rows(Some(&words), &workspaces, false, None);
         match &rows[0] {
             TrayRow::Item { id, label, enabled } => {
                 assert_eq!(id, "tray_verdict", "the verdict is the menu's first row: {rows:?}");
@@ -1645,10 +1677,38 @@ mod tray_icon_tests {
             other => panic!("the first row must be the verdict, got {other:?}"),
         }
         assert!(
-            !tray_menu_rows(None, &workspaces, false)
+            !tray_menu_rows(None, &workspaces, false, None)
                 .iter()
                 .any(|r| matches!(r, TrayRow::Item { id, .. } if id == "tray_verdict")),
             "and before any verdict exists there is no verdict row"
+        );
+    }
+
+    /// His request, 2026-10-22: "tray -> I would like to have the version numbers of studio and
+    /// mcp shown". One greyed row, above Quit; and a new engine must rebuild the menu.
+    #[test]
+    fn the_tray_names_the_studio_and_engine_versions() {
+        let workspaces = vec![("patterns".to_string(), RuntimePhase::Running)];
+        let rows = tray_menu_rows(None, &workspaces, false, Some("studio 4.4.8 · engine 4.4.13"));
+        let at = rows
+            .iter()
+            .position(|r| matches!(r, TrayRow::Item { id, .. } if id == "tray_versions"))
+            .expect("the menu carries a versions row");
+        match &rows[at] {
+            TrayRow::Item { label, enabled, .. } => {
+                assert_eq!(label, "studio 4.4.8 · engine 4.4.13");
+                assert!(!enabled, "a statement, not a command");
+            }
+            other => panic!("unexpected row {other:?}"),
+        }
+        assert!(
+            matches!(rows.last(), Some(TrayRow::Item { id, .. }) if id == "tray_quit"),
+            "Quit stays last"
+        );
+        assert_ne!(
+            tray_menu_key(workspaces.clone(), true, None, Some("studio 4.4.8 · engine 4.4.12")),
+            tray_menu_key(workspaces, true, None, Some("studio 4.4.8 · engine 4.4.13")),
+            "an engine update must rebuild the menu"
         );
     }
 
@@ -1657,12 +1717,12 @@ mod tray_icon_tests {
     #[test]
     fn a_change_in_the_words_alone_changes_the_menu_key() {
         let workspaces = vec![("patterns".to_string(), RuntimePhase::Running)];
-        let healthy = tray_menu_key(workspaces.clone(), true, Some("jawata — 1 of 1 residents healthy"));
-        let broken = tray_menu_key(workspaces.clone(), true, Some("jawata — patterns: store not answering"));
+        let healthy = tray_menu_key(workspaces.clone(), true, Some("jawata — 1 of 1 residents healthy"), None);
+        let broken = tray_menu_key(workspaces.clone(), true, Some("jawata — patterns: store not answering"), None);
         assert_ne!(healthy, broken, "new words must not be held back by an unchanged workspace list");
         assert_eq!(
             healthy,
-            tray_menu_key(workspaces, true, Some("jawata — 1 of 1 residents healthy")),
+            tray_menu_key(workspaces, true, Some("jawata — 1 of 1 residents healthy"), None),
             "and the same words and list are the same key, so a steady state does not flicker"
         );
     }

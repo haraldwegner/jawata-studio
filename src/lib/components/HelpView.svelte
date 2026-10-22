@@ -5,6 +5,8 @@
   import helpContent from "../../assets/help.md?raw";
 
   let parsedContent = "";
+  /** Passed through to About, which names the engine beside the studio. */
+  export let engineVersion = "";
   let showAboutModal = false;
 
   onMount(() => {
@@ -41,7 +43,7 @@
 </div>
 
 {#if showAboutModal}
-  <AboutModal on:close={closeAboutModal} />
+  <AboutModal {engineVersion} on:close={closeAboutModal} />
 {/if}
 
 <style>

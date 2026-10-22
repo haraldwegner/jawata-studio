@@ -148,6 +148,29 @@
   // so it was mis-hit when the intent was "remove deploy to agent and
   // redeploy". Every other destructive action already confirms; these did
   // not. Guard each delete behind an explicit, consequence-naming confirm.
+  /** Delete every workspace: its service, its projects and their analysis data. "Delete all" lives
+   * on the Workspaces panel since 2026-10-22, and its one confirm NAMES every workspace it takes. */
+  async function deleteAllWorkspaces() {
+    const names = [...knownWorkspaces];
+    if (names.length === 0) return;
+    const projectsTotal = ($appStore.projects ?? []).length;
+    if (
+      !(await confirmDestructive(
+        `Delete ALL ${names.length} workspace${names.length === 1 ? "" : "s"}: ${names.join(", ")}?\n\n` +
+          `This removes their ${projectsTotal} project${projectsTotal === 1 ? "" : "s"} and all ` +
+          `analysis data, and cannot be undone. Your project source files on disk are NOT deleted.`,
+      ))
+    ) {
+      return;
+    }
+    for (const name of names) {
+      await appStore.deleteWorkspaceEntry(name);
+    }
+    pinnedEmptyWorkspaces.clear();
+    pinnedEmptyWorkspaces = pinnedEmptyWorkspaces;
+    activeWorkspaceName = "";
+  }
+
   function confirmDeleteWorkspace(name: string): Promise<boolean> {
     const count = ($appStore.projects ?? []).filter(
       (p) => p.workspaceName === name,
@@ -480,6 +503,7 @@
               knownWorkspaces={knownWorkspaces}
               onSelect={activateWorkspace}
               onRename={(oldName, newName) => appStore.renameWorkspaceEntry(oldName, newName)}
+              onDeleteAll={deleteAllWorkspaces}
               onDelete={async (name) => {
                 if (!(await confirmDeleteWorkspace(name))) return;
                 appStore.deleteWorkspaceEntry(name);
@@ -523,34 +547,24 @@
               onStop={(projectId) => appStore.stopProject(projectId)}
               onStopAll={() => appStore.stopAllProjects()}
               onReloadAll={() => appStore.reloadAllProjects()}
-              onDelete={(projectId) => appStore.deleteProjectEntry(projectId)}
-              onDeleteAll={async () => {
-                // Sprint 10 v0.10.4: "Delete all" means everything —
-                // every workspace's runtime, projects, JDT data dir,
-                // and any pinned-empty workspaces. Iterates known
-                // workspaces calling delete_workspace (which wipes
-                // each one fully); then resets client-side pin state
-                // and active workspace.
-                // v3.0.1 (dogfood): ONE strong confirm for the whole
-                // wipe, not one prompt per workspace.
-                const n = knownWorkspaces.length;
+              onDelete={async (projectId) => {
+                // Every deletion asks first, naming what it removes (his ruling 2026-10-22).
+                const project = ($appStore.projects ?? []).find((p) => p.id === projectId);
+                const last =
+                  ($appStore.projects ?? []).filter((p) => p.workspaceName === project?.workspaceName)
+                    .length === 1;
                 if (
-                  n === 0 ||
                   !(await confirmDestructive(
-                    `Delete ALL ${n} workspace${n === 1 ? "" : "s"}?\n\n` +
-                      `This removes every running service, every project and all ` +
-                      `analysis data across all workspaces, and cannot be undone. ` +
-                      `Your project source files on disk are NOT deleted.`,
+                    `Delete the project "${project?.name ?? projectId}" from workspace ` +
+                      `"${project?.workspaceName ?? "?"}"?\n\n` +
+                      `It leaves the workspace and its analysis data is removed.` +
+                      (last ? ` It is the workspace's last project, so the workspace goes too.` : ``) +
+                      ` Your source files at ${project?.projectPath ?? "its folder"} are NOT deleted.`,
                   ))
                 ) {
                   return;
                 }
-                for (const name of [...knownWorkspaces]) {
-                  await appStore.deleteWorkspaceEntry(name);
-                }
-                pinnedEmptyWorkspaces.clear();
-                pinnedEmptyWorkspaces = pinnedEmptyWorkspaces;
-                activeWorkspaceName = "";
+                appStore.deleteProjectEntry(projectId);
               }}
               onDeploy={(mode, targetClients) => appStore.deployToAgents(mode, targetClients)}
               onSetWorkspace={(projectId, workspaceName) => appStore.setProjectWorkspaceEntry(projectId, workspaceName)}
@@ -656,7 +670,11 @@
     </section>
   {:else if currentView === 'help'}
     <section class="dashboard-main">
-      <HelpView />
+      <HelpView
+        engineVersion={runtimeSource?.kind === "localJar"
+          ? "local jar"
+          : ($appStore.installedRuntime?.version ?? "")}
+      />
     </section>
   {/if}
 </main>

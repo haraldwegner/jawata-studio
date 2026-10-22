@@ -27,6 +27,8 @@
 
   let statuses: KnowledgeWorkspaceStatus[] = [];
   let statusLoading = false;
+  /** False until the first status answer: an empty list before it means "not read yet", not "none". */
+  let statusReadOnce = false;
   let selected = "";
   let busyAction = "";
   let outputTitle = "";
@@ -448,6 +450,7 @@
       showResult("status", { error: String(error) });
     } finally {
       statusLoading = false;
+      statusReadOnce = true;
       scheduleAutoReload();
     }
   }
@@ -1082,13 +1085,17 @@
         </p>
       {/if}
     {:else if storeRows.length === 0}
-      <p class="summary-line">No workspaces, or their services are not reachable.</p>
+      <!-- Said once, and only after the store was actually asked: the seconds before the first
+           answer read as "no workspaces" while three were running (his screenshot, 2026-10-22). -->
+      <p class="summary-line">
+        {statusReadOnce ? "No workspaces, or their services are not reachable." : "Reading the store…"}
+      </p>
     {/if}
   </div>
 
   <div class="stack">
       {#if storeRows.length === 0}
-        <p class="hint">No workspaces (or residents unreachable).</p>
+        <!-- the summary line above already says why there is nothing here -->
       {:else}
         <div class="table-wrap">
           <table>
@@ -1386,7 +1393,7 @@
       <!-- Results live right below the actions (Harald, 2026-07-06) — the right
            column grows, the sources column breathes. -->
       <div class="result-block">
-        <h4>Result{outputTitle ? ` of “${outputTitle}”` : ""}</h4>
+        <h4>Status{outputTitle && outputTitle !== "status" ? ` of “${outputTitle}”` : ""}</h4>
         {#if outputSummary.length > 0}
           <ul class="result-lines">
             {#each outputSummary as line}
@@ -1394,7 +1401,7 @@
             {/each}
           </ul>
         {:else if !outputRaw}
-          <p class="hint">No action run yet — results appear here.</p>
+          <p class="hint">No action run yet — what the last action did appears here.</p>
         {/if}
         {#if outputRaw && outputRaw !== "…"}
           <details>
@@ -1407,7 +1414,7 @@
       </div>
   </div>
 
-  <details class="fold">
+  <details class="fold" open>
     <summary title="What the store holds, how far the cataloguer has got, and where the pattern library stands.">What the store holds</summary>
     <div class="fold-body">
       {#if selectedRow?.lanes}

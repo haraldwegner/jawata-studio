@@ -603,11 +603,30 @@ impl ManagerService {
         self.load_dashboard()
     }
 
-    /// Sprint 10 v0.10.4: delete a workspace entirely. Kills any running
+    /// The refusal for deleting from `workspace_name` while its service is live, if it is.
+    fn live_deletion_refusal(&self, workspace_name: &str) -> Option<String> {
+        let projects = self.config_store.list_projects();
+        let settings = self.config_store.get_settings();
+        let installed = self.release_manager.get_installed_runtime(&settings).ok().flatten();
+        let statuses = self.collect_runtime_statuses(&projects, &settings, installed.as_ref());
+        let member_phases: Vec<RuntimePhase> = projects
+            .iter()
+            .filter(|project| project.workspace_name == workspace_name)
+            .filter_map(|project| statuses.get(&project.id).map(|status| status.phase.clone()))
+            .collect();
+        deletion_refusal(workspace_name, &member_phases)
+    }
+
+    /// Sprint 10 v0.10.4: delete a workspace entirely. Refuses while the
+    /// workspace is live (`live_deletion_refusal`); otherwise kills any
     /// jawata subprocess for the workspace, deletes the JDT data dir,
     /// and deletes every ProjectRecord whose `workspace_name` matched.
     /// Returns the dashboard reflecting the new state.
     pub fn delete_workspace(&self, workspace_name: &str) -> Result<ManagerDashboard, String> {
+        // His ruling, 2026-10-22: a running (or starting) workspace cannot be deleted.
+        if let Some(refusal) = self.live_deletion_refusal(workspace_name) {
+            return Err(refusal);
+        }
         // Stop any running process for the workspace.
         self.runtime_manager.stop_workspace_runtime(workspace_name)?;
 
@@ -648,6 +667,11 @@ impl ManagerService {
             .iter()
             .find(|p| p.id == project_id)
             .map(|p| p.workspace_name.clone());
+        // A project leaves only a stopped workspace: removing one from a live service changes what
+        // it serves, and removing the last stops it and drops the workspace (his ruling, 2026-10-22).
+        if let Some(refusal) = host_workspace.as_deref().and_then(|ws| self.live_deletion_refusal(ws)) {
+            return Err(refusal);
+        }
 
         self.runtime_manager.remove_project_runtime(project_id)?;
         self.config_store.delete_project(project_id)?;
@@ -1846,6 +1870,22 @@ impl ManagerService {
     /// `config_store.get_settings()`.
     pub fn get_settings(&self) -> crate::config::ManagerSettings {
         self.config_store.get_settings()
+    }
+
+    /// The engine version the studio starts, for the tray and About: the installed managed
+    /// release's version, `local jar` for a hand-picked jar (whose version is unknowable here),
+    /// or `None` when no managed engine is installed yet.
+    pub fn engine_version_label(&self) -> Option<String> {
+        let settings = self.config_store.get_settings();
+        match &settings.global_runtime_source {
+            RuntimeSource::Managed => self
+                .release_manager
+                .get_installed_runtime(&settings)
+                .ok()
+                .flatten()
+                .map(|runtime| runtime.version),
+            RuntimeSource::LocalJar { .. } => Some("local jar".to_string()),
+        }
     }
 
     /// Sprint 14 (v0.14.0): minimal setter for `autostart_on_boot`. The
@@ -9888,6 +9928,21 @@ fn remove_managed_cursor_hooks(
     Ok(changed)
 }
 
+/// Why a workspace whose projects are in `member_phases` cannot be deleted from, or `None` when it
+/// may be: a running or a starting service is live, and his rule (2026-10-22) is that it is stopped
+/// first.
+pub(crate) fn deletion_refusal(workspace_name: &str, member_phases: &[RuntimePhase]) -> Option<String> {
+    // ANY live member, not the overall phase: that one reads Running beside Stopped as Stopped.
+    member_phases
+        .iter()
+        .any(|phase| matches!(phase, RuntimePhase::Running | RuntimePhase::Starting))
+        .then(|| {
+            format!(
+                "Workspace '{workspace_name}' is running. Stop it first; a running workspace cannot be deleted."
+            )
+        })
+}
+
 /// Sprint 10 v0.10.4: atomic write of `workspace.json` for one workspace.
 /// Lifted out of `ManagerService` so it can be unit-tested without the
 /// full ConfigStore + ReleaseManager + RuntimeManager dependency graph.
@@ -11995,6 +12050,24 @@ judge was never told to give"
         // is a real gap in the gate's reach on that client, recorded here
         // rather than papered over with a file it would ignore.
         assert!(derive_agents_dir("cursor", &display_path(&cfg)).is_none());
+    }
+
+    /// His ruling, 2026-10-22: "running workspaces cannot be deleted". The UI greys the controls;
+    /// this is the rule itself, so no path reaches the deletion while the service is live — a
+    /// STARTING workspace included, which can take minutes and the UI first left deletable.
+    #[test]
+    fn a_live_workspace_refuses_deletion_and_a_stopped_one_does_not() {
+        use RuntimePhase::{Failed, Running, Starting, Stopped};
+        // A workspace is live while ANY of its projects runs or starts: one running beside one
+        // stopped is a live service (the S19-R2 audit found the overall phase calling it Stopped).
+        for live in [vec![Running], vec![Starting], vec![Running, Stopped], vec![Running, Failed], vec![Stopped, Starting]] {
+            let refusal = deletion_refusal("patterns", &live)
+                .unwrap_or_else(|| panic!("a live workspace {live:?} must be refused"));
+            assert!(refusal.contains("patterns") && refusal.contains("Stop"), "{refusal}");
+        }
+        for idle in [vec![Stopped], vec![Failed], vec![Stopped, Failed], vec![]] {
+            assert_eq!(deletion_refusal("patterns", &idle), None, "{idle:?} may be deleted");
+        }
     }
 
     /// 2026-10-21: twice in twenty minutes a Cursor window froze for 15 s and was torn down, both
