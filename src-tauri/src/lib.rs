@@ -1261,17 +1261,19 @@ fn phase_glyph(phase: &RuntimePhase) -> &'static str {
 /// Sprint 13 (v0.13.0): build the tray menu reflecting the current set
 /// of workspaces.
 ///
-/// Menu shape:
-///   jawata — 3 of 3 residents healthy   (disabled; the verdict in words, REL44-11)
-///   ─────
+/// Menu shape (his order, 2026-10-23):
 ///   Open dashboard            (raises the full manager window)
+///   ─────
+///   studio 4.4.9 · engine 4.4.15         (disabled; the versions)
+///   jawata — 3 of 3 residents healthy   (disabled; the verdict in words, REL44-11)
 ///   ─────
 ///   Workspaces                (disabled header — only when ≥1 workspace)
 ///     ●  Jawata_WS          (toggle on click)
 ///     ○  BETA-WS
 ///   ─────
-///   Start all services
-///   Stop all services
+///   Start all services / Reload all services / Stop all services
+///   ─────
+///   Autostart on boot
 ///   ─────
 ///   Quit
 ///
@@ -1336,12 +1338,22 @@ fn tray_menu_rows(
         enabled,
     };
     let mut rows = Vec::new();
-    if let Some(row) = tray_verdict_row(words) {
-        rows.push(item("tray_verdict", &row, false));
-        rows.push(TrayRow::Separator);
-    }
+    // His order, 2026-10-23: "Open dashboard should be the first in the tray, because this is what
+    // you do most. then status which is jawata versions first and then the healthiness".
     rows.push(item("tray_open_dashboard", "Open dashboard", true));
     rows.push(TrayRow::Separator);
+    // The status: both are statements, so greyed. His request of 2026-10-22 put the versions in
+    // the tray; REL44-11 made the verdict words a row because his shell shows no tooltip.
+    let verdict = tray_verdict_row(words);
+    if let Some(versions) = versions {
+        rows.push(item("tray_versions", versions, false));
+    }
+    if let Some(row) = &verdict {
+        rows.push(item("tray_verdict", row, false));
+    }
+    if versions.is_some() || verdict.is_some() {
+        rows.push(TrayRow::Separator);
+    }
     if !workspaces.is_empty() {
         rows.push(item("tray_workspaces_header", "Workspaces", false));
         for (name, phase) in workspaces {
@@ -1366,11 +1378,6 @@ fn tray_menu_rows(
         checked: autostart_on_boot,
     });
     rows.push(TrayRow::Separator);
-    // His request, 2026-10-22: the versions of the studio and the engine, readable without
-    // opening the window. A statement, so greyed.
-    if let Some(versions) = versions {
-        rows.push(item("tray_versions", versions, false));
-    }
     rows.push(item("tray_quit", "Quit", true));
     rows
 }
@@ -1668,9 +1675,14 @@ mod tray_icon_tests {
         let workspaces = vec![("orb-strategy".to_string(), RuntimePhase::Running)];
 
         let rows = tray_menu_rows(Some(&words), &workspaces, false, None);
-        match &rows[0] {
+        // Since his order of 2026-10-23 the verdict is the first STATUS row, below Open dashboard.
+        let at = rows
+            .iter()
+            .position(|r| matches!(r, TrayRow::Item { id, .. } if id == "tray_verdict"))
+            .unwrap_or_else(|| panic!("the menu carries the verdict row: {rows:?}"));
+        match &rows[at] {
             TrayRow::Item { id, label, enabled } => {
-                assert_eq!(id, "tray_verdict", "the verdict is the menu's first row: {rows:?}");
+                assert_eq!(id, "tray_verdict");
                 assert!(label.contains("orb-strategy"), "it names the workspace: {label}");
                 assert!(label.contains("not accepting connections"), "and why it is amber: {label}");
                 assert!(!enabled, "a statement, not a command");
@@ -1711,6 +1723,33 @@ mod tray_icon_tests {
             tray_menu_key(workspaces, true, None, Some("studio 4.4.8 · engine 4.4.13")),
             "an engine update must rebuild the menu"
         );
+    }
+
+    /// His order, 2026-10-23: "Open dashboard should be the first in the tray, because this is what
+    /// you do most. then status which is jawata versions first and then the healthiness e.g. 3
+    /// residents healthy and then the workspaces etc".
+    #[test]
+    fn the_tray_opens_with_the_dashboard_then_the_versions_then_the_health() {
+        let workspaces = vec![("patterns".to_string(), RuntimePhase::Running)];
+        let rows = tray_menu_rows(
+            Some("jawata — 3 of 3 residents healthy"),
+            &workspaces,
+            false,
+            Some("studio 4.4.9 · engine 4.4.15"),
+        );
+        let ids: Vec<&str> = rows
+            .iter()
+            .filter_map(|r| match r {
+                TrayRow::Item { id, .. } | TrayRow::Check { id, .. } => Some(id.as_str()),
+                TrayRow::Separator => None,
+            })
+            .collect();
+        assert_eq!(
+            &ids[..5],
+            &["tray_open_dashboard", "tray_versions", "tray_verdict", "tray_workspaces_header", "tray_workspace_toggle:patterns"],
+            "the dashboard first, then the versions, then the health, then the workspaces: {ids:?}"
+        );
+        assert_eq!(ids.last(), Some(&"tray_quit"), "Quit stays last: {ids:?}");
     }
 
     /// REL44-11's other half: a change in the WORDS alone must rebuild the menu — the workspace
