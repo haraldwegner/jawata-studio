@@ -4315,8 +4315,9 @@ fn has_local_jar_files(path: &Path) -> bool {
     false
 }
 
-/// The projects an IntelliJ project's modules make, in the module list's order: a module with a build file is the project its build
-/// file makes; one without is a project (kind `intellij`) when its `.iml` names a source folder that exists, and is left out otherwise.
+/// The projects an IntelliJ project's modules make, sorted by path: a module with a build file is the project its build file makes; one
+/// without is a project (kind `intellij`) when its `.iml` names a source folder that exists, and is left out otherwise. Nesting is
+/// resolved by `fold_intellij_nesting`.
 fn intellij_candidates(project_dir: &Path) -> Result<Vec<WorkspaceProjectCandidate>, String> {
     let mut candidates = Vec::new();
     for module in crate::intellij::read_modules(project_dir)? {
@@ -4336,7 +4337,33 @@ fn intellij_candidates(project_dir: &Path) -> Result<Vec<WorkspaceProjectCandida
             source_roots,
         });
     }
-    Ok(keep_containing_roots(candidates))
+    Ok(fold_intellij_nesting(candidates))
+}
+
+/// How nested IntelliJ modules become projects (Sprint 28k, C14 round 2). Inside a project a build file makes, a nested module is
+/// covered by it and is not offered beside it, as for every other definition. Inside a module that names its own folders, nothing is
+/// covered that the module does not name: a nested module without a build file gives it its folders (so none of its code is lost), and
+/// a nested module with a build file stays a project of its own.
+fn fold_intellij_nesting(candidates: Vec<WorkspaceProjectCandidate>) -> Vec<WorkspaceProjectCandidate> {
+    let mut candidates = candidates;
+    candidates.sort_by(|a, b| a.project_path.len().cmp(&b.project_path.len()).then(a.project_path.cmp(&b.project_path)));
+    let mut kept: Vec<WorkspaceProjectCandidate> = Vec::new();
+    for candidate in candidates {
+        let path = PathBuf::from(&candidate.project_path);
+        // the deepest kept candidate that contains this one: kept is in order of path length, so the last match
+        let container = kept.iter_mut().filter(|k| path.starts_with(&k.project_path)).last();
+        match container {
+            None => kept.push(candidate),
+            Some(module) if module.kind == "intellij" && candidate.kind == "intellij" => {
+                module.source_roots.main.extend(candidate.source_roots.main);
+                module.source_roots.test.extend(candidate.source_roots.test);
+            }
+            Some(module) if module.kind == "intellij" => kept.push(candidate),
+            Some(_) => {}
+        }
+    }
+    kept.sort_by(|a, b| a.project_path.cmp(&b.project_path));
+    kept
 }
 
 fn read_workspace_roots(workspace_file: &str) -> Result<Vec<PathBuf>, String> {
@@ -17582,6 +17609,24 @@ judge was never told to give"
         let found = service.discover_workspace_projects(&project.to_string_lossy()).expect("read");
         assert_eq!(found.iter().map(|c| (c.name.as_str(), c.project_path.clone())).collect::<Vec<_>>(),
             vec![("parent", project.to_string_lossy().to_string())]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Inside a module that names its own folders (no build file), a nested module without a build file gives its folders to the module
+    /// that contains it, so none of its code is lost; a nested module with a build file stays a project of its own (C14 round 2, N1).
+    #[test]
+    fn a_module_nested_in_a_build_file_less_module_gives_it_its_folders_and_a_nested_build_file_project_stays_its_own() {
+        let dir = unique_tempdir("intellij-root-plain");
+        let service = service_over(&dir);
+        let project = intellij_fixture("intellij-root-plain");
+        let path = |p: PathBuf| p.to_string_lossy().to_string();
+        let found = service.discover_workspace_projects(&project.to_string_lossy()).expect("read");
+        let rows: Vec<(String, String, SourceRoots)> = found.iter()
+            .map(|c| (c.name.clone(), c.kind.clone(), c.source_roots.clone())).collect();
+        assert_eq!(rows, vec![
+            ("root".into(), "intellij".into(), SourceRoots { main: vec![path(project.join("src")), path(project.join("core").join("java"))], test: vec![] }),
+            ("lib".into(), "maven-gradle".into(), SourceRoots::default()),
+        ]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
