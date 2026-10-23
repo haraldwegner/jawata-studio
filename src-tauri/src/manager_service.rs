@@ -17615,7 +17615,7 @@ judge was never told to give"
     /// Inside a module that names its own folders (no build file), a nested module without a build file gives its folders to the module
     /// that contains it, so none of its code is lost; a nested module with a build file stays a project of its own (C14 round 2, N1).
     #[test]
-    fn a_module_nested_in_a_build_file_less_module_gives_it_its_folders_and_a_nested_build_file_project_stays_its_own() {
+    fn an_intellij_module_nested_in_a_build_file_less_module_gives_it_its_folders_and_a_nested_build_file_project_stays_its_own() {
         let dir = unique_tempdir("intellij-root-plain");
         let service = service_over(&dir);
         let project = intellij_fixture("intellij-root-plain");
