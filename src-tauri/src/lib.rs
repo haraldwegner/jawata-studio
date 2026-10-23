@@ -5,6 +5,7 @@ mod commands;
 mod config;
 mod field_view;
 mod gateway;
+mod intellij;
 mod lombok;
 mod conductor;
 mod manager_service;

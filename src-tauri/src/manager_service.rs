@@ -2165,6 +2165,10 @@ impl ManagerService {
         &self,
         workspace_file: &str,
     ) -> Result<Vec<WorkspaceProjectCandidate>, String> {
+        // Sprint 28k (contract S4): an IntelliJ project, named by its folder or its .idea/modules.xml, is read by its module list.
+        if let Some(project_dir) = crate::intellij::project_dir_of(Path::new(workspace_file.trim())) {
+            return intellij_candidates(&project_dir);
+        }
         // Sprint 16: thin wrapper — the walk/detect/nested-filter core moved
         // to scan_directory_for_java_projects, shared with the autoscan flow.
         scan_directory_for_java_projects(&read_workspace_roots(workspace_file)?)
@@ -4290,6 +4294,24 @@ fn has_local_jar_files(path: &Path) -> bool {
         }
     }
     false
+}
+
+/// The projects an IntelliJ project's modules make, in the module list's order: a module with a build file is the project its build
+/// file makes; one without is a project (kind `intellij`) when its `.iml` names a source folder that exists, and is left out otherwise.
+fn intellij_candidates(project_dir: &Path) -> Result<Vec<WorkspaceProjectCandidate>, String> {
+    let mut candidates = Vec::new();
+    for module in crate::intellij::read_modules(project_dir)? {
+        let kind = detect_java_project_kind(&module.dir)
+            .or_else(|| module.source_folders.iter().any(|f| f.is_dir()).then(|| "intellij".to_string()));
+        if let Some(kind) = kind {
+            candidates.push(WorkspaceProjectCandidate {
+                name: module.name,
+                project_path: module.dir.to_string_lossy().to_string(),
+                kind,
+            });
+        }
+    }
+    Ok(candidates)
 }
 
 fn read_workspace_roots(workspace_file: &str) -> Result<Vec<PathBuf>, String> {
@@ -17439,6 +17461,71 @@ judge was never told to give"
             scan_folder_for_projects_at("   ").is_err(),
             "blank input must error"
         );
+    }
+
+    // ===== Sprint 28k (contract S4): an IntelliJ project as a workspace definition =====
+
+    fn intellij_fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("test-fixtures").join(name)
+    }
+
+    /// The modules of an IntelliJ project that uses a build tool: each module is the project its build file makes, named as IntelliJ
+    /// names the module. Given the project's folder or its `.idea/modules.xml`, the answer is the same.
+    #[test]
+    fn an_intellij_project_with_a_build_tool_gives_each_module_as_its_build_files_project() {
+        let dir = unique_tempdir("intellij-build");
+        let service = service_over(&dir);
+        let project = intellij_fixture("intellij-with-build");
+        for given in [project.clone(), project.join(".idea").join("modules.xml")] {
+            let found = service.discover_workspace_projects(&given.to_string_lossy()).expect("an IntelliJ project is read");
+            let rows: Vec<(String, String, String)> = found.iter()
+                .map(|c| (c.name.clone(), c.project_path.clone(), c.kind.clone())).collect();
+            assert_eq!(rows, vec![
+                ("app".into(), project.join("app").to_string_lossy().to_string(), "maven-gradle".into()),
+                ("lib".into(), project.join("lib").to_string_lossy().to_string(), "maven-gradle".into()),
+            ], "given {}", given.display());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Without a build tool, a module is a project when its `.iml` names a source folder that exists, wherever the `.iml` is kept;
+    /// a module that names none is left out. Importing the selection puts the modules into the workspace.
+    #[test]
+    fn an_intellij_project_without_a_build_tool_gives_the_modules_whose_iml_names_source_folders_and_imports_them() {
+        let dir = unique_tempdir("intellij-plain");
+        let service = service_over(&dir);
+        let project = intellij_fixture("intellij-without-build");
+        let found = service.discover_workspace_projects(&project.to_string_lossy()).expect("an IntelliJ project is read");
+        let rows: Vec<(String, String, String)> = found.iter()
+            .map(|c| (c.name.clone(), c.project_path.clone(), c.kind.clone())).collect();
+        assert_eq!(rows, vec![
+            ("core".into(), project.join("core").to_string_lossy().to_string(), "intellij".into()),
+            ("tools".into(), project.join("tools").to_string_lossy().to_string(), "intellij".into()),
+        ]);
+        let result = service.import_workspace_projects(WorkspaceImportInput {
+            workspace_file: project.to_string_lossy().to_string(),
+            scan_folder: String::new(),
+            selected_paths: found.iter().map(|c| c.project_path.clone()).collect(),
+            workspace_name: "intellij-plain".into(),
+        }).expect("the import runs");
+        assert!(result.skipped.is_empty(), "{:?}", result.skipped);
+        let mut imported: Vec<(String, String)> = result.added.iter().map(|p| (p.name.clone(), p.workspace_name.clone())).collect();
+        imported.sort();
+        assert_eq!(imported, vec![("core".into(), "intellij-plain".into()), ("tools".into(), "intellij-plain".into())]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `.code-workspace` file is still read as one: the IntelliJ reader is chosen only for an IntelliJ project.
+    #[test]
+    fn a_code_workspace_file_is_still_read_as_one() {
+        let dir = unique_tempdir("intellij-not");
+        let service = service_over(&dir);
+        let module = intellij_fixture("intellij-with-build").join("app");
+        let file = dir.join("one.code-workspace");
+        std::fs::write(&file, format!(r#"{{ "folders": [ {{ "path": {:?} }} ] }}"#, module.to_string_lossy())).unwrap();
+        let found = service.discover_workspace_projects(&file.to_string_lossy()).expect("read");
+        assert_eq!(found.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["app"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ===== Sprint 16 (bugs.md #14a): managed-entry detection =====

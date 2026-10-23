@@ -170,8 +170,10 @@
     const selected = await open({
       directory: false,
       multiple: false,
-      title: "Select VSCode workspace file",
-      filters: [{ name: "VSCode Workspace", extensions: ["code-workspace"] }]
+      title: "Select a VS Code workspace file, or an IntelliJ project's .idea/modules.xml",
+      filters: [
+        { name: "VS Code workspace or IntelliJ modules.xml", extensions: ["code-workspace", "xml"] }
+      ]
     });
     if (typeof selected === "string") {
       workspaceFile = selected;
@@ -186,7 +188,7 @@
     scanMessage = "";
     const path = workspaceFile.trim();
     if (!path) {
-      importMessage = "Choose a .code-workspace file first.";
+      importMessage = "Choose a .code-workspace file or an IntelliJ project first.";
       return;
     }
     isDiscovering = true;
@@ -206,7 +208,7 @@
           ? ""
           : `Found ${candidates.length} project(s).`;
       if (candidates.length === 0) {
-        importMessage = "No Maven/Gradle or Eclipse/PDE Java projects found.";
+        importMessage = "No Maven/Gradle, Eclipse/PDE or IntelliJ Java projects found.";
       }
     } catch (error) {
       scanMessage = "";
@@ -275,7 +277,7 @@
 
 <form class="panel stack" on:submit|preventDefault={scanProjectFolder}>
 <details class="fold" bind:open={foldOpen}>
-<summary title="Pick a folder: the Java project in it, or every project under it, is listed for you to import. Or import the projects of a .code-workspace file. Open while you have no project yet.">Add projects</summary>
+<summary title="Pick a folder: the Java project in it, or every project under it, is listed for you to import. Or import the projects of a .code-workspace file or an IntelliJ project. Open while you have no project yet.">Add projects</summary>
 <div class="fold-body">
   <section class="stack">
     <div class="section-intro">
@@ -365,10 +367,10 @@
 
   <section class="stack">
     <div class="section-intro">
-      <h3>From a .code-workspace file</h3>
+      <h3>From a .code-workspace file or an IntelliJ project</h3>
       <p class="muted">
         {#if activeWorkspaceName}
-          Discover Maven/Gradle and Eclipse/PDE Java projects from a .code-workspace file. Selected projects join <strong>{activeWorkspaceName}</strong>.
+          Discover the Java projects a .code-workspace file or an IntelliJ project names. Selected projects join <strong>{activeWorkspaceName}</strong>.
         {:else}
           Pick a workspace above first.
         {/if}
@@ -376,19 +378,19 @@
     </div>
 
     <label class="field">
-      <span>.code-workspace file</span>
+      <span>.code-workspace file or IntelliJ project</span>
       <div class="field-row">
         <input
           bind:value={workspaceFile}
           disabled={disabled || isImporting}
           on:keydown={(event) => onEnter(event, () => canDiscover && discoverFromWorkspace())}
-          placeholder="/path/to/workspace.code-workspace"
-          title="Path to a VSCode .code-workspace file describing the projects to import"
+          placeholder="/path/to/workspace.code-workspace or /path/to/intellij-project"
+          title="A VS Code .code-workspace file, or an IntelliJ project (its folder or its .idea/modules.xml). From an IntelliJ project each module is offered: a module with a Maven or Gradle build as that project, a module without one when its .iml names source folders"
         />
         <button
           disabled={disabled || isImporting}
           on:click={chooseWorkspaceFile}
-          title="Open a file picker to choose a .code-workspace file"
+          title="Open a file picker to choose a .code-workspace file or an IntelliJ project's .idea/modules.xml"
           type="button"
         >Browse</button>
       </div>
@@ -398,7 +400,7 @@
       class:primary={canDiscover}
       disabled={!canDiscover}
       on:click={discoverFromWorkspace}
-      title="Scan the chosen .code-workspace file for Java projects (Maven/Gradle/Eclipse)"
+      title="List the Java projects the chosen .code-workspace file or IntelliJ project names (Maven/Gradle, Eclipse, IntelliJ modules)"
       type="button"
     >
       {isDiscovering ? "Discovering…" : "Discover"}
