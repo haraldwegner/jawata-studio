@@ -473,6 +473,15 @@ button {
   align-content: start;
 }
 
+/* C11-11 candidate (his "The scroll is slow", Seats view, 2026-10-20): inside the scroll container
+   every card's blurred 30px shadow is repainted on each scroll frame, 18 of them on the Seats view.
+   Cards there get no shadow. Not measured: WebKitGTK has no frame counter here, so his scroll in
+   the installed window is the judge; the bar's backdrop-filter is the next candidate if this is not
+   it. */
+.runtime-settings-root .panel {
+  box-shadow: none;
+}
+
 .settings-save-footer {
   position: sticky;
   bottom: 0;
