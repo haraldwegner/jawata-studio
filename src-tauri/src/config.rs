@@ -524,6 +524,26 @@ pub struct ProjectRecord {
     /// migration of existing projects.json files. Removed in Sprint 11.
     #[serde(default)]
     pub assigned_port: u16,
+    /// Sprint 28k (contract S4): the source folders a project declares when no build file says where its code is (an IntelliJ
+    /// module without one, from its `.iml`); empty for every other project, and then not written.
+    #[serde(default, skip_serializing_if = "SourceRoots::is_empty")]
+    pub source_roots: SourceRoots,
+}
+
+/// Where a project's code and its tests are, when the project says so itself rather than through a build file.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceRoots {
+    #[serde(default)]
+    pub main: Vec<String>,
+    #[serde(default)]
+    pub test: Vec<String>,
+}
+
+impl SourceRoots {
+    /// No folder named: the project is found the usual way.
+    pub fn is_empty(&self) -> bool {
+        self.main.is_empty() && self.test.is_empty()
+    }
 }
 
 /// Input data for registering a new project.
@@ -902,6 +922,11 @@ impl ConfigStore {
     }
 
     pub fn add_project(&self, input: AddProjectInput) -> Result<ProjectRecord, String> {
+        self.add_project_with_source_roots(input, SourceRoots::default())
+    }
+
+    /// Sprint 28k (contract S4): register a project together with the source folders it declares itself.
+    pub fn add_project_with_source_roots(&self, input: AddProjectInput, source_roots: SourceRoots) -> Result<ProjectRecord, String> {
         validate_non_empty("name", &input.name)?;
         validate_non_empty("projectPath", &input.project_path)?;
 
@@ -918,6 +943,7 @@ impl ConfigStore {
             project_path: input.project_path.trim().to_string(),
             workspace_name,
             assigned_port: 0,
+            source_roots,
         };
 
         let mut projects = self.projects.lock().expect("projects mutex poisoned");
@@ -1489,6 +1515,7 @@ fn read_projects(path: &Path) -> Result<ProjectsFile, String> {
                 project_path: legacy_project.project_path,
                 workspace_name: "workspace-default".to_string(),
                 assigned_port: 0,
+                source_roots: SourceRoots::default(),
             })
             .collect(),
         // Legacy projects.json files predate Stage 9; resident state is

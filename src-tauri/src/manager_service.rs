@@ -1,7 +1,7 @@
 use crate::{
     config::{
         display_path, AddProjectInput, BootstrapStatus, ConfigStore, DeployTargetFlags,
-        ManagerSettings, McpMergeMode, ProjectRecord, RuntimeSource, UpdateSettingsInput,
+        ManagerSettings, McpMergeMode, ProjectRecord, RuntimeSource, SourceRoots, UpdateSettingsInput,
     },
     gateway,
     release_manager::{ManagedRuntimeRecord, ReleaseManager, ReleaseStatus},
@@ -83,6 +83,10 @@ pub struct WorkspaceProjectCandidate {
     pub name: String,
     pub project_path: String,
     pub kind: String,
+    /// Sprint 28k (contract S4): the source folders the project declares itself (an IntelliJ module without a build file), carried
+    /// into the workspace definition on import; empty for every other kind.
+    #[serde(default, skip_serializing_if = "SourceRoots::is_empty")]
+    pub source_roots: SourceRoots,
 }
 
 /// Sprint 10 v0.10.4: input for moving a project to a different workspace.
@@ -528,7 +532,12 @@ impl ManagerService {
     /// `workspace.json` so any running jawata for that workspace picks
     /// up the new project via the file watcher.
     pub fn add_project(&self, input: AddProjectInput) -> Result<ProjectRecord, String> {
-        let project = self.config_store.add_project(input)?;
+        self.add_project_with_source_roots(input, SourceRoots::default())
+    }
+
+    /// Sprint 28k (contract S4): add a project with the source folders it declares itself; they are written into `workspace.json`.
+    fn add_project_with_source_roots(&self, input: AddProjectInput, source_roots: SourceRoots) -> Result<ProjectRecord, String> {
+        let project = self.config_store.add_project_with_source_roots(input, source_roots)?;
         self.write_workspace_json_for(&project.workspace_name)?;
         // Sprint 16 (bugs.md #14a): keep already-deployed client configs
         // in sync with workspace mutations.
@@ -2166,8 +2175,12 @@ impl ManagerService {
         workspace_file: &str,
     ) -> Result<Vec<WorkspaceProjectCandidate>, String> {
         // Sprint 28k (contract S4): an IntelliJ project, named by its folder or its .idea/modules.xml, is read by its module list.
-        if let Some(project_dir) = crate::intellij::project_dir_of(Path::new(workspace_file.trim())) {
+        let given = Path::new(workspace_file.trim());
+        if let Some(project_dir) = crate::intellij::project_dir_of(given) {
             return intellij_candidates(&project_dir);
+        }
+        if given.extension().is_some_and(|e| e.eq_ignore_ascii_case("xml")) {
+            return Err(format!("{} is not an IntelliJ project's .idea/modules.xml", given.display()));
         }
         // Sprint 16: thin wrapper — the walk/detect/nested-filter core moved
         // to scan_directory_for_java_projects, shared with the autoscan flow.
@@ -2208,11 +2221,11 @@ impl ManagerService {
             if !selected.contains(&candidate.project_path) {
                 continue;
             }
-            let result = self.add_project(AddProjectInput {
+            let result = self.add_project_with_source_roots(AddProjectInput {
                 name: candidate.name.clone(),
                 project_path: candidate.project_path.clone(),
                 workspace_name: target_workspace.clone(),
-            });
+            }, candidate.source_roots.clone());
             match result {
                 Ok(project) => added.push(project),
                 Err(error) => skipped.push(format!("{} ({error})", candidate.project_path)),
@@ -2489,14 +2502,15 @@ impl ManagerService {
     fn write_workspace_json_for(&self, workspace_name: &str) -> Result<(), String> {
         let settings = self.config_store.get_settings();
         let projects = self.config_store.list_projects();
-        let paths: Vec<&str> = projects
-            .iter()
-            .filter(|p| p.workspace_name == workspace_name)
-            .map(|p| p.project_path.as_str())
+        let members: Vec<&ProjectRecord> = projects.iter().filter(|p| p.workspace_name == workspace_name).collect();
+        let paths: Vec<&str> = members.iter().map(|p| p.project_path.as_str()).collect();
+        let roots: Vec<(&str, &SourceRoots)> = members.iter()
+            .filter(|p| !p.source_roots.is_empty())
+            .map(|p| (p.project_path.as_str(), &p.source_roots))
             .collect();
 
         let workspace_dir = settings.workspace_root().join(workspace_name);
-        write_workspace_json_to_dir(&workspace_dir, workspace_name, &paths)
+        write_workspace_json_with_roots(&workspace_dir, workspace_name, &paths, &roots)
     }
 
     fn unresolved_runtime_status(
@@ -4140,32 +4154,37 @@ fn scan_directory_for_java_projects(
                             .unwrap_or_else(|| "project".into()),
                         project_path: key,
                         kind,
+                        source_roots: SourceRoots::default(),
                     });
             }
         }
     }
 
-    let mut candidates: Vec<_> = by_path.into_values().collect();
+    Ok(keep_containing_roots(by_path.into_values().collect()))
+}
+
+/// The step every workspace definition's candidates pass through (Sprint 28k, C14): one candidate per folder, and only containing
+/// project roots, so a project nested inside another one that is offered is not offered beside it. Sorted by path.
+fn keep_containing_roots(candidates: Vec<WorkspaceProjectCandidate>) -> Vec<WorkspaceProjectCandidate> {
+    let mut candidates = candidates;
     candidates.sort_by(|a, b| {
         let al = a.project_path.len();
         let bl = b.project_path.len();
         al.cmp(&bl).then(a.project_path.cmp(&b.project_path))
     });
-
-    // Keep only containing project roots; drop nested children.
     let mut filtered: Vec<WorkspaceProjectCandidate> = Vec::new();
     for candidate in candidates {
         let candidate_path = PathBuf::from(&candidate.project_path);
-        let is_nested = filtered
+        let is_nested_or_seen = filtered
             .iter()
             .map(|parent| PathBuf::from(&parent.project_path))
-            .any(|parent| candidate_path != parent && candidate_path.starts_with(&parent));
-        if !is_nested {
+            .any(|parent| candidate_path.starts_with(&parent));
+        if !is_nested_or_seen {
             filtered.push(candidate);
         }
     }
     filtered.sort_by(|a, b| a.project_path.cmp(&b.project_path));
-    Ok(filtered)
+    filtered
 }
 
 /// Sprint 16: expand + validate the autoscan input, then scan. `~/` resolves
@@ -4301,17 +4320,23 @@ fn has_local_jar_files(path: &Path) -> bool {
 fn intellij_candidates(project_dir: &Path) -> Result<Vec<WorkspaceProjectCandidate>, String> {
     let mut candidates = Vec::new();
     for module in crate::intellij::read_modules(project_dir)? {
-        let kind = detect_java_project_kind(&module.dir)
-            .or_else(|| module.source_folders.iter().any(|f| f.is_dir()).then(|| "intellij".to_string()));
-        if let Some(kind) = kind {
-            candidates.push(WorkspaceProjectCandidate {
-                name: module.name,
-                project_path: module.dir.to_string_lossy().to_string(),
-                kind,
-            });
-        }
+        // a build file says where the code is; without one, the .iml does, and its folders go into the definition
+        let (kind, source_roots) = match detect_java_project_kind(&module.dir) {
+            Some(kind) => (kind, SourceRoots::default()),
+            None if module.has_existing_source_folder() => {
+                let paths = |folders: &[PathBuf]| folders.iter().map(|f| f.to_string_lossy().to_string()).collect();
+                ("intellij".to_string(), SourceRoots { main: paths(&module.main_sources), test: paths(&module.test_sources) })
+            }
+            None => continue,
+        };
+        candidates.push(WorkspaceProjectCandidate {
+            name: module.name,
+            project_path: module.dir.to_string_lossy().to_string(),
+            kind,
+            source_roots,
+        });
     }
-    Ok(candidates)
+    Ok(keep_containing_roots(candidates))
 }
 
 fn read_workspace_roots(workspace_file: &str) -> Result<Vec<PathBuf>, String> {
@@ -9980,6 +10005,18 @@ pub(crate) fn write_workspace_json_to_dir(
     workspace_name: &str,
     paths: &[&str],
 ) -> Result<(), String> {
+    write_workspace_json_with_roots(workspace_dir, workspace_name, paths, &[])
+}
+
+/// Sprint 28k (contract S4): `workspace.json` with, beside the project paths, the source folders the projects that name them declare,
+/// keyed by project path: `"sourceRoots": { "<path>": { "main": [...], "test": [...] } }`. Additive: written only when one exists, and
+/// an engine that does not read it loads the projects as before.
+pub(crate) fn write_workspace_json_with_roots(
+    workspace_dir: &Path,
+    workspace_name: &str,
+    paths: &[&str],
+    roots: &[(&str, &SourceRoots)],
+) -> Result<(), String> {
     let workspace_json = workspace_dir.join("workspace.json");
 
     if paths.is_empty() {
@@ -9994,11 +10031,17 @@ pub(crate) fn write_workspace_json_to_dir(
         )
     })?;
 
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "version": 1,
         "name": workspace_name,
         "projects": paths,
     });
+    if !roots.is_empty() {
+        let map: serde_json::Map<String, serde_json::Value> = roots.iter()
+            .map(|(path, r)| (path.to_string(), serde_json::json!({ "main": r.main, "test": r.test })))
+            .collect();
+        payload["sourceRoots"] = serde_json::Value::Object(map);
+    }
     let json = serde_json::to_string_pretty(&payload).map_err(|e| {
         format!("failed to serialize workspace.json for {workspace_name}: {e}")
     })?;
@@ -17484,14 +17527,17 @@ judge was never told to give"
                 ("app".into(), project.join("app").to_string_lossy().to_string(), "maven-gradle".into()),
                 ("lib".into(), project.join("lib").to_string_lossy().to_string(), "maven-gradle".into()),
             ], "given {}", given.display());
+            assert!(found.iter().all(|c| c.source_roots.is_empty()), "a build file says where the code is: no .iml folders are carried");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Without a build tool, a module is a project when its `.iml` names a source folder that exists, wherever the `.iml` is kept;
-    /// a module that names none is left out. Importing the selection puts the modules into the workspace.
+    /// PROMISE P14 (Sprint 28k, contract S4), studio's front door for an IntelliJ project: the definition is built from the fixture by
+    /// the service methods the two Tauri commands call (discover, then import), and what lands is read back from the `workspace.json`
+    /// the engine loads. Without a build tool, a module is a project when its `.iml` names a source folder that exists, wherever the
+    /// `.iml` is kept; a module that names none is left out; and the `.iml`'s main and test folders reach the workspace definition.
     #[test]
-    fn an_intellij_project_without_a_build_tool_gives_the_modules_whose_iml_names_source_folders_and_imports_them() {
+    fn p14_an_intellij_project_without_a_build_tool_reaches_the_workspace_definition_with_its_modules_and_their_iml_source_folders() {
         let dir = unique_tempdir("intellij-plain");
         let service = service_over(&dir);
         let project = intellij_fixture("intellij-without-build");
@@ -17512,6 +17558,41 @@ judge was never told to give"
         let mut imported: Vec<(String, String)> = result.added.iter().map(|p| (p.name.clone(), p.workspace_name.clone())).collect();
         imported.sort();
         assert_eq!(imported, vec![("core".into(), "intellij-plain".into()), ("tools".into(), "intellij-plain".into())]);
+
+        let written = service.config_store.get_settings().workspace_root().join("intellij-plain").join("workspace.json");
+        let definition: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&written).expect("workspace.json written")).unwrap();
+        let path = |p: PathBuf| p.to_string_lossy().to_string();
+        let mut projects: Vec<String> = definition["projects"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+        projects.sort();
+        assert_eq!(projects, vec![path(project.join("core")), path(project.join("tools"))]);
+        assert_eq!(definition["sourceRoots"][path(project.join("core"))], serde_json::json!({
+            "main": [path(project.join("core").join("java"))], "test": [path(project.join("core").join("test"))] }));
+        assert_eq!(definition["sourceRoots"][path(project.join("tools"))], serde_json::json!({
+            "main": [path(project.join("tools").join("src"))], "test": [] }));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A module nested in another module's project (a Maven aggregator listed as the root module) is not offered beside it: the
+    /// candidates pass the same containing-roots step every definition does (Sprint 28k, C14).
+    #[test]
+    fn an_intellij_module_inside_another_modules_project_is_not_offered_beside_it() {
+        let dir = unique_tempdir("intellij-root");
+        let service = service_over(&dir);
+        let project = intellij_fixture("intellij-with-root");
+        let found = service.discover_workspace_projects(&project.to_string_lossy()).expect("read");
+        assert_eq!(found.iter().map(|c| (c.name.as_str(), c.project_path.clone())).collect::<Vec<_>>(),
+            vec![("parent", project.to_string_lossy().to_string())]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An `.xml` file that is not an IntelliJ project's `.idea/modules.xml` is refused by name, not read as a `.code-workspace`.
+    #[test]
+    fn an_xml_file_that_is_not_an_intellij_modules_xml_is_refused_by_name() {
+        let dir = unique_tempdir("intellij-pom");
+        let service = service_over(&dir);
+        let pom = intellij_fixture("intellij-with-build").join("app").join("pom.xml");
+        let error = service.discover_workspace_projects(&pom.to_string_lossy()).unwrap_err();
+        assert!(error.contains("is not an IntelliJ project's .idea/modules.xml"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

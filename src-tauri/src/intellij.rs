@@ -14,8 +14,17 @@ pub struct IntellijModule {
     pub name: String,
     /// The module's folder: its content root, or the `.iml`'s folder when it names none.
     pub dir: PathBuf,
-    /// The source folders the `.iml` names, test sources included.
-    pub source_folders: Vec<PathBuf>,
+    /// The source folders the `.iml` names for the module's own code.
+    pub main_sources: Vec<PathBuf>,
+    /// The source folders it marks `isTestSource="true"`.
+    pub test_sources: Vec<PathBuf>,
+}
+
+impl IntellijModule {
+    /// Whether one of the source folders the `.iml` names exists: what makes a module without a build file a project at all.
+    pub fn has_existing_source_folder(&self) -> bool {
+        self.main_sources.iter().chain(&self.test_sources).any(|f| f.is_dir())
+    }
 }
 
 /// The IntelliJ project a path names: the folder holding `.idea/modules.xml`, given either that folder or the file itself.
@@ -50,11 +59,18 @@ fn read_iml(iml: &Path) -> Result<IntellijModule, String> {
     let text = std::fs::read_to_string(iml).map_err(|e| format!("failed to read the module file {}: {e}", iml.display()))?;
     let module_dir = iml.parent().unwrap_or(Path::new("/"));
     let url_path = |url: String| normalize(&PathBuf::from(expand(url.trim_start_matches("file://"), "$MODULE_DIR$", module_dir)));
-    let dir = tags(&text, "content").into_iter().filter_map(|t| attribute(t, "url")).map(url_path).next()
+    let roots: Vec<PathBuf> = tags(&text, "content").into_iter().filter_map(|t| attribute(t, "url")).map(url_path).collect();
+    let (mut main_sources, mut test_sources) = (Vec::new(), Vec::new());
+    for tag in tags(&text, "sourceFolder") {
+        let Some(url) = attribute(tag, "url") else { continue };
+        let folder = url_path(url);
+        if attribute(tag, "isTestSource").as_deref() == Some("true") { test_sources.push(folder) } else { main_sources.push(folder) }
+    }
+    // of several content roots, the module is placed at the one that holds its sources (Sprint 28k, C14)
+    let dir = roots.iter().find(|root| main_sources.iter().chain(&test_sources).any(|f| f.starts_with(root))).or(roots.first()).cloned()
         .unwrap_or_else(|| module_dir.to_path_buf());
-    let source_folders = tags(&text, "sourceFolder").into_iter().filter_map(|t| attribute(t, "url")).map(url_path).collect();
     let name = iml.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "module".into());
-    Ok(IntellijModule { name, dir, source_folders })
+    Ok(IntellijModule { name, dir, main_sources, test_sources })
 }
 
 /// The text of every `<name ...>` opening tag, attributes included.
@@ -131,11 +147,12 @@ mod tests {
         let modules = read_modules(&dir).unwrap();
         assert_eq!(modules.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["core", "tools", "empty"]);
         assert_eq!(modules[0].dir, dir.join("core"));
-        assert_eq!(modules[0].source_folders, vec![dir.join("core").join("java"), dir.join("core").join("test")]);
+        assert_eq!(modules[0].main_sources, vec![dir.join("core").join("java")]);
+        assert_eq!(modules[0].test_sources, vec![dir.join("core").join("test")]);
         // an .iml kept outside its module's folder names the folder through its content root
         assert_eq!(modules[1].dir, dir.join("tools"));
-        assert_eq!(modules[1].source_folders, vec![dir.join("tools").join("src")]);
-        assert!(modules[2].source_folders.is_empty());
+        assert_eq!(modules[1].main_sources, vec![dir.join("tools").join("src")]);
+        assert!(modules[2].main_sources.is_empty() && modules[2].test_sources.is_empty());
     }
 
     #[test]
