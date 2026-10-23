@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>jawata-studio (ux render mock)</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <!-- Not shipped: `vite build` only builds /index.html. Served by `vite` for build/ux-render/render.sh. -->
+    <script type="module">
+      import "./mock.js";
+      await import("/src/main.ts");
+    </script>
+  </body>
+</html>
