@@ -14,7 +14,7 @@ This is the job the studio is for. Five steps, all on the Dashboard:
 2. **Add its projects.** Open **Add projects** (left).
    - **From a folder:** type or **Browse** to a Java project's folder, or a folder that holds several. The search starts at once (Enter also starts it) and lists every Maven, Gradle or Eclipse project under it, the folder itself included. Untick what you do not want, then **Import selected**.
    - **A plain source folder** with no Maven, Gradle or Eclipse file is not found by the search. Then **Add this folder as a project** adds it as it is.
-   - **From a `.code-workspace` file:** **Browse** to the file, **Discover**, then **Import selected**.
+   - **From a `.code-workspace` file or an IntelliJ project:** **Browse** to the file (for IntelliJ, the project folder or its `.idea/modules.xml`), **Discover**, then **Import selected**. Each IntelliJ module is offered: one with a Maven or Gradle build as that project, one without when its `.iml` names a source folder that exists.
 3. **Check what landed.** In **Managed Projects** (right), open the workspace's card: each project shows its name and its folder. Drag a project onto another workspace on the left to move it. Right-click a project to start, stop, rename, move or delete it; right-click a workspace to start, stop, rename or delete it.
 4. **Start it.** **Start workspace** on its card, or **Start all**. The badge turns **RUNNING** once the service has loaded every project; hover it for the detail.
 5. **Connect your agents.** **Deploy to agents** writes the jawata entries into the agents' config files. Restart or reload an agent to pick them up. **Remove from agents** takes exactly those entries out again.
@@ -58,7 +58,7 @@ A seat is a narrow role an agent takes when you type its command, such as `/refa
 - **macOS** (Apple Silicon): the `_aarch64.dmg`; clear the quarantine once with `xattr -d com.apple.quarantine /Applications/jawata-studio.app`.
 - **Windows** (x64 and ARM64): the `.msi` or `-setup.exe`; the first launch needs SmartScreen → More info → Run anyway.
 
-The tray needs a StatusNotifierItem host on Linux; vanilla GNOME needs `gnome-shell-extension-appindicator` once. The tray menu shows the studio and engine versions above Quit. Per-platform detail is in the [README](https://github.com/haraldwegner/jawata-studio#installation).
+The tray needs a StatusNotifierItem host on Linux; vanilla GNOME needs `gnome-shell-extension-appindicator` once. The tray menu opens with Open dashboard, then the studio and engine versions and the health of your services. Per-platform detail is in the [README](https://github.com/haraldwegner/jawata-studio#installation).
 
 ## If something fails
 
