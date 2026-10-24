@@ -39,3 +39,21 @@ Written 2026-10-24 on his word ("You make a list of failures and bug fixes neces
 3. **Add projects:** pick an IntelliJ project folder or its `.idea/modules.xml`. The new screen was checked from its source only; the render harness the 28k session restored (`build/ux-render`, commit 20519ae) can produce a picture.
 4. **Help:** the tray sentence and the IntelliJ line are new.
 5. **Deleting** (4.4.9): a running or starting workspace cannot be deleted, nor one of its projects; every delete asks first.
+
+---
+
+# Update 2026-10-24 12:15 — the production dogfood, and what became of F1 to F8
+
+His word: "make the full dogfood, use docs/ux/ux-pass-2026-10-22.md for your studio analysis and fold into the plan". The engine half was driven through the three running residents (engine 4.4.15, restarted 11:55–11:56); the studio half is the render of the real frontend, in `ux-pass-2026-10-22.md` under "Status at studio 4.4.10". The plan carries the whole record (Stage 19, "round 3"); the ledger rows are S19-17 to S19-27.
+
+| Was | Now |
+|---|---|
+| F1 the red mark on the two Gradle samples | The `.gradle` folders came back at 11:58:51 and 11:59:00 after being removed at 11:45, with no test run of mine active. Two Gradle daemons (8.9 and 8.10) had been started at 11:03:09 and 11:03:14, the same minutes the folders were first written, and the editor's Gradle extension and ~12 Gradle daemons run on this machine. The writer is still not established (S19-27 carries the experiment). |
+| F2 the jawata tool servers and hook programs gone from the session | Back together at 12:00:32: all six hook programs and the agent's settings file were rewritten in the same second, a Deploy. What removed them is not established; asked of him (S19-23). |
+| F3, F4 the stop hook's "no verdict", the "answer first" guard | Not retried: the hooks work again, and there has been no case to replay since. Open, method unchanged. |
+| F5 the Seats scroll | His scroll in the installed window decides. |
+| F6 patterns recheck | **Done.** patterns compiles with 0 errors across 194 projects (it was 5 on 4.4.13), and `page-object` mounts its three source roots once each. But `run_tests` on `page-object` found a real defect: 4 of 4 tests red because the runner starts in the wrong folder (S19-17). |
+| F7 the 128 watcher slots | Unchanged (128). The engine side is fixed in the 28k session's unreleased commit. |
+| F8 no check on a studio push | Unchanged; needs his word. |
+
+**New from this pass:** S19-17 (`run_tests` working folder), S19-18 (the context the hooks inject is mostly about other work), S19-19 (two quality notes on my own `BootDirs` change), S19-20 to S19-22 (low, or cause not yet established), S19-24 to S19-26 (what the render shows: missing spaces, a fold that names residents that answer, cut placeholders).
