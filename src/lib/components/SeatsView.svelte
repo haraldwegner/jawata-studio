@@ -366,12 +366,17 @@
   }
   /* One row per seat: name and command, the On switch, then what it is for in one sentence. The
      sentence wraps rather than being cut, so nothing in it is hidden behind an ellipsis. */
+  /* S19-44 (his look at 4.4.10): the fold sign and the name sit level with the FIRST line of the sentence, not
+     halfway down its two lines; the shared `.fold > summary` rule centres, so only the Seats rows override it. */
   .seat-row > summary {
     flex-wrap: wrap;
     row-gap: 0.2rem;
+    align-items: flex-start;
   }
+  /* One width for every name so every sentence starts at one edge: `javadoc-writer (/javadocs)` is the longest
+     (about 17rem) and pushed its own sentence right when the column was 13rem. */
   .seat-name {
-    min-width: 13rem;
+    flex: 0 0 18rem;
     font-weight: 600;
   }
   .seat-command {

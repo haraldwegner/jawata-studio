@@ -11,9 +11,7 @@
     McpClientPaths,
     McpMergeMode,
     ManagerSettings,
-    ProjectRecord,
     ReleaseStatus,
-    RuntimeStatusRecord,
     ServiceProbeResult,
     UpdateSettingsInput,
     UpdatePolicy,
@@ -52,8 +50,6 @@
   export let saveStatus: "idle" | "saving" | "success" | "error" = "idle";
   export let saveMessage: string | undefined;
   export let disabled = false;
-  export let projects: ProjectRecord[] = [];
-  export let runtimeStatuses: Record<string, RuntimeStatusRecord> = {};
 
   /** The data root cleanup ACTUALLY targets: the persisted setting, falling
    * back to the OS default only when nothing is set. Read from `settings`
@@ -61,19 +57,18 @@
    * box and would show an unsaved edit as if it were live. */
   $: effectiveDataRoot = settings?.dataRoot?.trim() || bootstrap?.defaultDataRoot || "";
 
-  $: workspaceStats = (() => {
-    const byName = new Map<string, { count: number; running: number }>();
-    for (const p of projects) {
-      const ws = p.workspaceName || "workspace-default";
-      const cur = byName.get(ws) ?? { count: 0, running: 0 };
-      cur.count += 1;
-      if (runtimeStatuses[p.id]?.phase === "running") cur.running += 1;
-      byName.set(ws, cur);
-    }
-    let runningWorkspaces = 0;
-    for (const v of byName.values()) if (v.running > 0) runningWorkspaces += 1;
-    return { workspaces: byName.size, runningWorkspaces, projects: projects.length };
-  })();
+  // S19-46: the opening sentence says what Settings decides (the engine, and which agents Deploy writes to);
+  // the workspace and project counts live in the header only. Built in script so no space is lost at a block edge.
+  $: settingsSentence = [
+    !installedRuntime
+      ? "jawata engine not installed"
+      : releaseStatus?.updateAvailable
+        ? `jawata engine v${releaseStatus.latestVersion} is available (v${installedRuntime.version} installed)`
+        : "",
+    `deploying to ${Object.values(deployTargets).filter(Boolean).length} of ${Object.keys(deployTargets).length} agents`
+  ]
+    .filter((part) => part !== "")
+    .join(" · ");
 
   const dispatch = createEventDispatcher<{
     save: UpdateSettingsInput;
@@ -558,16 +553,7 @@
       class:attention={!installedRuntime || (releaseStatus?.updateAvailable ?? false)}
       title="The engine is what runs your workspaces. Deploy writes to the agents ticked under Agents."
     >
-      <strong>
-        {#if installedRuntime}jawata engine v{installedRuntime.version}{:else}jawata engine not installed{/if}
-      </strong>
-      {#if releaseStatus?.updateAvailable}
-        — v{releaseStatus.latestVersion} is available
-      {:else if installedRuntime && releaseStatus?.latestVersion}
-        (latest)
-      {/if}
-      · deploying to {Object.values(deployTargets).filter(Boolean).length} of {Object.keys(deployTargets).length} agents ·
-      {workspaceStats.workspaces} workspaces ({workspaceStats.runningWorkspaces} running)
+      {settingsSentence}
     </p>
     {#if updatePolicy === "ask" && releaseStatus?.updateAvailable}
       <div class="actions">
@@ -586,6 +572,23 @@
   <details class="fold">
     <summary title="Where the jawata engine comes from, whether it updates itself, and a check that it answers.">Engine</summary>
     <div class="fold-body">
+      <label class="field">
+        <span>Update policy</span>
+        <select bind:value={updatePolicy} disabled={interactionDisabled} on:change={handleBoundEdit}>
+          <option value="ask">Ask before updating</option>
+          <option value="always">Always keep latest</option>
+        </select>
+        <span class="hint">
+          Ask offers a Download button when a newer engine exists; Always downloads and installs it by itself.
+        </span>
+      </label>
+
+      <label class="checkbox-row" title="Looks for a newer engine each time the Dashboard opens, using the release source under Advanced.">
+        <input bind:checked={autoCheckForUpdates} disabled={interactionDisabled} on:change={handleBoundEdit} type="checkbox" />
+        <span>Auto-check release source on dashboard load</span>
+      </label>
+
+      <!-- S19-50: the one place for this link, beside the update settings (it was also in the Help footer). -->
       <p class="muted">
         <a
           href="https://github.com/haraldwegner/jawata-studio/releases"
@@ -596,6 +599,12 @@
           Check for jawata-studio updates
         </a>
       </p>
+
+      <!-- S19-51: where the engine comes from matters to someone running a fork or a local build, not to the
+           person who only decides whether to update. -->
+      <details class="fold">
+        <summary title="Rarely changed. Where the engine is downloaded from, or a local jar to use instead.">Advanced</summary>
+        <div class="fold-body">
       <label class="field">
         <span>Release source</span>
         <select
@@ -670,19 +679,8 @@
         </label>
       {/if}
 
-      <label class="field">
-        <span>Update policy</span>
-        <select bind:value={updatePolicy} disabled={interactionDisabled} on:change={handleBoundEdit}>
-          <option value="ask">Ask before updating</option>
-          <option value="always">Always keep latest</option>
-        </select>
-      </label>
-
-      <label class="checkbox-row">
-        <input bind:checked={autoCheckForUpdates} disabled={interactionDisabled} on:change={handleBoundEdit} type="checkbox" />
-        <span>Auto-check release source on dashboard load</span>
-      </label>
-
+        </div>
+      </details>
 
       <div class="actions">
         <button
@@ -953,14 +951,6 @@
               {#if effectiveDataRoot && effectiveDataRoot !== (bootstrap?.defaultDataRoot ?? "")}
                 <span class="hint">(overridden)</span>
               {/if}
-            </div>
-            <div title="Number of workspaces (and how many have at least one running runtime)">
-              <span class="label">Workspaces</span>
-              <strong>{workspaceStats.workspaces} ({workspaceStats.runningWorkspaces} running)</strong>
-            </div>
-            <div title="Total number of registered projects across all workspaces">
-              <span class="label">Project count</span>
-              <strong>{workspaceStats.projects}</strong>
             </div>
           </div>
 

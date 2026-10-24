@@ -74,8 +74,7 @@
   $: workspaces = status?.workspaces ?? [];
   $: allShapes = workspaces
     .flatMap((w) => w.pile.shapes.map((s) => ({ ...s, workspace: w.workspace })))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 8);
+    .sort((a, b) => b.count - a.count);
   $: canaryHealth = status?.canaryHealth ?? "unknown";
   // GO SILENT IS PER MACHINE. Harald's ruling, 2026-08-18: "I report tool
   // failures for jawata. Why should I want to report for one workspace and not
@@ -112,7 +111,23 @@
     store?.health === "unavailable" ? "the knowledge store is not answering" : "",
     unresolvedProjects.length > 0 ? `${unresolvedProjects.length} project${unresolvedProjects.length === 1 ? "" : "s"} need attention` : "",
   ].filter((entry) => entry !== "");
-  $: shownShapes = allShapes.slice(0, 3);
+  // S19-40 (his look at 4.4.10): the categories of ALL failure shapes, and the whole list, never a cut of it.
+  // "Still to report" is the backend's own badge, so the repeat threshold has one owner (field_view.rs).
+  $: shapeTotals = {
+    recorded: allShapes.length,
+    filed: allShapes.filter((one) => one.posted).length,
+    toReport: status?.badge ?? 0
+  };
+  // The residents the "not answering" fold lists: one derivation for the list and its rows (S19-35).
+  $: failingResidents = (status?.canary ?? []).filter((one) => !one.green);
+  // S19-42: the six recall figures are one sentence; the two guard figures and the client caveat sit in its mouseover.
+  $: recallSentence =
+    recall && recall.present
+      ? `${recall.applied} applied, ${recall.rejected} judged and rejected, ${recall.skipped} taken and never answered (the store was asked, its answer not used), ${recall.unavailable} found the store unavailable.`
+      : "Not observed yet.";
+  $: recallTitle = recall
+    ? `Each time an agent asks the memory store for knowledge, one of these happens. "Taken and never answered" means the store was asked and its answer was not used. ${recall.wouldBlock} would have been blocked and ${recall.blocked} were blocked. ${recall.coverage ?? ""}`
+    : "";
   $: canaryWord =
     canaryHealth === "green"
       ? "answering"
@@ -150,7 +165,8 @@
     <h2>Field recording</h2>
     <p class="muted">
       Shapes only — no paths, symbol names or message text. Nothing leaves this machine unless you
-      type <code>/report</code> in any client to file one from your own GitHub account.
+      type <code>/report</code> in any client to file one from your own GitHub account. A failure shape is worth
+      reporting when it was seen 3 or more times and is not yet filed.
     </p>
     {#if loadError}
       <p class="field-error">Could not read the field recording: {loadError}</p>
@@ -172,6 +188,14 @@
     {:else}
       <p class="summary-line attention">
         <strong>Needs a look:</strong> {attention.join(" · ")}
+      </p>
+    {/if}
+    {#if status}
+      <p
+        class="field-totals"
+        title="A failure shape is a kind of error that repeats: tool, kind of failure and error code, counted per workspace. Worth reporting means seen 3 or more times and not yet filed; type /report in any client to file it."
+      >
+        {shapeTotals.recorded} failure shapes recorded · {shapeTotals.filed} filed · {shapeTotals.toReport} still to report
       </p>
     {/if}
     <label class="checkbox-row field-silence" title="Stops the periodic reminder that failures are piling up. The recording itself keeps running and this page still shows everything.">
@@ -233,8 +257,8 @@
       </summary>
       <div class="fold-body">
         <ul class="shape-list">
-          {#each (status?.canary ?? []).filter((one) => !one.green) as probe (probe.workspace)}
-            <li class:field-dead={!probe.green}>
+          {#each failingResidents as probe (probe.workspace)}
+            <li class="field-dead">
               <code>{probe.workspace}</code>
               <span class="muted">
                 store: {probe.recallDetail} · compiler: {probe.compilerDetail}
@@ -246,45 +270,18 @@
     </details>
   {/if}
 
-  <!-- Open: folded, the tab read as empty (his "looks now very empty", 2026-10-22), and its top
-       failure shapes are the list the "worth reporting" count stands for. -->
-  <details class="fold" open>
+  <!-- Closed (S19-39, his look at 4.4.10: "Don't show the details first"). What the tab opens on is the
+       sentence and the three category numbers above; the first screen is no longer empty because of them. -->
+  <details class="fold">
     <summary title="The figures behind the sentence above.">Details</summary>
     <div class="fold-body">
       <section class="stack">
-        <h3 title="What the agent did with the knowledge it was handed. 'Taken and never answered' means the knowledge store was asked and its answer was not used.">Recalled knowledge</h3>
-        <!--
-          Each figure carries its own state. "Nothing observed yet" in a heading was not enough: a list
-          of zeros reads as a measurement. D4 asks for the figure shown as observed or labelled
-          un-observed AT THE POINT OF DISPLAY.
-        -->
-        <ul class="recall-counts">
-          <li>
-            {#if recall && recall.present}<span>{recall.applied}</span>{:else}<span
-                class="recall-unobserved">not observed</span>{/if} applied
-          </li>
-          <li>
-            {#if recall && recall.present}<span>{recall.rejected}</span>{:else}<span
-                class="recall-unobserved">not observed</span>{/if} judged and rejected
-          </li>
-          <li class:recall-bad={!!recall && recall.present && recall.skipped > 0}>
-            {#if recall && recall.present}<span>{recall.skipped}</span>{:else}<span
-                class="recall-unobserved">not observed</span>{/if} taken and never answered
-          </li>
-          <li>
-            {#if recall && recall.present}<span>{recall.wouldBlock}</span>{:else}<span
-                class="recall-unobserved">not observed</span>{/if} would block
-          </li>
-          <li>
-            {#if recall && recall.present}<span>{recall.blocked}</span>{:else}<span
-                class="recall-unobserved">not observed</span>{/if} blocked
-          </li>
-          <li>
-            {#if recall && recall.present}<span>{recall.unavailable}</span>{:else}<span
-                class="recall-unobserved">not observed</span>{/if} store unavailable
-          </li>
-        </ul>
-        <p class="field-caveat">{recall?.coverage ?? ""}</p>
+        <h3 title={recallTitle}>Recalled knowledge</h3>
+        <!-- S19-42 (his look at 4.4.10: "The info needs to be useful"): one sentence, built in script so no
+             space is lost at a block edge; "not observed" stays visible when the recorder has nothing. -->
+        <p class="recall-sentence" class:recall-bad={!!recall && recall.present && recall.skipped > 0} title={recallTitle}>
+          {recallSentence}
+        </p>
         {#if store && (store.health === "slow" || store.health === "unavailable")}
           <p class="field-caveat">
             {store.worstWorkspace}: {store.why} (over {store.slowAboveMillis} ms)
@@ -293,12 +290,13 @@
       </section>
 
       <section class="stack">
-        <h3 title="Ranked by repeats. Three or more repeats that nobody has filed are what the count in the sentence above counts.">Top failure shapes</h3>
+        <h3 title="Ranked by repeats. Three or more repeats that nobody has filed are what the count in the sentence above counts.">Failure shapes</h3>
+        <p class="muted">A failure shape is a kind of error that repeats. The list is every shape, most repeated first.</p>
         {#if allShapes.length === 0}
           <p class="muted">No failures recorded.</p>
         {:else}
-          <ul class="shape-list">
-            {#each shownShapes as shape (shape.workspace + shape.shape)}
+          <ul class="shape-list shape-list-all">
+            {#each allShapes as shape (shape.workspace + shape.shape)}
               <li>
                 <code>{shape.shape}</code>
                 <span class="shape-count">{shape.count}x</span>
@@ -307,23 +305,6 @@
               </li>
             {/each}
           </ul>
-          {#if allShapes.length > shownShapes.length}
-            <details class="fold">
-              <summary>{allShapes.length - shownShapes.length} more</summary>
-              <div class="fold-body">
-                <ul class="shape-list">
-                  {#each allShapes.slice(shownShapes.length) as shape (shape.workspace + shape.shape)}
-                    <li>
-                      <code>{shape.shape}</code>
-                      <span class="shape-count">{shape.count}x</span>
-                      {#if shape.posted}<span class="shape-flag">filed</span>{/if}
-                      <span class="muted">{shape.workspace}</span>
-                    </li>
-                  {/each}
-                </ul>
-              </div>
-            </details>
-          {/if}
         {/if}
       </section>
 
@@ -372,29 +353,22 @@
   .field-silence {
     margin-top: 0.9rem;
   }
-  .recall-counts {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem 1.1rem;
+  .field-totals {
+    margin: 0.4rem 0 0;
     font-size: 0.9rem;
   }
-  .recall-counts span {
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
+  .recall-sentence {
+    margin: 0;
+    font-size: 0.9rem;
   }
-  /* The one number that means something went wrong. */
-  .recall-counts .recall-bad span {
+  /* The sentence carries the one number that means something went wrong. */
+  .recall-sentence.recall-bad {
     color: var(--color-warning, #d08700);
   }
-  /* Not a number: it must not inherit the figure's weight, or an absence of
-     measurement reads at a glance as a measured result. */
-  .recall-counts span.recall-unobserved {
-    font-weight: 400;
-    font-style: italic;
-    opacity: 0.7;
+  /* Every shape on the page, with room to read: the list scrolls inside Details rather than being cut. */
+  .shape-list-all {
+    max-height: 22rem;
+    overflow-y: auto;
   }
 
   .field-caveat {

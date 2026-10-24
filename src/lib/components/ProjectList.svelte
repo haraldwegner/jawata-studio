@@ -325,6 +325,15 @@
     return { x: event.clientX, y: event.clientY };
   }
 
+  /** True when any project of the workspace is running or starting. The statuses are passed in, so a
+   *  template that calls this re-runs when they change (S19-48: one Start or Stop button by state). */
+  function workspaceIsUp(
+    list: ProjectRecord[],
+    statuses: Record<string, RuntimeStatusRecord>,
+  ): boolean {
+    return list.some((p) => ["running", "starting"].includes(statuses[p.id]?.phase ?? ""));
+  }
+
   function openProjectContextMenu(event: MouseEvent, project: ProjectRecord) {
     event.preventDefault();
     event.stopPropagation();
@@ -637,7 +646,6 @@
   $: runningWorkspaces = groupedWorkspaces.filter((w) => w.phase === "running").length;
   $: stoppedWorkspaces = groupedWorkspaces.filter((w) => w.phase === "stopped").length;
   $: selectedDeployTargetCount = deployTargetOptions.filter((option) => deployTargetsDraft[option.key]).length;
-  $: highlightedDeployMode = showDeployTargetPicker ? pendingDeployMode : "deploy";
 
   afterUpdate(() => {
     if (!selectedProjectId || selectedProjectId === lastAutoScrolledSelection) {
@@ -666,8 +674,7 @@
         class="summary-line"
         title="A workspace is running when every project in it is running."
       >
-        <strong>{runningWorkspaces} of {totalWorkspaces}</strong> workspaces running ·
-        {totalProjects} projects
+        <strong>{runningWorkspaces} of {totalWorkspaces}</strong> workspaces running
       </p>
     </div>
     <div class="project-list-toolbar segmented-actions">
@@ -700,9 +707,10 @@
 
   <div class="deploy-toolbar-wrap">
     <span class="deploy-toolbar-label">Agent deploy</span>
-    <div class="deploy-toolbar segmented-actions">
+    <div class="deploy-toolbar deploy-buttons">
     <button
-      class:active={highlightedDeployMode === "deploy"}
+      class="primary"
+      class:active={showDeployTargetPicker && pendingDeployMode === "deploy"}
       disabled={disabled || deployBusy}
       on:click={() => openDeployTargetPicker("deploy")}
       title="Write the jawata entry of every workspace into the config files of the agents you tick next. Run it again after adding or renaming a workspace; it rewrites only what differs."
@@ -711,7 +719,7 @@
       {deployBusy ? "Deploying..." : "Deploy to agents"}
     </button>
     <button
-      class:active={highlightedDeployMode === "delete"}
+      class:active={showDeployTargetPicker && pendingDeployMode === "delete"}
       disabled={disabled || deployBusy}
       on:click={() => openDeployTargetPicker("delete")}
       title="Remove exactly the entries Deploy wrote from the selected agents' config files. Nothing is stopped and no project is removed."
@@ -935,22 +943,25 @@
               </span>
             </div>
             <div class="actions workspace-actions">
-              <button
-                disabled={disabled}
-                on:click={() => startWorkspace(workspace.projects)}
-                title="Start the jawata process for this workspace (loads every project under its name)"
-                type="button"
-              >
-                Start workspace
-              </button>
-              <button
-                disabled={disabled}
-                on:click={() => stopWorkspace(workspace.projects)}
-                title="Stop the jawata process for this workspace"
-                type="button"
-              >
-                Stop workspace
-              </button>
+              {#if workspaceIsUp(workspace.projects, runtimeStatuses)}
+                <button
+                  disabled={disabled}
+                  on:click={() => stopWorkspace(workspace.projects)}
+                  title="Stop the jawata process for this workspace"
+                  type="button"
+                >
+                  Stop workspace
+                </button>
+              {:else}
+                <button
+                  disabled={disabled}
+                  on:click={() => startWorkspace(workspace.projects)}
+                  title="Start the jawata process for this workspace (loads every project under its name)"
+                  type="button"
+                >
+                  Start workspace
+                </button>
+              {/if}
             </div>
           </header>
           {#if isRenaming && renameError}

@@ -605,9 +605,7 @@
           installedRuntime={$appStore.installedRuntime}
           lastCleanupSummary={$appStore.lastCleanupSummary}
           lastServiceProbe={$appStore.lastServiceProbe}
-          projects={$appStore.projects ?? []}
           releaseStatus={$appStore.releaseStatus}
-          runtimeStatuses={$appStore.runtimeStatuses ?? {}}
           serviceProbeBusy={$appStore.serviceProbeBusy ?? false}
           serviceProbeError={$appStore.serviceProbeError}
           saveMessage={$appStore.settingsSaveMessage}

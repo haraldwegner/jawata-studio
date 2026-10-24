@@ -122,10 +122,6 @@
      * producer admits the filter and the view must not go on denying it.
      */
     describedAreasTruncated?: string;
-    /** A sample of the rows the admission gate accepted — what was written, not how much. */
-    acceptedSample?: { symbol?: string; summary: string }[];
-    /** How many rows the sample was drawn FROM — absent when the resident could not say. */
-    acceptedRows?: number;
     /**
      * Sprint 28g D27: the PATTERN CATALOGUE, as its own thing.
      *
@@ -191,8 +187,6 @@
           describedLost: lostDescribeWrites(first?.stats),
           describedAreas: describedAreas(first?.stats),
           describedAreasTruncated: describedAreasTruncated(first?.stats),
-          acceptedSample: acceptedSample(first?.stats),
-          acceptedRows: acceptedRows(first?.stats),
           catalogue: catalogueBlock(first?.stats)
         }
       ];
@@ -211,8 +205,6 @@
       describedLost: lostDescribeWrites(status.stats),
       describedAreas: describedAreas(status.stats),
       describedAreasTruncated: describedAreasTruncated(status.stats),
-      acceptedSample: acceptedSample(status.stats),
-      acceptedRows: acceptedRows(status.stats),
       catalogue: catalogueBlock(status.stats)
     }));
   }
@@ -362,45 +354,6 @@
   ): string | undefined {
     const raw = describingBlock(stats)?.describedAreasTruncated;
     return typeof raw === "string" && raw.length > 0 ? raw : undefined;
-  }
-
-  /**
-   * A sample of the rows the admission gate accepted — WHAT was written, beside the counts
-   * that say how much. Undefined on an older engine or when nothing has been accepted.
-   *
-   * Listed by SYMBOL because that is what a row carries: a job entry has no bundle and no
-   * package, so the resident cannot group the sample and neither can this.
-   */
-  function acceptedSample(
-    stats: KnowledgeWorkspaceStatus["stats"]
-  ): { symbol?: string; summary: string }[] | undefined {
-    const raw = describingBlock(stats)?.acceptedSample;
-    if (!Array.isArray(raw) || raw.length === 0) return undefined;
-    const out: { symbol?: string; summary: string }[] = [];
-    for (const row of raw) {
-      if (!row || typeof row !== "object") continue;
-      const r = row as Record<string, unknown>;
-      const summary = typeof r.summary === "string" ? r.summary : "";
-      if (!summary) continue;
-      out.push({
-        symbol: typeof r.symbol === "string" ? r.symbol : undefined,
-        summary
-      });
-    }
-    return out.length > 0 ? out : undefined;
-  }
-
-  /**
-   * How many rows the sample was drawn FROM.
-   *
-   * The resident omits this when its own read was capped, rather than publishing a capped
-   * figure as a total — so an absence here means "could not say", and the view shows no
-   * number instead of showing a wrong one.
-   */
-  function acceptedRows(stats: KnowledgeWorkspaceStatus["stats"]): number | undefined {
-    const raw = describingBlock(stats)?.acceptedRows;
-    const n = Number(raw);
-    return Number.isFinite(n) ? n : undefined;
   }
 
   // Auto-reload while residents are unreachable: a freshly (re)started resident needs
@@ -1104,8 +1057,6 @@
                 {#if storeRows.length > 1}<th></th>{/if}
                 <th>Store</th>
                 <th>Workspaces</th>
-                <th>Entries</th>
-                <th>Size</th>
               </tr>
             </thead>
             <tbody>
@@ -1129,8 +1080,6 @@
                     {row.file ?? row.error ?? "–"}
                   </td>
                   <td>{row.workspaceLabels}</td>
-                  <td>{row.total ?? "–"}</td>
-                  <td>{formatBytes(row.bytes)}</td>
                 </tr>
               {/each}
             </tbody>
@@ -1414,9 +1363,11 @@
       </div>
   </div>
 
-  <details class="fold" open>
-    <summary title="What the store holds, how far the cataloguer has got, and where the pattern library stands.">What the store holds</summary>
-    <div class="fold-body">
+  <!-- S19-36/37 (his look at 4.4.10): nothing of this is drawn before the store has been read, and it is
+       plain content, not a fold: a fold hides the figures he wants to see once the read is done. -->
+  {#if selectedRow}
+    <div class="store-holds">
+      <h3 title="What the store holds, how far the cataloguer has got, and where the pattern library stands.">What the store holds</h3>
       {#if selectedRow?.lanes}
         <div class="lane-split">
           {#each Object.entries(selectedRow.lanes) as [lane, count] (lane)}
@@ -1435,21 +1386,19 @@
       <!-- Sprint 28g D27, his ruling: the pattern library is shown as its own thing, as a share of the
            whole store. Kept as one line; the namespace split and the reason the counts differ sit in the
            mouseover. The denominator is the row's OWN total, never a literal (C13). -->
-      {#if selectedRow?.catalogue}
+      {#if selectedRow?.catalogue && selectedRow.catalogue.curesDeclared !== undefined}
         <p
           class="summary-line"
-          title={`The architect's template library. The first figure is how many of this store's rows are patterns; a per-namespace figure is what that source last SEEDED, so the two drift apart when a pattern is added here or retired upstream. ${
+          title={`The architect's template library. How many of this store's rows are patterns is the figure above; a per-namespace figure is what that source last SEEDED, so it drifts when a pattern is added here or retired upstream. ${
             selectedRow.catalogue.byNamespace
               ? Object.entries(selectedRow.catalogue.byNamespace).map(([ns, count]) => `${ns}: ${count}`).join(" · ")
               : ""
           }`}
         >
           <strong>Pattern library:</strong>
-          {selectedRow.catalogue.entries}{#if selectedRow.total !== undefined}{" "}of {selectedRow.total}{/if}
-          rows{#if selectedRow.catalogue.curesDeclared !== undefined}{" "}·
-            {selectedRow.catalogue.curesDeclared} cures{selectedRow.catalogue.curesUnresolved
-              ? `, ${selectedRow.catalogue.curesUnresolved} unresolved`
-              : ", all resolved"}{/if}
+          {selectedRow.catalogue.curesDeclared} cures{selectedRow.catalogue.curesUnresolved
+            ? `, ${selectedRow.catalogue.curesUnresolved} unresolved`
+            : ", all resolved"}
         </p>
       {/if}
 
@@ -1481,28 +1430,6 @@
         </p>
       {/if}
     </div>
-  </details>
-
-  {#if selectedRow?.acceptedSample && selectedRow.acceptedSample.length > 0}
-    <details class="fold">
-      <summary
-        title={`A sample of what the cataloguer wrote and the admission gate accepted${
-          selectedRow?.acceptedRows ? ` — ${selectedRow.acceptedSample.length} of ${selectedRow.acceptedRows} rows` : ""
-        }. At most two rows share a class, so one busy class cannot crowd out the rest. Read these to judge the work.`}
-      >
-        What the cataloguer wrote ({selectedRow.acceptedSample.length}{#if selectedRow?.acceptedRows}{" "}of {selectedRow.acceptedRows}{/if})
-      </summary>
-      <div class="fold-body">
-        <ul class="sample">
-          {#each selectedRow.acceptedSample as row, i (row.symbol ?? i)}
-            <li>
-              {#if row.symbol}<code>{row.symbol}</code>{/if}
-              <span>{row.summary}</span>
-            </li>
-          {/each}
-        </ul>
-      </div>
-    </details>
   {/if}
 
   <details class="fold">
@@ -1613,6 +1540,14 @@
 
   /* Sprint 28f Stage 5: the lane split reads as a row of counts, not a second table —
      it is one number per lane and a table would out-weigh the store table above it. */
+  .store-holds {
+    display: grid;
+    gap: 0.5rem;
+  }
+  .store-holds h3 {
+    margin: 0;
+    font-size: 0.95rem;
+  }
   .lane-split {
     display: flex;
     flex-wrap: wrap;
@@ -1641,30 +1576,6 @@
      and a second channel here would compete with the unclassified marker. */
   .lane-catalogue {
     font-weight: 600;
-  }
-  /* Sprint 28f Stage 7: the sample is PROSE to be read, not a row of counts — so it is a
-     list with the sentence given the room to be read, where the lane strip above is a
-     glance. Rendering it as pills would make the one thing on this panel a person must
-     actually read look like another tally. */
-  .sample {
-    list-style: none;
-    margin: 0.5rem 0 0.35rem;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-  }
-  .sample li {
-    font-size: 0.8rem;
-    line-height: 1.35;
-    padding-left: 0.6rem;
-    border-left: 2px solid rgba(148, 163, 184, 0.28);
-  }
-  .sample code {
-    display: block;
-    opacity: 0.75;
-    font-size: 0.75rem;
-    overflow-wrap: anywhere;
   }
   .retired {
     opacity: 0.7;

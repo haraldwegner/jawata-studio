@@ -207,8 +207,7 @@
 
 <section class="panel stack workspace-list-panel">
   <div class="section-intro">
-    <h2>Workspaces</h2>
-    <p class="muted">Pick a workspace to add new projects to. Multiple projects in one workspace share a single MCP service.</p>
+    <h2 title="Pick a workspace to add new projects to. Projects in one workspace share a single MCP service.">Workspaces</h2>
   </div>
 
   {#if workspaceSummary.length === 0 && !isCreating}

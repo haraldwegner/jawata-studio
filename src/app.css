@@ -896,12 +896,23 @@ button:disabled {
   color: #cbd5e1;
 }
 
-.deploy-toolbar.segmented-actions {
-  border-color: rgba(96, 165, 250, 0.45);
-  background: rgba(37, 99, 235, 0.16);
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  width: 100%;
+/* S19-49: Deploy and Remove are two actions, not a mode switch, so they are two ordinary buttons side by
+   side (Remove quieter, by being the unfilled one), not two full-width segments with one pre-selected. */
+.deploy-buttons {
+  display: flex;
+  gap: 0.5rem;
+  width: auto;
+}
+
+.deploy-buttons button {
+  min-height: 2rem;
+  padding: 0.46rem 0.9rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.deploy-buttons button.active {
+  outline: 2px solid rgba(96, 165, 250, 0.6);
 }
 
 .project-list-header {
@@ -988,26 +999,6 @@ button:disabled {
 
 .segmented-actions button:hover:not(:disabled) {
   background: rgba(148, 163, 184, 0.12);
-}
-
-/* Keep deploy controls visibly distinct from the generic segmented bars. */
-.deploy-toolbar.segmented-actions button {
-  min-height: 2rem;
-  padding: 0.46rem 0.8rem;
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: #e2e8f0;
-  width: 100%;
-  justify-content: center;
-}
-
-.deploy-toolbar.segmented-actions button.active {
-  background: rgba(59, 130, 246, 0.22);
-  color: #f8fafc;
-}
-
-.deploy-toolbar.segmented-actions button:hover:not(:disabled) {
-  background: rgba(59, 130, 246, 0.25);
 }
 
 .deploy-target-picker {
@@ -1754,8 +1745,11 @@ dd {
   color: #cbd5e1;
 }
 
+/* S19-52: the field, Browse and Clear sit in one row; with the two-column grid Clear wrapped to a row of its own
+   and stretched across the cell. */
 .agents-table .agent-path .field-row {
   margin-top: 0.4rem;
+  grid-template-columns: minmax(0, 1fr) auto auto;
 }
 
 /* An agent switched out of deploys reads as switched off. */

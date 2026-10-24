@@ -53,18 +53,39 @@ shoot "reporting-attention" "tab=Reporting&scenario=attention"
 # (S19-24: "189of 11622 rows· 13 cures", "describedin", "answering(62 ms)"). The mock's own figures are fixed,
 # so the exact sentences can be named.
 shown() { sed -e 's/<!--[^>]*-->//g; s/<[^>]*>//g' "$OUT/$1.html" | tr -s ' \n\t' ' '; }
+# The page text is captured into a variable first: `shown | grep -q` lets grep leave early on a match, shown then dies on
+# SIGPIPE under pipefail, and a `reject` would report "does not show" for text that IS there (audit S19-35 c).
 expect() { # shot, text it must show
-    if shown "$1" | grep -qF -- "$2"; then echo "shows ($1): $2"; else echo "FAILED: $1 does not show \"$2\""; fail=1; fi
+    local text; text="$(shown "$1")"
+    if grep -qF -- "$2" <<<"$text"; then echo "shows ($1): $2"; else echo "FAILED: $1 does not show \"$2\""; fail=1; fi
 }
 reject() { # shot, text it must not show
-    if shown "$1" | grep -qF -- "$2"; then echo "FAILED: $1 shows \"$2\""; fail=1; else echo "does not show ($1): $2"; fi
+    local text; text="$(shown "$1")"
+    if grep -qF -- "$2" <<<"$text"; then echo "FAILED: $1 shows \"$2\""; fail=1; else echo "does not show ($1): $2"; fi
 }
-expect memory "189 of 11622 rows · 13 cures"
+# S19-36/37/38 (Memory): the store's figures are plain content, the pattern line no longer repeats the row count, the
+# cataloguer sample is gone.
+expect memory "Pattern library: 13 cures, all resolved"
 expect memory "406 units described in 4 bundles · 54 areas summarised"
-expect memory "What the cataloguer wrote (10 of 400)"
+reject memory "What the cataloguer wrote"
+reject memory "189 of 11622 rows"
+# S19-40/41/42 (Reporting): the totals line, every shape on the page (no "5 more"), the recall figures as one sentence.
 expect reporting "knowledge store answering (62 ms) · residents answering"
+expect reporting "8 failure shapes recorded · 0 filed · 0 still to report"
+expect reporting "4789 taken and never answered (the store was asked, its answer not used)"
+reject reporting "5 more"
 # S19-25: the fold "Residents not answering" names the resident that does not answer, and only that one.
 expect reporting-attention "patterns store: timed out"
 reject reporting-attention "javata-dev store:"
 reject reporting-attention "orb-strategy store:"
+# S19-46/47 (Dashboard): the Workspaces paragraph is a mouseover now, and the Managed Projects line carries no project count.
+reject dashboard "share a single MCP service"
+expect dashboard "3 of 3 workspaces running"
+reject dashboard "workspaces running ·"
+# S19-46/51/52 (Settings): the opening sentence names no workspace count; Paths drops the two count rows.
+expect settings "deploying to 6 of 6 agents"
+reject settings "3 running"
+reject settings-open "Project count"
+# S19-53 (Help): the subtitle is gone.
+reject help "Learn how to configure and deploy"
 exit $fail

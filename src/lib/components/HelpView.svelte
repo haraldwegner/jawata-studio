@@ -25,7 +25,6 @@
 <section class="panel stack help-view-root">
   <div class="help-header">
     <h2>Help & Documentation</h2>
-    <p class="muted">Learn how to configure and deploy jawata-studio.</p>
   </div>
 
   <div class="markdown-body">
@@ -34,9 +33,6 @@
 </section>
 
 <div class="panel help-footer">
-  <a href="https://github.com/haraldwegner/jawata-studio/releases" target="_blank" rel="noopener noreferrer" class="muted" style="margin-right: auto; text-decoration: underline;">
-    Check for jawata-studio updates
-  </a>
   <button class="primary about-button" on:click={openAboutModal} type="button">
     About
   </button>
