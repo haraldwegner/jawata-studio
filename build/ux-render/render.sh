@@ -48,4 +48,23 @@ for tab in Dashboard Memory Reporting Seats Settings Help; do
     shoot "$t-open" "tab=$tab&open=1"
 done
 shoot "reporting-attention" "tab=Reporting&scenario=attention"
+# What a shot SHOWS, as a browser joins it: tags and comments removed with no space put in their place,
+# whitespace runs collapsed. A space lost at the edge of a template block shows up here and nowhere else
+# (S19-24: "189of 11622 rows· 13 cures", "describedin", "answering(62 ms)"). The mock's own figures are fixed,
+# so the exact sentences can be named.
+shown() { sed -e 's/<!--[^>]*-->//g; s/<[^>]*>//g' "$OUT/$1.html" | tr -s ' \n\t' ' '; }
+expect() { # shot, text it must show
+    if shown "$1" | grep -qF -- "$2"; then echo "shows ($1): $2"; else echo "FAILED: $1 does not show \"$2\""; fail=1; fi
+}
+reject() { # shot, text it must not show
+    if shown "$1" | grep -qF -- "$2"; then echo "FAILED: $1 shows \"$2\""; fail=1; else echo "does not show ($1): $2"; fi
+}
+expect memory "189 of 11622 rows · 13 cures"
+expect memory "406 units described in 4 bundles · 54 areas summarised"
+expect memory "What the cataloguer wrote (10 of 400)"
+expect reporting "knowledge store answering (62 ms) · residents answering"
+# S19-25: the fold "Residents not answering" names the resident that does not answer, and only that one.
+expect reporting-attention "patterns store: timed out"
+reject reporting-attention "javata-dev store:"
+reject reporting-attention "orb-strategy store:"
 exit $fail

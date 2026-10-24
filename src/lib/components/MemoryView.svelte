@@ -1445,9 +1445,9 @@
           }`}
         >
           <strong>Pattern library:</strong>
-          {selectedRow.catalogue.entries}{#if selectedRow.total !== undefined} of {selectedRow.total}{/if}
-          rows{#if selectedRow.catalogue.curesDeclared !== undefined}
-            · {selectedRow.catalogue.curesDeclared} cures{selectedRow.catalogue.curesUnresolved
+          {selectedRow.catalogue.entries}{#if selectedRow.total !== undefined}{" "}of {selectedRow.total}{/if}
+          rows{#if selectedRow.catalogue.curesDeclared !== undefined}{" "}·
+            {selectedRow.catalogue.curesDeclared} cures{selectedRow.catalogue.curesUnresolved
               ? `, ${selectedRow.catalogue.curesUnresolved} unresolved`
               : ", all resolved"}{/if}
         </p>
@@ -1468,8 +1468,8 @@
           }. Which areas are still missing needs a loaded project: experience(kind=describe, action=next) answers it, one row per package in scope.`}
         >
           <strong>Cataloguer:</strong>
-          {describedUnits} units described{#if selectedRow?.described}
-            in {Object.keys(selectedRow.described).length} bundles{/if}
+          {describedUnits} units described{#if selectedRow?.described}{" "}in
+            {Object.keys(selectedRow.described).length} bundles{/if}
           {#if selectedRow?.describedAreas}
             · {selectedRow.describedAreas.length > 0
               ? `${selectedRow.describedAreas.length} areas summarised${selectedRow.describedAreasTruncated ? " (list cut)" : ""}`
@@ -1490,7 +1490,7 @@
           selectedRow?.acceptedRows ? ` — ${selectedRow.acceptedSample.length} of ${selectedRow.acceptedRows} rows` : ""
         }. At most two rows share a class, so one busy class cannot crowd out the rest. Read these to judge the work.`}
       >
-        What the cataloguer wrote ({selectedRow.acceptedSample.length}{#if selectedRow?.acceptedRows} of {selectedRow.acceptedRows}{/if})
+        What the cataloguer wrote ({selectedRow.acceptedSample.length}{#if selectedRow?.acceptedRows}{" "}of {selectedRow.acceptedRows}{/if})
       </summary>
       <div class="fold-body">
         <ul class="sample">

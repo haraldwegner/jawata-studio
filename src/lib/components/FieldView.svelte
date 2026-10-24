@@ -167,7 +167,7 @@
             {sharePercent} of Java work went through JAWATA ·
           </span>
         {/if}
-        knowledge store {store?.word ?? "not checked yet"}{#if store && store.slowestMillis > 0} ({store.slowestMillis} ms){/if} · residents {canaryWord}
+        knowledge store {store?.word ?? "not checked yet"}{#if store && store.slowestMillis > 0}{" "}({store.slowestMillis} ms){/if} · residents {canaryWord}
       </p>
     {:else}
       <p class="summary-line attention">
@@ -233,7 +233,7 @@
       </summary>
       <div class="fold-body">
         <ul class="shape-list">
-          {#each status?.canary ?? [] as probe (probe.workspace)}
+          {#each (status?.canary ?? []).filter((one) => !one.green) as probe (probe.workspace)}
             <li class:field-dead={!probe.green}>
               <code>{probe.workspace}</code>
               <span class="muted">

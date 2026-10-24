@@ -298,7 +298,7 @@
           bind:value={projectPath}
           disabled={disabled || !activeWorkspaceName || isScanning}
           on:keydown={(event) => onEnter(event, () => canScan && scanProjectFolder())}
-          placeholder="/a/java/project, or a folder that holds several"
+          placeholder="/path/to/project"
           required
           title="A Java project's folder, or a folder that holds several: it is searched (depth up to 6) and every Maven, Gradle or Eclipse project in it is listed, the folder itself included. Each keeps its folder name; rename one later with a right-click."
         />
@@ -384,7 +384,7 @@
           bind:value={workspaceFile}
           disabled={disabled || isImporting}
           on:keydown={(event) => onEnter(event, () => canDiscover && discoverFromWorkspace())}
-          placeholder="/path/to/workspace.code-workspace or /path/to/intellij-project"
+          placeholder="/path/to/workspace"
           title="A VS Code .code-workspace file, or an IntelliJ project (its folder or its .idea/modules.xml). From an IntelliJ project each module is offered: a module with a Maven or Gradle build as that project, a module without one when its .iml names source folders"
         />
         <button
