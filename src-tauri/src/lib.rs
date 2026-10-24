@@ -1261,13 +1261,14 @@ fn phase_glyph(phase: &RuntimePhase) -> &'static str {
 /// Sprint 13 (v0.13.0): build the tray menu reflecting the current set
 /// of workspaces.
 ///
-/// Menu shape (his order, 2026-10-23):
+/// Menu shape (his order, 2026-10-23, refined 2026-10-24):
 ///   Open dashboard            (raises the full manager window)
 ///   ─────
-///   studio 4.4.9 · engine 4.4.15         (disabled; the versions)
-///   jawata — 3 of 3 residents healthy   (disabled; the verdict in words, REL44-11)
+///   jawata studio 4.4.10 / engine 4.4.15   (disabled; the versions)
 ///   ─────
-///   Workspaces                (disabled header — only when ≥1 workspace)
+///   Workspaces — 3 of 3 residents healthy  (disabled header, only when ≥1 workspace; carries the
+///                                           verdict in words, REL44-11; with no workspace the
+///                                           verdict is a line of its own)
 ///     ●  Jawata_WS          (toggle on click)
 ///     ○  BETA-WS
 ///   ─────
@@ -1348,14 +1349,25 @@ fn tray_menu_rows(
     if let Some(versions) = versions {
         rows.push(item("tray_versions", versions, false));
     }
-    if let Some(row) = &verdict {
-        rows.push(item("tray_verdict", row, false));
+    // His order, 2026-10-24: "The healthy status goes in Workspaces (3/3 healthy)". The health is
+    // the state of the workspaces, so it rides in their line; only with no workspace to carry it
+    // does it keep a line of its own, because the menu is the one surface a tray without tooltips
+    // can say WHY it is amber on.
+    let health_on_its_own_line = workspaces.is_empty() && verdict.is_some();
+    if health_on_its_own_line {
+        if let Some(row) = &verdict {
+            rows.push(item("tray_verdict", row, false));
+        }
     }
-    if versions.is_some() || verdict.is_some() {
+    if versions.is_some() || health_on_its_own_line {
         rows.push(TrayRow::Separator);
     }
     if !workspaces.is_empty() {
-        rows.push(item("tray_workspaces_header", "Workspaces", false));
+        let header = match &verdict {
+            Some(words) => format!("Workspaces — {}", words.strip_prefix("jawata — ").unwrap_or(words)),
+            None => "Workspaces".to_string(),
+        };
+        rows.push(item("tray_workspaces_header", &header, false));
         for (name, phase) in workspaces {
             rows.push(item(
                 &format!("tray_workspace_toggle:{name}"),
@@ -1402,7 +1414,12 @@ fn tray_versions_row<R: Runtime>(app: &AppHandle<R>) -> String {
         *cache = Some((std::time::Instant::now(), label.clone()));
         label
     });
-    format!("studio {} · engine {}", app.package_info().version, engine)
+    tray_versions_label(&app.package_info().version.to_string(), &engine)
+}
+
+/// The tray's versions line.
+fn tray_versions_label(studio: &str, engine: &str) -> String {
+    format!("jawata studio {studio} / engine {engine}")
 }
 
 fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
@@ -1675,26 +1692,52 @@ mod tray_icon_tests {
         let workspaces = vec![("orb-strategy".to_string(), RuntimePhase::Running)];
 
         let rows = tray_menu_rows(Some(&words), &workspaces, false, None);
-        // Since his order of 2026-10-23 the verdict is the first STATUS row, below Open dashboard.
+        // His order of 2026-10-24: the health goes in the Workspaces line, not on a line of its own.
         let at = rows
             .iter()
-            .position(|r| matches!(r, TrayRow::Item { id, .. } if id == "tray_verdict"))
-            .unwrap_or_else(|| panic!("the menu carries the verdict row: {rows:?}"));
+            .position(|r| matches!(r, TrayRow::Item { id, .. } if id == "tray_workspaces_header"))
+            .unwrap_or_else(|| panic!("the menu carries the Workspaces line: {rows:?}"));
         match &rows[at] {
-            TrayRow::Item { id, label, enabled } => {
-                assert_eq!(id, "tray_verdict");
+            TrayRow::Item { label, enabled, .. } => {
+                assert!(label.starts_with("Workspaces"), "it is still the Workspaces line: {label}");
                 assert!(label.contains("orb-strategy"), "it names the workspace: {label}");
                 assert!(label.contains("not accepting connections"), "and why it is amber: {label}");
                 assert!(!enabled, "a statement, not a command");
             }
-            other => panic!("the first row must be the verdict, got {other:?}"),
+            other => panic!("unexpected row {other:?}"),
         }
         assert!(
-            !tray_menu_rows(None, &workspaces, false, None)
-                .iter()
-                .any(|r| matches!(r, TrayRow::Item { id, .. } if id == "tray_verdict")),
-            "and before any verdict exists there is no verdict row"
+            !rows.iter().any(|r| matches!(r, TrayRow::Item { id, .. } if id == "tray_verdict")),
+            "with workspaces to hang it on, the health has no line of its own: {rows:?}"
         );
+        let plain = tray_menu_rows(None, &workspaces, false, None);
+        assert!(
+            plain.iter().any(|r| matches!(r, TrayRow::Item { id, label, .. }
+                if id == "tray_workspaces_header" && label == "Workspaces")),
+            "and before any verdict exists the line says only Workspaces"
+        );
+    }
+
+    /// Without a workspace there is nothing for the health to hang on, so it keeps a line of its
+    /// own, below the versions: the words are the only place a tray with no tooltip can say why.
+    #[test]
+    fn without_workspaces_the_health_keeps_a_line_of_its_own() {
+        let rows = tray_menu_rows(Some("jawata — nothing started yet"), &[], false, Some("jawata studio 4.4.10 / engine 4.4.15"));
+        let ids: Vec<&str> = rows
+            .iter()
+            .filter_map(|r| match r {
+                TrayRow::Item { id, .. } | TrayRow::Check { id, .. } => Some(id.as_str()),
+                TrayRow::Separator => None,
+            })
+            .collect();
+        assert_eq!(&ids[..3], &["tray_open_dashboard", "tray_versions", "tray_verdict"], "{ids:?}");
+    }
+
+    /// His wording, 2026-10-24: "jawata studio 4.4.10 / engine 4.4.15".
+    #[test]
+    fn the_versions_line_reads_jawata_studio_slash_engine() {
+        assert_eq!(tray_versions_label("4.4.10", "4.4.15"), "jawata studio 4.4.10 / engine 4.4.15");
+        assert_eq!(tray_versions_label("4.4.10", "not installed"), "jawata studio 4.4.10 / engine not installed");
     }
 
     /// His request, 2026-10-22: "tray -> I would like to have the version numbers of studio and
@@ -1745,10 +1788,18 @@ mod tray_icon_tests {
             })
             .collect();
         assert_eq!(
-            &ids[..5],
-            &["tray_open_dashboard", "tray_versions", "tray_verdict", "tray_workspaces_header", "tray_workspace_toggle:patterns"],
-            "the dashboard first, then the versions, then the health, then the workspaces: {ids:?}"
+            &ids[..4],
+            &["tray_open_dashboard", "tray_versions", "tray_workspaces_header", "tray_workspace_toggle:patterns"],
+            "the dashboard first, then the versions, then the workspaces with the health in their line: {ids:?}"
         );
+        let header = rows
+            .iter()
+            .find_map(|r| match r {
+                TrayRow::Item { id, label, .. } if id == "tray_workspaces_header" => Some(label.as_str()),
+                _ => None,
+            })
+            .expect("the Workspaces line");
+        assert_eq!(header, "Workspaces — 3 of 3 residents healthy", "his '3/3 healthy' in the Workspaces line");
         assert_eq!(ids.last(), Some(&"tray_quit"), "Quit stays last: {ids:?}");
     }
 

@@ -58,7 +58,7 @@ A seat is a narrow role an agent takes when you type its command, such as `/refa
 - **macOS** (Apple Silicon): the `_aarch64.dmg`; clear the quarantine once with `xattr -d com.apple.quarantine /Applications/jawata-studio.app`.
 - **Windows** (x64 and ARM64): the `.msi` or `-setup.exe`; the first launch needs SmartScreen → More info → Run anyway.
 
-The tray needs a StatusNotifierItem host on Linux; vanilla GNOME needs `gnome-shell-extension-appindicator` once. The tray menu opens with Open dashboard, then the studio and engine versions and the health of your services. Per-platform detail is in the [README](https://github.com/haraldwegner/jawata-studio#installation).
+The tray needs a StatusNotifierItem host on Linux; vanilla GNOME needs `gnome-shell-extension-appindicator` once. The tray menu opens with Open dashboard, then the studio and engine versions, then your workspaces with the health of your services in their line. Per-platform detail is in the [README](https://github.com/haraldwegner/jawata-studio#installation).
 
 ## If something fails
 
