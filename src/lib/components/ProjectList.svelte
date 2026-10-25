@@ -660,6 +660,7 @@
   });
 </script>
 
+<div class="project-list-stack">
 <section class="panel stack project-list-panel">
   <div class="project-list-header">
     <div>
@@ -704,75 +705,6 @@
       </button>
     </div>
   </div>
-
-  <div class="deploy-toolbar-wrap">
-    <span class="deploy-toolbar-label">Agent deploy</span>
-    <div class="deploy-toolbar deploy-buttons">
-    <button
-      class="primary"
-      class:active={showDeployTargetPicker && pendingDeployMode === "deploy"}
-      disabled={disabled || deployBusy}
-      on:click={() => openDeployTargetPicker("deploy")}
-      title="Write the jawata entry of every workspace into the config files of the agents you tick next. Run it again after adding or renaming a workspace; it rewrites only what differs."
-      type="button"
-    >
-      {deployBusy ? "Deploying..." : "Deploy to agents"}
-    </button>
-    <button
-      class:active={showDeployTargetPicker && pendingDeployMode === "delete"}
-      disabled={disabled || deployBusy}
-      on:click={() => openDeployTargetPicker("delete")}
-      title="Remove exactly the entries Deploy wrote from the selected agents' config files. Nothing is stopped and no project is removed."
-      type="button"
-    >
-      Remove from agents
-    </button>
-    </div>
-  </div>
-
-  {#if showDeployTargetPicker}
-    <div class="deploy-target-picker">
-      <p class="hint"><strong>{pendingDeployMode === "delete" ? "Remove from which agents?" : "Deploy to which agents?"}</strong></p>
-      <div class="deploy-target-grid">
-        {#each deployTargetOptions.filter((option) => deployTargetDefaults[option.key]) as option}
-          <label class="checkbox-row compact">
-            <input
-              bind:checked={deployTargetsDraft[option.key]}
-              disabled={disabled || deployBusy}
-              type="checkbox"
-            />
-            <span>{option.label}</span>
-          </label>
-        {/each}
-      </div>
-      <div class="actions compact">
-        <button disabled={disabled || deployBusy} on:click={closeDeployTargetPicker} type="button">Cancel</button>
-        <button
-          disabled={disabled || deployBusy || selectedDeployTargetCount === 0}
-          on:click={runDeployWithTargets}
-          type="button"
-        >
-          {runActionLabel(pendingDeployMode)}
-        </button>
-      </div>
-      {#if selectedDeployTargetCount === 0}
-        <p class="project-error">Select at least one deploy target.</p>
-      {/if}
-    </div>
-  {/if}
-
-  {#if deployError}
-    <p class="project-error">{deployError}</p>
-  {:else if lastDeployResult}
-    <!-- Sprint 28a 2b (Harald's ruling): ONE status line, and it STAYS — the
-         status is informative (is it deployed or not). No dismiss, no line per
-         agent; failures are named inline because a failure is the one thing
-         worth more than a count. Staleness is handled at the source: starting
-         a new run clears the previous result in the store. -->
-    <p class={deployStatusLine(lastDeployResult).failed ? "project-error" : "hint"}>
-      {deployStatusLine(lastDeployResult).text}
-    </p>
-  {/if}
 
   {#if selectionCount > 0}
     {@const otherWorkspaces = knownWorkspaces}
@@ -930,7 +862,7 @@
                 <!-- jawata-studio#24. Beside the phase, never instead of it: the
                      service really is running, AND the workspace cannot be read.
                      Both are true and the reader needs both. -->
-                <span class="badge workspace-status failed" title="The resident cannot read this workspace — at least one project's directory is missing or unreadable. Refactorings are refused while this is true.">
+                <span class="badge workspace-status failed" title="This workspace cannot be read — at least one project's directory is missing or unreadable. Refactorings are refused while this is true.">
                   <span class="status-lamp failed"></span>
                   cannot be read
                 </span>
@@ -1040,7 +972,7 @@
                                The tooltip carries the resident's own words. -->
                           <span
                             class="badge failed"
-                            title={`${unreadableProject.problem ?? "The resident cannot read this project."}${unreadableProject.remedy ? "\n\n" + unreadableProject.remedy : ""}`}
+                            title={`${unreadableProject.problem ?? "This project cannot be read."}${unreadableProject.remedy ? "\n\n" + unreadableProject.remedy : ""}`}
                           >
                             <span class="status-lamp failed"></span>
                             cannot be read
@@ -1120,6 +1052,80 @@
     </div>
   {/if}
 </section>
+
+<!-- S19-56 (his word, 2026-10-25): Agent Deploy acts on the agents' config files, Managed Projects on the workspaces' services;
+     they are two jobs, so two panels, the second always visible below the list. -->
+<section class="panel stack deploy-panel">
+  <h2 title="Writes jawata's entries into your agents' config files so they can reach your workspaces, or takes exactly those entries out again.">Agent deploy</h2>
+  <div class="deploy-toolbar-wrap">
+    <div class="deploy-toolbar deploy-buttons">
+    <button
+      class="primary"
+      class:active={showDeployTargetPicker && pendingDeployMode === "deploy"}
+      disabled={disabled || deployBusy}
+      on:click={() => openDeployTargetPicker("deploy")}
+      title="Write the jawata entry of every workspace into the config files of the agents you tick next. Run it again after adding or renaming a workspace; it rewrites only what differs."
+      type="button"
+    >
+      {deployBusy ? "Deploying..." : "Deploy to agents"}
+    </button>
+    <button
+      class:active={showDeployTargetPicker && pendingDeployMode === "delete"}
+      disabled={disabled || deployBusy}
+      on:click={() => openDeployTargetPicker("delete")}
+      title="Remove exactly the entries Deploy wrote from the selected agents' config files. Nothing is stopped and no project is removed."
+      type="button"
+    >
+      Remove from agents
+    </button>
+    </div>
+  </div>
+
+  {#if showDeployTargetPicker}
+    <div class="deploy-target-picker">
+      <p class="hint"><strong>{pendingDeployMode === "delete" ? "Remove from which agents?" : "Deploy to which agents?"}</strong></p>
+      <div class="deploy-target-grid">
+        {#each deployTargetOptions.filter((option) => deployTargetDefaults[option.key]) as option}
+          <label class="checkbox-row compact">
+            <input
+              bind:checked={deployTargetsDraft[option.key]}
+              disabled={disabled || deployBusy}
+              type="checkbox"
+            />
+            <span>{option.label}</span>
+          </label>
+        {/each}
+      </div>
+      <div class="actions compact">
+        <button disabled={disabled || deployBusy} on:click={closeDeployTargetPicker} type="button">Cancel</button>
+        <button
+          disabled={disabled || deployBusy || selectedDeployTargetCount === 0}
+          on:click={runDeployWithTargets}
+          type="button"
+        >
+          {runActionLabel(pendingDeployMode)}
+        </button>
+      </div>
+      {#if selectedDeployTargetCount === 0}
+        <p class="project-error">Select at least one deploy target.</p>
+      {/if}
+    </div>
+  {/if}
+
+  {#if deployError}
+    <p class="project-error">{deployError}</p>
+  {:else if lastDeployResult}
+    <!-- Sprint 28a 2b (Harald's ruling): ONE status line, and it STAYS — the
+         status is informative (is it deployed or not). No dismiss, no line per
+         agent; failures are named inline because a failure is the one thing
+         worth more than a count. Staleness is handled at the source: starting
+         a new run clears the previous result in the store. -->
+    <p class={deployStatusLine(lastDeployResult).failed ? "project-error" : "hint"}>
+      {deployStatusLine(lastDeployResult).text}
+    </p>
+  {/if}
+</section>
+</div>
 
 {#if contextMenu}
   <ContextMenu

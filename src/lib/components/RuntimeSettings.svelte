@@ -864,7 +864,7 @@
         <section class="machine-control-card compact-card stack">
           <h4>Workspace Runtime</h4>
           <p class="muted">
-            Each workspace's resident gets this heap ceiling. Leave a box empty to use the
+            Each workspace gets this heap ceiling. Leave a box empty to use the
             2048 MB default. Both settings apply the next time that workspace starts —
             neither a running JVM's ceiling nor its debug agent can be changed.
           </p>
@@ -881,7 +881,7 @@
                     on:change={(event) =>
                       applyHeapBound(row.workspaceName, event.currentTarget.value)}
                     placeholder="2048 (default)"
-                    title="Heap ceiling in megabytes for this workspace's resident, applied as -Xmx at its next start"
+                    title="Heap ceiling in megabytes for this workspace, applied as -Xmx at its next start"
                     value={row.maxHeapMb ?? ""}
                   />
                   <span class="muted">MB</span>

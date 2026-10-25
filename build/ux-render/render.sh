@@ -70,11 +70,11 @@ expect memory "406 units described in 4 bundles · 54 areas summarised"
 reject memory "What the cataloguer wrote"
 reject memory "189 of 11622 rows"
 # S19-40/41/42 (Reporting): the totals line, every shape on the page (no "5 more"), the recall figures as one sentence.
-expect reporting "knowledge store answering (62 ms) · residents answering"
+expect reporting "knowledge store answering (62 ms) · workspaces answering"
 expect reporting "8 failure shapes recorded · 0 filed · 0 still to report"
 expect reporting "4789 taken and never answered (the store was asked, its answer not used)"
 reject reporting "5 more"
-# S19-25: the fold "Residents not answering" names the resident that does not answer, and only that one.
+# S19-25: the fold "Workspaces not answering" names the workspace that does not answer, and only that one.
 expect reporting-attention "patterns store: timed out"
 reject reporting-attention "javata-dev store:"
 reject reporting-attention "orb-strategy store:"
@@ -88,4 +88,12 @@ reject settings "3 running"
 reject settings-open "Project count"
 # S19-53 (Help): the subtitle is gone.
 reject help "Learn how to configure and deploy"
+# S19-56/58 (his word, 2026-10-25): Agent deploy is its own panel, and no view says "resident" (the word is the engineers').
+expect dashboard "Agent deploy"
+expect reporting-attention "Workspaces not answering"
+reject dashboard "esident"
+reject memory "esident"
+reject reporting "esident"
+reject reporting-attention "esident"
+reject settings-open "esident"
 exit $fail

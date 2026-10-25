@@ -914,9 +914,9 @@ pub fn judge_canary(
                 if resolved {
                     format!("the compiler resolved {CANARY_FIXTURE_TYPE}")
                 } else if loading {
-                    "the resident is still loading its projects".to_string()
+                    "the workspace is still loading its projects".to_string()
                 } else {
-                    format!("the resident answered but could not resolve {CANARY_FIXTURE_TYPE}")
+                    format!("the workspace answered but could not resolve {CANARY_FIXTURE_TYPE}")
                 },
             )
         }
@@ -1054,7 +1054,7 @@ pub fn canary_tooltip(
         CanaryHealth::Unknown => "jawata — not probed yet".to_string(),
 
         CanaryHealth::Green => {
-            format!("jawata — {running} of {total} residents healthy")
+            format!("jawata — {running} of {total} healthy")
         }
 
         CanaryHealth::Reduced => {
@@ -2876,6 +2876,19 @@ mod tests {
 
         assert!(words.contains("patterns"), "must NAME it: {words}");
         assert!(words.contains("2 of 3"), "and say how much is running: {words}");
+    }
+
+    /// His word, 2026-10-25: "Haven't I told you Workspaces (3 of 3 healthy)? You seem to love the word
+    /// resident?" The tray line is read by someone who knows workspaces and has never been told what a
+    /// resident is, so the green words say "3 of 3 healthy", like every other state, which counts without a noun.
+    #[test]
+    fn the_green_tooltip_counts_workspaces_and_never_says_resident() {
+        let board = vec![healthy_result("a"), healthy_result("b"), healthy_result("c")];
+
+        let words = canary_tooltip(CanaryHealth::Green, &board, &[], 0);
+
+        assert_eq!("jawata \u{2014} 3 of 3 healthy", words);
+        assert!(!words.to_lowercase().contains("resident"), "{words}");
     }
 
     #[test]

@@ -181,7 +181,7 @@
             .join(", "),
           targets: reachable.map((s) => s.workspace),
           reachable: reachable.length > 0,
-          error: reachable.length === 0 ? "No resident reachable — retrying…" : null,
+          error: reachable.length === 0 ? "No workspace reachable — retrying…" : null,
           lanes: laneSplit(first?.stats),
           described: describedSplit(first?.stats),
           describedLost: lostDescribeWrites(first?.stats),
@@ -636,7 +636,7 @@
       "clean up runs three steps on the selected store:\n" +
       "• prune — drop rejected/superseded entries older than 30 days\n" +
       "• dedup + merge — duplicate groups merged (best survives, rest superseded)\n" +
-      "• compact — reclaim file space (attached residents reconnect)\n\nContinue?";
+      "• compact — reclaim file space (running workspaces reconnect)\n\nContinue?";
     if (!(await confirmDestructive(confirmText))) return;
     busyAction = "clean up";
     outputTitle = "clean up";
@@ -1121,7 +1121,7 @@
               type="button"
               disabled={statusLoading || interactionDisabled}
               on:click={refreshStatus}
-              title="Re-read entry counts, store file and size from every resident (unreachable residents are retried automatically)"
+              title="Re-read entry counts, store file and size from every workspace (unreachable workspaces are retried automatically)"
             >
               {statusLoading ? "Loading…" : "Reload status"}
             </button>
@@ -1170,7 +1170,7 @@
           </div>
         </details>
       {#if autoRetrying && !busyAction}
-        <span class="hint">resident starting — retrying automatically…</span>
+        <span class="hint">workspace starting — retrying automatically…</span>
       {/if}
       {#if busyAction}
         <span class="hint">running “{busyAction}”…</span>
@@ -1486,7 +1486,7 @@
       </label>
       <label
         class="checkbox-row"
-        title="After every successful deploy, run Load on each resident so the knowledge is there from day one"
+        title="After every successful deploy, run Load on each workspace so the knowledge is there from day one"
       >
         <input type="checkbox" bind:checked={autoSeedOnDeploy} disabled={interactionDisabled} />
         <span>Auto-seed on deploy</span>
@@ -1499,7 +1499,7 @@
           min="1"
           max="500"
           placeholder="engine default"
-          title="How many copies of the memory store each resident keeps before dropping the oldest. A copy is about 37 MB, so ten are about 370 MB before compression. Empty = the engine's own default. This is not the MCP config backup in Settings → Agents."
+          title="How many copies of the memory store each workspace keeps before dropping the oldest. A copy is about 37 MB, so ten are about 370 MB before compression. Empty = the engine's own default. This is not the MCP config backup in Settings → Agents."
           type="number"
         />
       </label>

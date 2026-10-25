@@ -149,7 +149,7 @@ impl PortAllocator {
             }
         }
         Err(format!(
-            "No free port in range {}-{} for workspace residents \
+            "No free port in range {}-{} for workspaces \
              (every port either already allocated or in use by another process)",
             self.range_start, self.range_end
         ))

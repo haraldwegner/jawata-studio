@@ -17,7 +17,7 @@ This is the job the studio is for. Five steps, all on the Dashboard:
    - **From a `.code-workspace` file or an IntelliJ project:** **Browse** to the file (for IntelliJ, the project folder or its `.idea/modules.xml`), **Discover**, then **Import selected**. Each IntelliJ module is offered: one with a Maven or Gradle build as that project, one without when its `.iml` names a source folder that exists.
 3. **Check what landed.** In **Managed Projects** (right), open the workspace's card: each project shows its name and its folder. Drag a project onto another workspace on the left to move it. Right-click a project to start, stop, rename, move or delete it; right-click a workspace to start, stop, rename or delete it.
 4. **Start it.** **Start workspace** on its card (it reads **Stop workspace** while the workspace runs), or **Start all**. The badge turns **RUNNING** once the service has loaded every project; hover it for the detail.
-5. **Connect your agents.** **Deploy to agents** writes the jawata entries into the agents' config files. Restart or reload an agent to pick them up. **Remove from agents** takes exactly those entries out again.
+5. **Connect your agents.** In the **Agent deploy** panel under Managed Projects, **Deploy to agents** writes the jawata entries into the agents' config files. Restart or reload an agent to pick them up. **Remove from agents** takes exactly those entries out again.
 
 **Deleting.** Every delete asks first and names what it removes; your source files on disk are never deleted. A running or starting workspace cannot be deleted, and neither can one of its projects: stop the workspace first. **Delete all workspaces** is at the bottom of the Workspaces panel.
 

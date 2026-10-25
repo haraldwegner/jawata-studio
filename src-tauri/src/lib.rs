@@ -1266,7 +1266,7 @@ fn phase_glyph(phase: &RuntimePhase) -> &'static str {
 ///   ─────
 ///   jawata studio 4.4.10 / engine 4.4.15   (disabled; the versions)
 ///   ─────
-///   Workspaces — 3 of 3 residents healthy  (disabled header, only when ≥1 workspace; carries the
+///   Workspaces — 3 of 3 healthy  (disabled header, only when ≥1 workspace; carries the
 ///                                           verdict in words, REL44-11; with no workspace the
 ///                                           verdict is a line of its own)
 ///     ●  Jawata_WS          (toggle on click)
@@ -1775,7 +1775,7 @@ mod tray_icon_tests {
     fn the_tray_opens_with_the_dashboard_then_the_versions_then_the_health() {
         let workspaces = vec![("patterns".to_string(), RuntimePhase::Running)];
         let rows = tray_menu_rows(
-            Some("jawata — 3 of 3 residents healthy"),
+            Some("jawata — 3 of 3 healthy"),
             &workspaces,
             false,
             Some("studio 4.4.9 · engine 4.4.15"),
@@ -1799,7 +1799,7 @@ mod tray_icon_tests {
                 _ => None,
             })
             .expect("the Workspaces line");
-        assert_eq!(header, "Workspaces — 3 of 3 residents healthy", "his '3/3 healthy' in the Workspaces line");
+        assert_eq!(header, "Workspaces — 3 of 3 healthy", "his '3/3 healthy' in the Workspaces line");
         assert_eq!(ids.last(), Some(&"tray_quit"), "Quit stays last: {ids:?}");
     }
 
@@ -1808,12 +1808,12 @@ mod tray_icon_tests {
     #[test]
     fn a_change_in_the_words_alone_changes_the_menu_key() {
         let workspaces = vec![("patterns".to_string(), RuntimePhase::Running)];
-        let healthy = tray_menu_key(workspaces.clone(), true, Some("jawata — 1 of 1 residents healthy"), None);
+        let healthy = tray_menu_key(workspaces.clone(), true, Some("jawata — 1 of 1 healthy"), None);
         let broken = tray_menu_key(workspaces.clone(), true, Some("jawata — patterns: store not answering"), None);
         assert_ne!(healthy, broken, "new words must not be held back by an unchanged workspace list");
         assert_eq!(
             healthy,
-            tray_menu_key(workspaces, true, Some("jawata — 1 of 1 residents healthy"), None),
+            tray_menu_key(workspaces, true, Some("jawata — 1 of 1 healthy"), None),
             "and the same words and list are the same key, so a steady state does not flicker"
         );
     }

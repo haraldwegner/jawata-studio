@@ -106,7 +106,7 @@
   $: attention = [
     (status?.badge ?? 0) > 0 ? `${status?.badge} failure shape${status?.badge === 1 ? "" : "s"} worth reporting` : "",
     (status?.deadChannels.length ?? 0) > 0 ? `dead channel${status?.deadChannels.length === 1 ? "" : "s"}: ${status?.deadChannels.join(", ")}` : "",
-    canaryHealth === "degraded" ? "a resident is not answering" : "",
+    canaryHealth === "degraded" ? "a workspace is not answering" : "",
     store?.health === "slow" ? "the knowledge store is slow" : "",
     store?.health === "unavailable" ? "the knowledge store is not answering" : "",
     unresolvedProjects.length > 0 ? `${unresolvedProjects.length} project${unresolvedProjects.length === 1 ? "" : "s"} need attention` : "",
@@ -183,7 +183,7 @@
             {sharePercent} of Java work went through JAWATA ·
           </span>
         {/if}
-        knowledge store {store?.word ?? "not checked yet"}{#if store && store.slowestMillis > 0}{" "}({store.slowestMillis} ms){/if} · residents {canaryWord}
+        knowledge store {store?.word ?? "not checked yet"}{#if store && store.slowestMillis > 0}{" "}({store.slowestMillis} ms){/if} · workspaces {canaryWord}
       </p>
     {:else}
       <p class="summary-line attention">
@@ -252,8 +252,8 @@
 
   {#if canaryHealth === "degraded"}
     <details class="fold" open>
-      <summary title="Each resident is asked one real recall and one real compiler question. Failing either turns this amber and tints the tray.">
-        Residents not answering
+      <summary title="Each workspace is asked one real recall and one real compiler question. Failing either turns this amber and tints the tray.">
+        Workspaces not answering
       </summary>
       <div class="fold-body">
         <ul class="shape-list">
@@ -295,7 +295,8 @@
         {#if allShapes.length === 0}
           <p class="muted">No failures recorded.</p>
         {:else}
-          <ul class="shape-list shape-list-all">
+          <!-- S19-57 (his look at 4.4.11: "multiple scrolling feels odd"): no scrollbar of its own, the one panel scrolls. -->
+          <ul class="shape-list">
             {#each allShapes as shape (shape.workspace + shape.shape)}
               <li>
                 <code>{shape.shape}</code>
@@ -364,11 +365,6 @@
   /* The sentence carries the one number that means something went wrong. */
   .recall-sentence.recall-bad {
     color: var(--color-warning, #d08700);
-  }
-  /* Every shape on the page, with room to read: the list scrolls inside Details rather than being cut. */
-  .shape-list-all {
-    max-height: 22rem;
-    overflow-y: auto;
   }
 
   .field-caveat {
