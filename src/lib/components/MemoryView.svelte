@@ -8,7 +8,7 @@
   //
   // LAYOUT: mirrors the Settings page — global panel/settings-grid/section-intro/field/
   // checkbox-row/hint classes from app.css, two-column grid, sticky save footer.
-  import { createEventDispatcher, onMount } from "svelte";
+  import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { confirmDestructive } from "../dialog";
   import {
@@ -29,6 +29,20 @@
   let statusLoading = false;
   /** False until the first status answer: an empty list before it means "not read yet", not "none". */
   let statusReadOnce = false;
+  /** S19-61 (his word, 2026-10-25: "after Reading the store… add a . every second"): the first read can take more
+   *  than five seconds, so the wait text grows by a dot a second, and starts over after ten so the line stays short. */
+  let readSeconds = 0;
+  let readTicker: ReturnType<typeof setInterval> | null = null;
+  $: if (!statusReadOnce && readTicker === null) {
+    readTicker = setInterval(() => (readSeconds += 1), 1000);
+  } else if (statusReadOnce && readTicker !== null) {
+    clearInterval(readTicker);
+    readTicker = null;
+  }
+  $: readingText = `Reading the store…${".".repeat(readSeconds % 10)}`;
+  onDestroy(() => {
+    if (readTicker !== null) clearInterval(readTicker);
+  });
   let selected = "";
   let busyAction = "";
   let outputTitle = "";
@@ -1041,7 +1055,7 @@
       <!-- Said once, and only after the store was actually asked: the seconds before the first
            answer read as "no workspaces" while three were running (his screenshot, 2026-10-22). -->
       <p class="summary-line">
-        {statusReadOnce ? "No workspaces, or their services are not reachable." : "Reading the store…"}
+        {statusReadOnce ? "No workspaces, or their services are not reachable." : readingText}
       </p>
     {/if}
   </div>

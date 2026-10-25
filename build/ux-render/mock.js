@@ -4,6 +4,7 @@
 //   tab      the nav tab to click after load (Dashboard, Memory, Reporting, Seats, Settings, Help)
 //   open     1 = open every <details> after load (to see what the folds hold)
 //   scenario attention = the Reporting view with something wrong
+//   scenario slowmemory = the store read never answers (the Memory wait text)
 const q = new URLSearchParams(location.search);
 const scenario = q.get("scenario") ?? "healthy";
 const ws = ["javata-dev", "orb-strategy", "patterns"];
@@ -130,7 +131,7 @@ const brains = [{ id: "claude", label: "Claude Code", installed: true, version: 
 const H = {
   get_dashboard: () => dashboard, get_quit_prompt_context: () => ({ workspaces: [] }), field_status: () => field,
   resolution_status: () => [], workspace_readability: () => ws.map((w) => ({ workspace: w, readable: true })),
-  knowledge_status: () => knowledge, experience_verb: () => ({ ok: true }),
+  knowledge_status: () => (scenario === "slowmemory" ? new Promise(() => {}) : knowledge), experience_verb: () => ({ ok: true }),
   seats_view: () => ({ seats, clients: [{ id: "claude", label: "Claude Code" }, { id: "cursor", label: "Cursor" }], errors: [] }),
   brains_status: () => brains, get_runtime_status: (a) => runtimeStatuses[a.projectId], get_services_inventory: () => dashboard.servicesInventory,
   probe_services: () => ({ ok: true, durationMs: 840, services: new Array(50).fill({ name: "x" }), detail: "" }),

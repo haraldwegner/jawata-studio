@@ -96,6 +96,16 @@
     margin-bottom: 1rem;
   }
 
+  /* The screenshots: as wide as the column and no wider, with a hairline so a dark picture on a dark page has an edge. */
+  :global(.markdown-body img) {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin: 0.5rem 0 1rem;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 10px;
+  }
+
   :global(.markdown-body ul) {
     margin-top: 0;
     margin-bottom: 1rem;

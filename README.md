@@ -13,7 +13,7 @@ rest.
 
 ```bash
 # Linux — one line installs the app and a desktop entry
-curl -sSL https://raw.githubusercontent.com/haraldwegner/jawata-studio/main/install.sh | bash
+curl -fsSL https://jawata.org/install.sh | bash
 ```
 
 ---
@@ -22,7 +22,7 @@ curl -sSL https://raw.githubusercontent.com/haraldwegner/jawata-studio/main/inst
 
 | Platform | How |
 |---|---|
-| **Linux** (x86_64 / aarch64) | `curl -sSL https://raw.githubusercontent.com/haraldwegner/jawata-studio/main/install.sh \| bash` — downloads the matching `.AppImage` and registers a desktop entry. Or grab the `.AppImage` / `.deb` from [releases](https://github.com/haraldwegner/jawata-studio/releases/latest). |
+| **Linux** (x86_64 / aarch64) | `curl -fsSL https://jawata.org/install.sh \| bash` — downloads the matching `.AppImage` and registers a desktop entry. Or grab the `.AppImage` / `.deb` from [releases](https://github.com/haraldwegner/jawata-studio/releases/latest). |
 | **macOS** (Apple Silicon) | Download the `.dmg` from [releases](https://github.com/haraldwegner/jawata-studio/releases/latest) and drag to Applications. Unsigned: right-click → **Open** once to clear Gatekeeper. |
 | **Windows** (x64 / ARM64) | Download the `.msi` or `_x64-setup.exe` from [releases](https://github.com/haraldwegner/jawata-studio/releases/latest). Unsigned: on the SmartScreen prompt choose **More info → Run anyway**. |
 

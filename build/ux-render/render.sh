@@ -16,7 +16,9 @@ if [ -z "$CHROME" ]; then
     exit 2
 fi
 PORT=$((14000 + RANDOM % 1000))
-( cd "$ROOT" && exec npx vite --port "$PORT" --host 127.0.0.1 --strictPort >"$OUT/vite.log" 2>&1 ) &
+# exec the vite binary itself, not `npx vite`: $VITE must be the server's own process, because the trap below kills
+# $VITE and npx left its node child running (a dozen of them over two days, S19-60).
+( cd "$ROOT" && exec ./node_modules/.bin/vite --port "$PORT" --host 127.0.0.1 --strictPort >"$OUT/vite.log" 2>&1 ) &
 VITE=$!
 trap 'kill $VITE 2>/dev/null' EXIT
 URL="http://127.0.0.1:$PORT/build/ux-render/mock.html"
@@ -48,6 +50,7 @@ for tab in Dashboard Memory Reporting Seats Settings Help; do
     shoot "$t-open" "tab=$tab&open=1"
 done
 shoot "reporting-attention" "tab=Reporting&scenario=attention"
+shoot "memory-reading" "tab=Memory&scenario=slowmemory"
 # What a shot SHOWS, as a browser joins it: tags and comments removed with no space put in their place,
 # whitespace runs collapsed. A space lost at the edge of a template block shows up here and nowhere else
 # (S19-24: "189of 11622 rows· 13 cures", "describedin", "answering(62 ms)"). The mock's own figures are fixed,
@@ -96,4 +99,7 @@ reject memory "esident"
 reject reporting "esident"
 reject reporting-attention "esident"
 reject settings-open "esident"
+# S19-61 (his word, 2026-10-25: "add a . every second"): while the store read has not answered, the wait text grows by a dot a second.
+expect memory-reading "Reading the store…..."
+reject memory-reading "No workspaces"
 exit $fail
