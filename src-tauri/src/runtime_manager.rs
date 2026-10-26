@@ -1886,6 +1886,103 @@ mod tests {
         request
     }
 
+    /// Sprint 28k Stage 9 (D1): the BUILT engine, started by studio's own start path, not by a script.
+    ///
+    /// Studio builds the command line (`command_spec_for`), writes the token file, spawns the process and watches for the start
+    /// line; this drives exactly that against `build/dist/target/dist/jawata.jar` of jawata-mcp, then asks the endpoint over MCP what
+    /// it publishes. It needs the built jar, so it is ignored by default:
+    /// `JAWATA_DIST_JAR=<jawata-mcp>/build/dist/target/dist/jawata.jar JAWATA_DIST_TOOLS=44 cargo test -- --ignored studio_starts_the_built_dist`
+    #[test]
+    #[ignore = "needs the built dist: set JAWATA_DIST_JAR to its jawata.jar"]
+    fn studio_starts_the_built_dist_and_it_publishes_its_tools() {
+        let jar = std::env::var("JAWATA_DIST_JAR").expect("JAWATA_DIST_JAR names the built jawata.jar");
+        let expected: usize = std::env::var("JAWATA_DIST_TOOLS")
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(44);
+        let dir = unique_tempdir("dist-start");
+        let workspace = dir.join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(
+            workspace.join("workspace.json"),
+            r#"{"version":1,"name":"dist-start","projects":[]}"#,
+        )
+        .unwrap();
+        let paths = AppPaths {
+            config_dir: dir.join("config"),
+            state_dir: dir.join("state"),
+            cache_dir: dir.join("cache"),
+            projects_file: dir.join("config/projects.json"),
+            settings_file: dir.join("config/settings.json"),
+            runtime_state_file: dir.join("state/runtime-state.json"),
+            default_data_root: dir.join("cache"),
+            log_dir: dir.join("state/logs"),
+        };
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut request = token_file_launch_request(&workspace);
+        request.reference.workspace_name = "dist-start".into();
+        request.reference.resolved_jar_path = jar;
+        request.reference.resident_port = port;
+        request.reference.resident_token = "dist-start-token".into();
+        request.reference.jvm_properties = vec![
+            format!("-Djawata.experience.shared.dir={}", dir.join("store").display()),
+            "-Djawata.embed.disabled=true".into(),
+        ];
+        request.reference.engine_version = Some("99.0.0".into());
+        let manager = RuntimeManager::new(paths);
+
+        manager.start_runtime(&request).expect("studio starts the built dist");
+        let mut up = false;
+        for _ in 0..120 {
+            if resident_answers(port, "dist-start-token") {
+                up = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        let names: Vec<String> = if up {
+            let body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} });
+            let listed: serde_json::Value = reqwest::blocking::Client::new()
+                .post(format!("http://127.0.0.1:{port}/mcp"))
+                .header("Authorization", "Bearer dist-start-token")
+                .json(&body)
+                .send()
+                .expect("the endpoint answers tools/list")
+                .json()
+                .expect("tools/list is JSON");
+            listed["result"]["tools"]
+                .as_array()
+                .map(|tools| tools.iter().filter_map(|t| t["name"].as_str().map(String::from)).collect())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let token_file_mode_ok = {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::metadata(workspace.join(RESIDENT_TOKEN_FILE))
+                    .map(|m| m.permissions().mode() & 0o777 == 0o600)
+                    .unwrap_or(false)
+            }
+            #[cfg(not(unix))]
+            {
+                true
+            }
+        };
+        let _ = manager.stop_workspace_runtime("dist-start");
+
+        assert!(up, "the dist never answered on port {port}");
+        assert_eq!(names.len(), expected, "tools published: {names:?}");
+        assert!(names.iter().any(|n| n == "health_check"));
+        assert!(names.iter().any(|n| n == "search_symbols"));
+        assert!(token_file_mode_ok, "the token file is owner-only");
+    }
+
     #[test]
     fn command_spec_uses_workspace_dir_and_no_env_var() {
         let manager = RuntimeManager::new(fake_paths());
