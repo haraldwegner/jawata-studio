@@ -1269,7 +1269,6 @@ mod tests {
 
     // ===== Sprint 15 Stage 8 (bug #8) =====
 
-    #[cfg(unix)]
     fn unique_test_dir(label: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1285,7 +1284,6 @@ mod tests {
         dir
     }
 
-    #[cfg(unix)]
     // ---- 4.4.14: a replacing engine is tried before it is switched to ----
 
     fn fake_release(version: &str) -> RemoteRelease {
@@ -1424,6 +1422,7 @@ mod tests {
         assert!(again.log_line().contains("nothing was downloaded"), "the second time it was not");
     }
 
+    #[cfg(unix)]
     #[test]
     fn current_symlink_points_at_target() {
         let tools_dir = unique_test_dir("symlink-points");
