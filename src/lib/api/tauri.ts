@@ -14,7 +14,8 @@ export type ReleaseStatusKind =
   | "missing"
   | "updateAvailable"
   | "checkFailed"
-  | "checkingDisabled";
+  | "checkingDisabled"
+  | "updateHeld";
 
 /** Paths and configuration used during application bootstrap. */
 export interface BootstrapStatus {

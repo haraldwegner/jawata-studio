@@ -50,6 +50,69 @@ pub struct ManagedRuntimeRecord {
     pub installed_at: String,
 }
 
+/// The trial a new engine must pass before it replaces a working one: given the unpacked engine's jar, start it,
+/// ask what it offers and compare. `Err` carries the reason it is not switched to, in words for Settings.
+pub type EngineTrial<'a> = &'a dyn Fn(&Path) -> Result<(), String>;
+
+/// Why an install did not produce an active engine. Held is not a failure of the download: the engine arrived and
+/// was tried, and it is not the one this studio can work with.
+#[derive(Debug)]
+pub enum InstallError {
+    Failed(String),
+    Held(String),
+}
+
+impl From<String> for InstallError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+
+impl From<&str> for InstallError {
+    fn from(message: &str) -> Self {
+        Self::Failed(message.to_string())
+    }
+}
+
+/// An engine release that was downloaded, tried and not switched to. Remembered, so that the next start or
+/// reload does not download 112 MB again to learn the same thing: it applies to that engine version and that
+/// studio version, and a newer engine or a newer studio gets a fresh trial.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldUpdate {
+    pub version: String,
+    pub studio_version: String,
+    pub reason: String,
+}
+
+impl HeldUpdate {
+    pub fn applies_to(&self, latest: &str, studio_version: &str) -> bool {
+        self.version == latest && self.studio_version == studio_version
+    }
+}
+
+fn held_path(tools_dir: &Path) -> PathBuf {
+    tools_dir.join("held-update.json")
+}
+
+fn read_held(tools_dir: &Path) -> Option<HeldUpdate> {
+    serde_json::from_str(&fs::read_to_string(held_path(tools_dir)).ok()?).ok()
+}
+
+fn write_held(tools_dir: &Path, held: &HeldUpdate) {
+    if let Ok(text) = serde_json::to_string_pretty(held) {
+        let _ = fs::write(held_path(tools_dir), format!("{text}\n"));
+    }
+}
+
+fn clear_held(tools_dir: &Path) {
+    let _ = fs::remove_file(held_path(tools_dir));
+}
+
+fn studio_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
 /// Represents the current state of the managed runtime release.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,6 +122,8 @@ pub enum ReleaseStatusKind {
     UpdateAvailable,
     CheckFailed,
     CheckingDisabled,
+    /// A newer engine was downloaded and tried, and is not the one this studio can work with; the old one stays.
+    UpdateHeld,
 }
 
 /// Detailed status information about the managed JAWATA release.
@@ -170,6 +235,11 @@ pub enum UpdateDecision {
     PolicyDeclined { installed: String, latest: String },
     /// The policy allowed it and the download did not finish.
     DownloadFailed { version: String, error: String },
+    /// The engine was downloaded, started once and compared with what this studio expects, and it differs: the
+    /// installed engine stays active and `reason` says how the new one differs.
+    Held { version: String, reason: String },
+    /// The same engine was already tried against this studio version; nothing was downloaded this time.
+    HeldAgain { version: String, reason: String },
 }
 
 impl UpdateDecision {
@@ -199,10 +269,23 @@ impl UpdateDecision {
             Self::DownloadFailed { version, error } => {
                 format!("could not install {version} — the download failed: {error}")
             }
+            Self::Held { version, reason } => format!(
+                "kept the installed engine — {version} was downloaded and started once, and it differs from \
+                 what this studio expects ({reason}); update the studio first"
+            ),
+            Self::HeldAgain { version, reason } => format!(
+                "kept the installed engine — {version} was already tried against this studio and differs from \
+                 what it expects ({reason}); nothing was downloaded"
+            ),
         }
     }
 
     /// Whether this decision means a release was fetched.
+    /// Whether a newer engine exists that this studio refused to switch to.
+    pub fn is_held(&self) -> bool {
+        matches!(self, Self::Held { .. } | Self::HeldAgain { .. })
+    }
+
     pub fn installed_something(&self) -> bool {
         matches!(self, Self::Installed { .. } | Self::InstalledFirstRuntime { .. })
     }
@@ -290,6 +373,7 @@ impl ReleaseManager {
     pub fn sync_with_settings(
         &self,
         settings: &mut ManagerSettings,
+        trial: EngineTrial,
     ) -> Result<(Option<ManagedRuntimeRecord>, ReleaseStatus, UpdateDecision), String> {
         let mut installed = self.get_installed_runtime(settings)?;
 
@@ -324,29 +408,64 @@ impl ReleaseManager {
                     &release.version,
                 );
 
+                let tools_dir = settings.tools_dir();
+                // 4.4.14: an engine already tried against this studio and refused is not downloaded again.
+                if matches!(decision, UpdateDecision::Installed { .. }) {
+                    if let Some(held) = read_held(&tools_dir) {
+                        if held.applies_to(&release.version, studio_version()) {
+                            decision = UpdateDecision::HeldAgain {
+                                version: release.version.clone(),
+                                reason: held.reason,
+                            };
+                        }
+                    }
+                }
+
                 if decision.installed_something() {
                     // A FAILED download is its own decision rather than an
                     // error thrown past the caller: before this it aborted the
                     // whole sync with `?`, so the one outcome most worth
                     // recording was the one that left no record.
-                    match self.install_release(&release, settings) {
-                        Ok(_) => installed = self.get_installed_runtime(settings)?,
-                        Err(error) => {
+                    //
+                    // A REPLACING engine is tried before it is switched to; the first engine has nothing to
+                    // be kept in its place, so it is installed without a trial.
+                    let replacing = installed.is_some();
+                    match self.install_release(&release, settings, replacing.then_some(trial)) {
+                        Ok(_) => {
+                            clear_held(&tools_dir);
+                            installed = self.get_installed_runtime(settings)?
+                        }
+                        Err(InstallError::Failed(error)) => {
                             decision = UpdateDecision::DownloadFailed {
                                 version: release.version.clone(),
                                 error,
                             }
                         }
+                        Err(InstallError::Held(reason)) => {
+                            write_held(
+                                &tools_dir,
+                                &HeldUpdate {
+                                    version: release.version.clone(),
+                                    studio_version: studio_version().to_string(),
+                                    reason: reason.clone(),
+                                },
+                            );
+                            decision = UpdateDecision::Held { version: release.version.clone(), reason };
+                        }
                     }
                 }
 
-                let status = self.build_release_status(
+                let mut status = self.build_release_status(
                     Some(&release),
                     installed.as_ref(),
                     settings,
                     Some(decision.log_line()),
                     None,
                 );
+                if decision.is_held() {
+                    status.kind = ReleaseStatusKind::UpdateHeld;
+                    status.update_available = false;
+                }
 
                 Ok((installed, status, decision))
             }
@@ -375,9 +494,36 @@ impl ReleaseManager {
     pub fn download_latest_runtime(
         &self,
         settings: &mut ManagerSettings,
+        trial: EngineTrial,
     ) -> Result<ManagedRuntimeRecord, String> {
         let release = self.fetch_latest_release(settings)?;
-        let runtime = self.install_release(&release, settings)?;
+        let tools_dir = settings.tools_dir();
+        let replacing = self.get_installed_runtime(settings)?.is_some();
+        if replacing {
+            if let Some(held) = read_held(&tools_dir) {
+                if held.applies_to(&release.version, studio_version()) {
+                    return Err(format!("Not switched to {}: {}", release.version, held.reason));
+                }
+            }
+        }
+        let runtime = match self.install_release(&release, settings, replacing.then_some(trial)) {
+            Ok(runtime) => {
+                clear_held(&tools_dir);
+                runtime
+            }
+            Err(InstallError::Failed(error)) => return Err(error),
+            Err(InstallError::Held(reason)) => {
+                write_held(
+                    &tools_dir,
+                    &HeldUpdate {
+                        version: release.version.clone(),
+                        studio_version: studio_version().to_string(),
+                        reason: reason.clone(),
+                    },
+                );
+                return Err(format!("Not switched to {}: {reason}", release.version));
+            }
+        };
         settings.last_release_check = Some(current_timestamp_string());
         settings.last_seen_latest_version = Some(release.version.clone());
         // D4 says EVERY version check names its decision, and this reaches the
@@ -482,7 +628,8 @@ impl ReleaseManager {
         &self,
         release: &RemoteRelease,
         settings: &ManagerSettings,
-    ) -> Result<ManagedRuntimeRecord, String> {
+        trial: Option<EngineTrial>,
+    ) -> Result<ManagedRuntimeRecord, InstallError> {
         let tools_dir = settings.tools_dir();
         fs::create_dir_all(&tools_dir).map_err(|error| {
             format!(
@@ -563,7 +710,8 @@ impl ReleaseManager {
             return Err(format!(
                 "JAWATA archive download returned an empty body for {}",
                 release.asset_name
-            ));
+            )
+            .into());
         }
 
         let open_archive = || {
@@ -628,86 +776,7 @@ impl ReleaseManager {
             }
         }
 
-        let jar_relative_path = find_relative_jar_path(&extract_root)?;
-
-        // Sprint 15 Stage 8 (bug #8): the install sequence is now ordered so
-        // that the `current` symlink swap is the atomic commit point. Any
-        // reader of the stable jar path (deploy writer, resident-JVM spawner
-        // in Stage 10) sees EITHER the old version OR the new one, never a
-        // dangling path.
-        //
-        // 1. Extract to a tmp dir (above).
-        // 2. Rename tmp → versioned target dir.
-        // 3. Atomically swap `current` → new versioned dir.
-        // 4. Clean up older `jawata-*` dirs (single-cached-runtime
-        //    invariant preserved from pre-bug-#8 behaviour).
-        // 5. Write runtime.json with the stable `current/...` jar path.
-
-        fs::rename(&extract_root, &target_dir).map_err(|error| {
-            format!(
-                "failed to finalize managed runtime dir {}: {error}",
-                target_dir.display()
-            )
-        })?;
-        let _ = fs::remove_dir_all(&tmp_dir);
-
-        let target_dir_name = target_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or("invalid target directory name")?
-            .to_string();
-
-        // Atomic commit point — on POSIX this is a rename-into-place of a
-        // tmp symlink. On unsupported platforms the install still succeeds
-        // but the recorded jar_path falls back to the versioned form (so
-        // the install is operational; only the bug-#8 mitigation degrades).
-        let stable_jar_path = match update_current_symlink(&tools_dir, &target_dir_name) {
-            Ok(()) => tools_dir.join("current").join(&jar_relative_path),
-            Err(error) => {
-                eprintln!(
-                    "jawata-studio: falling back to versioned jar path ({}). \
-                     Bug #8 mitigation degraded on this platform.",
-                    error
-                );
-                target_dir.join(&jar_relative_path)
-            }
-        };
-
-        // Clean up older jawata-* dirs (NOT the current one).
-        if let Ok(entries) = fs::read_dir(&tools_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        if name.starts_with("jawata-") && name != target_dir_name {
-                            let _ = fs::remove_dir_all(&path);
-                        }
-                    }
-                }
-            }
-        }
-
-        let runtime = ManagedRuntimeRecord {
-            version: release.version.clone(),
-            install_dir: display_path(&target_dir),
-            jar_path: display_path(&stable_jar_path),
-            asset_name: release.asset_name.clone(),
-            installed_at: release
-                .published_at
-                .clone()
-                .unwrap_or_else(current_timestamp_string),
-        };
-
-        let manifest = serde_json::to_string_pretty(&runtime)
-            .map_err(|error| format!("failed to serialize managed runtime manifest: {error}"))?;
-        fs::write(&manifest_path, format!("{manifest}\n")).map_err(|error| {
-            format!(
-                "failed to write managed runtime manifest {}: {error}",
-                manifest_path.display()
-            )
-        })?;
-
-        Ok(runtime)
+        activate_extracted(&tools_dir, &tmp_dir, &extract_root, release, trial)
     }
 
     fn build_release_status(
@@ -846,6 +915,110 @@ impl ReleaseManager {
             detail: "No cached release information is available yet. Use Refresh release info to check upstream.".into(),
         }
     }
+}
+
+/// Everything from "the archive is unpacked" to "the engine is the active one".
+///
+/// 4.4.14, his word 2026-10-27 ("I want guard 2"): when a working engine is being REPLACED, the unpacked engine is
+/// started once and compared with the tool surface this studio expects, and it only becomes the active one if that
+/// passes. The trial runs on the unpacked files in the temporary folder, before the rename and the `current`
+/// symlink swap, so a refused engine is never reachable by a deploy, a start or a restart: the swap below stays the
+/// single commit point.
+fn activate_extracted(
+    tools_dir: &Path,
+    tmp_dir: &Path,
+    extract_root: &Path,
+    release: &RemoteRelease,
+    trial: Option<EngineTrial>,
+) -> Result<ManagedRuntimeRecord, InstallError> {
+    let target_dir = tools_dir.join(format!("jawata-{}", release.version));
+    let manifest_path = target_dir.join("runtime.json");
+    let jar_relative_path = find_relative_jar_path(extract_root)?;
+    if let Some(trial) = trial {
+        if let Err(reason) = trial(&extract_root.join(&jar_relative_path)) {
+            let _ = fs::remove_dir_all(tmp_dir);
+            return Err(InstallError::Held(reason));
+        }
+    }
+
+        // Sprint 15 Stage 8 (bug #8): the install sequence is now ordered so
+        // that the `current` symlink swap is the atomic commit point. Any
+        // reader of the stable jar path (deploy writer, resident-JVM spawner
+        // in Stage 10) sees EITHER the old version OR the new one, never a
+        // dangling path.
+        //
+        // 1. Extract to a tmp dir (above).
+        // 2. Rename tmp → versioned target dir.
+        // 3. Atomically swap `current` → new versioned dir.
+        // 4. Clean up older `jawata-*` dirs (single-cached-runtime
+        //    invariant preserved from pre-bug-#8 behaviour).
+        // 5. Write runtime.json with the stable `current/...` jar path.
+
+        fs::rename(extract_root, &target_dir).map_err(|error| {
+            format!(
+                "failed to finalize managed runtime dir {}: {error}",
+                target_dir.display()
+            )
+        })?;
+        let _ = fs::remove_dir_all(tmp_dir);
+
+        let target_dir_name = target_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or("invalid target directory name")?
+            .to_string();
+
+        // Atomic commit point — on POSIX this is a rename-into-place of a
+        // tmp symlink. On unsupported platforms the install still succeeds
+        // but the recorded jar_path falls back to the versioned form (so
+        // the install is operational; only the bug-#8 mitigation degrades).
+        let stable_jar_path = match update_current_symlink(&tools_dir, &target_dir_name) {
+            Ok(()) => tools_dir.join("current").join(&jar_relative_path),
+            Err(error) => {
+                eprintln!(
+                    "jawata-studio: falling back to versioned jar path ({}). \
+                     Bug #8 mitigation degraded on this platform.",
+                    error
+                );
+                target_dir.join(&jar_relative_path)
+            }
+        };
+
+        // Clean up older jawata-* dirs (NOT the current one).
+        if let Ok(entries) = fs::read_dir(&tools_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if name.starts_with("jawata-") && name != target_dir_name {
+                            let _ = fs::remove_dir_all(&path);
+                        }
+                    }
+                }
+            }
+        }
+
+        let runtime = ManagedRuntimeRecord {
+            version: release.version.clone(),
+            install_dir: display_path(&target_dir),
+            jar_path: display_path(&stable_jar_path),
+            asset_name: release.asset_name.clone(),
+            installed_at: release
+                .published_at
+                .clone()
+                .unwrap_or_else(current_timestamp_string),
+        };
+
+        let manifest = serde_json::to_string_pretty(&runtime)
+            .map_err(|error| format!("failed to serialize managed runtime manifest: {error}"))?;
+        fs::write(&manifest_path, format!("{manifest}\n")).map_err(|error| {
+            format!(
+                "failed to write managed runtime manifest {}: {error}",
+                manifest_path.display()
+            )
+        })?;
+
+        Ok(runtime)
 }
 
 fn normalize_version(tag: &str) -> String {
@@ -1113,6 +1286,144 @@ mod tests {
     }
 
     #[cfg(unix)]
+    // ---- 4.4.14: a replacing engine is tried before it is switched to ----
+
+    fn fake_release(version: &str) -> RemoteRelease {
+        RemoteRelease {
+            version: version.to_string(),
+            asset_name: "jawata.tar.gz".into(),
+            download_url: "http://127.0.0.1:1/jawata.tar.gz".into(),
+            published_at: None,
+            archive_kind: ArchiveKind::TarGz,
+        }
+    }
+
+    /// What `install_release` has on disk when the archive is unpacked and nothing is active yet.
+    fn unpacked_engine(tools_dir: &Path, version: &str) -> (PathBuf, PathBuf) {
+        let tmp = tools_dir.join(format!(".tmp-{version}-x"));
+        let extract = tmp.join("contents");
+        fs::create_dir_all(extract.join("inner")).expect("create the unpacked folder");
+        fs::write(extract.join("inner/jawata.jar"), b"new-engine").expect("write the unpacked jar");
+        (tmp, extract)
+    }
+
+    #[test]
+    fn an_engine_that_fails_its_trial_is_never_reachable_and_the_old_one_stays() {
+        let tools = unique_test_dir("trial-refused");
+        fs::create_dir_all(tools.join("jawata-1.0.0/inner")).unwrap();
+        fs::write(tools.join("jawata-1.0.0/inner/jawata.jar"), b"old-engine").unwrap();
+        fs::write(tools.join("jawata-1.0.0/runtime.json"), "{}").unwrap();
+        #[cfg(unix)]
+        update_current_symlink(&tools, "jawata-1.0.0").expect("old engine is current");
+        let (tmp, extract) = unpacked_engine(&tools, "9.9.9");
+        let tried = std::cell::RefCell::new(None::<PathBuf>);
+        let trial = |jar: &Path| -> Result<(), String> {
+            *tried.borrow_mut() = Some(jar.to_path_buf());
+            Err("the engine no longer offers: extract".into())
+        };
+
+        let outcome = activate_extracted(&tools, &tmp, &extract, &fake_release("9.9.9"), Some(&trial));
+
+        match outcome {
+            Err(InstallError::Held(reason)) => assert_eq!("the engine no longer offers: extract", reason),
+            other => panic!("expected the engine to be held, got {other:?}"),
+        }
+        let jar = tried.borrow().clone().expect("the trial was run on the unpacked jar");
+        assert!(jar.starts_with(&extract), "tried in the temporary folder, not an installed one: {jar:?}");
+        assert!(!tools.join("jawata-9.9.9").exists(), "the refused engine has no versioned folder");
+        assert!(!tmp.exists(), "and its temporary folder is removed");
+        #[cfg(unix)]
+        assert_eq!(
+            PathBuf::from("jawata-1.0.0"),
+            fs::read_link(tools.join("current")).expect("current is still a link"),
+            "current still points at the old engine"
+        );
+        assert_eq!(
+            "jawata-1.0.0",
+            get_installed_version_dir(&tools),
+            "the installed engine is still the old one"
+        );
+        fs::remove_dir_all(&tools).ok();
+    }
+
+    /// The version folder the discovery would pick, by the same `runtime.json` rule `get_installed_runtime` uses.
+    fn get_installed_version_dir(tools_dir: &Path) -> String {
+        let mut found: Vec<String> = fs::read_dir(tools_dir)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.path().join("runtime.json").exists())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+        found.sort();
+        found.pop().unwrap_or_default()
+    }
+
+    #[test]
+    fn an_engine_that_passes_its_trial_becomes_the_active_one() {
+        let tools = unique_test_dir("trial-passed");
+        let (tmp, extract) = unpacked_engine(&tools, "9.9.9");
+        let trial = |jar: &Path| -> Result<(), String> {
+            assert_eq!("jawata.jar", jar.file_name().unwrap().to_string_lossy(), "{jar:?}");
+            Ok(())
+        };
+
+        let runtime = activate_extracted(&tools, &tmp, &extract, &fake_release("9.9.9"), Some(&trial))
+            .expect("a passing trial activates the engine");
+
+        assert_eq!("9.9.9", runtime.version);
+        assert!(tools.join("jawata-9.9.9/runtime.json").exists());
+        assert!(tools.join("jawata-9.9.9/inner/jawata.jar").exists());
+        fs::remove_dir_all(&tools).ok();
+    }
+
+    #[test]
+    fn the_first_engine_is_installed_without_a_trial_because_nothing_is_there_to_keep() {
+        let tools = unique_test_dir("trial-first");
+        let (tmp, extract) = unpacked_engine(&tools, "9.9.9");
+
+        let runtime = activate_extracted(&tools, &tmp, &extract, &fake_release("9.9.9"), None)
+            .expect("no trial, no refusal");
+
+        assert_eq!("9.9.9", runtime.version);
+        fs::remove_dir_all(&tools).ok();
+    }
+
+    #[test]
+    fn a_held_engine_applies_to_that_engine_version_and_that_studio_version_only() {
+        let held = HeldUpdate { version: "4.5.0".into(), studio_version: "4.4.14".into(), reason: "x".into() };
+        assert!(held.applies_to("4.5.0", "4.4.14"));
+        assert!(!held.applies_to("4.5.1", "4.4.14"), "a newer engine gets its own trial");
+        assert!(!held.applies_to("4.5.0", "4.4.15"), "a newer studio gets a new trial of the same engine");
+    }
+
+    #[test]
+    fn what_was_held_survives_a_restart_and_a_good_install_clears_it() {
+        let tools = unique_test_dir("trial-held-file");
+        assert_eq!(None, read_held(&tools));
+        let held = HeldUpdate { version: "4.5.0".into(), studio_version: "4.4.14".into(), reason: "new: wipe".into() };
+
+        write_held(&tools, &held);
+        assert_eq!(Some(held), read_held(&tools));
+
+        clear_held(&tools);
+        assert_eq!(None, read_held(&tools));
+        fs::remove_dir_all(&tools).ok();
+    }
+
+    #[test]
+    fn a_held_decision_says_the_old_engine_stays_and_why_and_is_not_an_install() {
+        let held = UpdateDecision::Held { version: "4.5.0".into(), reason: "new: wipe".into() };
+        let again = UpdateDecision::HeldAgain { version: "4.5.0".into(), reason: "new: wipe".into() };
+        for decision in [&held, &again] {
+            let line = decision.log_line();
+            assert!(line.contains("kept the installed engine") && line.contains("4.5.0") && line.contains("new: wipe"), "{line}");
+            assert!(decision.is_held());
+            assert!(!decision.installed_something());
+        }
+        assert!(held.log_line().contains("downloaded"), "the first time it was downloaded");
+        assert!(again.log_line().contains("nothing was downloaded"), "the second time it was not");
+    }
+
     #[test]
     fn current_symlink_points_at_target() {
         let tools_dir = unique_test_dir("symlink-points");

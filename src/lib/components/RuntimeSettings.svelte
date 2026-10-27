@@ -62,9 +62,12 @@
   $: settingsSentence = [
     !installedRuntime
       ? "jawata engine not installed"
-      : releaseStatus?.updateAvailable
-        ? `jawata engine v${releaseStatus.latestVersion} is available (v${installedRuntime.version} installed)`
-        : "",
+      : releaseStatus?.kind === "updateHeld"
+        ? // 4.4.14: a newer engine was tried before it replaced this one, and it is not the one this studio expects.
+          `jawata engine v${releaseStatus.latestVersion} is not used: ${releaseStatus.detail}`
+        : releaseStatus?.updateAvailable
+          ? `jawata engine v${releaseStatus.latestVersion} is available (v${installedRuntime.version} installed)`
+          : "",
     `deploying to ${Object.values(deployTargets).filter(Boolean).length} of ${Object.keys(deployTargets).length} agents`
   ]
     .filter((part) => part !== "")
@@ -550,7 +553,7 @@
     <h2>Settings</h2>
     <p
       class="summary-line"
-      class:attention={!installedRuntime || (releaseStatus?.updateAvailable ?? false)}
+      class:attention={!installedRuntime || (releaseStatus?.updateAvailable ?? false) || releaseStatus?.kind === "updateHeld"}
       title="The engine is what runs your workspaces. Deploy writes to the agents ticked under Agents."
     >
       {settingsSentence}

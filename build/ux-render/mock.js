@@ -4,6 +4,7 @@
 //   tab      the nav tab to click after load (Dashboard, Memory, Reporting, Seats, Settings, Help)
 //   open     1 = open every <details> after load (to see what the folds hold)
 //   scenario attention = the Reporting view with something wrong
+//   scenario held = a newer engine was tried and not switched to (the Settings sentence)
 //   scenario slowmemory = the store read never answers (the Memory wait text)
 const q = new URLSearchParams(location.search);
 const scenario = q.get("scenario") ?? "healthy";
@@ -46,7 +47,9 @@ const dashboard = {
     runtimeStateFile: "x", defaultDataRoot: "/home/u/.cache/jawata-studio", logDir: "x", transport: "http", healthStrategy: "x",
   },
   settings,
-  releaseStatus: { kind: "ready", latestVersion: "4.4.12", defaultVersion: "4.4.12", checkedAt: null, updateAvailable: false, detail: "" },
+  releaseStatus: scenario === "held"
+    ? { kind: "updateHeld", latestVersion: "4.5.0", defaultVersion: "4.4.12", checkedAt: null, updateAvailable: false, detail: "kept the installed engine — 4.5.0 was downloaded and started once, and it differs from what this studio expects (the engine no longer offers: extract; new: wipe_disk); update the studio first" }
+    : { kind: "ready", latestVersion: "4.4.12", defaultVersion: "4.4.12", checkedAt: null, updateAvailable: false, detail: "" },
   installedRuntime: { version: "4.4.12", installDir: "x", jarPath: "x", assetName: "x", installedAt: "x" },
   projects, runtimeStatuses, suggestedWorkspaceName: "javata-dev",
   servicesInventory: { available: true, services: [], detail: "" },

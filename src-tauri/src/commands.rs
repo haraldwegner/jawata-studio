@@ -187,10 +187,31 @@ pub async fn start_all_runtimes(state: State<'_, AppState>) -> Result<ManagerDas
     dashboard
 }
 
+/// His word, 2026-10-27: "It should search for a new version if you stop or reload." The same release check as at
+/// start, off the UI thread (a download once froze the window), skipped when one ran in the last ten minutes. A newer
+/// engine is tried against what this studio expects before it replaces the working one, and it takes effect at the
+/// next start.
+fn check_for_newer_engine(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        let state = app.state::<AppState>();
+        match state.manager_service.sync_releases_throttled(std::time::Duration::from_secs(600)) {
+            Ok(true) => {
+                let _ = tauri::Emitter::emit(&app, "jawata://settings-changed", ());
+            }
+            Ok(false) => {}
+            Err(error) => eprintln!("[jawata-studio] release check after stop or reload failed: {error}"),
+        }
+    });
+}
+
 #[tauri::command]
-pub fn stop_all_runtimes(state: State<'_, AppState>) -> Result<ManagerDashboard, String> {
+pub fn stop_all_runtimes(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<ManagerDashboard, String> {
     let dashboard = state.manager_service.stop_all_runtimes();
     crate::request_canary_round();   // studio#21
+    check_for_newer_engine(app);
     dashboard
 }
 
@@ -198,9 +219,13 @@ pub fn stop_all_runtimes(state: State<'_, AppState>) -> Result<ManagerDashboard,
 /// polls until each has stopped, then runs the fleet start, which waits for each import. On the
 /// command thread all of that froze the window.
 #[tauri::command]
-pub async fn reload_all_runtimes(state: State<'_, AppState>) -> Result<ManagerDashboard, String> {
+pub async fn reload_all_runtimes(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<ManagerDashboard, String> {
     let dashboard = state.manager_service.reload_all_runtimes();
     crate::request_canary_round();   // studio#21
+    check_for_newer_engine(app);
     dashboard
 }
 
@@ -319,9 +344,12 @@ pub fn start_runtime(
 #[tauri::command]
 pub fn stop_runtime(
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
     project_id: String,
 ) -> Result<RuntimeStatusRecord, String> {
-    state.manager_service.stop_runtime(&project_id)
+    let stopped = state.manager_service.stop_runtime(&project_id);
+    check_for_newer_engine(app);
+    stopped
 }
 
 #[tauri::command]

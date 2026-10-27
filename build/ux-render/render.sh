@@ -51,6 +51,7 @@ for tab in Dashboard Memory Reporting Seats Settings Help; do
 done
 shoot "reporting-attention" "tab=Reporting&scenario=attention"
 shoot "memory-reading" "tab=Memory&scenario=slowmemory"
+shoot "settings-held" "tab=Settings&scenario=held"
 # What a shot SHOWS, as a browser joins it: tags and comments removed with no space put in their place,
 # whitespace runs collapsed. A space lost at the edge of a template block shows up here and nowhere else
 # (S19-24: "189of 11622 rows· 13 cures", "describedin", "answering(62 ms)"). The mock's own figures are fixed,
@@ -102,4 +103,8 @@ reject settings-open "esident"
 # S19-61 (his word, 2026-10-25: "add a . every second"): while the store read has not answered, the wait text grows by a dot a second.
 expect memory-reading "Reading the store…..."
 reject memory-reading "No workspaces"
+# 4.4.14 (his word 2026-10-27, "I want guard 2"): a newer engine that was tried and refused is said in Settings, with why.
+expect settings-held "jawata engine v4.5.0 is not used: kept the installed engine"
+expect settings-held "new: wipe_disk"
+reject settings "is not used"
 exit $fail

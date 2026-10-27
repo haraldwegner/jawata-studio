@@ -179,6 +179,9 @@ pub struct ServiceProbeResult {
 pub struct ProbeServiceEntry {
     pub name: String,
     pub description: Option<String>,
+    /// `_meta."jawata/changesCode"` as the engine publishes it in `tools/list`; None when it publishes none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changes_code: Option<bool>,
 }
 
 /// Specifies the deployment mode for MCP configurations.
@@ -404,6 +407,9 @@ pub struct ManagerService {
     /// status could start its own — three overlapping `archive.bin` temp directories
     /// inside 105 seconds, observed live. One at a time, and never on the UI thread.
     release_sync_running: Arc<std::sync::atomic::AtomicBool>,
+    /// 4.4.14: when a release check last started, so a stop or a reload does not ask GitHub again within ten minutes
+    /// (anonymous requests are rate limited, and a check that finds nothing new is a request spent).
+    last_release_sync: Arc<Mutex<Option<Instant>>>,
 }
 
 impl ManagerService {
@@ -452,6 +458,7 @@ impl ManagerService {
             routing_table,
             canary: Arc::new(RwLock::new(Vec::new())),
             release_sync_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            last_release_sync: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -470,6 +477,53 @@ impl ManagerService {
     /// Returns `Ok(true)` when the newest known version changed, so the caller can tell
     /// the UI to reload. Returns `Ok(false)` immediately when a sync is already running:
     /// one 112 MB download at a time, never two.
+    /// The release check a stop or a reload asks for (his word 2026-10-27: "It should search for a new version if you
+    /// stop or reload"). The same check as at start, skipped when one ran within `min_gap`; the caller runs it off the
+    /// UI thread, and a newer engine takes effect at the next start.
+    pub fn sync_releases_throttled(&self, min_gap: std::time::Duration) -> Result<bool, String> {
+        let recent = self
+            .last_release_sync
+            .lock()
+            .ok()
+            .and_then(|last| *last)
+            .is_some_and(|at| at.elapsed() < min_gap);
+        if recent {
+            return Ok(false);
+        }
+        self.sync_releases_now()
+    }
+
+    /// The trial a replacing engine must pass: it is started once on its own (the same probe as Settings > Test
+    /// services, on the unpacked jar and a throwaway data folder), and the tools it offers are compared with the
+    /// surface this studio vendors. `Err` is the sentence Settings shows: it is never a pass when the engine could
+    /// not be started or did not answer.
+    pub fn engine_trial(&self, jar: &Path) -> Result<(), String> {
+        let started_at = Instant::now();
+        let settings = self.config_store.get_settings();
+        let trial_dir = settings
+            .workspace_root()
+            .join(format!("engine-trial-{}", crate::config::current_timestamp_string()));
+        fs::create_dir_all(&trial_dir)
+            .map_err(|error| format!("could not prepare a trial folder {}: {error}", trial_dir.display()))?;
+        let runtime = ProbeRuntime {
+            jar_path: display_path(jar),
+            runtime_label: "The downloaded JAWATA engine".into(),
+        };
+        let probe = self.probe_services_with_runtime(&runtime, &trial_dir, started_at);
+        let _ = fs::remove_dir_all(&trial_dir);
+        if !probe.ok {
+            return Err(format!("it did not start or answer ({})", probe.detail));
+        }
+        let vendored: serde_json::Value = serde_json::from_str(ENGINE_SURFACE_JSON)
+            .map_err(|error| format!("this studio's copy of the tool surface is unreadable: {error}"))?;
+        let found = surface_differences(&vendored, &probe.services);
+        if found.is_empty() {
+            Ok(())
+        } else {
+            Err(found.describe())
+        }
+    }
+
     pub fn sync_releases_now(&self) -> Result<bool, String> {
         use std::sync::atomic::Ordering;
         if self
@@ -480,11 +534,15 @@ impl ManagerService {
             return Ok(false);
         }
 
+        if let Ok(mut last) = self.last_release_sync.lock() {
+            *last = Some(Instant::now());
+        }
         let outcome = (|| {
             let mut settings = self.config_store.get_settings();
             let before = settings.last_seen_latest_version.clone();
-            let (_installed, status, decision) =
-                self.release_manager.sync_with_settings(&mut settings)?;
+            let (_installed, status, decision) = self
+                .release_manager
+                .sync_with_settings(&mut settings, &|jar| self.engine_trial(jar))?;
             let changed = before != settings.last_seen_latest_version;
             self.config_store.write_settings(settings)?;
             // D4: one line per version check, naming what it DECIDED and why.
@@ -1989,7 +2047,7 @@ impl ManagerService {
     pub fn download_or_update_jawata(&self) -> Result<ManagerDashboard, String> {
         let mut settings = self.config_store.get_settings();
         self.release_manager
-            .download_latest_runtime(&mut settings)?;
+            .download_latest_runtime(&mut settings, &|jar| self.engine_trial(jar))?;
         self.config_store.write_settings(settings)?;
         self.load_dashboard()
     }
@@ -1998,8 +2056,9 @@ impl ManagerService {
         let bootstrap = self.config_store.bootstrap_status();
         let (settings, installed_runtime, release_status) = if refresh_release_status {
             let mut settings = self.config_store.get_settings();
-            let (installed_runtime, release_status, decision) =
-                self.release_manager.sync_with_settings(&mut settings)?;
+            let (installed_runtime, release_status, decision) = self
+                .release_manager
+                .sync_with_settings(&mut settings, &|jar| self.engine_trial(jar))?;
             // D4: this path reaches the network too. It is dead today — every
             // caller passes `false` — and a version check that logs nothing is
             // exactly the silence this deliverable removed, so it says the same
@@ -3987,6 +4046,10 @@ fn extract_tool_entries(response: &serde_json::Value) -> Result<Vec<ProbeService
                     .get("description")
                     .and_then(|value| value.as_str())
                     .map(ToOwned::to_owned),
+                changes_code: tool
+                    .get("_meta")
+                    .and_then(|meta| meta.get("jawata/changesCode"))
+                    .and_then(|flag| flag.as_bool()),
             });
         }
     }
@@ -9229,6 +9292,92 @@ fn engine_changing_tools() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// How a newly downloaded engine differs from the tool surface this studio vendors (`engine-surface.json`).
+///
+/// 4.4.14: an engine that replaces a working one is started once, asked for `tools/list` and compared with the
+/// studio's copy BEFORE it becomes the active engine. The standard is the release job's own (`build/engine-surface.py`):
+/// the same live names with the same changesCode flags, and none of the retired names. A tool the studio has never
+/// heard of is a difference too, because the studio's guard decides from that list whether a call changes code, and a new
+/// code-changing tool it does not know would pass unguarded.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SurfaceDifferences {
+    /// Live in the studio's copy, not offered by the engine.
+    pub missing: Vec<String>,
+    /// Offered by the engine, not in the studio's copy.
+    pub added: Vec<String>,
+    /// Offered with another changesCode flag than the studio's copy holds, or with none.
+    pub flag_changed: Vec<String>,
+    /// Offered by the engine although the studio's copy lists them as retired.
+    pub retired_offered: Vec<String>,
+}
+
+impl SurfaceDifferences {
+    pub fn is_empty(&self) -> bool {
+        *self == SurfaceDifferences::default()
+    }
+
+    /// One sentence for the person who reads Settings: what differs, each list cut at eight names.
+    pub fn describe(&self) -> String {
+        fn listed(names: &[String]) -> String {
+            const SHOWN: usize = 8;
+            if names.len() <= SHOWN {
+                names.join(", ")
+            } else {
+                format!("{} and {} more", names[..SHOWN].join(", "), names.len() - SHOWN)
+            }
+        }
+        let mut parts = Vec::new();
+        if !self.missing.is_empty() {
+            parts.push(format!("the engine no longer offers: {}", listed(&self.missing)));
+        }
+        if !self.added.is_empty() {
+            parts.push(format!("new: {}", listed(&self.added)));
+        }
+        if !self.flag_changed.is_empty() {
+            parts.push(format!("changesCode flag differs: {}", listed(&self.flag_changed)));
+        }
+        if !self.retired_offered.is_empty() {
+            parts.push(format!("retired but offered again: {}", listed(&self.retired_offered)));
+        }
+        parts.join("; ")
+    }
+}
+
+pub fn surface_differences(vendored: &serde_json::Value, offered: &[ProbeServiceEntry]) -> SurfaceDifferences {
+    use std::collections::{BTreeMap, BTreeSet};
+    let have: BTreeMap<String, Option<bool>> = vendored["live"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| Some((row["name"].as_str()?.to_string(), row["changesCode"].as_bool())))
+                .collect()
+        })
+        .unwrap_or_default();
+    let retired: BTreeSet<String> = vendored["retired"]
+        .as_array()
+        .map(|rows| rows.iter().filter_map(|row| row.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let offered_by_name: BTreeMap<&str, Option<bool>> =
+        offered.iter().map(|tool| (tool.name.as_str(), tool.changes_code)).collect();
+
+    let mut found = SurfaceDifferences::default();
+    for (name, flag) in &have {
+        match offered_by_name.get(name.as_str()) {
+            None => found.missing.push(name.clone()),
+            Some(published) if published != flag => found.flag_changed.push(name.clone()),
+            Some(_) => {}
+        }
+    }
+    for name in offered_by_name.keys() {
+        if retired.contains(*name) {
+            found.retired_offered.push((*name).to_string());
+        } else if !have.contains_key(*name) {
+            found.added.push((*name).to_string());
+        }
+    }
+    found
+}
+
 /// A shell `case` alternation over those tools, matching the name as Claude Code writes an MCP tool
 /// (`mcp__<server>__<tool>`) and as a bare name. Anchored at the tool name rather than a substring, so a
 /// tool of another server that merely ENDS in `move` or `data` does not fire a recall.
@@ -10369,6 +10518,73 @@ mod tests {
             aggregate_workspace_phase(&[RuntimePhase::Stopped, RuntimePhase::Stopped]),
             RuntimePhase::Stopped
         ));
+    }
+
+    fn entry(name: &str, changes_code: Option<bool>) -> ProbeServiceEntry {
+        ProbeServiceEntry { name: name.to_string(), description: None, changes_code }
+    }
+
+    fn studio_copy_of_surface() -> serde_json::Value {
+        serde_json::json!({
+            "engineVersion": "4.4.9",
+            "live": [
+                {"name": "analyze", "changesCode": false},
+                {"name": "extract", "changesCode": true}
+            ],
+            "retired": ["rename_class"]
+        })
+    }
+
+    #[test]
+    fn an_engine_that_publishes_exactly_the_vendored_surface_differs_in_nothing() {
+        let offered = vec![entry("extract", Some(true)), entry("analyze", Some(false))];
+        assert_eq!(SurfaceDifferences::default(), surface_differences(&studio_copy_of_surface(), &offered));
+    }
+
+    #[test]
+    fn a_tool_the_studio_knows_and_the_engine_no_longer_offers_is_missing() {
+        let offered = vec![entry("analyze", Some(false))];
+        let found = surface_differences(&studio_copy_of_surface(), &offered);
+        assert_eq!(vec!["extract".to_string()], found.missing);
+        assert!(found.added.is_empty() && found.flag_changed.is_empty() && found.retired_offered.is_empty());
+    }
+
+    #[test]
+    fn a_tool_the_studio_has_never_heard_of_is_a_difference_because_its_guard_cannot_classify_it() {
+        let offered = vec![entry("analyze", Some(false)), entry("extract", Some(true)), entry("wipe_disk", Some(true))];
+        let found = surface_differences(&studio_copy_of_surface(), &offered);
+        assert_eq!(vec!["wipe_disk".to_string()], found.added);
+    }
+
+    #[test]
+    fn a_flipped_or_unpublished_changes_code_flag_is_a_difference() {
+        let offered = vec![entry("analyze", Some(true)), entry("extract", None)];
+        let found = surface_differences(&studio_copy_of_surface(), &offered);
+        assert_eq!(vec!["analyze".to_string(), "extract".to_string()], found.flag_changed);
+    }
+
+    #[test]
+    fn a_retired_name_offered_again_is_a_difference() {
+        let offered = vec![entry("analyze", Some(false)), entry("extract", Some(true)), entry("rename_class", Some(true))];
+        let found = surface_differences(&studio_copy_of_surface(), &offered);
+        assert_eq!(vec!["rename_class".to_string()], found.retired_offered);
+        assert!(found.added.is_empty(), "a retired name is reported as retired, not also as new: {found:?}");
+    }
+
+    #[test]
+    fn the_description_names_each_kind_of_difference_and_caps_a_long_list() {
+        let found = SurfaceDifferences {
+            missing: (1..=11).map(|n| format!("gone{n}")).collect(),
+            added: vec!["fresh".into()],
+            flag_changed: vec!["flipped".into()],
+            retired_offered: vec!["back".into()],
+        };
+        let text = found.describe();
+        assert!(text.contains("no longer offers: gone1, gone2, gone3, gone4, gone5, gone6, gone7, gone8 and 3 more"), "{text}");
+        assert!(text.contains("new: fresh"), "{text}");
+        assert!(text.contains("changesCode flag differs: flipped"), "{text}");
+        assert!(text.contains("retired but offered again: back"), "{text}");
+        assert_eq!("", SurfaceDifferences::default().describe());
     }
 
     #[test]
@@ -12269,6 +12485,25 @@ judge was never told to give"
             crate::release_manager::ReleaseManager::new().expect("http clients"),
             crate::runtime_manager::RuntimeManager::new(paths),
         )
+    }
+
+    /// The whole trial against a REAL engine, by hand: `JAWATA_TRIAL_JAR=<path to a published jawata.jar> cargo test
+    /// --lib engine_trial_passes_a_real_published_engine -- --ignored`. It starts the engine, asks it for `tools/list`
+    /// over the same probe as Settings > Test services and compares the answer with `engine-surface.json`. Ignored
+    /// because it needs a jar and Java and takes several seconds; run it before a studio release when the engine
+    /// has published a new version.
+    #[test]
+    #[ignore]
+    fn engine_trial_passes_a_real_published_engine() {
+        let jar = std::env::var("JAWATA_TRIAL_JAR").expect("set JAWATA_TRIAL_JAR to a published jawata.jar");
+        let dir = std::env::temp_dir().join(format!("jawata-trial-real-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let service = service_over(&dir);
+
+        let verdict = service.engine_trial(Path::new(&jar));
+
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(Ok(()), verdict, "a published engine the studio was released against must pass");
     }
 
     /// REL44-12: the wait ends when the import is DONE — loaded, or failed — or when the process

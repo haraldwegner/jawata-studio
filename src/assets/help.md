@@ -58,7 +58,7 @@ A seat is a narrow role an agent takes when you type its command, such as `/refa
 
 ## Settings
 
-**Engine**: whether the engine updates itself (**Update policy**), a link to the studio's releases, and **Test services**, which checks that the engine answers; **Advanced** holds where the engine is downloaded from or a local jar to use instead. **Agents**: which agents Deploy writes to, with each one's config file shown in the table (under **Advanced**: merge mode and a backup before each write). Grok receives jawata's tools but not its guard. Antigravity cannot connect jawata and is not supported. **This machine**: the data folder, tray, autostart, per-workspace memory limits, and cleanup.
+**Engine**: whether the engine updates itself (**Update policy**), a link to the studio's releases, and **Test services**, which checks that the engine answers; **Advanced** holds where the engine is downloaded from or a local jar to use instead. A newer engine is looked for when the studio starts and after you stop or reload (at most every ten minutes); it is started once on its own and compared with the tool list this studio expects before it replaces the engine you use. If it differs, the old engine stays and Settings says how it differs; a new engine takes effect at the next start. **Agents**: which agents Deploy writes to, with each one's config file shown in the table (under **Advanced**: merge mode and a backup before each write). Grok receives jawata's tools but not its guard. Antigravity cannot connect jawata and is not supported. **This machine**: the data folder, tray, autostart, per-workspace memory limits, and cleanup.
 
 ![Settings, Engine: update policy and the updates link](/help/09-settings-engine.png)
 
