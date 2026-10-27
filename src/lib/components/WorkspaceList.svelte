@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ProjectRecord, RuntimeStatusRecord } from "../api/tauri";
+  import { isLivePhase } from "../workspaceLive";
   import ContextMenu from "./ContextMenu.svelte";
 
   type ContextMenuItem = {
@@ -115,7 +116,7 @@
       }
       // LIVE = running or starting: a starting workspace (a cold import can take minutes) is as
       // undeletable as a running one (the S19 round-2 audit).
-      if (phase === "running" || phase === "starting") {
+      if (isLivePhase(phase)) {
         byName[name].live += 1;
       }
     }

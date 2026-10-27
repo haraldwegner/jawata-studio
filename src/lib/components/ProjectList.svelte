@@ -1,5 +1,6 @@
 <script lang="ts">
   import { afterUpdate } from "svelte";
+  import { anyLive } from "../workspaceLive";
   import type {
     DeployTargetFlags,
     DeployMode,
@@ -331,17 +332,16 @@
     list: ProjectRecord[],
     statuses: Record<string, RuntimeStatusRecord>,
   ): boolean {
-    return list.some((p) => ["running", "starting"].includes(statuses[p.id]?.phase ?? ""));
+    return anyLive(list, statuses);
   }
 
   function openProjectContextMenu(event: MouseEvent, project: ProjectRecord) {
     event.preventDefault();
     event.stopPropagation();
     if (disabled) return;
-    const projectWorkspaceLive = projects.some(
-      (p) =>
-        p.workspaceName === project.workspaceName &&
-        ["running", "starting"].includes(runtimeStatuses[p.id]?.phase ?? ""),
+    const projectWorkspaceLive = anyLive(
+      projects.filter((p) => p.workspaceName === project.workspaceName),
+      runtimeStatuses,
     );
     contextMenu = {
       ...menuPosition(event),
@@ -368,7 +368,7 @@
     event.preventDefault();
     event.stopPropagation();
     if (disabled) return;
-    const workspaceRuns = workspace.projects.some((p) => ["running", "starting"].includes(runtimeStatuses[p.id]?.phase ?? ""));
+    const workspaceRuns = anyLive(workspace.projects, runtimeStatuses);
     contextMenu = {
       ...menuPosition(event),
       items: [
