@@ -261,7 +261,7 @@
     },
     "observer": {
       "live": "binary",
-      "ported": "Sprint 28b D8 (2026-08-17). Both script halves are in the binary (observer.rs): outcome capture \u2014 the outcomes.log signals (slip, read-ungrounded, verify) \u2014 and the jawata-fallback audit trail \u2014 the slip store bridge plus the steering answer \u2014 with the C7 edit feed alongside. Pinned by the observer tests that drive the real module. Live on BOTH clients from this one row: Cursor has run the observer binary since v3.7.9 (its script did nothing, so there was no parity to lose \u2014 a cursor override on this row recorded that while the clients diverged), and Claude Code flips here, closing the 3.7.2 revert (outcomes.log froze the moment the entry pointed at the stub) the way 28a closed the guard's 3.7.3 revert."
+      "ported": "Sprint 28b D8 (2026-08-17). Both script halves are in the binary (observer.rs): outcome capture \u2014 the outcomes.log signals (slip, read-ungrounded, verify) \u2014 and the jawata-fallback audit trail \u2014 the slip store bridge plus the steering answer (the C7 edit feed that sat alongside was retired in S19-66, the engine having retired the kind it posted to). Pinned by the observer tests that drive the real module. Live on BOTH clients from this one row: Cursor has run the observer binary since v3.7.9 (its script did nothing, so there was no parity to lose \u2014 a cursor override on this row recorded that while the clients diverged), and Claude Code flips here, closing the 3.7.2 revert (outcomes.log froze the moment the entry pointed at the stub) the way 28a closed the guard's 3.7.3 revert."
     },
     "stop": {
       "live": "binary"

@@ -15,12 +15,15 @@
 //!   session), `verify` (a compile/diagnostics/test event)
 //! - a slip is BRIDGED into the experience store as a candidate, and answers
 //!   with the steering context (the one PostToolUse emission this role makes)
-//! - the edit feed: a .java edit's fragments held per session; the session's
-//!   next gate outcome (or an undo) labels them and posts each as
-//!   `observe_edit(outcome=…)`
 //! - judge the REQUEST only: `tool_response` may echo file contents that
 //!   merely mention `.java` or the marker (a cat of a hook script once logged
-//!   a false slip) — the response is read ONLY to label the edit feed.
+//!   a false slip) — the response is not read at all.
+//!
+//! There is no edit feed any more (S19-66): a `.java` edit used to be held and
+//! labelled by the session's next gate outcome, then posted to the engine as
+//! `observe_edit(outcome=…)`. The engine retired that kind in v3.3.1 (the
+//! edit-switch model is gone), so every post was refused and counted as a
+//! failure in the field recording. The posting and the holding went together.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -119,7 +122,7 @@ pub fn observe_in(
     // on calls the observer had nothing else to say about.
     //
     // `None` means "this arm owes the session nothing of its own" — its side
-    // effects (the trail, the edit feed) have already happened.
+    // effects (the trail) have already happened.
     let owed: Option<Outcome> = if tool == "Read" {
         if let Some(path) = crate::pipeline::edit_path_in(payload) {
             if is_java(&path) && !read_is_grounded(&dir, session, &path) {
@@ -129,21 +132,14 @@ pub fn observe_in(
         None
     } else if ends_with_any(tool, &["compile_workspace", "get_diagnostics", "run_tests"]) {
         emit(&dir, "verify", tool);
-        editfeed_resolve(&dir, session, &doc, None, config);
         None
     } else if ends_with_any(tool, &["find_tests"]) {
         emit(&dir, "verify", tool);
-        None
-    } else if ends_with_any(tool, &["refactoring"]) {
-        if doc["tool_input"]["action"].as_str().unwrap_or("").starts_with("undo") {
-            editfeed_resolve(&dir, session, &doc, Some("failed"), config);
-        }
         None
     } else if matches!(tool, "Edit" | "Write" | "MultiEdit") {
         let path = crate::pipeline::edit_path_in(payload).unwrap_or_default();
         let mut slipped = None;
         if is_java(&path) {
-            editfeed_hold(&dir, session, &doc);
             if request_only.to_lowercase().contains("jawata-fallback:") {
                 slipped = Some(slip(&dir, client, tool, &request_only, config));
             }
@@ -400,101 +396,6 @@ fn read_is_grounded(dir: &Path, session: &str, java_path: &str) -> bool {
         .lines()
         .filter(|l| l.len() >= 3)
         .any(|token| base.contains(&token.to_lowercase()) || token.to_lowercase().contains(&base))
-}
-
-// ---- the edit feed (C7): hold fragments, label on the next gate outcome ----
-
-fn editfeed_path(dir: &Path, session: &str) -> PathBuf {
-    dir.join("editfeed").join(session)
-}
-
-fn editfeed_hold(dir: &Path, session: &str, doc: &serde_json::Value) {
-    if session.is_empty() {
-        return;
-    }
-    let input = &doc["tool_input"];
-    let edits: Vec<&serde_json::Value> = match input["edits"].as_array() {
-        Some(list) => list.iter().collect(),
-        None => vec![input],
-    };
-    let clip = |s: String| s.chars().take(4000).collect::<String>();
-    let before = clip(edits.iter().filter_map(|e| e["old_string"].as_str()).collect::<Vec<_>>().join("\n"));
-    let after = clip(edits.iter()
-        .filter_map(|e| e["new_string"].as_str().or_else(|| e["content"].as_str()))
-        .collect::<Vec<_>>().join("\n"));
-    if before.trim().is_empty() && after.trim().is_empty() {
-        return;
-    }
-    let path = editfeed_path(dir, session);
-    let _ = std::fs::create_dir_all(path.parent().unwrap_or(dir));
-    let mut lines: Vec<String> = std::fs::read_to_string(&path)
-        .map(|c| c.lines().map(String::from).collect())
-        .unwrap_or_default();
-    lines.push(serde_json::json!({"before": before, "after": after}).to_string());
-    let keep = lines.len().saturating_sub(32);
-    let _ = std::fs::write(&path, lines[keep..].join("\n") + "\n");
-}
-
-fn editfeed_resolve(
-    dir: &Path,
-    session: &str,
-    doc: &serde_json::Value,
-    forced: Option<&str>,
-    config: Option<&HookConfig>,
-) {
-    if session.is_empty() {
-        return;
-    }
-    let path = editfeed_path(dir, session);
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return;
-    };
-    // Pop FIRST: a lost post is a lost label, never a stale re-label.
-    let _ = std::fs::remove_file(&path);
-    let pending: Vec<serde_json::Value> = content
-        .lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect();
-    if pending.is_empty() {
-        return;
-    }
-    let outcome = match forced {
-        Some(f) => f.to_string(),
-        None => match gate_outcome(doc) {
-            Some(o) => o,
-            None => return, // unreadable outcome: no label beats a guessed label
-        },
-    };
-    let Some(cfg) = config else {
-        return;
-    };
-    for p in pending {
-        let args = serde_json::json!({
-            "kind": "observe_edit", "outcome": outcome,
-            "before": p["before"].as_str().unwrap_or(""),
-            "after": p["after"].as_str().unwrap_or("")
-        });
-        let _ = crate::query::ask(
-            &crate::query::Endpoint {
-                url: cfg.url.clone(),
-                token: cfg.token.clone(),
-                timeout: std::time::Duration::from_secs(3),
-            },
-            args,
-        );
-    }
-}
-
-/// The gate's verdict from the tool_response — the ONE read of the response.
-fn gate_outcome(doc: &serde_json::Value) -> Option<String> {
-    let text = doc["tool_response"]["content"][0]["text"].as_str()?;
-    let body: serde_json::Value = serde_json::from_str(text).ok()?;
-    let ok = body["success"].as_bool().unwrap_or(true);
-    let errs = body["data"]["errorCount"]
-        .as_i64()
-        .or_else(|| body["data"]["failed"].as_i64())
-        .unwrap_or(0);
-    Some(if ok && errs == 0 { "clean".into() } else { "failed".into() })
 }
 
 #[cfg(test)]
@@ -842,17 +743,13 @@ mod tests {
     }
 
     #[test]
-    fn a_gate_call_emits_verify_and_labels_the_held_edits() {
+    fn a_gate_call_emits_verify_and_no_edit_is_held_for_a_label() {
         let home = scratch("gate");
         let d = dir(&home);
-        // Hold one edit…
         let edit = payload("Edit", serde_json::json!({
             "file_path": "/w/A.java", "old_string": "a", "new_string": "b"
         }));
         observe_in(&home, Client::ClaudeCode, &edit, None);
-        assert!(editfeed_path(&d, "s1").exists(), "the edit is held");
-        // …then the gate resolves it (no config: the pop still happens — a
-        // lost post is a lost label, never a stale re-label).
         let inner = serde_json::json!({"success": true, "data": {"errorCount": 0}}).to_string();
         let gate = serde_json::json!({
             "tool_name": "mcp__jawata__compile_workspace", "session_id": "s1",
@@ -861,22 +758,13 @@ mod tests {
         })
         .to_string();
         observe_in(&home, Client::ClaudeCode, &gate, None);
-        assert!(!editfeed_path(&d, "s1").exists(), "resolve pops the feed");
-        let log = std::fs::read_to_string(d.join("outcomes.log")).unwrap();
-        assert!(log.contains("\tverify\tmcp__jawata__compile_workspace"), "{log}");
-    }
-
-    #[test]
-    fn an_undo_forces_the_failed_label_path() {
-        let home = scratch("undo");
-        let d = dir(&home);
-        let edit = payload("Edit", serde_json::json!({
-            "file_path": "/w/A.java", "old_string": "a", "new_string": "b"
-        }));
-        observe_in(&home, Client::ClaudeCode, &edit, None);
         let undo = payload("mcp__jawata__refactoring", serde_json::json!({"action": "undo"}));
         observe_in(&home, Client::ClaudeCode, &undo, None);
-        assert!(!editfeed_path(&d, "s1").exists(), "the undo pops the feed");
+        // S19-66: the edit feed is gone. The engine retired the kind it posted to (observe_edit, v3.3.1), so holding a
+        // .java edit for a label was work whose every post was refused; nothing is held and the folder it used is never made.
+        assert!(!d.join("editfeed").exists(), "an edit is held for a label that nobody reads");
+        let log = std::fs::read_to_string(d.join("outcomes.log")).unwrap();
+        assert!(log.contains("\tverify\tmcp__jawata__compile_workspace"), "{log}");
     }
 
     #[test]

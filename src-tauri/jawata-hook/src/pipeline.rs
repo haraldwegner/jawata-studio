@@ -248,8 +248,8 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
                 other => crate::transcript::name_back(client, payload, store).unwrap_or(other),
             }
         }
-        // Sprint 28b D8: the ported observer arm (outcome capture, slip trail,
-        // edit feed) — no longer the stub that read as a dead channel.
+        // Sprint 28b D8: the ported observer arm (outcome capture, slip trail)
+        // — no longer the stub that read as a dead channel.
         Role::Observer => {
             let observed = crate::observer::observe(client, payload, Some(config));
             // Sprint 28g S23 O1/O2 — the call after a halt carries the rule once, as a reminder. Only
@@ -4181,7 +4181,7 @@ mod tests {
 
     /// F4 (re-pinned at 28b D8): the Observer table and the code must not
     /// drift apart. The rows now declare the PORTED capability — a store
-    /// query (the slip bridge + edit-feed posts) on both clients, an emission
+    /// query (the slip bridge) on both clients, an emission
     /// only where the client can inject (Claude Code's PostToolUse; Cursor's
     /// afterMCPExecution cannot) — and the pipeline actually makes them: a
     /// slip payload emits the steering on Claude Code and is recorded-not-
