@@ -102,6 +102,18 @@ if [ "$HELP" -ne 0 ]; then
 fi
 
 echo
+echo "=== gate: no symbolic link is tracked ==="
+# S19-68. The 4.4.16 release commit carried a link named node_modules to a folder on the machine that built it, because
+# the ignore pattern matched directories only. The repository holds no link; a tracked one is a path on one machine.
+LINKS="$(git -C "$ROOT" ls-files -s | awk '$1 == "120000" { print $4 }')"
+if [ -n "$LINKS" ]; then
+    echo "FAILED: the repository tracks a symbolic link (a path on one machine):"
+    echo "$LINKS"
+    exit 1
+fi
+echo "ok: no symbolic link is tracked."
+
+echo
 echo "=== gate: no screen spells out the live-workspace rule ==="
 # S19-10. Exit 2 is "nothing was checked".
 "$ROOT/build/live-rule-gate.sh" --selftest && "$ROOT/build/live-rule-gate.sh"
