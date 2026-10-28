@@ -1860,7 +1860,7 @@ impl ManagerService {
             let Ok(status) = self.runtime_manager.get_runtime_status(&reference) else {
                 continue;
             };
-            if matches!(status.phase, RuntimePhase::Running | RuntimePhase::Starting) {
+            if status.phase.is_live() {
                 running += 1;
             }
         }
@@ -2322,10 +2322,7 @@ impl ManagerService {
             .find(|s| s.workspace_name == workspace_name)
             .map(|s| s.phase);
 
-        let should_start = !matches!(
-            current_phase,
-            Some(RuntimePhase::Running) | Some(RuntimePhase::Starting)
-        );
+        let should_start = !current_phase.is_some_and(|phase| phase.is_live());
 
         let mut errors = Vec::new();
         for project in projects {
@@ -3630,7 +3627,7 @@ impl ManagerService {
             let Ok(status) = self.runtime_manager.get_runtime_status(&reference) else {
                 continue;
             };
-            if matches!(status.phase, RuntimePhase::Running | RuntimePhase::Starting) {
+            if status.phase.is_live() {
                 active.push(project.name);
             }
         }
@@ -10158,7 +10155,7 @@ pub(crate) fn deletion_refusal(workspace_name: &str, member_phases: &[RuntimePha
     // ANY live member, not the overall phase: that one reads Running beside Stopped as Stopped.
     member_phases
         .iter()
-        .any(|phase| matches!(phase, RuntimePhase::Running | RuntimePhase::Starting))
+        .any(RuntimePhase::is_live)
         .then(|| {
             format!(
                 "Workspace '{workspace_name}' is running. Stop it first; a running workspace cannot be deleted."

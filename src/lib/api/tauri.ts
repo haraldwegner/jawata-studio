@@ -209,6 +209,9 @@ export interface RuntimeStatusRecord {
   resolvedJarPath: string;
   serviceMode: string;
   detail: string;
+  /** Whether the service is live: running or starting. The backend's answer, written beside `phase` from the same value, so a
+   * screen reads this and never spells the rule out (S19-10b). */
+  live: boolean;
 }
 
 /** Comprehensive dashboard state for the manager application. */

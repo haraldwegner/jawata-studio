@@ -269,12 +269,26 @@ pub enum RuntimePhase {
     Failed,
 }
 
+impl RuntimePhase {
+    /// Whether a service in this phase is live: running, or starting (a cold import can take minutes, and a starting workspace
+    /// is as undeletable and as un-startable as a running one). THE one place the rule is written (S19-10b): the Rust callers
+    /// ask this, and the screens read it as the `live` field of [`RuntimeStatusRecord`], which is written from this method.
+    pub fn is_live(&self) -> bool {
+        matches!(self, RuntimePhase::Running | RuntimePhase::Starting)
+    }
+}
+
 /// Status record for a project's runtime. Sprint 10 v0.10.4: multiple
 /// projects sharing a `workspace_name` reflect the same underlying jawata
 /// process — same PID, same workspace_dir, same log file. They differ only
 /// in `project_id`. The frontend continues to read these per-project for
 /// rendering, but the underlying process is shared.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// S19-10b: serialized with one more field than it holds, `live`, which is
+/// `phase.is_live()` written beside `phase` at the moment of serializing (see
+/// the `Serialize` impl below), so it cannot be staler than the phase and no
+/// screen has to spell the rule out. It is not stored and not read back.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeStatusRecord {
     pub project_id: String,
@@ -297,6 +311,27 @@ pub struct RuntimeStatusRecord {
     /// runtime-state.json files (pre-v0.14.0) deserialize cleanly.
     #[serde(default)]
     pub exit_code: Option<i32>,
+}
+
+impl Serialize for RuntimeStatusRecord {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut record = serializer.serialize_struct("RuntimeStatusRecord", 13)?;
+        record.serialize_field("projectId", &self.project_id)?;
+        record.serialize_field("phase", &self.phase)?;
+        record.serialize_field("live", &self.phase.is_live())?;
+        record.serialize_field("workspaceName", &self.workspace_name)?;
+        record.serialize_field("transport", &self.transport)?;
+        record.serialize_field("pid", &self.pid)?;
+        record.serialize_field("workspaceDir", &self.workspace_dir)?;
+        record.serialize_field("logPath", &self.log_path)?;
+        record.serialize_field("runtimeLabel", &self.runtime_label)?;
+        record.serialize_field("resolvedJarPath", &self.resolved_jar_path)?;
+        record.serialize_field("serviceMode", &self.service_mode)?;
+        record.serialize_field("detail", &self.detail)?;
+        record.serialize_field("exitCode", &self.exit_code)?;
+        record.end()
+    }
 }
 
 /// Sprint 12 (v0.12.0): one entry per workspace_name, with a phase
@@ -1379,7 +1414,7 @@ impl RuntimeManager {
                 .values()
                 .filter(|s| {
                     s.workspace_name == reference.workspace_name
-                        && matches!(s.phase, RuntimePhase::Running | RuntimePhase::Starting)
+                        && s.phase.is_live()
                 })
                 .map(|s| s.project_id.clone())
                 .collect()
@@ -1803,6 +1838,91 @@ mod tests {
     use super::*;
     use crate::config::AppPaths;
     use std::path::PathBuf;
+
+    // ---- S19-10b: "is this service live" is written once, in RuntimePhase::is_live ----
+
+    fn record_in(phase: RuntimePhase) -> RuntimeStatusRecord {
+        RuntimeStatusRecord {
+            project_id: "p-1".into(),
+            phase,
+            workspace_name: "ws".into(),
+            transport: "http".into(),
+            pid: Some(4242),
+            workspace_dir: "/w".into(),
+            log_path: "/l".into(),
+            runtime_label: "label".into(),
+            resolved_jar_path: "/j".into(),
+            service_mode: "manager-process".into(),
+            detail: "d".into(),
+            exit_code: Some(3),
+        }
+    }
+
+    #[test]
+    fn only_a_running_or_a_starting_service_is_live() {
+        assert!(RuntimePhase::Running.is_live());
+        assert!(RuntimePhase::Starting.is_live());
+        assert!(!RuntimePhase::Stopped.is_live());
+        assert!(!RuntimePhase::Failed.is_live());
+    }
+
+    #[test]
+    fn the_record_the_screens_read_carries_live_beside_phase() {
+        for (phase, name, live) in [
+            (RuntimePhase::Running, "running", true),
+            (RuntimePhase::Starting, "starting", true),
+            (RuntimePhase::Stopped, "stopped", false),
+            (RuntimePhase::Failed, "failed", false),
+        ] {
+            let json = serde_json::to_value(record_in(phase)).unwrap();
+            assert_eq!(json["phase"], name);
+            assert_eq!(json["live"], live, "a {name} service: {json}");
+        }
+    }
+
+    #[test]
+    fn serializing_the_record_loses_no_field() {
+        // The record is written out by hand so that it can carry `live`. A field added to the struct and forgotten there would
+        // vanish from every screen without a compile error; every field here has a value of its own, so one that goes missing
+        // fails to read back, or reads back different.
+        let sent = serde_json::to_value(record_in(RuntimePhase::Starting)).unwrap();
+        let back: RuntimeStatusRecord = serde_json::from_value(sent.clone()).expect("the serialized record reads back");
+        assert_eq!(serde_json::to_value(&back).unwrap(), sent);
+        assert_eq!(back.project_id, "p-1");
+        assert_eq!(back.pid, Some(4242));
+        assert_eq!(back.workspace_dir, "/w");
+        assert_eq!(back.log_path, "/l");
+        assert_eq!(back.runtime_label, "label");
+        assert_eq!(back.resolved_jar_path, "/j");
+        assert_eq!(back.service_mode, "manager-process");
+        assert_eq!(back.detail, "d");
+        assert_eq!(back.exit_code, Some(3));
+    }
+
+    #[test]
+    fn the_rule_is_not_written_a_second_time_in_the_backend() {
+        // The two phases named side by side are the rule. It lives in `is_live`; the one other place that names them together
+        // adds Failed (a service the manager expects to find up, which is a different question). The needles are built from
+        // pieces so that this test does not contain the thing it looks for.
+        let running = "RuntimePhase::Running";
+        let starting = "RuntimePhase::Starting";
+        let pair = format!("{running} | {starting}");
+        let reversed = format!("{starting} | {running}");
+        let separate = format!("Some({running}) | Some({starting})");
+        let in_is_live = format!("matches!(self, {pair})");
+        let with_failed = format!("{pair} | RuntimePhase::Failed");
+        for (file, text) in [
+            ("runtime_manager.rs", include_str!("runtime_manager.rs")),
+            ("manager_service.rs", include_str!("manager_service.rs")),
+            ("lib.rs", include_str!("lib.rs")),
+        ] {
+            let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let rest = flat.replace(&in_is_live, "").replace(&with_failed, "");
+            for needle in [&pair, &reversed, &separate] {
+                assert!(!rest.contains(needle.as_str()), "{file} writes the live rule again ({needle}); ask RuntimePhase::is_live");
+            }
+        }
+    }
 
     // ---- Sprint 27a Stage 10 (studio #1): adopt/kill primitives ----
 

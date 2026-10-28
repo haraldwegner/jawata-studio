@@ -102,12 +102,12 @@ if [ "$HELP" -ne 0 ]; then
 fi
 
 echo
-echo "=== gate: the live-workspace rule is written once on the screens ==="
+echo "=== gate: no screen spells out the live-workspace rule ==="
 # S19-10. Exit 2 is "nothing was checked".
 "$ROOT/build/live-rule-gate.sh" --selftest && "$ROOT/build/live-rule-gate.sh"
 LIVE=$?
 if [ "$LIVE" -ne 0 ]; then
-    echo "FAILED: the live-rule gate (exit $LIVE). Read workspace liveness from src/lib/workspaceLive.ts."
+    echo "FAILED: the live-rule gate (exit $LIVE). Read workspace liveness from the status record's live field."
     exit "$LIVE"
 fi
 

@@ -1,6 +1,5 @@
 <script lang="ts">
   import { afterUpdate } from "svelte";
-  import { anyLive } from "../workspaceLive";
   import type {
     DeployTargetFlags,
     DeployMode,
@@ -324,6 +323,15 @@
       return { x: box.left + 16, y: box.bottom };
     }
     return { x: event.clientX, y: event.clientY };
+  }
+
+  /** True when any of the projects is live, as the backend says (`live` is its answer for running or starting; S19-10b). The
+   *  statuses are passed in, so a template that calls this re-runs when they change. */
+  function anyLive(
+    list: ReadonlyArray<{ id: string }>,
+    statuses: Record<string, RuntimeStatusRecord>,
+  ): boolean {
+    return list.some((project) => statuses[project.id]?.live === true);
   }
 
   /** True when any project of the workspace is running or starting. The statuses are passed in, so a

@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { ProjectRecord, RuntimeStatusRecord } from "../api/tauri";
-  import { isLivePhase } from "../workspaceLive";
   import ContextMenu from "./ContextMenu.svelte";
 
   type ContextMenuItem = {
@@ -110,13 +109,13 @@
         byName[name] = { count: 0, running: 0, live: 0 };
       }
       byName[name].count += 1;
-      const phase = runtimeStatuses[project.id]?.phase;
-      if (phase === "running") {
+      const status = runtimeStatuses[project.id];
+      if (status?.phase === "running") {
         byName[name].running += 1;
       }
-      // LIVE = running or starting: a starting workspace (a cold import can take minutes) is as
-      // undeletable as a running one (the S19 round-2 audit).
-      if (isLivePhase(phase)) {
+      // LIVE is the backend's answer (running or starting; a cold import can take minutes, and a starting workspace is as
+      // undeletable as a running one): the screens read the flag and never spell the rule out (S19-10b).
+      if (status?.live) {
         byName[name].live += 1;
       }
     }
