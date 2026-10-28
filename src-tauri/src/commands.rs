@@ -457,6 +457,17 @@ pub fn workspace_readability(
     Ok(state.manager_service.workspace_readability())
 }
 
+/// 28k Stage 20: the Eclipse workspaces, running or not, from the notes an Eclipse with the plug-in leaves. The
+/// dashboard polls this beside the runtime statuses so a workspace opened or closed in Eclipse shows up without a
+/// reload. It reads files and probes one pid per note, so it is cheap and safe on the main thread. The rows carry
+/// no action: there is nothing here to start.
+#[tauri::command]
+pub fn eclipse_workspaces(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::eclipse_notes::EclipseWorkspaceRow>, String> {
+    Ok(state.manager_service.eclipse_workspace_rows())
+}
+
 /// Everything the field view and the `/report` tile render: the per-workspace
 /// piles, the machine's reach counters and utilization number (with its
 /// caveat), the lane state, and the last canary reading.

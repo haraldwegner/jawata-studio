@@ -302,6 +302,11 @@ pub struct ManagerSettings {
     /// the truth and the file is its mirror.
     #[serde(default)]
     pub experience_stories_dir: Option<String>,
+    /// 28k Stage 20: every Eclipse workspace studio has seen through the notes an Eclipse with the jawata plug-in
+    /// leaves (path, name, last project list), so a closed one stays listed as "not running". Studio's own
+    /// record: it is never written into the Eclipse workspace folder, and nothing here starts anything.
+    #[serde(default)]
+    pub eclipse_workspaces: Vec<crate::eclipse_notes::RememberedEclipseWorkspace>,
 }
 
 pub fn default_experience_store_mode() -> String {
@@ -463,6 +468,7 @@ impl ManagerSettings {
             // None = the resident's own default for an absent -Djawata.stories.dir: the
             // store's own story folder. Studio keeps no second copy of that rule.
             experience_stories_dir: None,
+            eclipse_workspaces: Vec::new(),
         }
     }
 
@@ -785,7 +791,26 @@ pub struct ConfigStore {
 
 impl ConfigStore {
     pub fn new() -> Result<Self, String> {
-        let paths = AppPaths::detect()?;
+        Self::from_paths(AppPaths::detect()?)
+    }
+
+    /// 28k Stage 20 (P20): the real store, loading and writing its files exactly as `new` does, over a folder the
+    /// caller names instead of the user's own directories. It is how an end-to-end run reaches studio's settings
+    /// without touching the real ones: every file lives under `dir`.
+    pub fn in_directory(dir: &Path) -> Result<Self, String> {
+        Self::from_paths(AppPaths {
+            config_dir: dir.to_path_buf(),
+            state_dir: dir.to_path_buf(),
+            cache_dir: dir.to_path_buf(),
+            projects_file: dir.join(PROJECTS_FILE_NAME),
+            settings_file: dir.join(SETTINGS_FILE_NAME),
+            runtime_state_file: dir.join(RUNTIME_STATE_FILE_NAME),
+            default_data_root: dir.to_path_buf(),
+            log_dir: dir.join("logs"),
+        })
+    }
+
+    fn from_paths(paths: AppPaths) -> Result<Self, String> {
         paths.ensure_dirs()?;
 
         let projects = if paths.projects_file.exists() {
@@ -1356,6 +1381,23 @@ impl ConfigStore {
         settings.mcp_client_paths = merge_detected_mcp_paths(settings.mcp_client_paths.clone());
         write_json(&self.paths.settings_file, &*settings)?;
         Ok(settings.clone())
+    }
+
+    /// 28k Stage 20: change the remembered Eclipse workspaces and nothing else, the whole read-merge-write under the
+    /// settings lock. `merge` receives the list stored RIGHT NOW and returns the list to store; the file is written
+    /// only when the list changed. The tray thread and the command thread both ask for the rows, so a merge made
+    /// outside the lock would let one overwrite what the other just remembered.
+    pub fn update_eclipse_workspaces<F>(&self, merge: F) -> Result<(), String>
+    where
+        F: FnOnce(&[crate::eclipse_notes::RememberedEclipseWorkspace]) -> Vec<crate::eclipse_notes::RememberedEclipseWorkspace>,
+    {
+        let mut guard = self.settings.lock().expect("settings mutex poisoned");
+        let merged = merge(&guard.eclipse_workspaces);
+        if merged == guard.eclipse_workspaces {
+            return Ok(());
+        }
+        guard.eclipse_workspaces = merged;
+        write_json(&self.paths.settings_file, &*guard)
     }
 
     pub fn write_settings(&self, settings: ManagerSettings) -> Result<ManagerSettings, String> {

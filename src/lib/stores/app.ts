@@ -8,6 +8,7 @@ import {
   deploySeats as deploySeatsApi,
   deleteAllProjects,
   deleteProject,
+  eclipseWorkspaces as eclipseWorkspacesApi,
   downloadOrUpdateJawata,
   getDashboard,
   getRuntimeStatus,
@@ -490,10 +491,24 @@ export function createAppStore() {
     }
   }
 
+  async function refreshEclipseWorkspaces() {
+    try {
+      const rows = await eclipseWorkspacesApi();
+      update((state) => ({ ...state, eclipseWorkspaces: rows }));
+    } catch (e) {
+      // A failed poll leaves the previous answer standing, the discipline the polls below keep.
+      console.error("eclipse workspaces poll failed", e);
+    }
+  }
+
   async function refreshAllProjectStatuses() {
     if (pollInFlight || typeof document === "undefined" || document.hidden) {
       return;
     }
+
+    // 28k Stage 20: an Eclipse opened or closed shows up here, not only on the next dashboard load. It does not
+    // wait for, or depend on, the headless projects below: a machine with no project still has Eclipse workspaces.
+    void refreshEclipseWorkspaces();
 
     let projectIds: string[] = [];
     update((state) => {

@@ -1,0 +1,13 @@
+{
+  "schema": "jawata.engine-note/2",
+  "hostKind": "eclipse",
+  "workspacePath": "/home/user/eclipse-ws/newer",
+  "workspaceName": "newer",
+  "pid": 4242,
+  "processStartedAt": "2026-10-22T09:00:00Z",
+  "engineVersion": "9.0.0",
+  "contractVersion": "2.0",
+  "updatedAt": "2026-10-22T09:05:00Z",
+  "workspaces": [ { "root": "/home/user/eclipse-ws/newer", "members": [ "x" ] } ],
+  "endpoints": [ { "url": "https://127.0.0.1:43126/v2", "auth": "mtls" } ]
+}

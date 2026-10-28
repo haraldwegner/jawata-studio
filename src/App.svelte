@@ -518,6 +518,7 @@
                   appStore.setProjectWorkspaceEntry(id, workspaceName);
                 }
               }}
+              eclipseWorkspaces={$appStore.eclipseWorkspaces ?? []}
               projects={$appStore.projects ?? []}
               runtimeStatuses={$appStore.runtimeStatuses ?? {}}
             />

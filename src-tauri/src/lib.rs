@@ -8,6 +8,9 @@ mod gateway;
 mod intellij;
 mod lombok;
 mod conductor;
+mod eclipse_notes;
+#[doc(hidden)]
+pub mod eclipse_probe;
 mod manager_service;
 mod release_manager;
 mod resident;
@@ -964,6 +967,7 @@ pub fn run() {
             commands::experience_verb,
             commands::field_status,
             commands::workspace_readability,
+            commands::eclipse_workspaces,
             commands::field_set_silence,
             commands::seats_view,
             commands::seat_change,
@@ -1303,15 +1307,17 @@ fn tray_verdict_row(words: Option<&str>) -> Option<String> {
 /// What decides whether the menu must be rebuilt: the workspaces' phases, the autostart
 /// checkmark, and — since REL44-11 — the verdict words, so a change in WHY the tray is amber
 /// reaches the menu and is not held back by an unchanged workspace list.
-type TrayMenuKey = (Vec<(String, RuntimePhase)>, bool, Option<String>, Option<String>);
+type TrayMenuKey = (Vec<(String, RuntimePhase)>, Vec<String>, bool, Option<String>, Option<String>);
 
 fn tray_menu_key(
     workspaces: Vec<(String, RuntimePhase)>,
+    eclipse: &[eclipse_notes::EclipseWorkspaceRow],
     autostart_on_boot: bool,
     words: Option<&str>,
     versions: Option<&str>,
 ) -> TrayMenuKey {
-    (workspaces, autostart_on_boot, tray_verdict_row(words), versions.map(str::to_string))
+    let eclipse_lines = eclipse.iter().map(eclipse_notes::EclipseWorkspaceRow::tray_label).collect();
+    (workspaces, eclipse_lines, autostart_on_boot, tray_verdict_row(words), versions.map(str::to_string))
 }
 
 /// One row of the tray menu, before any platform builds it.
@@ -1330,6 +1336,7 @@ enum TrayRow {
 fn tray_menu_rows(
     words: Option<&str>,
     workspaces: &[(String, RuntimePhase)],
+    eclipse: &[eclipse_notes::EclipseWorkspaceRow],
     autostart_on_boot: bool,
     versions: Option<&str>,
 ) -> Vec<TrayRow> {
@@ -1353,7 +1360,7 @@ fn tray_menu_rows(
     // the state of the workspaces, so it rides in their line; only with no workspace to carry it
     // does it keep a line of its own, because the menu is the one surface a tray without tooltips
     // can say WHY it is amber on.
-    let health_on_its_own_line = workspaces.is_empty() && verdict.is_some();
+    let health_on_its_own_line = workspaces.is_empty() && eclipse.is_empty() && verdict.is_some();
     if health_on_its_own_line {
         if let Some(row) = &verdict {
             rows.push(item("tray_verdict", row, false));
@@ -1362,7 +1369,7 @@ fn tray_menu_rows(
     if versions.is_some() || health_on_its_own_line {
         rows.push(TrayRow::Separator);
     }
-    if !workspaces.is_empty() {
+    if !workspaces.is_empty() || !eclipse.is_empty() {
         let header = match &verdict {
             Some(words) => format!("Workspaces — {}", words.strip_prefix("jawata — ").unwrap_or(words)),
             None => "Workspaces".to_string(),
@@ -1374,6 +1381,11 @@ fn tray_menu_rows(
                 &format!("  {}  {}", phase_glyph(phase), name),
                 true,
             ));
+        }
+        // 28k Stage 20: the Eclipse workspaces, beside the headless ones. A greyed statement with an id the menu
+        // handler does not act on: an Eclipse workspace is shown, never started (contract §14.1, S3).
+        for workspace in eclipse {
+            rows.push(item(&format!("tray_eclipse:{}", workspace.id), &workspace.tray_label(), false));
         }
         rows.push(TrayRow::Separator);
     }
@@ -1444,9 +1456,12 @@ fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .autostart_on_boot;
     let words = TRAY_VERDICT_WORDS.lock().unwrap().clone();
 
+    // The Eclipse rows come from the same function the dashboard list is built from (28k Stage 20, S2).
+    let eclipse = app.state::<AppState>().manager_service.eclipse_workspace_rows();
+
     let versions = tray_versions_row(app);
     let mut builder = MenuBuilder::new(app);
-    for row in tray_menu_rows(words.as_deref(), &workspaces, autostart_on_boot, Some(&versions)) {
+    for row in tray_menu_rows(words.as_deref(), &workspaces, &eclipse, autostart_on_boot, Some(&versions)) {
         builder = match row {
             TrayRow::Item { id, label, enabled } => {
                 let item = MenuItemBuilder::new(label).id(id).enabled(enabled).build(app)?;
@@ -1513,7 +1528,8 @@ fn refresh_tray_menu<R: Runtime>(app: &AppHandle<R>) {
         .autostart_on_boot;
     let words = TRAY_VERDICT_WORDS.lock().unwrap().clone();
     let versions = tray_versions_row(app);
-    let snapshot = tray_menu_key(workspace_snapshot, autostart_on_boot, words.as_deref(), Some(&versions));
+    let eclipse = app.state::<AppState>().manager_service.eclipse_workspace_rows();
+    let snapshot = tray_menu_key(workspace_snapshot, &eclipse, autostart_on_boot, words.as_deref(), Some(&versions));
 
     {
         let last = LAST.lock().unwrap();
@@ -1691,7 +1707,7 @@ mod tray_icon_tests {
         let words = field_view::canary_tooltip(field_view::canary_health(&board, 0), &board, &[], 0);
         let workspaces = vec![("orb-strategy".to_string(), RuntimePhase::Running)];
 
-        let rows = tray_menu_rows(Some(&words), &workspaces, false, None);
+        let rows = tray_menu_rows(Some(&words), &workspaces, &[], false, None);
         // His order of 2026-10-24: the health goes in the Workspaces line, not on a line of its own.
         let at = rows
             .iter()
@@ -1710,7 +1726,7 @@ mod tray_icon_tests {
             !rows.iter().any(|r| matches!(r, TrayRow::Item { id, .. } if id == "tray_verdict")),
             "with workspaces to hang it on, the health has no line of its own: {rows:?}"
         );
-        let plain = tray_menu_rows(None, &workspaces, false, None);
+        let plain = tray_menu_rows(None, &workspaces, &[], false, None);
         assert!(
             plain.iter().any(|r| matches!(r, TrayRow::Item { id, label, .. }
                 if id == "tray_workspaces_header" && label == "Workspaces")),
@@ -1722,7 +1738,7 @@ mod tray_icon_tests {
     /// own, below the versions: the words are the only place a tray with no tooltip can say why.
     #[test]
     fn without_workspaces_the_health_keeps_a_line_of_its_own() {
-        let rows = tray_menu_rows(Some("jawata — nothing started yet"), &[], false, Some("jawata studio 4.4.10 / engine 4.4.15"));
+        let rows = tray_menu_rows(Some("jawata — nothing started yet"), &[], &[], false, Some("jawata studio 4.4.10 / engine 4.4.15"));
         let ids: Vec<&str> = rows
             .iter()
             .filter_map(|r| match r {
@@ -1745,7 +1761,7 @@ mod tray_icon_tests {
     #[test]
     fn the_tray_names_the_studio_and_engine_versions() {
         let workspaces = vec![("patterns".to_string(), RuntimePhase::Running)];
-        let rows = tray_menu_rows(None, &workspaces, false, Some("studio 4.4.8 · engine 4.4.13"));
+        let rows = tray_menu_rows(None, &workspaces, &[], false, Some("studio 4.4.8 · engine 4.4.13"));
         let at = rows
             .iter()
             .position(|r| matches!(r, TrayRow::Item { id, .. } if id == "tray_versions"))
@@ -1762,8 +1778,8 @@ mod tray_icon_tests {
             "Quit stays last"
         );
         assert_ne!(
-            tray_menu_key(workspaces.clone(), true, None, Some("studio 4.4.8 · engine 4.4.12")),
-            tray_menu_key(workspaces, true, None, Some("studio 4.4.8 · engine 4.4.13")),
+            tray_menu_key(workspaces.clone(), &[], true, None, Some("studio 4.4.8 · engine 4.4.12")),
+            tray_menu_key(workspaces, &[], true, None, Some("studio 4.4.8 · engine 4.4.13")),
             "an engine update must rebuild the menu"
         );
     }
@@ -1777,6 +1793,7 @@ mod tray_icon_tests {
         let rows = tray_menu_rows(
             Some("jawata — 3 of 3 healthy"),
             &workspaces,
+            &[],
             false,
             Some("studio 4.4.9 · engine 4.4.15"),
         );
@@ -1808,14 +1825,69 @@ mod tray_icon_tests {
     #[test]
     fn a_change_in_the_words_alone_changes_the_menu_key() {
         let workspaces = vec![("patterns".to_string(), RuntimePhase::Running)];
-        let healthy = tray_menu_key(workspaces.clone(), true, Some("jawata — 1 of 1 healthy"), None);
-        let broken = tray_menu_key(workspaces.clone(), true, Some("jawata — patterns: store not answering"), None);
+        let healthy = tray_menu_key(workspaces.clone(), &[], true, Some("jawata — 1 of 1 healthy"), None);
+        let broken = tray_menu_key(workspaces.clone(), &[], true, Some("jawata — patterns: store not answering"), None);
         assert_ne!(healthy, broken, "new words must not be held back by an unchanged workspace list");
         assert_eq!(
             healthy,
-            tray_menu_key(workspaces, true, Some("jawata — 1 of 1 healthy"), None),
+            tray_menu_key(workspaces, &[], true, Some("jawata — 1 of 1 healthy"), None),
             "and the same words and list are the same key, so a steady state does not flicker"
         );
+    }
+
+    fn eclipse_row(name: &str, running: bool) -> eclipse_notes::EclipseWorkspaceRow {
+        eclipse_notes::EclipseWorkspaceRow {
+            id: format!("/ws/{name}"),
+            name: name.to_string(),
+            path: Some(format!("/ws/{name}")),
+            running,
+            newer_jawata: false,
+            status_text: if running { "running" } else { "not running" }.to_string(),
+            projects: vec![],
+        }
+    }
+
+    /// 28k Stage 20 (S2/S3): an Eclipse workspace is a greyed statement beside the headless ones, with an id the
+    /// menu handler does not act on, so there is nothing in the tray to start.
+    #[test]
+    fn eclipse_workspaces_stand_beside_the_headless_ones_as_greyed_statements() {
+        let workspaces = vec![("patterns".to_string(), RuntimePhase::Running)];
+        let eclipse = vec![eclipse_row("ide", true), eclipse_row("closed", false)];
+        let rows = tray_menu_rows(None, &workspaces, &eclipse, false, None);
+        let items: Vec<(&str, &str, bool)> = rows
+            .iter()
+            .filter_map(|r| match r {
+                TrayRow::Item { id, label, enabled } => Some((id.as_str(), label.as_str(), *enabled)),
+                _ => None,
+            })
+            .collect();
+        let at = |id: &str| items.iter().position(|(i, _, _)| *i == id).unwrap_or_else(|| panic!("no row {id}: {items:?}"));
+        assert!(at("tray_workspace_toggle:patterns") < at("tray_eclipse:/ws/ide"), "after the headless workspaces");
+        assert!(at("tray_eclipse:/ws/ide") < at("tray_start_all_services"), "inside the Workspaces block");
+        assert_eq!(("tray_eclipse:/ws/ide", "  ●  ide — Eclipse", false), items[at("tray_eclipse:/ws/ide")]);
+        assert_eq!(("tray_eclipse:/ws/closed", "  ○  closed — Eclipse, not running", false), items[at("tray_eclipse:/ws/closed")]);
+        assert!(items[at("tray_workspace_toggle:patterns")].2, "the headless workspace is still a switch");
+        // Nothing in the handler acts on an Eclipse id.
+        let source = include_str!("lib.rs");
+        let handler_start = source.find(".on_menu_event(").unwrap();
+        let handler = &source[handler_start..handler_start + source[handler_start..].find(".build(app)?").unwrap()];
+        assert!(!handler.contains("tray_eclipse"), "the tray's menu handler must not act on an Eclipse row");
+    }
+
+    #[test]
+    fn a_machine_with_only_eclipse_workspaces_still_has_a_workspaces_block() {
+        let rows = tray_menu_rows(Some("jawata — nothing started yet"), &[], &[eclipse_row("ide", true)], false, None);
+        assert!(rows.iter().any(|r| matches!(r, TrayRow::Item { id, label, .. }
+            if id == "tray_workspaces_header" && label == "Workspaces — nothing started yet")));
+        assert!(!rows.iter().any(|r| matches!(r, TrayRow::Item { id, .. } if id == "tray_verdict")), "the words ride in the Workspaces line");
+    }
+
+    #[test]
+    fn an_eclipse_workspace_opening_or_closing_changes_the_menu_key() {
+        let key = |eclipse: &[eclipse_notes::EclipseWorkspaceRow]| tray_menu_key(vec![], eclipse, false, None, None);
+        assert_ne!(key(&[eclipse_row("ide", true)]), key(&[eclipse_row("ide", false)]), "closing is a change");
+        assert_ne!(key(&[]), key(&[eclipse_row("ide", true)]), "opening is a change");
+        assert_eq!(key(&[eclipse_row("ide", true)]), key(&[eclipse_row("ide", true)]), "a steady state is the same key");
     }
 
     /// The control: the five-second readability tick must NOT turn into a send every five

@@ -46,6 +46,10 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console"] }
 
+# 28k Stage 20: the test that the copy of the engine's note fixtures is byte-identical checks sha256 sums.
+[dev-dependencies]
+sha2 = "0.10"
+
 # Sprint 28 (D-SHIM) — the workspace exists so `jawata-hook` can be a SIBLING
 # crate rather than a module of this one. That is the enforcement, not a
 # convention: a hook binary that could `use` studio's internals would sooner or

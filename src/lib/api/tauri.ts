@@ -229,6 +229,28 @@ export interface ManagerDashboard {
   servicesInventory: ServicesInventory;
   /** Each workspace's per-resident launch settings. */
   workspaceRuntimeSettings: WorkspaceRuntimeSetting[];
+  /** 28k Stage 20: the Eclipse workspaces, running or not. Facts only: an Eclipse row has no switch. */
+  eclipseWorkspaces: EclipseWorkspaceRow[];
+}
+
+/** One project of an Eclipse workspace, as the note an Eclipse with the jawata plug-in leaves lists it. */
+export interface EclipseProject {
+  name: string;
+  path: string;
+  open: boolean;
+}
+
+/** One Eclipse workspace as the list and the tray show it. `running` is the ONE verdict both read (decided in
+ * the backend from the note's pid and process start time); a row carries no action: it is shown, never switched. */
+export interface EclipseWorkspaceRow {
+  id: string;
+  name: string;
+  path?: string | null;
+  running: boolean;
+  /** Written by a newer jawata: named, and its projects are not read. */
+  newerJawata: boolean;
+  statusText: string;
+  projects: EclipseProject[];
 }
 
 /** One workspace's per-resident launch settings, as the Settings view needs
@@ -796,6 +818,11 @@ export interface WorkspaceReadability {
  *  read, no probe. Safe to poll on the dashboard's own cadence. */
 export function workspaceReadability(): Promise<WorkspaceReadability[]> {
   return invoke<WorkspaceReadability[]>("workspace_readability");
+}
+
+/** The Eclipse workspaces, running or not (polled beside the runtime statuses). */
+export function eclipseWorkspaces(): Promise<EclipseWorkspaceRow[]> {
+  return invoke<EclipseWorkspaceRow[]>("eclipse_workspaces");
 }
 
 /** Per-workspace dependency-resolution report. One health_check per resident. */

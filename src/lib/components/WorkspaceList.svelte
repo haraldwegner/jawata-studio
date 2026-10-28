@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { ProjectRecord, RuntimeStatusRecord } from "../api/tauri";
+  import type { EclipseWorkspaceRow, ProjectRecord, RuntimeStatusRecord } from "../api/tauri";
   import ContextMenu from "./ContextMenu.svelte";
 
   type ContextMenuItem = {
@@ -10,6 +10,9 @@
   };
 
   export let projects: ProjectRecord[] = [];
+  /** The Eclipse workspaces, running or not (28k Stage 20). They are shown, never switched: the rows below carry
+   * no switch, no start and no stop, and the backend row holds the one verdict (`running`) that the tray reads too. */
+  export let eclipseWorkspaces: EclipseWorkspaceRow[] = [];
   export let runtimeStatuses: Record<string, RuntimeStatusRecord> = {};
   export let activeWorkspaceName: string;
   export let disabled = false;
@@ -178,6 +181,16 @@
     onDelete?.(name);
   }
 
+  /** What the hover says about an Eclipse row: whose it is, and that studio only shows it. */
+  function eclipseTitle(ew: EclipseWorkspaceRow): string {
+    const where = ew.path ? ` (${ew.path})` : "";
+    const names = ew.projects.map((p) => p.name).join(", ");
+    return (
+      `Eclipse workspace${where}. Studio shows it and cannot start or stop it: open or close it in Eclipse.` +
+      (names ? ` Projects: ${names}.` : "")
+    );
+  }
+
   /** Currently-open right-click context menu. Closed = null. */
   let contextMenu: { x: number; y: number; items: ContextMenuItem[] } | null = null;
 
@@ -210,7 +223,7 @@
     <h2 title="Pick a workspace to add new projects to. Projects in one workspace share a single MCP service.">Workspaces</h2>
   </div>
 
-  {#if workspaceSummary.length === 0 && !isCreating}
+  {#if workspaceSummary.length === 0 && eclipseWorkspaces.length === 0 && !isCreating}
     <p class="muted empty-hint">No workspaces yet. Create one to get started.</p>
   {/if}
 
@@ -271,6 +284,29 @@
                 ✕
               </button>
             {/if}
+          </span>
+        </div>
+      </li>
+    {/each}
+
+    {#each eclipseWorkspaces as ew (ew.id)}
+      <li>
+        <div
+          class="workspace-row workspace-row-eclipse"
+          title={eclipseTitle(ew)}
+          role="presentation"
+        >
+          <span class="workspace-row-select workspace-row-static">
+            <span class={`status-lamp ${ew.running ? "running" : "stopped"}`}></span>
+            <span class="workspace-row-name">{ew.name}</span>
+            <span class="workspace-row-meta muted">
+              {#if ew.newerJawata}
+                {ew.statusText}
+              {:else}
+                <span class="eclipse-chip">Eclipse</span>
+                {ew.statusText} · {ew.projects.length} project{ew.projects.length === 1 ? "" : "s"}
+              {/if}
+            </span>
           </span>
         </div>
       </li>

@@ -4,6 +4,7 @@
 //   tab      the nav tab to click after load (Dashboard, Memory, Reporting, Seats, Settings, Help)
 //   open     1 = open every <details> after load (to see what the folds hold)
 //   scenario attention = the Reporting view with something wrong
+//   scenario eclipse = the workspace list with Eclipse workspaces (running, not running, newer jawata)
 //   scenario held = a newer engine was tried and not switched to (the Settings sentence)
 //   scenario slowmemory = the store read never answers (the Memory wait text)
 const q = new URLSearchParams(location.search);
@@ -53,6 +54,15 @@ const dashboard = {
   installedRuntime: { version: "4.4.12", installDir: "x", jarPath: "x", assetName: "x", installedAt: "x" },
   projects, runtimeStatuses, suggestedWorkspaceName: "javata-dev",
   servicesInventory: { available: true, services: [], detail: "" },
+  // 28k Stage 20: two Eclipse workspaces running, one closed, one written by a newer jawata (scenario=eclipse; none otherwise).
+  eclipseWorkspaces: scenario === "eclipse"
+    ? [
+        { id: "/home/u/eclipse-ws/app", name: "app", path: "/home/u/eclipse-ws/app", running: true, newerJawata: false, statusText: "running", projects: [{ name: "app-core", path: "/home/u/eclipse-ws/app-core", open: true }, { name: "app-ui", path: "/home/u/eclipse-ws/app-ui", open: true }] },
+        { id: "/home/u/eclipse-ws/plugins", name: "plugins", path: "/home/u/eclipse-ws/plugins", running: true, newerJawata: false, statusText: "running", projects: [{ name: "org.example.plugin", path: "/home/u/eclipse-ws/org.example.plugin", open: true }] },
+        { id: "/home/u/eclipse-ws/old", name: "old", path: "/home/u/eclipse-ws/old", running: false, newerJawata: false, statusText: "not running", projects: [{ name: "legacy", path: "/home/u/eclipse-ws/legacy", open: false }] },
+        { id: "file:eclipse-5555555555555555.json", name: "next", path: null, running: false, newerJawata: true, statusText: "Eclipse workspace (newer jawata)", projects: [] },
+      ]
+    : [],
   workspaceRuntimeSettings: ws.map((w) => ({ workspaceName: w, maxHeapMb: null, effectiveMaxHeapMb: 2048, debuggable: false, debugPort: null })),
 };
 const bundles = ["org.jawata.core", "org.jawata.mcp", "org.jawata.boot", "com.example"];
@@ -133,7 +143,7 @@ const seats = Object.entries(purposes).map(([name, [command, purpose, fires]]) =
 const brains = [{ id: "claude", label: "Claude Code", installed: true, version: "x", login: "loggedIn", reason: null, loginCommand: "claude", models: ["opus", "sonnet"], hirable: true, takesModel: true, writesHeldByInstruction: false }];
 const H = {
   get_dashboard: () => dashboard, get_quit_prompt_context: () => ({ workspaces: [] }), field_status: () => field,
-  resolution_status: () => [], workspace_readability: () => ws.map((w) => ({ workspace: w, readable: true })),
+  eclipse_workspaces: () => dashboard.eclipseWorkspaces, resolution_status: () => [], workspace_readability: () => ws.map((w) => ({ workspace: w, readable: true })),
   knowledge_status: () => (scenario === "slowmemory" ? new Promise(() => {}) : knowledge), experience_verb: () => ({ ok: true }),
   seats_view: () => ({ seats, clients: [{ id: "claude", label: "Claude Code" }, { id: "cursor", label: "Cursor" }], errors: [] }),
   brains_status: () => brains, get_runtime_status: (a) => runtimeStatuses[a.projectId], get_services_inventory: () => dashboard.servicesInventory,

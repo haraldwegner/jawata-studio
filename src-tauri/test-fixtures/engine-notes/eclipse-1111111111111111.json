@@ -1,0 +1,16 @@
+{
+  "schema": "jawata.engine-note/1",
+  "hostKind": "eclipse",
+  "workspacePath": "/home/user/eclipse-ws/live",
+  "workspaceName": "live",
+  "pid": 4242,
+  "processStartedAt": "2026-10-22T09:00:00Z",
+  "engineVersion": "4.5.0",
+  "contractVersion": "1.0",
+  "updatedAt": "2026-10-22T09:05:00Z",
+  "projects": [
+    { "name": "foo", "path": "/home/user/eclipse-ws/foo", "open": true },
+    { "name": "bar", "path": "/home/user/eclipse-ws/bar", "open": false }
+  ],
+  "endpoint": "http://127.0.0.1:43123/mcp"
+}

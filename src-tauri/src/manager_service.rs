@@ -1,4 +1,5 @@
 use crate::{
+    eclipse_notes::{self, EclipseWorkspaceRow},
     config::{
         display_path, AddProjectInput, BootstrapStatus, ConfigStore, DeployTargetFlags,
         ManagerSettings, McpMergeMode, ProjectRecord, RuntimeSource, SourceRoots, UpdateSettingsInput,
@@ -50,6 +51,9 @@ pub struct ManagerDashboard {
     /// resident's bearer token, and studio#14 was a credential reaching a place
     /// it did not need to be. The UI needs two numbers and a name.
     pub workspace_runtime_settings: Vec<WorkspaceRuntimeSetting>,
+    /// 28k Stage 20: the Eclipse workspaces, running or not. Facts only: an Eclipse row has no switch and no
+    /// start action. The tray is built from the same rows (`ManagerService::eclipse_workspace_rows`).
+    pub eclipse_workspaces: Vec<EclipseWorkspaceRow>,
 }
 
 /// One workspace's per-resident launch settings, as the UI needs to see them.
@@ -410,6 +414,11 @@ pub struct ManagerService {
     /// 4.4.14: when a release check last started, so a stop or a reload does not ask GitHub again within ten minutes
     /// (anonymous requests are rate limited, and a check that finds nothing new is a request spent).
     last_release_sync: Arc<Mutex<Option<Instant>>>,
+    /// 28k Stage 20: where an Eclipse with the jawata plug-in leaves its notes (the OS cache folder, independent of
+    /// `data_root`). Studio only ever READS this folder.
+    eclipse_notes_dir: Option<PathBuf>,
+    /// 28k Stage 20: whether the process behind a note still runs. The real check in production; a test supplies its own.
+    eclipse_liveness: Arc<dyn Fn(u32, Option<i64>) -> bool + Send + Sync>,
 }
 
 impl ManagerService {
@@ -459,7 +468,43 @@ impl ManagerService {
             canary: Arc::new(RwLock::new(Vec::new())),
             release_sync_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_release_sync: Arc::new(Mutex::new(None)),
+            eclipse_notes_dir: eclipse_notes::default_notes_dir(),
+            eclipse_liveness: Arc::new(eclipse_notes::os_liveness),
         }
+    }
+
+    /// 28k Stage 20 (P20): read the Eclipse notes from `dir` instead of the OS cache folder. The liveness check stays
+    /// the real one: a note's process is judged by the OS, as in the shipped studio.
+    pub(crate) fn with_eclipse_notes_dir(mut self, dir: PathBuf) -> Self {
+        self.eclipse_notes_dir = Some(dir);
+        self
+    }
+
+    /// The Eclipse workspaces to show, running or not: the ONE function the dashboard list and the tray menu both
+    /// build their rows from (contract §14.1, S2).
+    ///
+    /// It reads the notes (never deleting or writing one), merges them with the workspaces studio has already seen,
+    /// and — only when something about them changed — remembers the result in studio's own settings, so a closed
+    /// Eclipse stays listed as "not running".
+    pub fn eclipse_workspace_rows(&self) -> Vec<EclipseWorkspaceRow> {
+        let readings = eclipse_notes::read_notes(self.eclipse_notes_dir.as_deref(), &*self.eclipse_liveness);
+        self.rows_and_remember(&readings)
+    }
+
+    /// The rows for these readings, remembering what they show. Split from the folder read so a test can feed it readings.
+    fn rows_and_remember(&self, readings: &[eclipse_notes::NoteReading]) -> Vec<EclipseWorkspaceRow> {
+        let mut rows = Vec::new();
+        // The merge runs inside the settings lock, on the list stored at that moment; the tray asks every second,
+        // and an unchanged list is not a write.
+        let remembered = self.config_store.update_eclipse_workspaces(|stored| {
+            let (shown, now_remembered) = eclipse_notes::eclipse_rows(readings, stored);
+            rows = shown;
+            now_remembered
+        });
+        if let Err(error) = remembered {
+            eprintln!("[jawata-studio] the Eclipse workspaces seen could not be remembered: {error}");
+        }
+        rows
     }
 
     /// Check for a new runtime, and install it when the policy says so.
@@ -2090,6 +2135,7 @@ impl ManagerService {
             suggested_workspace_name,
             services_inventory,
             workspace_runtime_settings,
+            eclipse_workspaces: self.eclipse_workspace_rows(),
         })
     }
 
@@ -18144,5 +18190,264 @@ mod canary_tests {
         );
         assert!(green.green);
         assert_eq!(CanaryHealth::Green, canary_health(&[green], 0));
+    }
+}
+
+/// 28k Stage 20 (contract §14.1, S2/S3): the Eclipse rows of the dashboard and of the tray, over the engine's
+/// fixture notes. Pid 4242 in the fixtures is not a real process, so each test says who is alive.
+#[cfg(test)]
+mod eclipse_rows_tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// 2026-10-22T09:00:00Z, the start time the live fixture carries.
+    const NOTED_START: i64 = 1_792_659_600_000;
+
+    fn fake_os(pid: u32, started: Option<i64>) -> bool {
+        pid == 4242 && started == Some(NOTED_START)
+    }
+
+    fn fixtures() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/engine-notes")
+    }
+
+    fn temp(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("jawata-eclipse-rows-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A service over `dir` whose notes folder is a copy of the engine's fixtures (in `dir/engines`).
+    fn service_with_fixture_notes(dir: &Path) -> (ManagerService, PathBuf) {
+        let notes = dir.join("engines");
+        fs::create_dir_all(&notes).unwrap();
+        for entry in fs::read_dir(fixtures()).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_name() != "SHA256SUMS" {
+                fs::copy(entry.path(), notes.join(entry.file_name())).unwrap();
+            }
+        }
+        let store = crate::config::ConfigStore::over(dir);
+        let paths = store.paths();
+        let mut service = ManagerService::new(
+            store,
+            crate::release_manager::ReleaseManager::new().expect("http clients"),
+            crate::runtime_manager::RuntimeManager::new(paths),
+        );
+        service.eclipse_notes_dir = Some(notes.clone());
+        service.eclipse_liveness = Arc::new(fake_os);
+        (service, notes)
+    }
+
+    fn listing(dir: &Path) -> BTreeMap<String, Vec<u8>> {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|e| {
+                let e = e.unwrap();
+                (e.file_name().to_string_lossy().into_owned(), fs::read(e.path()).unwrap())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_dashboard_lists_the_eclipse_workspaces_running_and_not_running() {
+        let dir = temp("dash");
+        let (service, _) = service_with_fixture_notes(&dir);
+        let dashboard = service.load_dashboard().expect("dashboard");
+        let rows: Vec<(&str, bool)> = dashboard.eclipse_workspaces.iter().map(|r| (r.name.as_str(), r.running)).collect();
+        let _ = fs::remove_dir_all(&dir);
+        // live is running; stale (pid gone), reused (pid reused) and newer (not read further) are not.
+        assert_eq!(vec![("live", true), ("newer", false), ("reused", false), ("stale", false)], rows);
+    }
+
+    #[test]
+    fn the_list_and_the_tray_are_built_from_the_same_rows() {
+        let dir = temp("same");
+        let (service, _) = service_with_fixture_notes(&dir);
+        let dashboard = service.load_dashboard().expect("dashboard");
+        let tray = crate::tray_menu_rows(None, &[], &service.eclipse_workspace_rows(), false, None);
+        let _ = fs::remove_dir_all(&dir);
+
+        let tray_labels: Vec<String> = tray
+            .iter()
+            .filter_map(|r| match r {
+                crate::TrayRow::Item { id, label, .. } if id.starts_with("tray_eclipse:") => Some(label.clone()),
+                _ => None,
+            })
+            .collect();
+        let list_labels: Vec<String> = dashboard.eclipse_workspaces.iter().map(|r| r.tray_label()).collect();
+        assert_eq!(4, list_labels.len());
+        assert_eq!(list_labels, tray_labels, "same rows, same order, same words");
+        assert_eq!(
+            dashboard.eclipse_workspaces.iter().map(|r| format!("tray_eclipse:{}", r.id)).collect::<Vec<_>>(),
+            tray.iter().filter_map(|r| match r {
+                crate::TrayRow::Item { id, .. } if id.starts_with("tray_eclipse:") => Some(id.clone()),
+                _ => None,
+            }).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_eclipse_row_has_no_start_action_in_the_tray() {
+        let dir = temp("noaction");
+        let (service, _) = service_with_fixture_notes(&dir);
+        let tray = crate::tray_menu_rows(None, &[], &service.eclipse_workspace_rows(), false, None);
+        let _ = fs::remove_dir_all(&dir);
+        let eclipse: Vec<&crate::TrayRow> = tray
+            .iter()
+            .filter(|r| matches!(r, crate::TrayRow::Item { id, .. } | crate::TrayRow::Check { id, .. } if id.starts_with("tray_eclipse:")))
+            .collect();
+        assert_eq!(4, eclipse.len());
+        for row in eclipse {
+            match row {
+                // A greyed item with an id the menu handler does not act on: clicking it does nothing, and there is no check mark to switch.
+                crate::TrayRow::Item { enabled, id, .. } => {
+                    assert!(!enabled, "{id} must be greyed");
+                    assert!(!id.starts_with("tray_workspace_toggle:"), "{id} must not be a switch");
+                }
+                other => panic!("an Eclipse row is a plain statement, not {other:?}"),
+            }
+        }
+        assert!(
+            !tray.iter().any(|r| matches!(r, crate::TrayRow::Item { id, .. } if id == "tray_workspace_toggle:live")),
+            "no headless switch exists for an Eclipse workspace"
+        );
+    }
+
+    #[test]
+    fn an_eclipse_workspace_cannot_be_started_by_name() {
+        let dir = temp("toggle");
+        let (service, notes) = service_with_fixture_notes(&dir);
+        let before = listing(&notes);
+        let answer = service.toggle_workspace("live");
+        let after = listing(&notes);
+        let _ = fs::remove_dir_all(&dir);
+        assert!(answer.is_err(), "studio has no headless workspace called live: {answer:?}");
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn building_the_dashboard_and_the_tray_rows_never_deletes_or_changes_a_note() {
+        let dir = temp("nodelete");
+        let (service, notes) = service_with_fixture_notes(&dir);
+        let before = listing(&notes);
+        assert_eq!(5, before.len(), "five notes: live, stale, reused, malformed, newer");
+        let _ = service.load_dashboard().expect("dashboard");
+        let _ = service.eclipse_workspace_rows();
+        let _ = service.workspace_status_summary();
+        let after = listing(&notes);
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(before, after, "the stale, the reused, the newer and the malformed note are all still there, byte for byte");
+    }
+
+    #[test]
+    fn studio_never_opens_or_writes_the_eclipse_workspace_folder_a_note_names() {
+        let dir = temp("wsfolder");
+        let (service, notes) = service_with_fixture_notes(&dir);
+        // An Eclipse workspace folder with its metadata, and a live note that names it.
+        let workspace = dir.join("eclipse-ws");
+        fs::create_dir_all(workspace.join(".metadata/.plugins/org.eclipse.core.resources")).unwrap();
+        fs::write(workspace.join(".metadata/.plugins/org.eclipse.core.resources/.location"), b"binary").unwrap();
+        fs::write(workspace.join(".metadata/version.ini"), "org.eclipse.core.runtime=2\n").unwrap();
+        let note = fs::read_to_string(notes.join("eclipse-1111111111111111.json"))
+            .unwrap()
+            .replace("/home/user/eclipse-ws/live", &workspace.to_string_lossy());
+        fs::write(notes.join("eclipse-1111111111111111.json"), note).unwrap();
+        let snapshot = |root: &Path| -> BTreeMap<String, Vec<u8>> {
+            walkdir::WalkDir::new(root)
+                .into_iter()
+                .filter_map(Result::ok)
+                .filter(|e| e.file_type().is_file())
+                .map(|e| (e.path().to_string_lossy().into_owned(), fs::read(e.path()).unwrap()))
+                .collect()
+        };
+        let before = snapshot(&workspace);
+        let dashboard = service.load_dashboard().expect("dashboard");
+        let _ = service.eclipse_workspace_rows();
+        let after = snapshot(&workspace);
+        let running = dashboard.eclipse_workspaces.iter().any(|r| r.path.as_deref() == Some(&*workspace.to_string_lossy()) && r.running);
+        let _ = fs::remove_dir_all(&dir);
+        assert!(running, "the row for the workspace exists and runs");
+        assert_eq!(before, after, "nothing in the Eclipse workspace folder was created, changed or removed");
+        assert_eq!(2, before.len());
+    }
+
+    #[test]
+    fn a_workspace_that_was_seen_stays_listed_after_its_note_is_gone_and_is_kept_in_studios_settings() {
+        let dir = temp("remember");
+        let (service, notes) = service_with_fixture_notes(&dir);
+        let first = service.eclipse_workspace_rows();
+        assert!(first.iter().any(|r| r.name == "live" && r.running));
+        let remembered = service.get_settings().eclipse_workspaces;
+        let mut names: Vec<&str> = remembered.iter().map(|r| r.name.as_str()).collect();
+        names.sort();
+        assert_eq!(vec!["live", "reused", "stale"], names, "every workspace studio could read a path from");
+        let on_disk = fs::read_to_string(dir.join("settings.json")).expect("the settings file");
+        assert!(on_disk.contains("eclipseWorkspaces") && on_disk.contains("/home/user/eclipse-ws/live"), "persisted in studio's own settings");
+
+        // Eclipse closes cleanly: the producer deletes its own note. (Studio would never do this.)
+        fs::remove_file(notes.join("eclipse-1111111111111111.json")).unwrap();
+        let second = service.eclipse_workspace_rows();
+        let _ = fs::remove_dir_all(&dir);
+        let live = second.iter().find(|r| r.name == "live").expect("the closed workspace is still listed");
+        assert!(!live.running);
+        assert_eq!("not running", live.status_text);
+        assert_eq!(2, live.projects.len(), "with its last project list");
+    }
+
+    /// The tray thread and the command thread both ask for the rows. Each reads what is remembered, adds what it sees
+    /// and writes the list back; with the read and the write apart, a workspace one of them just saw is overwritten by
+    /// the other's write and is forgotten. Two threads each see their own new workspaces, many times: the stored list
+    /// must hold every one.
+    #[test]
+    fn two_threads_remembering_different_new_workspaces_lose_none() {
+        use crate::eclipse_notes::{NoteReading, NoteStatus};
+        const EACH: usize = 150;
+        let dir = temp("lostupdate");
+        let (service, _) = service_with_fixture_notes(&dir);
+        let service = Arc::new(service);
+        let reading = |thread: &str, i: usize| NoteReading {
+            file_name: format!("eclipse-{thread}{i}.json"),
+            status: NoteStatus::Stale,
+            workspace_name: format!("{thread}{i}"),
+            workspace_path: Some(format!("/ws/{thread}/{i}")),
+            pid: 1,
+            port: Some(1),
+            projects: vec![],
+            detail: String::new(),
+        };
+        let handles: Vec<_> = ["a", "b"]
+            .into_iter()
+            .map(|thread| {
+                let service = Arc::clone(&service);
+                thread::spawn(move || {
+                    for i in 0..EACH {
+                        let _ = service.rows_and_remember(&[reading(thread, i)]);
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let stored = service.get_settings().eclipse_workspaces;
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(2 * EACH, stored.len(), "every workspace either thread saw is remembered, none lost to the other's write");
+    }
+
+    #[test]
+    fn asking_for_the_rows_again_does_not_rewrite_the_settings() {
+        let dir = temp("quiet");
+        let (service, _) = service_with_fixture_notes(&dir);
+        let _ = service.eclipse_workspace_rows();
+        let settings_file = dir.join("settings.json");
+        let first = fs::metadata(&settings_file).and_then(|m| m.modified()).unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        let _ = service.eclipse_workspace_rows();
+        let _ = service.load_dashboard();
+        let second = fs::metadata(&settings_file).and_then(|m| m.modified()).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(first, second, "the tray asks every second; an unchanged list must not be a write");
     }
 }

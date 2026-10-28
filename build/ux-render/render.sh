@@ -49,6 +49,7 @@ for tab in Dashboard Memory Reporting Seats Settings Help; do
     shoot "$t" "tab=$tab"
     shoot "$t-open" "tab=$tab&open=1"
 done
+shoot "dashboard-eclipse" "tab=Dashboard&scenario=eclipse"
 shoot "reporting-attention" "tab=Reporting&scenario=attention"
 shoot "memory-reading" "tab=Memory&scenario=slowmemory"
 shoot "settings-held" "tab=Settings&scenario=held"

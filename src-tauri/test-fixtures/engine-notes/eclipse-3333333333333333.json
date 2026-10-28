@@ -1,0 +1,13 @@
+{
+  "schema": "jawata.engine-note/1",
+  "hostKind": "eclipse",
+  "workspacePath": "/home/user/eclipse-ws/reused",
+  "workspaceName": "reused",
+  "pid": 4242,
+  "processStartedAt": "2001-01-01T00:00:00Z",
+  "engineVersion": "4.5.0",
+  "contractVersion": "1.0",
+  "updatedAt": "2001-01-01T00:05:00Z",
+  "projects": [],
+  "endpoint": "http://127.0.0.1:43125/mcp"
+}

@@ -207,6 +207,19 @@ button {
   white-space: nowrap;
 }
 
+/* An Eclipse workspace row (28k Stage 20): the same row as a headless workspace, with nothing to click. */
+.workspace-row-static {
+  cursor: default;
+}
+
+.eclipse-chip {
+  padding: 0 0.4rem;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  border-radius: 999px;
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+}
+
 .workspace-new-row {
   background: rgba(37, 99, 235, 0.08);
   border-color: rgba(96, 165, 250, 0.32);
