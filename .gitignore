@@ -15,6 +15,10 @@ target
 
 # Frontend / Tauri
 node_modules/
+# Without the slash it also matches a SYMLINK named node_modules, which a release worktree uses to share the main
+# checkout's packages; the 4.4.16 release commit committed one (a link to a path on one machine) because the pattern above
+# only matches directories.
+node_modules
 dist/
 .svelte-kit/
 src-tauri/target/
