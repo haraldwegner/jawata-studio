@@ -18315,16 +18315,26 @@ mod eclipse_rows_tests {
         );
     }
 
+    /// TEXTUAL, on purpose: the dashboard list is a Svelte component and the repository has no front-end test runner, so
+    /// what an Eclipse row can DO is read from its template. The `{#each eclipseWorkspaces}` block is the whole of an
+    /// Eclipse row; it must hold nothing a person could click or tab to — no `on:` event handler, no button, no
+    /// `role="button"`, no `tabindex`, no link or input — because an Eclipse workspace is shown, never switched.
+    /// It replaces a test that asked the backend to start an Eclipse workspace by name: that passed only because no
+    /// headless workspace had the name, and would have stayed green had a start action been added to the row.
     #[test]
-    fn an_eclipse_workspace_cannot_be_started_by_name() {
-        let dir = temp("toggle");
-        let (service, notes) = service_with_fixture_notes(&dir);
-        let before = listing(&notes);
-        let answer = service.toggle_workspace("live");
-        let after = listing(&notes);
-        let _ = fs::remove_dir_all(&dir);
-        assert!(answer.is_err(), "studio has no headless workspace called live: {answer:?}");
-        assert_eq!(before, after);
+    fn the_eclipse_rows_of_the_workspace_list_have_nothing_to_click() {
+        let source = include_str!("../../src/lib/components/WorkspaceList.svelte");
+        let start = source.find("{#each eclipseWorkspaces as").expect("the list has an Eclipse block");
+        let block = &source[start..start + source[start..].find("{/each}").expect("the Eclipse block is closed")];
+        assert!(block.contains("ew.name") && block.contains("status-lamp"), "this is the Eclipse row template: {block}");
+        let actionable = |token: &str| token.starts_with("on:") || token.starts_with("onclick") || token.starts_with("use:");
+        assert!(
+            !block.split_whitespace().any(actionable),
+            "an Eclipse row must carry no event handler or action: {block}"
+        );
+        for forbidden in ["<button", "role=\"button\"", "tabindex", "<a ", "<input", "<select", "<summary"] {
+            assert!(!block.contains(forbidden), "an Eclipse row must not contain {forbidden}: {block}");
+        }
     }
 
     #[test]

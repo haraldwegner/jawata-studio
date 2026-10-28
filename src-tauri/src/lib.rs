@@ -1835,6 +1835,33 @@ mod tray_icon_tests {
         );
     }
 
+    /// TEXTUAL, on purpose: building the tray needs a live app handle, which a unit test cannot stand up, so what the two
+    /// tray functions ask for is read from their source. `rebuild_tray_menu` (builds the menu) and `refresh_tray_menu`
+    /// (decides whether to rebuild it) must each obtain the Eclipse rows by calling
+    /// `ManagerService::eclipse_workspace_rows`, the function the dashboard builds its list from. A tray fed by another
+    /// reader or row builder would pass every test that supplies the rows itself.
+    #[test]
+    fn the_tray_obtains_its_eclipse_rows_from_the_one_function_the_dashboard_uses() {
+        let source = include_str!("lib.rs");
+        let body = |name: &str| -> &str {
+            let start = source.find(&format!("\nfn {name}<R: Runtime>")).unwrap_or_else(|| panic!("no fn {name}"));
+            let rest = &source[start + 1..];
+            // A top-level function ends at the first closing brace in column 0.
+            &rest[..rest.find("\n}\n").unwrap_or(rest.len())]
+        };
+        for name in ["rebuild_tray_menu", "refresh_tray_menu"] {
+            let text = body(name);
+            assert_eq!(
+                1,
+                text.matches("manager_service.eclipse_workspace_rows()").count(),
+                "{name} must take the Eclipse rows from ManagerService::eclipse_workspace_rows"
+            );
+            for other in ["eclipse_notes::", "read_notes(", "eclipse_rows(", "default_notes_dir"] {
+                assert!(!text.contains(other), "{name} must not build Eclipse rows another way ({other})");
+            }
+        }
+    }
+
     fn eclipse_row(name: &str, running: bool) -> eclipse_notes::EclipseWorkspaceRow {
         eclipse_notes::EclipseWorkspaceRow {
             id: format!("/ws/{name}"),
