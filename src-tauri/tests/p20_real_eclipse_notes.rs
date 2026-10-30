@@ -115,5 +115,24 @@ fn studios_compiled_code_reads_the_notes_real_eclipse_instances_wrote() {
 
     // Studio deletes nothing and writes nothing into the notes folder.
     assert_eq!(before, listing(notes), "every note that was in the folder before is still there, byte for byte");
+    // The cross-repository gate (plan Stage 25): a COPY of a real note with its schema major raised is refused by studio's reader — a row that
+    // says "newer jawata", not running, not read further — so a note format that moves in the plug-in makes studio fail loudly, not guess.
+    if let Some((file, bytes)) = before.iter().next() {
+        let text = String::from_utf8(bytes.clone()).expect("a note is UTF-8");
+        assert!(text.contains("jawata.engine-note/1"), "the real note carries the schema the reader supports: {file}");
+        let copy_dir = std::env::temp_dir().join(format!("p20-newer-schema-{}", std::process::id()));
+        let copy_settings = copy_dir.join("settings");
+        let copy_notes = copy_dir.join("notes");
+        fs::create_dir_all(&copy_settings).unwrap();
+        fs::create_dir_all(&copy_notes).unwrap();
+        fs::write(copy_notes.join(file), text.replace("jawata.engine-note/1", "jawata.engine-note/9")).unwrap();
+        let newer = EclipseProbe::open(&copy_settings, &copy_notes).expect("a settings store opens over the copy");
+        let newer_rows = newer.dashboard_rows().expect("a dashboard build over the copy");
+        assert_eq!(1, newer_rows.len(), "the copy gives one row: {newer_rows:?}");
+        assert!(newer_rows[0].newer_jawata && !newer_rows[0].running, "a note of a newer schema major is refused, not shown as running: {newer_rows:?}");
+        println!("P20: ok — a copy with the schema raised to major 9 is refused: {}", newer_rows[0].status_text);
+        fs::remove_dir_all(&copy_dir).ok();
+    }
+
     println!("P20: ok — {running} running, {not_running} not running; the tray equals the list; no note touched");
 }
