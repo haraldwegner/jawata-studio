@@ -474,6 +474,10 @@ jobs:
             exit 1
           fi
           echo "AppImage payload adjacency OK: jawata-hook beside jawata-studio"
+          # The appimagetool download is not pinned ("continuous"); at the 4.4.18 build it refused an AppDir
+          # holding files that only their owner can read (the extraction leaves mode 0700), and says
+          # to run exactly this. 4.4.18 was tagged and never published because of it.
+          chmod -R a+rX squashfs-root
           /tmp/appimagetool --appimage-extract-and-run squashfs-root "$APP_IMAGE"
           rm -rf squashfs-root /tmp/appimagetool
           popd
