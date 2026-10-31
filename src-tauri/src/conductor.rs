@@ -1422,6 +1422,92 @@ mod tests {
         );
     }
 
+    /// D8 (28h S14): the lead's instruction block is written in the shape the engine parses, and
+    /// the two seats that issue instructions prescribe the SAME three lines. The engine side is
+    /// pinned by `InstructionBlocksTest` over the same wording, so a change to either side goes
+    /// red on the other: a header with no `TOOL:` line is dropped by the engine's parser, which
+    /// is what this test keeps the seat files from teaching.
+    #[test]
+    fn the_leads_instruction_block_is_the_shape_the_engine_parses() {
+        for name in ["pm", "chief-engineer"] {
+            let body = EMBEDDED_SEATS
+                .iter()
+                .find(|(f, _)| *f == format!("{name}.md"))
+                .map(|(_, body)| *body)
+                .unwrap_or_else(|| panic!("{name}.md is not embedded"));
+            let header = body
+                .find("INSTRUCTION <n>")
+                .unwrap_or_else(|| panic!("{name} does not prescribe the INSTRUCTION <n> header"));
+            let tool = body
+                .find("TOOL: <engine tool name>")
+                .unwrap_or_else(|| panic!("{name} does not prescribe the TOOL: line"));
+            let arguments = body
+                .find("ARGUMENTS: <one JSON object")
+                .unwrap_or_else(|| panic!("{name} does not prescribe the ARGUMENTS: line"));
+            assert!(
+                header < tool && tool < arguments,
+                "{name} prescribes the block out of order (header {header}, tool {tool}, \
+                 arguments {arguments}); the engine reads the header, then TOOL:, then ARGUMENTS:"
+            );
+        }
+    }
+
+    /// D17 (28h S14): each of the seven seat-speed requirements is written in the seat that
+    /// carries it, and each assertion below reads that requirement's own measure sentence, so
+    /// removing the sentence from the seat file turns exactly that assertion red. The pm carries
+    /// S1 to S4 and the manager half of S7; the worker carries S5, S6 and the other half of S7.
+    /// The test-manager's half of S5 and its S2 wording wait for his ruling on the two points
+    /// recorded against that seat (R5, R6), so that file is not touched here.
+    #[test]
+    fn the_seat_files_carry_each_speed_requirement_d17() {
+        let seat = |name: &str| -> &str {
+            EMBEDDED_SEATS
+                .iter()
+                .find(|(f, _)| *f == format!("{name}.md"))
+                .map(|(_, body)| *body)
+                .unwrap_or_else(|| panic!("{name}.md is not embedded"))
+        };
+        // The files wrap their lines, so each sentence is compared with its whitespace collapsed.
+        let flat = |text: &str| -> String { text.split_whitespace().collect::<Vec<_>>().join(" ") };
+        let pm = flat(seat("pm"));
+        let worker = flat(seat("worker"));
+
+        let pm_clauses = [
+            ("S1", "Every step's gate line in a brief names the impacted selection it runs. A full-suite run between checkpoints carries a written reason in the brief, or it is not issued."),
+            ("S2", "The checkpoint gate is the full run, and a diff touching the fixture project forces the full run whatever the selection says."),
+            ("S3", "A round whose findings are all wording ends the audit. A checkpoint record never carries a fifth round without his word beside it."),
+            ("S4", "Every number in a record sits beside the command that produced it, in the same action."),
+            ("S7 (manager)", "The brief states the expected output size of each instruction (files changed, lines of answer); a run whose cost is an order off that size stops and reports, and what the next step does not read is dropped from the brief, not carried."),
+        ];
+        for (id, clause) in pm_clauses {
+            assert!(pm.contains(clause), "the pm seat no longer carries D17 {id}: {clause}");
+        }
+
+        let worker_clauses = [
+            ("S5", "A call refused twice for the same reason changes shape or you stop and say so, and a repeat made only to read output you dropped is a defect of this seat."),
+            ("S7 (worker)", "A run whose cost is an order of magnitude off that size stops and reports."),
+        ];
+        for (id, clause) in worker_clauses {
+            assert!(worker.contains(clause), "the worker seat no longer carries D17 {id}: {clause}");
+        }
+
+        // S6: the reset budget is a number in the stance, and it is the seat's own ceiling.
+        let ceiling = seat("worker")
+            .lines()
+            .find_map(|l| l.strip_prefix("max_tool_steps:"))
+            .map(|v| v.trim().to_string())
+            .expect("the worker declares max_tool_steps in its frontmatter");
+        let budget = format!("Your reset budget is {ceiling} tool steps, the `max_tool_steps` above: at {ceiling} you stop and report where you are.");
+        assert!(
+            worker.contains(&budget),
+            "the worker's stance does not state its reset budget as its own max_tool_steps ({ceiling}) - D17 S6"
+        );
+        assert!(
+            worker.contains("You carry nothing from one instruction to the next."),
+            "the worker's stance no longer says its context ends with its unit - D17 S6"
+        );
+    }
+
     /// D12: the run limits must bound TOOL STEPS, not only model turns.
     ///
     /// ARCHITECT FINDING F3 DECLINED, 2026-10-05, and the ground is in the field's own

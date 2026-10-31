@@ -65,6 +65,21 @@ const EXTRACT_METHOD: Shape = Shape {
     tool: "extract",
     call: "extract(kind=method, filePath=…, startLine=…, endLine=…, methodName=…)",
 };
+const EQUALITY_PAIR: Shape = Shape {
+    name: "an equality pair started by hand",
+    tool: "generate",
+    call: "generate(kind=equals_hashcode, typeName=pkg.Type, fields=[…])",
+};
+const STRING_FORM: Shape = Shape {
+    name: "a string form started by hand",
+    tool: "generate",
+    call: "generate(kind=tostring, typeName=pkg.Type, fields=[…])",
+};
+const FIELD_CONSTRUCTOR: Shape = Shape {
+    name: "a constructor over fields started by hand",
+    tool: "generate",
+    call: "generate(kind=constructor, typeName=pkg.Type, fields=[…])",
+};
 
 /// The shape an edit performs, or `None` for everything this cannot account for — which is the
 /// answer for all authoring.
@@ -88,6 +103,9 @@ pub fn classify(old: &str, new: &str) -> Option<Shape> {
         return Some(s);
     }
     if let Some(s) = delete_member_shape(&ot, &nt) {
+        return Some(s);
+    }
+    if let Some(s) = generator_shape(&ot, &nt) {
         return Some(s);
     }
     extract_method_shape(old, new)
@@ -497,6 +515,137 @@ fn looks_like_method_decl(t: &str) -> bool {
     words.last().is_some_and(|w| is_ident(w))
 }
 
+// ---- boilerplate a generator writes (Sprint 28h S14, D24) ----------------------------------------
+
+/// One method-shaped member of an inserted run: its name, whether it declares a return type (a
+/// constructor does not), the tokens between its parentheses, and the tokens of its body.
+struct Member<'a> {
+    name: &'a str,
+    typed: bool,
+    params: &'a [String],
+    body: &'a [String],
+}
+
+/// The tokens `new` has and `old` lacks, when `new` is `old` with ONE run of text inserted and
+/// nothing else changed. Anything that also removes or alters a token is not an insertion.
+fn inserted_run<'a>(ot: &[String], nt: &'a [String]) -> Option<&'a [String]> {
+    let prefix = ot.iter().zip(nt).take_while(|(a, b)| a == b).count();
+    let suffix = ot[prefix..].iter().rev().zip(nt[prefix..].iter().rev()).take_while(|(a, b)| a == b).count();
+    (prefix + suffix == ot.len() && nt.len() > ot.len()).then(|| &nt[prefix..nt.len() - suffix])
+}
+
+/// The run as a sequence of method-shaped members and nothing else; `None` when any token is
+/// outside one (a field, an initialiser, a nested type), because then the run is more than boilerplate.
+fn members(run: &[String]) -> Option<Vec<Member<'_>>> {
+    const MODIFIERS: [&str; 6] = ["public", "protected", "private", "final", "static", "synchronized"];
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < run.len() {
+        let open = (i..run.len()).find(|&k| run[k] == "{")?;
+        let head = &run[i..open];
+        let paren = head.iter().position(|t| t == "(")?;
+        if paren == 0 || head.last().map(String::as_str) != Some(")") || !is_ident(&head[paren - 1]) {
+            return None;
+        }
+        let mut depth = 0;
+        let mut close = None;
+        for (k, t) in run.iter().enumerate().skip(open) {
+            match t.as_str() {
+                "{" => depth += 1,
+                "}" => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(k);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let close = close?;
+        // What stands before the name once annotations and modifiers are set aside: a return type, or nothing.
+        let mut typed = false;
+        let mut k = 0;
+        while k < paren - 1 {
+            if head[k] == "@" {
+                k += 2;
+            } else {
+                typed |= !MODIFIERS.contains(&head[k].as_str());
+                k += 1;
+            }
+        }
+        out.push(Member { name: &head[paren - 1], typed, params: &head[paren + 1..head.len() - 1], body: &run[open + 1..close] });
+        i = close + 1;
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// A parameter list `Type a, Type b` as the names, splitting on commas outside angle brackets.
+fn parameter_names(params: &[String]) -> Option<Vec<&str>> {
+    let (mut names, mut start, mut angle) = (Vec::new(), 0, 0);
+    for (k, t) in params.iter().enumerate().chain(std::iter::once((params.len(), &",".to_string()))) {
+        match t.as_str() {
+            "<" => angle += 1,
+            ">" => angle -= 1,
+            "," if angle == 0 => {
+                let one = &params[start..k];
+                let name = one.last()?;
+                if one.len() < 2 || !is_ident(name) {
+                    return None;
+                }
+                names.push(name.as_str());
+                start = k + 1;
+            }
+            _ => {}
+        }
+    }
+    Some(names)
+}
+
+/// A constructor whose whole body is `this.f = f;` for each of its own parameters, once each.
+fn assigns_only_its_parameters(member: &Member<'_>) -> bool {
+    let Some(names) = parameter_names(member.params) else { return false };
+    let statements: Vec<&[String]> = member.body.split(|t| t == ";").collect();
+    let (last, whole) = statements.split_last().expect("split always yields one part");
+    if !last.is_empty() || whole.len() != names.len() {
+        return false;
+    }
+    let mut seen = Vec::new();
+    for s in whole {
+        match s {
+            [this, dot, field, eq, value] if this == "this" && dot == "." && eq == "=" && field == value && names.contains(&field.as_str()) => {
+                seen.push(field.as_str());
+            }
+            _ => return false,
+        }
+    }
+    seen.sort_unstable();
+    seen.dedup();
+    seen.len() == names.len()
+}
+
+/// Boilerplate a generator writes, typed by hand: an `equals`/`hashCode` pair, a `toString`, or a
+/// constructor that only assigns its parameters to fields. Claimed only when the edit is nothing but
+/// that insertion (precision over recall: an `equals` beside other new code is authoring, and so is
+/// any change to an existing member).
+fn generator_shape(ot: &[String], nt: &[String]) -> Option<Shape> {
+    let found = members(inserted_run(ot, nt)?)?;
+    let equals = |m: &Member<'_>| m.name == "equals" && m.typed && matches!(m.params, [t, x] if t == "Object" && is_ident(x));
+    let hash = |m: &Member<'_>| m.name == "hashCode" && m.typed && m.params.is_empty();
+    if found.iter().all(|m| equals(m) || hash(m)) {
+        return Some(EQUALITY_PAIR);
+    }
+    if let [only] = found.as_slice() {
+        if only.name == "toString" && only.typed && only.params.is_empty() {
+            return Some(STRING_FORM);
+        }
+        if !only.typed && !only.params.is_empty() && assigns_only_its_parameters(only) {
+            return Some(FIELD_CONSTRUCTOR);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -699,6 +848,49 @@ mod tests {
         eprintln!("{head}");
     }
 
+    const POINT: &str = "class P {\n    private final long id;\n    private final String name;\n}\n";
+
+    fn inside_point(members: &str) -> String {
+        POINT.replace("name;\n}", &format!("name;\n\n{members}}}"))
+    }
+
+    /// D24 (28h S14): THE GUARD'S OWN TEST. An equality pair typed by hand is steered to `generate`
+    /// before it lands; the controls differ from it in one thing each, so a classifier that refused
+    /// every insertion, or every `equals`, would fail one of them.
+    #[test]
+    fn a_hand_typed_equality_pair_is_steered_to_generate_and_other_authoring_is_not() {
+        let pair = "    @Override\n    public boolean equals(Object o) {\n        if (this == o) return true;\n        if (!(o instanceof P)) return false;\n        P p = (P) o;\n        return id == p.id && java.util.Objects.equals(name, p.name);\n    }\n\n    @Override\n    public int hashCode() {\n        return java.util.Objects.hash(id, name);\n    }\n";
+        assert_eq!(tool(POINT, &inside_point(pair)), Some("generate"), "the pair, typed whole");
+        let only_equals = "    @Override\n    public boolean equals(Object o) {\n        return o instanceof P p && id == p.id;\n    }\n";
+        assert_eq!(tool(POINT, &inside_point(only_equals)), Some("generate"), "an equals alone STARTS the pair");
+        // Controls. An unrelated method beside the pair is authoring.
+        let beside = format!("{pair}\n    void log() {{\n        System.out.println(id);\n    }}\n");
+        assert_eq!(tool(POINT, &inside_point(&beside)), None, "the whole diff must be boilerplate");
+        // A method that merely begins with the name, and an equals of another shape, are authoring.
+        assert_eq!(tool(POINT, &inside_point("    boolean equalsIgnoringCase(String s) {\n        return name.equalsIgnoreCase(s);\n    }\n")), None);
+        assert_eq!(tool(POINT, &inside_point("    boolean equals(Object o, int mode) {\n        return mode == 0;\n    }\n")), None);
+        // Changing an equals that already exists is not an insertion.
+        let had = inside_point(only_equals);
+        assert_eq!(tool(&had, &had.replace("id == p.id", "id == p.id && name.equals(p.name)")), None);
+    }
+
+    #[test]
+    fn a_hand_typed_string_form_or_field_constructor_is_steered_to_generate_and_logic_is_not() {
+        let string_form = "    @Override\n    public String toString() {\n        return \"P{id=\" + id + \", name=\" + name + \"}\";\n    }\n";
+        assert_eq!(tool(POINT, &inside_point(string_form)), Some("generate"));
+        let constructor = "    public P(long id, String name) {\n        this.id = id;\n        this.name = name;\n    }\n";
+        assert_eq!(tool(POINT, &inside_point(constructor)), Some("generate"));
+        // Controls: a constructor that does anything but assign, or assigns something else, is authoring.
+        let validating = "    public P(long id, String name) {\n        if (id < 0) throw new IllegalArgumentException();\n        this.id = id;\n        this.name = name;\n    }\n";
+        assert_eq!(tool(POINT, &inside_point(validating)), None);
+        let computed = "    public P(long id, String name) {\n        this.id = id;\n        this.name = name.trim();\n    }\n";
+        assert_eq!(tool(POINT, &inside_point(computed)), None);
+        let partial = "    public P(long id, String name) {\n        this.id = id;\n    }\n";
+        assert_eq!(tool(POINT, &inside_point(partial)), None, "a parameter left unassigned is not the generated shape");
+        // A toString that takes a parameter is a different method.
+        assert_eq!(tool(POINT, &inside_point("    String toString(int indent) {\n        return \" \".repeat(indent) + name;\n    }\n")), None);
+    }
+
     #[test]
     fn a_sibling_method_that_repeats_the_originals_lines_is_authoring_not_an_extraction() {
         let old = "    void a(Event e) {\n        Event ev = new Event();\n        ev.type = e.type;\n        ev.when = e.when;\n        dispatch(ev);\n    }\n";
@@ -724,7 +916,10 @@ mod surface_tests {
     /// engine retired, or one that changes nothing, would send the agent to a call that cannot do the edit.
     #[test]
     fn every_shape_names_an_engine_tool_that_changes_code() {
-        for shape in [IMPORT, VISIBILITY, RENAME, SIGNATURE, RECORD_COMPONENT, DELETE_MEMBER, EXTRACT_METHOD] {
+        for shape in [
+            IMPORT, VISIBILITY, RENAME, SIGNATURE, RECORD_COMPONENT, DELETE_MEMBER, EXTRACT_METHOD, EQUALITY_PAIR, STRING_FORM,
+            FIELD_CONSTRUCTOR,
+        ] {
             assert!(
                 crate::surface::changes_code(shape.tool),
                 "the shape '{}' names '{}', which is not an engine tool that changes code",
