@@ -1,3 +1,7 @@
 # Sprint 16a: exclude internal/historical docs from the fresh public archive
 # (git archive honours export-ignore; Stage 9 cuts the public repo via archive).
 docs/** export-ignore
+
+# 28h S15: the engine-floor golden is compared as raw bytes against what the deploy writes (LF), so a Windows checkout must not turn the fixtures into CRLF.
+src-tauri/test-fixtures/engine-floor-golden/** text eol=lf
+src-tauri/test-fixtures/engine-floor-seats/** text eol=lf
