@@ -452,19 +452,26 @@ fn guard_rules(client: Client, payload: &str) -> Outcome {
             // D1: an edit that PERFORMS a refactoring a tool performs is refused by name - inside
             // an authoring window too, because the window is how forty-seven of them got through.
             if crate::editgate::is_editing_tool(&tool) && crate::editgate::is_java_source(&path) {
-                for (old, new) in crate::editgate::edit_pairs(payload) {
-                    if let Some(shape) = crate::editshape::classify(&old, &new) {
-                        let home = home_dir();
-                        let session = session_id_in(payload);
-                        if let crate::editgate::EditVerdict::Denied(reason) = crate::editgate::judge_shaped(
-                            &shape,
-                            &path,
-                            home.as_deref(),
-                            session.as_deref(),
-                            crate::editgate::shape_check_enabled(),
-                        ) {
-                            return emit_permission(client, false, reason);
-                        }
+                // S14 (D24): a `Write` has no old text, so it is judged as a whole new file, which is
+                // boilerplate when it is a test skeleton typed by hand.
+                let written = crate::editgate::written_content(payload)
+                    .filter(|_| tool.eq_ignore_ascii_case("Write"))
+                    .and_then(|content| crate::editshape::classify_new_file(&content));
+                let shapes = crate::editgate::edit_pairs(payload)
+                    .into_iter()
+                    .filter_map(|(old, new)| crate::editshape::classify(&old, &new))
+                    .chain(written);
+                for shape in shapes {
+                    let home = home_dir();
+                    let session = session_id_in(payload);
+                    if let crate::editgate::EditVerdict::Denied(reason) = crate::editgate::judge_shaped(
+                        &shape,
+                        &path,
+                        home.as_deref(),
+                        session.as_deref(),
+                        crate::editgate::shape_check_enabled(),
+                    ) {
+                        return emit_permission(client, false, reason);
                     }
                 }
             }

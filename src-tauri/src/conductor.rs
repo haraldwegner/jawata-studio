@@ -1422,44 +1422,30 @@ mod tests {
         );
     }
 
-    /// D8 (28h S14): the lead's instruction block is written in the shape the engine parses, and
-    /// the two seats that issue instructions prescribe the SAME three lines. The engine side is
-    /// pinned by `InstructionBlocksTest` over the same wording, so a change to either side goes
-    /// red on the other: a header with no `TOOL:` line is dropped by the engine's parser, which
-    /// is what this test keeps the seat files from teaching.
-    #[test]
-    fn the_leads_instruction_block_is_the_shape_the_engine_parses() {
-        for name in ["pm", "chief-engineer"] {
-            let body = EMBEDDED_SEATS
-                .iter()
-                .find(|(f, _)| *f == format!("{name}.md"))
-                .map(|(_, body)| *body)
-                .unwrap_or_else(|| panic!("{name}.md is not embedded"));
-            let header = body
-                .find("INSTRUCTION <n>")
-                .unwrap_or_else(|| panic!("{name} does not prescribe the INSTRUCTION <n> header"));
-            let tool = body
-                .find("TOOL: <engine tool name>")
-                .unwrap_or_else(|| panic!("{name} does not prescribe the TOOL: line"));
-            let arguments = body
-                .find("ARGUMENTS: <one JSON object")
-                .unwrap_or_else(|| panic!("{name} does not prescribe the ARGUMENTS: line"));
-            assert!(
-                header < tool && tool < arguments,
-                "{name} prescribes the block out of order (header {header}, tool {tool}, \
-                 arguments {arguments}); the engine reads the header, then TOOL:, then ARGUMENTS:"
-            );
-        }
+    /// The instruction block exactly as `pm.md` words it, three lines. THE OTHER SIDE of this coupling is
+    /// `PM_BLOCK` in jawata-mcp's `org.jawata.mcp.tests/.../execution/InstructionBlocksTest.java`, which holds
+    /// the same three lines and parses them to a number, a tool and arguments. Change a word of the block in a
+    /// seat file and this test goes red; change it here and the Java literal no longer matches what the seat
+    /// teaches, which that file's comment tells whoever edits it to repeat.
+    const PM_BLOCK: &str = "INSTRUCTION <n>\nTOOL: <engine tool name>\nARGUMENTS: <one JSON object, every argument the tool needs>";
+
+    /// The same block as `chief-engineer.md` words it: two lines identical, the third saying more.
+    const CHIEF_ENGINEER_ARGUMENTS: &str =
+        "ARGUMENTS: <one JSON object, every argument the tool needs, none left to the worker>";
+
+    /// The three lines of the block that starts at `INSTRUCTION <n>` in a seat file, trimmed, one per line.
+    fn lead_block_in(seat: &str) -> String {
+        let lines: Vec<&str> = seat.lines().map(str::trim).collect();
+        let at = lines.iter().position(|l| *l == "INSTRUCTION <n>").expect("the seat prescribes an INSTRUCTION <n> block");
+        lines[at..at + 3].join("\n")
     }
 
-    /// D17 (28h S14): each of the seven seat-speed requirements is written in the seat that
-    /// carries it, and each assertion below reads that requirement's own measure sentence, so
-    /// removing the sentence from the seat file turns exactly that assertion red. The pm carries
-    /// S1 to S4 and the manager half of S7; the worker carries S5, S6 and the other half of S7.
-    /// The test-manager's half of S5 and its S2 wording wait for his ruling on the two points
-    /// recorded against that seat (R5, R6), so that file is not touched here.
+    /// D8 (28h S14): the block the pm and the chief engineer are told to write is the block the engine reads.
+    /// This test holds the seat-file side to the literal above (equality with the text in the file, not an
+    /// order of substrings). What it does NOT show is the engine reading the block: that is
+    /// `InstructionBlocksTest` over the same literal.
     #[test]
-    fn the_seat_files_carry_each_speed_requirement_d17() {
+    fn the_leads_instruction_block_in_the_seat_files_is_the_literal_the_engine_test_parses() {
         let seat = |name: &str| -> &str {
             EMBEDDED_SEATS
                 .iter()
@@ -1467,45 +1453,106 @@ mod tests {
                 .map(|(_, body)| *body)
                 .unwrap_or_else(|| panic!("{name}.md is not embedded"))
         };
-        // The files wrap their lines, so each sentence is compared with its whitespace collapsed.
-        let flat = |text: &str| -> String { text.split_whitespace().collect::<Vec<_>>().join(" ") };
-        let pm = flat(seat("pm"));
-        let worker = flat(seat("worker"));
+        assert_eq!(PM_BLOCK, lead_block_in(seat("pm")), "pm.md words the instruction block differently from the literal");
+        let chief = lead_block_in(seat("chief-engineer"));
+        let expected = format!("{}\n{}", PM_BLOCK.rsplit_once('\n').expect("three lines").0, CHIEF_ENGINEER_ARGUMENTS);
+        assert_eq!(expected, chief, "chief-engineer.md words the instruction block differently from the literal");
+    }
 
-        let pm_clauses = [
-            ("S1", "Every step's gate line in a brief names the impacted selection it runs. A full-suite run between checkpoints carries a written reason in the brief, or it is not issued."),
-            ("S2", "The checkpoint gate is the full run, and a diff touching the fixture project forces the full run whatever the selection says."),
-            ("S3", "A round whose findings are all wording ends the audit. A checkpoint record never carries a fifth round without his word beside it."),
-            ("S4", "Every number in a record sits beside the command that produced it, in the same action."),
-            ("S7 (manager)", "The brief states the expected output size of each instruction (files changed, lines of answer); a run whose cost is an order off that size stops and reports, and what the next step does not read is dropped from the brief, not carried."),
-        ];
-        for (id, clause) in pm_clauses {
-            assert!(pm.contains(clause), "the pm seat no longer carries D17 {id}: {clause}");
-        }
+    /// One sentence of a D17 measure, and the seat that must carry it. Sentences are compared with their
+    /// whitespace collapsed, because the seat files wrap their lines.
+    struct SpeedClause {
+        id: &'static str,
+        seat: &'static str,
+        text: String,
+    }
 
-        let worker_clauses = [
-            ("S5", "A call refused twice for the same reason changes shape or you stop and say so, and a repeat made only to read output you dropped is a defect of this seat."),
-            ("S7 (worker)", "A run whose cost is an order of magnitude off that size stops and reports."),
-        ];
-        for (id, clause) in worker_clauses {
-            assert!(worker.contains(clause), "the worker seat no longer carries D17 {id}: {clause}");
-        }
-
-        // S6: the reset budget is a number in the stance, and it is the seat's own ceiling.
-        let ceiling = seat("worker")
-            .lines()
-            .find_map(|l| l.strip_prefix("max_tool_steps:"))
+    /// Every sentence of D17's S1 to S7 as the pm and the worker carry them. The test-manager's half of S5
+    /// and its S2 wording wait for his ruling on the two points recorded against that seat (R5, R6), so
+    /// that file is not touched here. S6's number is read from the worker's own frontmatter, not typed.
+    fn speed_clauses() -> Vec<SpeedClause> {
+        let ceiling = EMBEDDED_SEATS
+            .iter()
+            .find(|(f, _)| *f == "worker.md")
+            .and_then(|(_, body)| body.lines().find_map(|l| l.strip_prefix("max_tool_steps:")))
             .map(|v| v.trim().to_string())
             .expect("the worker declares max_tool_steps in its frontmatter");
-        let budget = format!("Your reset budget is {ceiling} tool steps, the `max_tool_steps` above: at {ceiling} you stop and report where you are.");
-        assert!(
-            worker.contains(&budget),
-            "the worker's stance does not state its reset budget as its own max_tool_steps ({ceiling}) - D17 S6"
-        );
-        assert!(
-            worker.contains("You carry nothing from one instruction to the next."),
-            "the worker's stance no longer says its context ends with its unit - D17 S6"
-        );
+        let own = |id: &'static str, seat: &'static str, text: &str| SpeedClause { id, seat, text: text.to_string() };
+        vec![
+            own("S1", "pm", "THE PER-STEP GATE IS THE CHANGE-REACHABLE TEST SELECTION, NEVER THE FULL SUITE (D17 S1)."),
+            own("S1", "pm", "Every step's gate line in a brief names the impacted selection it runs."),
+            own("S1", "pm", "A full-suite run between checkpoints carries a written reason in the brief, or it is not issued."),
+            own("S2", "pm", "THE FULL SUITE RUNS ONCE PER CHECKPOINT AND ALWAYS WHEN THE SHARED FIXTURE PROJECT CHANGED (D17 S2)."),
+            own("S2", "pm", "The checkpoint gate is the full run, and a diff touching the fixture project forces the full run whatever the selection says."),
+            own("S3", "pm", "THE AUDIT-ROUND CAP IS A STOP: THREE ROUNDS, FOUR AT THE OUTSIDE (D17 S3, his ruling of 2026-08-11)."),
+            own("S3", "pm", "A round whose findings are all wording ends the audit."),
+            own("S3", "pm", "A checkpoint record never carries a fifth round without his word beside it."),
+            own("S4", "pm", "THE RECORD IS WRITTEN FROM GATE RESULTS, NEVER FROM THE ENGINEER'S NARRATIVE (D17 S4)."),
+            own("S4", "pm", "Every number in a record sits beside the command that produced it, in the same action."),
+            own("S5", "worker", "READ THE GATE'S OWN SUMMARY LINE, NEVER A WRAPPER'S STATUS (D17 S5)."),
+            own("S5", "worker", "Whatever a gate prints goes to a file, and the summary line you read is the one in that file."),
+            own("S5", "worker", "A call refused twice for the same reason changes shape or you stop and say so, and a repeat made only to read output you dropped is a defect of this seat."),
+            own("S6", "worker", "YOUR CONTEXT ENDS WITH YOUR UNIT (D17 S6)."),
+            own("S6", "worker", "You carry nothing from one instruction to the next."),
+            own("S6", "worker", &format!("Your reset budget is {ceiling} tool steps, the `max_tool_steps` above: at {ceiling} you stop and report where you are.")),
+            own("S7", "pm", "EVERY INSTRUCTION DECLARES THE SIZE OF WHAT IT PRODUCES, AND YOU DROP THE CONTEXT YOU DO NOT READ (D17 S7)."),
+            own("S7", "pm", "The brief states the expected output size of each instruction (files changed, lines of answer); a run whose cost is an order off that size stops and reports, and what the next step does not read is dropped from the brief, not carried."),
+            own("S7", "worker", "NAME THE SIZE OF WHAT YOU PRODUCE (D17 S7)."),
+            own("S7", "worker", "Your report states the expected size of the output the instruction asks for, in files changed, before you call."),
+            own("S7", "worker", "A run whose cost is an order of magnitude off that size stops and reports."),
+        ]
+    }
+
+    /// The sentences, as `(requirement, sentence)`, that `texts(seat)` does not carry. `texts` gives the
+    /// whitespace-collapsed text of a seat file, so the same check runs over the real files and over a copy
+    /// with one sentence taken out.
+    fn speed_clauses_missing(texts: &dyn Fn(&str) -> String) -> Vec<(&'static str, String)> {
+        speed_clauses()
+            .into_iter()
+            .filter(|c| !texts(c.seat).contains(&c.text))
+            .map(|c| (c.id, c.text))
+            .collect()
+    }
+
+    fn collapsed_seat(name: &str) -> String {
+        let body = EMBEDDED_SEATS
+            .iter()
+            .find(|(f, _)| *f == format!("{name}.md"))
+            .map(|(_, body)| *body)
+            .unwrap_or_else(|| panic!("{name}.md is not embedded"));
+        body.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// D17 (28h S14): each of the seven seat-speed requirements is written in the seat that carries it. The
+    /// pm carries S1 to S4 and the manager half of S7; the worker carries S5, S6 and the other half of S7.
+    #[test]
+    fn the_seat_files_carry_each_speed_requirement_d17() {
+        let missing = speed_clauses_missing(&collapsed_seat);
+        assert!(missing.is_empty(), "a seat no longer carries these D17 sentences: {missing:?}");
+    }
+
+    /// The proof that the check above can fail, for EVERY sentence: the same check, run over the seat texts
+    /// with that one sentence taken out of an in-memory copy, names exactly that sentence and no other. No
+    /// file is touched. And the cap is held to its number: the same text with TEN ROUNDS in place of THREE
+    /// ROUNDS, FOUR AT THE OUTSIDE is caught as S3.
+    #[test]
+    fn taking_any_one_speed_sentence_out_of_its_seat_is_caught_by_name() {
+        for clause in speed_clauses() {
+            let missing = speed_clauses_missing(&|seat: &str| {
+                let text = collapsed_seat(seat);
+                if seat == clause.seat { text.replacen(&clause.text, "", 1) } else { text }
+            });
+            assert_eq!(
+                vec![(clause.id, clause.text.clone())],
+                missing,
+                "removing D17 {} ({:?}) from {}.md was not caught by exactly that sentence",
+                clause.id, clause.text, clause.seat
+            );
+        }
+        let ten = speed_clauses_missing(&|seat: &str| {
+            collapsed_seat(seat).replacen("THREE ROUNDS, FOUR AT THE OUTSIDE", "TEN ROUNDS, FOUR AT THE OUTSIDE", 1)
+        });
+        assert!(ten.iter().any(|(id, _)| *id == "S3"), "a cap changed to TEN ROUNDS must be caught as S3: {ten:?}");
     }
 
     /// D12: the run limits must bound TOOL STEPS, not only model turns.

@@ -280,6 +280,14 @@ pub fn shape_check_enabled() -> bool {
     !(cfg!(debug_assertions) && std::env::var("JAWATA_TEST_EDITSHAPE_OFF").is_ok())
 }
 
+/// The whole text a `Write` call carries, or `None` for any other call (S14, D24: a new file can be
+/// boilerplate a generator writes, which [`edit_pairs`] cannot see because a `Write` has no old text).
+pub fn written_content(payload: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(payload).ok()?;
+    let input = value.get("tool_input").unwrap_or(&value);
+    input.get("content").and_then(serde_json::Value::as_str).map(str::to_string)
+}
+
 /// Every (old, new) text pair the edit call carries: `Edit` has one, `MultiEdit` several, and a
 /// `Write` has none — a whole file is never a refactoring of itself.
 pub fn edit_pairs(payload: &str) -> Vec<(String, String)> {
@@ -422,6 +430,8 @@ mod tests {
         let multi = r#"{"tool_input":{"edits":[{"old_string":"a","new_string":"b"},{"old_string":"c","new_string":"d"}]}}"#;
         assert_eq!(2, edit_pairs(multi).len());
         assert!(edit_pairs(r#"{"tool_input":{"file_path":"A.java","content":"x"}}"#).is_empty());
+        assert_eq!(Some("x".to_string()), written_content(r#"{"tool_input":{"file_path":"A.java","content":"x"}}"#));
+        assert_eq!(None, written_content(edit), "an Edit carries pairs and no whole file");
     }
 
     #[test]

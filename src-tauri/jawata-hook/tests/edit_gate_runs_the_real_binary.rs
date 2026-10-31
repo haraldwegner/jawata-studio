@@ -285,6 +285,45 @@ fn a_brand_new_java_file_is_not_a_hand_edit() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
+fn write_of(session: &str, target: &std::path::Path, content: &str) -> String {
+    serde_json::json!({
+        "session_id": session, "tool_name": "Write",
+        "tool_input": {"file_path": target.to_string_lossy(), "content": content}
+    })
+    .to_string()
+}
+
+/// D24 (28h S14) through the REAL binary: a test skeleton written as a NEW file by hand is refused by
+/// name, inside an open authoring window too; a test somebody wrote passes (the control); and one
+/// declared failure of `generate` covers exactly one such write.
+#[test]
+fn a_hand_typed_test_skeleton_as_a_new_file_is_refused_by_name_and_a_written_test_passes() {
+    let home = scratch("skeleton");
+    let skeleton = "class OrderTest {\n    @org.junit.jupiter.api.Test\n    void place() {\n        // TODO: implement\n        fail(\"not yet implemented\");\n    }\n}\n";
+    let written = "class OrderTest {\n    @org.junit.jupiter.api.Test\n    void place() {\n        assertEquals(1, new Order().place());\n    }\n}\n";
+    let s = "s-skeleton";
+    let (first, second) = (home.join("OrderTest.java"), home.join("OrderIT.java")); // neither is created
+
+    let opened = guard_says(&bash(s, "echo jawata-author: adding tests for the order class"), &home);
+    assert_ne!("deny", decision_of(&opened), "{opened}");
+
+    let refused = guard_says(&write_of(s, &first, skeleton), &home);
+    assert_eq!("deny", decision_of(&refused), "a skeleton typed by hand, inside the window: {refused}");
+    assert!(refused.contains("generate"), "the refusal names the tool: {refused}");
+
+    let authoring = guard_says(&write_of(s, &first, written), &home);
+    assert_ne!("deny", decision_of(&authoring), "THE CONTROL: a test with an assertion passes: {authoring}");
+
+    let named = guard_says(&bash(s, "echo jawata-author: generate: refused the skeleton for a type with no public methods"), &home);
+    assert_ne!("deny", decision_of(&named), "{named}");
+    let covered = guard_says(&write_of(s, &first, skeleton), &home);
+    assert_ne!("deny", decision_of(&covered), "the declared failure covers one write: {covered}");
+    let again = guard_says(&write_of(s, &second, skeleton), &home);
+    assert_eq!("deny", decision_of(&again), "and only one: {again}");
+
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 #[test]
 fn the_shell_half_still_works_after_the_edit_half_was_added() {
     // The regression this file's history demands: adding one half must not

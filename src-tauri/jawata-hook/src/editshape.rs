@@ -606,7 +606,7 @@ fn parameter_names(params: &[String]) -> Option<Vec<&str>> {
 fn assigns_only_its_parameters(member: &Member<'_>) -> bool {
     let Some(names) = parameter_names(member.params) else { return false };
     let statements: Vec<&[String]> = member.body.split(|t| t == ";").collect();
-    let (last, whole) = statements.split_last().expect("split always yields one part");
+    let Some((last, whole)) = statements.split_last() else { return false };
     if !last.is_empty() || whole.len() != names.len() {
         return false;
     }
@@ -644,6 +644,95 @@ fn generator_shape(ot: &[String], nt: &[String]) -> Option<Shape> {
         }
     }
     None
+}
+
+const TEST_SKELETON: Shape = Shape {
+    name: "a test skeleton started by hand",
+    tool: "generate",
+    call: "generate(kind=test_skeleton, typeName=pkg.Type, framework=junit5)",
+};
+
+/// The index of the token that closes the bracket opened at `open` (`(`/`)` or `{`/`}`), or `None`.
+fn closing(t: &[String], open: usize) -> Option<usize> {
+    let (o, c) = if t[open] == "(" { ("(", ")") } else { ("{", "}") };
+    let mut depth = 0;
+    for (k, tok) in t.iter().enumerate().skip(open) {
+        if tok == o {
+            depth += 1;
+        } else if tok == c {
+            depth -= 1;
+            if depth == 0 {
+                return Some(k);
+            }
+        }
+    }
+    None
+}
+
+/// What a WHOLE NEW `.java` file is, when it is a test skeleton typed by hand (Sprint 28h S14, D24).
+///
+/// `classify` leaves a `Write` alone on purpose: a whole file is never a refactoring of itself. A
+/// skeleton is different because it is boilerplate, not authoring, and `generate(kind=test_skeleton)`
+/// writes exactly it. So this claims a new file only when EVERY member of its one top-level class is a
+/// `@Test` method, or a `@BeforeEach`/`@AfterEach`/`@BeforeAll`/`@AfterAll` fixture, with a body that is
+/// empty or a single `fail("…")` (comments do not count; the generator's `// TODO` lines are comments).
+/// One assertion, one helper method, one nested type or one field initialiser makes it a test somebody
+/// wrote, and it passes.
+pub fn classify_new_file(content: &str) -> Option<Shape> {
+    const FIXTURES: [&str; 6] = ["BeforeEach", "AfterEach", "BeforeAll", "AfterAll", "Before", "After"];
+    let t = tokens(content);
+    let (mut depth, mut tests, mut i) = (0usize, 0usize, 0usize);
+    while i < t.len() {
+        match t[i].as_str() {
+            "{" => {
+                depth += 1;
+                if depth > 1 {
+                    return None; // a nested type, an initialiser: more than a skeleton
+                }
+            }
+            "}" => depth = depth.saturating_sub(1),
+            "(" if depth == 1 && i > 0 && is_ident(&t[i - 1]) && !(i > 1 && t[i - 2] == "@") => {
+                let params_end = closing(&t, i)?;
+                let mut open = params_end + 1;
+                while open < t.len() && t[open] != "{" && t[open] != ";" {
+                    open += 1; // `throws A, B`
+                }
+                if t.get(open).map(String::as_str) != Some("{") {
+                    return None;
+                }
+                let end = closing(&t, open)?;
+                // The annotations standing before this member's name.
+                let mut names = Vec::new();
+                let mut j = i - 1;
+                while j > 0 && !matches!(t[j - 1].as_str(), ";" | "{" | "}") {
+                    j -= 1;
+                    if t[j] == "@" {
+                        // `@Test`, or `@org.junit.jupiter.api.Test`: the last segment names it.
+                        let mut n = j + 1;
+                        while t.get(n + 1).map(String::as_str) == Some(".") && n + 2 < i {
+                            n += 2;
+                        }
+                        names.push(t[n].as_str());
+                    }
+                }
+                let is_test = names.contains(&"Test");
+                if !is_test && !names.iter().any(|n| FIXTURES.contains(n)) {
+                    return None; // a helper, a constructor: somebody's own code
+                }
+                let body = &t[open + 1..end];
+                let trivial = body.is_empty()
+                    || matches!(body, [f, p, s, q, semi] if f == "fail" && p == "(" && s.starts_with('"') && q == ")" && semi == ";");
+                if !trivial {
+                    return None;
+                }
+                tests += usize::from(is_test);
+                i = end;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    (tests > 0).then_some(TEST_SKELETON)
 }
 
 #[cfg(test)]
@@ -857,6 +946,14 @@ mod tests {
     /// D24 (28h S14): THE GUARD'S OWN TEST. An equality pair typed by hand is steered to `generate`
     /// before it lands; the controls differ from it in one thing each, so a classifier that refused
     /// every insertion, or every `equals`, would fail one of them.
+    ///
+    /// THE TOKEN SAVING OF ONE GENERATED PAIR AGAINST ONE TYPED (the spec's second D24 measure),
+    /// measured 2026-11-01 on `LegacyOrderService` (three fields: `status`, `totalCents`, `customer`):
+    /// the `equals`/`hashCode` pair `generate(kind=equals_hashcode)` wrote is 538 characters of code,
+    /// typed; the call that asks for it is 114 characters of arguments. At four characters to a token
+    /// that is about 134 tokens typed against about 28 asked for, a ratio of 4.7 (an estimate by
+    /// characters, since no tokenizer was at hand). The typed text is output the brain generates; the
+    /// call's answer, which carries the same code back as a diff, is input it only reads.
     #[test]
     fn a_hand_typed_equality_pair_is_steered_to_generate_and_other_authoring_is_not() {
         let pair = "    @Override\n    public boolean equals(Object o) {\n        if (this == o) return true;\n        if (!(o instanceof P)) return false;\n        P p = (P) o;\n        return id == p.id && java.util.Objects.equals(name, p.name);\n    }\n\n    @Override\n    public int hashCode() {\n        return java.util.Objects.hash(id, name);\n    }\n";
@@ -891,6 +988,35 @@ mod tests {
         assert_eq!(tool(POINT, &inside_point("    String toString(int indent) {\n        return \" \".repeat(indent) + name;\n    }\n")), None);
     }
 
+    /// A skeleton as `generate(kind=test_skeleton)` writes it: a fixture and one stub per method, whose
+    /// bodies are comments and a `fail`.
+    const GENERATED_SKELETON: &str = "package com.example;\n\nimport static org.junit.jupiter.api.Assertions.fail;\n\nimport org.junit.jupiter.api.BeforeEach;\nimport org.junit.jupiter.api.Test;\n\nclass OrderServiceTest {\n\n    private OrderService subject;\n\n    @BeforeEach\n    void setUp() {\n        // TODO: instantiate subject\n    }\n\n    @Test\n    void place() {\n        // TODO: implement\n        fail(\"not yet implemented\");\n    }\n\n    @Test\n    void cancel() {\n        // TODO: implement\n        fail(\"not yet implemented\");\n    }\n}\n";
+
+    /// D24 (28h S14): a test skeleton written as a new file by hand is steered to `generate`, and a test
+    /// somebody wrote is not. Each control differs from the skeleton in one thing.
+    #[test]
+    fn a_hand_typed_test_skeleton_is_steered_to_generate_and_a_written_test_is_not() {
+        assert_eq!(classify_new_file(GENERATED_SKELETON).map(|s| s.tool), Some("generate"));
+        assert_eq!(
+            classify_new_file("class ATest {\n    @org.junit.jupiter.api.Test\n    void a() {}\n}\n").map(|s| s.tool),
+            Some("generate"),
+            "an empty stub is a skeleton"
+        );
+        // One assertion in one stub makes it a test somebody wrote.
+        let asserting = GENERATED_SKELETON.replacen("fail(\"not yet implemented\");", "assertEquals(1, subject.place());", 1);
+        assert_eq!(classify_new_file(&asserting), None);
+        // A helper method beside the stubs is somebody's own code.
+        let helper = GENERATED_SKELETON.replace("    @Test\n    void cancel()", "    int helper() {\n        return 1;\n    }\n\n    @Test\n    void cancel()");
+        assert_eq!(classify_new_file(&helper), None);
+        // A nested type is more than a skeleton.
+        let nested = GENERATED_SKELETON.replace("    @Test\n    void cancel()", "    static class Fake {\n    }\n\n    @Test\n    void cancel()");
+        assert_eq!(classify_new_file(&nested), None);
+        // No test at all: a fixture alone, or an ordinary class, is not a skeleton.
+        assert_eq!(classify_new_file("class A {\n    @BeforeEach\n    void setUp() {}\n}\n"), None);
+        assert_eq!(classify_new_file("class A {\n    void a() {}\n}\n"), None);
+        assert_eq!(classify_new_file(""), None);
+    }
+
     #[test]
     fn a_sibling_method_that_repeats_the_originals_lines_is_authoring_not_an_extraction() {
         let old = "    void a(Event e) {\n        Event ev = new Event();\n        ev.type = e.type;\n        ev.when = e.when;\n        dispatch(ev);\n    }\n";
@@ -918,7 +1044,7 @@ mod surface_tests {
     fn every_shape_names_an_engine_tool_that_changes_code() {
         for shape in [
             IMPORT, VISIBILITY, RENAME, SIGNATURE, RECORD_COMPONENT, DELETE_MEMBER, EXTRACT_METHOD, EQUALITY_PAIR, STRING_FORM,
-            FIELD_CONSTRUCTOR,
+            FIELD_CONSTRUCTOR, TEST_SKELETON,
         ] {
             assert!(
                 crate::surface::changes_code(shape.tool),

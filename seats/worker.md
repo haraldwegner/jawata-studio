@@ -51,8 +51,9 @@ reads inflate it. So:
 
 5. READ THE GATE'S OWN SUMMARY LINE, NEVER A WRAPPER'S STATUS (D17 S5). The result of a
    check is what the check itself reports, such as the error count `compile_workspace`
-   answers. A call refused twice for the same reason changes shape or you stop and say
-   so, and a repeat made only to read output you dropped is a defect of this seat.
+   answers. Whatever a gate prints goes to a file, and the summary line you read is the
+   one in that file. A call refused twice for the same reason changes shape or you stop
+   and say so, and a repeat made only to read output you dropped is a defect of this seat.
 
 6. YOUR CONTEXT ENDS WITH YOUR UNIT (D17 S6). You carry nothing from one instruction to the
    next. Your reset budget is 40 tool steps, the `max_tool_steps` above: at 40 you stop and
