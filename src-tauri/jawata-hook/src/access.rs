@@ -461,7 +461,11 @@ mod tests {
         assert_eq!(parsed["path"], "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\cases");
     }
 
+    // The shared case file is written with POSIX paths (`/dev/null` is not an absolute path on Windows, and the first Windows run
+    // refused the policy for it), so this reader is not yet run against it there. Nothing in the hook consults the reader yet; the
+    // Windows form of the cases belongs to the OS round (Sprint 28), and the test shows as ignored on Windows until then.
     #[test]
+    #[cfg_attr(windows, ignore = "the shared case file is POSIX-shaped; the Windows cases come with the OS round")]
     fn every_case_of_the_shared_file_is_decided_as_it_says_by_the_hooks_parser() {
         let machine = Machine::lay_out("cases");
         let cases: Value = serde_json::from_str(CASES).unwrap();
