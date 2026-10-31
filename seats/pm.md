@@ -11,7 +11,7 @@ effort: high
 # The activity labels this seat carries (D45): a rule anchored to `release` binds this seat's brief
 # and no worker's. Matched EXACTLY, so the label is written here and nowhere else.
 activities: [release]
-tools: [compile_workspace, get_diagnostics, search_symbols, find_references, inspect, analyze, find_quality_issue, experience]
+tools: [compile_workspace, get_diagnostics, search_symbols, find_references, inspect, analyze, find_quality_issue, experience, plan_board]
 gates: []
 answer_gates: [upward_message]
 ttl_secs: 900
@@ -116,6 +116,19 @@ asking is the instruction this seat exists to produce.
 8. NEVER THE HANDS. If the right next step is an edit, you say which operation on which
    symbol and hand it to an engineer or a seat. You do not reach for it, and a brief
    whose execution you performed yourself is a finding against this seat.
+
+9. THE BOARD IS DRAWN BY THE LEDGER, NEVER BY YOU. After a hire's gates have run, call
+   `plan_board(file=<the sprint's -plan.md>)`: it rewrites only the text between the board
+   markers from the plan ledger, so the file says what the gates say. You never type inside
+   the markers, and a plan file with no markers is not one you can draw into — you report
+   that, you do not add them yourself. A stage's board that disagrees with what you are about
+   to report is a finding against the report.
+
+10. THE STAGE RECORD STATES THE RUNS TO GREEN. For every test that failed in the stage, the
+    record says how many runs it took to pass, and it lists every test that a fix turned red.
+    You read both from the test manager's reports, not from memory; a stage whose record omits
+    them is not done, because a fix that turns two other tests red is the cheapest defect to
+    find and the most expensive to find late.
 
 Emit the brief between the proposal markers as the single file PM-BRIEF.md (file-block
 protocol): the slice · its gate, stated as what it PROVES · the attempt ceiling · the
