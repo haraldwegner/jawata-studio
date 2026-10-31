@@ -9,6 +9,7 @@ mod intellij;
 mod lombok;
 mod conductor;
 mod eclipse_notes;
+mod engine_activity;
 #[doc(hidden)]
 pub mod eclipse_probe;
 mod manager_service;
@@ -579,6 +580,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState { manager_service })
         .setup(|app| {
+            // 28h S2a: a download that begins, or an engine that is installed, reaches the open window at once
+            // (the window reloads the dashboard on this event) instead of at the next time something else changes.
+            {
+                let announce = app.handle().clone();
+                engine_activity::set_notifier(std::sync::Arc::new(move || {
+                    let _ = announce.emit("jawata://settings-changed", ());
+                }));
+            }
             // Sprint 13 (v0.13.0): native dynamic menu — the libappindicator
             // path on GNOME hard-routes left-click to the menu and strips
             // per-item icons. Workspace status is shown via monochrome
@@ -891,7 +900,7 @@ pub fn run() {
                         }
                         Ok(false) => {}
                         Err(error) => {
-                            eprintln!("[jawata-studio] runtime update check failed: {error}")
+                            studio_log::say(&format!("runtime update check failed: {error}"))
                         }
                     }
                 });

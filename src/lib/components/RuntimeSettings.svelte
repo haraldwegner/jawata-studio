@@ -20,6 +20,8 @@
 
   export let settings: ManagerSettings | undefined;
   export let releaseStatus: ReleaseStatus | undefined;
+  /** What the studio is doing to the engine right now, with the time it began (28h S2a). */
+  export let engineActivity: string | null | undefined = undefined;
   export let installedRuntime: ManagedRuntimeRecord | null | undefined = undefined;
   export let bootstrap: BootstrapStatus | undefined;
   export let lastCleanupSummary: CleanupSummary | undefined;
@@ -60,6 +62,7 @@
   // S19-46: the opening sentence says what Settings decides (the engine, and which agents Deploy writes to);
   // the workspace and project counts live in the header only. Built in script so no space is lost at a block edge.
   $: settingsSentence = [
+    engineActivity ?? "",
     !installedRuntime
       ? "jawata engine not installed"
       : releaseStatus?.kind === "updateHeld"

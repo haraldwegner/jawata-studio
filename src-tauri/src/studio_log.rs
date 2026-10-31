@@ -46,6 +46,17 @@ pub fn install(log_dir: &Path) {
     }
 }
 
+/// One log line as the log shows it: the studio's tag, the time, then the message (Sprint 28h, S2a, D35: every
+/// release-check line carries its time, as the start-up line does).
+pub fn stamped(message: &str) -> String {
+    format!("[jawata-studio] {} {message}", utc_stamp(crate::field_view::now_millis()))
+}
+
+/// Writes {@link stamped} to the studio's standard error, which is the log file when the studio was not started from a terminal.
+pub fn say(message: &str) {
+    eprintln!("{}", stamped(message));
+}
+
 /// Move a log past `limit` bytes to `<name>.1`, replacing an older one. Best effort.
 fn rotate_if_large(path: &Path, limit: u64) {
     let too_big = fs::metadata(path).map(|m| m.len() > limit).unwrap_or(false);
@@ -103,6 +114,16 @@ pub fn utc_stamp(millis: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stamped_line_names_the_studio_then_the_time_then_the_message() {
+        let line = stamped("release check: nothing new");
+        let rest = line.strip_prefix("[jawata-studio] ").expect("the tag comes first");
+        let (time, message) = rest.split_once(' ').expect("a time then the message");
+        assert_eq!(message, "release check: nothing new");
+        assert_eq!(time.len(), "2026-09-13T20:53:44Z".len(), "not a time: {time}");
+        assert!(time.ends_with('Z') && time.as_bytes()[10] == b'T', "not a UTC time: {time}");
+    }
 
     #[test]
     fn utc_stamp_renders_known_instants() {

@@ -14,6 +14,65 @@ use tar::Archive;
 use walkdir::WalkDir;
 use zip::ZipArchive;
 
+use crate::engine_activity;
+
+/// Where an archive that is being downloaded waits (28h S2a, D35). The name is the same for every attempt at the same
+/// release, which is what lets the next attempt find what the last one left.
+fn partial_archive_path(tools_dir: &Path, release: &RemoteRelease) -> PathBuf {
+    tools_dir.join(format!(".partial-{}-{}", release.version, release.asset_name))
+}
+
+/// Removes every archive left waiting, once an engine is installed: they are of no use to a newer release.
+fn remove_partial_archives(tools_dir: &Path) {
+    if let Ok(entries) = fs::read_dir(tools_dir) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(".partial-") {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+/// Brings `url` down into `path`, continuing from the bytes already there. Returns the size of the file when it is complete.
+///
+/// A file of N bytes is continued with `Range: bytes=N-`. A server that answers 206 is appended to; one that answers
+/// 200 has ignored the range and is sending everything, so the file is begun again; one that answers 416 says the
+/// range does not fit what it has (the file is as long as the resource, or from another version), so the file is
+/// removed and fetched whole. A body that breaks off leaves the file as far as it got.
+fn fetch_resumable(client: &Client, url: &str, path: &Path) -> Result<u64, String> {
+    let mut have = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    for _ in 0..2 {
+        let mut request = client.get(url);
+        if have > 0 {
+            request = request.header("Range", format!("bytes={have}-"));
+        }
+        let response = request.send().map_err(|error| {
+            format!("failed to download JAWATA release archive from {url}: {}", describe_error_chain(&error))
+        })?;
+        let status = response.status();
+        if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE && have > 0 {
+            let _ = fs::remove_file(path);
+            have = 0;
+            continue;
+        }
+        let mut response = response
+            .error_for_status()
+            .map_err(|error| format!("JAWATA archive download failed: {error}"))?;
+        let resuming = status == reqwest::StatusCode::PARTIAL_CONTENT && have > 0;
+        let mut file = if resuming {
+            fs::OpenOptions::new().append(true).open(path)
+        } else {
+            fs::File::create(path)
+        }
+        .map_err(|error| format!("failed to open archive staging file {}: {error}", path.display()))?;
+        let copied = response.copy_to(&mut file).map_err(|error| {
+            format!("failed to download JAWATA archive body from {url}: {}", describe_error_chain(&error))
+        })?;
+        return Ok(if resuming { have + copied } else { copied });
+    }
+    Err(format!("the server refused to continue or restart the download of {url}"))
+}
+
 /// Render an error together with its FULL source chain.
 ///
 /// Sprint 28 (v3.6.0): reqwest's `Display` prints only the outermost kind, so
@@ -531,10 +590,10 @@ impl ReleaseManager {
         // person pressed the button rather than because a policy allowed it.
         // Leaving it silent would have made the log's coverage depend on how
         // the download was started.
-        eprintln!(
-            "[jawata-studio] release check: {}",
+        crate::studio_log::say(&format!(
+            "release check: {}",
             UpdateDecision::Installed { version: runtime.version.clone() }.log_line()
-        );
+        ));
         Ok(runtime)
     }
 
@@ -677,36 +736,20 @@ impl ReleaseManager {
         // never meet. Errors report their full source chain, because reqwest's
         // own Display for a timed-out body read is the useless
         // "error decoding response body" with the cause hidden underneath.
-        let archive_path = tmp_dir.join("archive.bin");
-        let mut response = self
-            .download_client
-            .get(&release.download_url)
-            .send()
-            .map_err(|error| {
-                format!(
-                    "failed to download JAWATA release archive from {}: {}",
-                    release.download_url,
-                    describe_error_chain(&error)
-                )
-            })?
-            .error_for_status()
-            .map_err(|error| format!("JAWATA archive download failed: {error}"))?;
-
-        let mut archive_file = fs::File::create(&archive_path).map_err(|error| {
-            format!(
-                "failed to create archive staging file {}: {error}",
-                archive_path.display()
-            )
-        })?;
-        let copied = response.copy_to(&mut archive_file).map_err(|error| {
-            format!(
-                "failed to download JAWATA archive body ({} MB expected): {}",
-                release.asset_name,
-                describe_error_chain(&error)
-            )
-        })?;
-        drop(archive_file);
+        //
+        // 28h S2a (D35): the staging file has a name that stays the same from one attempt to the next, so a download
+        // that was interrupted is continued where it stopped instead of begun again.
+        let archive_path = partial_archive_path(&tools_dir, release);
+        engine_activity::downloading(&release.version);
+        let copied = match fetch_resumable(&self.download_client, &release.download_url, &archive_path) {
+            Ok(total) => total,
+            Err(error) => {
+                engine_activity::download_ended();
+                return Err(error.into());
+            }
+        };
         if copied == 0 {
+            engine_activity::download_ended();
             return Err(format!(
                 "JAWATA archive download returned an empty body for {}",
                 release.asset_name
@@ -714,69 +757,24 @@ impl ReleaseManager {
             .into());
         }
 
-        let open_archive = || {
-            fs::File::open(&archive_path).map_err(|error| {
-                format!(
-                    "failed to reopen staged archive {}: {error}",
-                    archive_path.display()
-                )
-            })
-        };
-
-        match release.archive_kind {
-            ArchiveKind::TarGz => {
-                let decoder = GzDecoder::new(open_archive()?);
-                let mut archive = Archive::new(decoder);
-                archive.unpack(&extract_root).map_err(|error| {
-                    format!("failed to unpack JAWATA tar.gz archive: {error}")
-                })?;
-            }
-            ArchiveKind::Zip => {
-                let mut archive = ZipArchive::new(open_archive()?)
-                    .map_err(|error| format!("failed to read JAWATA zip archive: {error}"))?;
-                for index in 0..archive.len() {
-                    let mut file = archive.by_index(index).map_err(|error| {
-                        format!("failed to inspect JAWATA zip entry: {error}")
-                    })?;
-                    let enclosed = file
-                        .enclosed_name()
-                        .ok_or("zip archive contained an invalid entry path")?;
-                    let output_path = extract_root.join(enclosed);
-
-                    if file.is_dir() {
-                        fs::create_dir_all(&output_path).map_err(|error| {
-                            format!(
-                                "failed to create zip output dir {}: {error}",
-                                output_path.display()
-                            )
-                        })?;
-                    } else {
-                        if let Some(parent) = output_path.parent() {
-                            fs::create_dir_all(parent).map_err(|error| {
-                                format!(
-                                    "failed to create zip parent dir {}: {error}",
-                                    parent.display()
-                                )
-                            })?;
-                        }
-                        let mut output_file = fs::File::create(&output_path).map_err(|error| {
-                            format!(
-                                "failed to create extracted JAWATA file {}: {error}",
-                                output_path.display()
-                            )
-                        })?;
-                        std::io::copy(&mut file, &mut output_file).map_err(|error| {
-                            format!(
-                                "failed to write extracted JAWATA file {}: {error}",
-                                output_path.display()
-                            )
-                        })?;
-                    }
-                }
-            }
+        if let Err(error) = unpack_archive(&release.archive_kind, &archive_path, &extract_root) {
+            // A staged file that will not unpack is no use to a resume: the next attempt starts from nothing.
+            let _ = fs::remove_file(&archive_path);
+            engine_activity::download_ended();
+            return Err(error.into());
         }
 
-        activate_extracted(&tools_dir, &tmp_dir, &extract_root, release, trial)
+        match activate_extracted(&tools_dir, &tmp_dir, &extract_root, release, trial) {
+            Ok(runtime) => {
+                remove_partial_archives(&tools_dir);
+                engine_activity::installed(&release.version);
+                Ok(runtime)
+            }
+            Err(error) => {
+                engine_activity::download_ended();
+                Err(error)
+            }
+        }
     }
 
     fn build_release_status(
@@ -915,6 +913,72 @@ impl ReleaseManager {
             detail: "No cached release information is available yet. Use Refresh release info to check upstream.".into(),
         }
     }
+}
+
+/// Unpacks the staged archive into `extract_root`.
+fn unpack_archive(kind: &ArchiveKind, archive_path: &Path, extract_root: &Path) -> Result<(), String> {
+    let open_archive = || {
+        fs::File::open(&archive_path).map_err(|error| {
+            format!(
+                "failed to reopen staged archive {}: {error}",
+                archive_path.display()
+            )
+        })
+    };
+
+    match kind {
+        ArchiveKind::TarGz => {
+            let decoder = GzDecoder::new(open_archive()?);
+            let mut archive = Archive::new(decoder);
+            archive.unpack(&extract_root).map_err(|error| {
+                format!("failed to unpack JAWATA tar.gz archive: {error}")
+            })?;
+        }
+        ArchiveKind::Zip => {
+            let mut archive = ZipArchive::new(open_archive()?)
+                .map_err(|error| format!("failed to read JAWATA zip archive: {error}"))?;
+            for index in 0..archive.len() {
+                let mut file = archive.by_index(index).map_err(|error| {
+                    format!("failed to inspect JAWATA zip entry: {error}")
+                })?;
+                let enclosed = file
+                    .enclosed_name()
+                    .ok_or("zip archive contained an invalid entry path")?;
+                let output_path = extract_root.join(enclosed);
+
+                if file.is_dir() {
+                    fs::create_dir_all(&output_path).map_err(|error| {
+                        format!(
+                            "failed to create zip output dir {}: {error}",
+                            output_path.display()
+                        )
+                    })?;
+                } else {
+                    if let Some(parent) = output_path.parent() {
+                        fs::create_dir_all(parent).map_err(|error| {
+                            format!(
+                                "failed to create zip parent dir {}: {error}",
+                                parent.display()
+                            )
+                        })?;
+                    }
+                    let mut output_file = fs::File::create(&output_path).map_err(|error| {
+                        format!(
+                            "failed to create extracted JAWATA file {}: {error}",
+                            output_path.display()
+                        )
+                    })?;
+                    std::io::copy(&mut file, &mut output_file).map_err(|error| {
+                        format!(
+                            "failed to write extracted JAWATA file {}: {error}",
+                            output_path.display()
+                        )
+                    })?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Everything from "the archive is unpacked" to "the engine is the active one".
@@ -1536,5 +1600,180 @@ mod tests {
             latest_release_url(&settings),
             "https://api.github.com/repos/example-org/custom-mcp/releases/latest"
         );
+    }
+
+    // ---- 28h S2a (D35): an interrupted download resumes -------------------------------------------------------------
+
+    /// A one-purpose HTTP server on localhost: it serves `body`, notes the `Range` header of every request, and can be told
+    /// to break the first response off after `cut_first_at` bytes (a connection that drops mid-body) or to ignore ranges.
+    struct ArchiveServer {
+        url: String,
+        ranges: std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>,
+        sent: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl ArchiveServer {
+        fn start(body: Vec<u8>, honour_range: bool, cut_first_at: Option<usize>, requests: usize) -> Self {
+            use std::io::{Read, Write};
+            use std::sync::atomic::Ordering;
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            let url = format!("http://{}/jawata.zip", listener.local_addr().expect("addr"));
+            let ranges = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let sent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let (seen, counted) = (ranges.clone(), sent.clone());
+            let thread = std::thread::spawn(move || {
+                for served in 0..requests {
+                    let Ok((mut stream, _)) = listener.accept() else { return };
+                    let mut head = Vec::new();
+                    let mut byte = [0u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        if stream.read(&mut byte).unwrap_or(0) == 0 {
+                            break;
+                        }
+                        head.push(byte[0]);
+                    }
+                    let head = String::from_utf8_lossy(&head).to_string();
+                    let range = head
+                        .lines()
+                        .find_map(|l| l.to_ascii_lowercase().strip_prefix("range: bytes=").map(|r| r.trim().to_string()));
+                    seen.lock().unwrap().push(range.clone());
+                    let from = range.as_ref().and_then(|r| r.trim_end_matches('-').parse::<usize>().ok());
+                    let (status, payload, extra) = match from {
+                        Some(n) if honour_range && n >= body.len() => ("416 Range Not Satisfiable", Vec::new(), String::new()),
+                        Some(n) if honour_range => (
+                            "206 Partial Content",
+                            body[n..].to_vec(),
+                            format!("Content-Range: bytes {n}-{}/{}\r\n", body.len() - 1, body.len()),
+                        ),
+                        _ => ("200 OK", body.clone(), String::new()),
+                    };
+                    let header = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n", payload.len());
+                    let _ = stream.write_all(header.as_bytes());
+                    let written = if served == 0 { cut_first_at.map_or(payload.len(), |c| c.min(payload.len())) } else { payload.len() };
+                    let _ = stream.write_all(&payload[..written]);
+                    counted.fetch_add(written, Ordering::SeqCst);
+                    let _ = stream.flush();
+                }
+            });
+            Self { url, ranges, sent, thread: Some(thread) }
+        }
+
+        fn finish(mut self) -> (Vec<Option<String>>, usize) {
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+            (self.ranges.lock().unwrap().clone(), self.sent.load(std::sync::atomic::Ordering::SeqCst))
+        }
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("studio-resume-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn archive_bytes() -> Vec<u8> {
+        (0..4000u32).map(|i| (i % 251) as u8).collect()
+    }
+
+    fn client() -> Client {
+        Client::builder().timeout(Duration::from_secs(10)).build().unwrap()
+    }
+
+    #[test]
+    fn a_download_that_broke_off_is_continued_from_where_it_stopped_not_begun_again() {
+        let body = archive_bytes();
+        let server = ArchiveServer::start(body.clone(), true, Some(1500), 2);
+        let dir = scratch("resume");
+        let path = dir.join(".partial-4.4.20-jawata.zip");
+
+        let first = fetch_resumable(&client(), &server.url, &path);
+        assert!(first.is_err(), "the first attempt was cut off and must say so: {first:?}");
+        let kept = fs::metadata(&path).expect("what arrived is kept").len();
+        assert!(kept > 0 && kept < body.len() as u64, "the broken download left {kept} bytes");
+
+        let total = fetch_resumable(&client(), &server.url, &path).expect("the second attempt finishes");
+        let (ranges, sent) = server.finish();
+
+        assert_eq!(total, body.len() as u64);
+        assert_eq!(fs::read(&path).unwrap(), body, "the continued file is not the archive");
+        assert_eq!(ranges, vec![None, Some(format!("{kept}-"))], "the second request did not ask for the rest");
+        assert_eq!(sent, 1500 + (body.len() - kept as usize), "bytes already on disk were sent again");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_server_that_ignores_the_range_restarts_the_file_and_does_not_append_a_second_copy() {
+        let body = archive_bytes();
+        let server = ArchiveServer::start(body.clone(), false, None, 1);
+        let dir = scratch("ignores");
+        let path = dir.join(".partial-4.4.20-jawata.zip");
+        fs::write(&path, &body[..700]).unwrap();
+
+        let total = fetch_resumable(&client(), &server.url, &path).expect("the whole archive arrives");
+        let (ranges, _) = server.finish();
+
+        assert_eq!(ranges, vec![Some("700-".to_string())], "CONTROL: a range was asked for");
+        assert_eq!(total, body.len() as u64);
+        assert_eq!(fs::read(&path).unwrap(), body, "a 200 answer was appended to the old bytes");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_range_the_server_cannot_satisfy_starts_the_download_over() {
+        let body = archive_bytes();
+        let server = ArchiveServer::start(body.clone(), true, None, 2);
+        let dir = scratch("unsatisfiable");
+        let path = dir.join(".partial-4.4.20-jawata.zip");
+        fs::write(&path, vec![7u8; body.len() + 10]).unwrap();
+
+        let total = fetch_resumable(&client(), &server.url, &path).expect("the archive arrives whole");
+        let (ranges, _) = server.finish();
+
+        assert_eq!(ranges.len(), 2, "one request for the range, one for the whole file");
+        assert_eq!(ranges[1], None);
+        assert_eq!(total, body.len() as u64);
+        assert_eq!(fs::read(&path).unwrap(), body);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_first_download_asks_for_no_range() {
+        let body = archive_bytes();
+        let server = ArchiveServer::start(body.clone(), true, None, 1);
+        let dir = scratch("fresh");
+        let path = dir.join(".partial-4.4.20-jawata.zip");
+
+        fetch_resumable(&client(), &server.url, &path).expect("downloads");
+        let (ranges, _) = server.finish();
+
+        assert_eq!(ranges, vec![None]);
+        assert_eq!(fs::read(&path).unwrap(), body);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_waiting_archive_has_one_name_per_release_and_installing_clears_it() {
+        let release = RemoteRelease {
+            version: "4.4.20".into(),
+            asset_name: "jawata.zip".into(),
+            download_url: "https://example.test/jawata.zip".into(),
+            published_at: None,
+            archive_kind: ArchiveKind::Zip,
+        };
+        let dir = scratch("names");
+        assert_eq!(partial_archive_path(&dir, &release), partial_archive_path(&dir, &release), "the name changes between attempts");
+        fs::write(partial_archive_path(&dir, &release), b"x").unwrap();
+        fs::write(dir.join(".partial-4.4.19-jawata.zip"), b"x").unwrap();
+        fs::write(dir.join("jawata-4.4.19"), b"keep").unwrap();
+
+        remove_partial_archives(&dir);
+
+        assert!(!partial_archive_path(&dir, &release).exists());
+        assert!(!dir.join(".partial-4.4.19-jawata.zip").exists());
+        assert!(dir.join("jawata-4.4.19").exists(), "CONTROL: something that is not a waiting archive was removed");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

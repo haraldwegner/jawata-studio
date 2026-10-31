@@ -199,7 +199,7 @@ fn check_for_newer_engine(app: tauri::AppHandle) {
                 let _ = tauri::Emitter::emit(&app, "jawata://settings-changed", ());
             }
             Ok(false) => {}
-            Err(error) => eprintln!("[jawata-studio] release check after stop or reload failed: {error}"),
+            Err(error) => crate::studio_log::say(&format!("release check after stop or reload failed: {error}")),
         }
     });
 }
@@ -314,7 +314,7 @@ pub fn update_settings(
                     let _ = tauri::Emitter::emit(&app_handle, "jawata://settings-changed", ());
                 }
                 Ok(false) => {}
-                Err(error) => eprintln!("[jawata-studio] release re-poll failed: {error}"),
+                Err(error) => crate::studio_log::say(&format!("release re-poll failed: {error}")),
             }
         });
     }

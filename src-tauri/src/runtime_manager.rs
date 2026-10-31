@@ -647,6 +647,9 @@ impl RuntimeManager {
         &self,
         launch_request: &RuntimeLaunchRequest,
     ) -> Result<RuntimeStatusRecord, String> {
+        // 28h S2a: an engine installed before this start is the one that now runs, so its "takes effect when the
+        // services restart" notice is spent.
+        crate::engine_activity::services_started();
         let spec = self.command_spec_for(launch_request);
         let started = self.start_runtime_with_spec(&launch_request.reference, spec);
         // The tray repaints on the ACTION. Announced here rather than by the five service

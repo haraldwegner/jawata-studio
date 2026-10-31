@@ -607,6 +607,7 @@
           lastCleanupSummary={$appStore.lastCleanupSummary}
           lastServiceProbe={$appStore.lastServiceProbe}
           releaseStatus={$appStore.releaseStatus}
+          engineActivity={$appStore.engineActivity}
           serviceProbeBusy={$appStore.serviceProbeBusy ?? false}
           serviceProbeError={$appStore.serviceProbeError}
           saveMessage={$appStore.settingsSaveMessage}

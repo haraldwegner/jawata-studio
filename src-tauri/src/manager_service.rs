@@ -36,6 +36,10 @@ pub struct ManagerDashboard {
     pub bootstrap: BootstrapStatus,
     pub settings: ManagerSettings,
     pub release_status: ReleaseStatus,
+    /// 28h S2a (D35): "downloading engine X" while an archive is coming down, "engine X installed, takes effect when
+    /// the services restart" once it is in place; each with the time it began. None when the studio is doing nothing
+    /// to the engine.
+    pub engine_activity: Option<String>,
     pub installed_runtime: Option<ManagedRuntimeRecord>,
     pub projects: Vec<ProjectRecord>,
     pub runtime_statuses: HashMap<String, RuntimeStatusRecord>,
@@ -593,7 +597,7 @@ impl ManagerService {
             // D4: one line per version check, naming what it DECIDED and why.
             // `status.detail` is the same sentence — both are rendered from the
             // decision, so the log and the UI cannot say different things.
-            eprintln!("[jawata-studio] release check: {}", decision.log_line());
+            crate::studio_log::say(&format!("release check: {}", decision.log_line()));
             Ok(changed)
         })();
 
@@ -2108,7 +2112,7 @@ impl ManagerService {
             // caller passes `false` — and a version check that logs nothing is
             // exactly the silence this deliverable removed, so it says the same
             // sentence rather than waiting to be found later.
-            eprintln!("[jawata-studio] release check: {}", decision.log_line());
+            crate::studio_log::say(&format!("release check: {}", decision.log_line()));
             let settings = self.config_store.write_settings(settings)?;
             (settings, installed_runtime, release_status)
         } else {
@@ -2129,6 +2133,7 @@ impl ManagerService {
             bootstrap,
             settings,
             release_status,
+            engine_activity: crate::engine_activity::line(),
             installed_runtime,
             projects,
             runtime_statuses,

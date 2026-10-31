@@ -219,6 +219,8 @@ export interface ManagerDashboard {
   bootstrap: BootstrapStatus;
   settings: ManagerSettings;
   releaseStatus: ReleaseStatus;
+  /** 28h S2a: "downloading engine X" or "engine X installed, takes effect when the services restart", each with the time it began; none when the studio is doing nothing to the engine. */
+  engineActivity?: string | null;
   installedRuntime?: ManagedRuntimeRecord | null;
   projects: ProjectRecord[];
   runtimeStatuses: Record<string, RuntimeStatusRecord>;
