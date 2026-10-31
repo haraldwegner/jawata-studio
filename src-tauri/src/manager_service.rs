@@ -14,7 +14,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::hash_map::DefaultHasher,
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     hash::{Hash, Hasher},
     fs,
     io::{BufRead, BufReader, Write},
@@ -423,6 +423,10 @@ pub struct ManagerService {
     eclipse_notes_dir: Option<PathBuf>,
     /// 28k Stage 20: whether the process behind a note still runs. The real check in production; a test supplies its own.
     eclipse_liveness: Arc<dyn Fn(u32, Option<i64>) -> bool + Send + Sync>,
+    /// D27: the answer of the engine floor's question "what does the running engine offer?", which a
+    /// test supplies in place of asking a resident (`Some(None)` = no engine answered). `None` in
+    /// production: the resident is asked.
+    engine_verbs_stub: Option<Option<BTreeSet<String>>>,
 }
 
 impl ManagerService {
@@ -474,6 +478,7 @@ impl ManagerService {
             last_release_sync: Arc::new(Mutex::new(None)),
             eclipse_notes_dir: eclipse_notes::default_notes_dir(),
             eclipse_liveness: Arc::new(eclipse_notes::os_liveness),
+            engine_verbs_stub: None,
         }
     }
 
@@ -1486,6 +1491,19 @@ impl ManagerService {
             .flatten();
         let statuses = self.collect_runtime_statuses(&projects, &settings, installed.as_ref());
         partition_by_intent(servers, &statuses)
+    }
+
+    /// D27: the tools the engine that is RUNNING offers, asked of the first ready resident that
+    /// answers (a short wait each, at most three tried). `None` when none answers.
+    fn running_engine_verbs(&self) -> Option<BTreeSet<String>> {
+        if let Some(stub) = &self.engine_verbs_stub {
+            return stub.clone();
+        }
+        self.knowledge_servers()
+            .iter()
+            .filter(|server| !server.url.is_empty() && !server.token.is_empty())
+            .take(3)
+            .find_map(|server| list_resident_verbs(&server.url, &server.token, 3).ok())
     }
 
     pub(crate) fn knowledge_servers(&self) -> Vec<ManagedDeployServer> {
@@ -3595,6 +3613,21 @@ impl ManagerService {
                         ));
                     }
                     let force = matches!(mode, DeployMode::Regenerate);
+                    // D27 (28h): the rollout order. A skill naming a verb the RUNNING engine does
+                    // not offer is not written (and an older copy is left as it is); with no
+                    // engine answering, nothing can be compared and the deploy goes on as before.
+                    let running = self.running_engine_verbs();
+                    let (seats, held_seats) = crate::engine_floor::split_seats(&seats, running.as_ref());
+                    let held_utilities = crate::engine_floor::held_utilities(running.as_ref());
+                    let held_utility_names: BTreeSet<String> =
+                        held_utilities.iter().map(|held| held.name.clone()).collect();
+                    for (what, held) in [("seats", &held_seats), ("utility commands", &held_utilities)] {
+                        if !held.is_empty() {
+                            let sentence = crate::engine_floor::describe(held);
+                            crate::studio_log::say(&format!("{client}: {what} held back by the engine floor: {sentence}"));
+                            changed_sections.push(format!("{what}HeldByEngineFloor: {sentence}"));
+                        }
+                    }
                     // Sprint 28a (D1): Antigravity is UNSUPPORTED — its
                     // command-line tool has no mechanism to connect jawata at
                     // all, so the workflow files we used to write for it steer
@@ -3641,7 +3674,12 @@ impl ManagerService {
                         // listed two of them by name and 28g's /setup made it
                         // stale, which is the hand-written-list-beside-a-list
                         // shape this file has already paid for.
-                        match write_managed_utility_commands(client, &commands_dir, force) {
+                        match write_managed_utility_commands_below_floor(
+                            client,
+                            &commands_dir,
+                            force,
+                            &held_utility_names,
+                        ) {
                             Ok(written) if !written.is_empty() => {
                                 changed_sections.push("utilityCommands".into())
                             }
@@ -5090,8 +5128,21 @@ fn write_managed_utility_commands(
     commands_dir: &Path,
     force_rewrite: bool,
 ) -> Result<Vec<String>, String> {
+    write_managed_utility_commands_below_floor(client, commands_dir, force_rewrite, &BTreeSet::new())
+}
+
+/// D27: the utility commands, except those the engine floor holds back (`held` names them).
+fn write_managed_utility_commands_below_floor(
+    client: &str,
+    commands_dir: &Path,
+    force_rewrite: bool,
+    held: &BTreeSet<String>,
+) -> Result<Vec<String>, String> {
     let mut written = Vec::new();
     for (cmd, desc) in crate::conductor::UTILITY_MAP {
+        if held.contains(cmd) {
+            continue;
+        }
         let body = match client {
             "claude" => crate::conductor::render_claude_utility(cmd, desc),
             "cursor" => crate::conductor::render_cursor_utility(cmd, desc),
@@ -7898,6 +7949,41 @@ fn call_resident_tool(
         return Err(format!("resident answered {status}: {body}"));
     }
     Ok(body)
+}
+
+/// D27: the tool names a running resident offers, from its own `tools/list`.
+fn list_resident_verbs(
+    url: &str,
+    token: &str,
+    timeout_secs: u64,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .build()
+        .map_err(|error| format!("http client: {error}"))?;
+    let payload = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} });
+    let response = client
+        .post(url)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .json(&payload)
+        .send()
+        .map_err(|error| format!("{}: {error}", crate::field_view::TRANSPORT_FAILURE_PREFIX))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|error| format!("{}: {error}", crate::field_view::TRANSPORT_FAILURE_PREFIX))?;
+    if !status.is_success() {
+        return Err(format!("resident answered {status}: {body}"));
+    }
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|error| format!("bad tools/list answer: {error}"))?;
+    let names: std::collections::BTreeSet<String> =
+        extract_tool_entries(&json)?.into_iter().map(|entry| entry.name).collect();
+    if names.is_empty() {
+        return Err("the resident offered no tools".to_string());
+    }
+    Ok(names)
 }
 
 /// Sprint 21a (item J): the post-deploy hook self-check — the v2.0.x dogfood lesson
@@ -12038,6 +12124,181 @@ mod tests {
         let (seats, errors) = crate::runner::load_seat_definitions(&seats_dir);
         assert!(errors.is_empty(), "embedded seats must load clean: {errors:?}");
         (seats_dir, seats)
+    }
+
+    // ===== 28h S15 slice 1 (D27): the engine floor reaches the deploy =====
+
+    /// Every file under `dir`, relative path to bytes, in path order.
+    fn tree_bytes(dir: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+        WalkDir::new(dir)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| {
+                let rel = entry.path().strip_prefix(dir).unwrap().to_string_lossy().replace('\\', "/");
+                (rel, fs::read(entry.path()).unwrap())
+            })
+            .collect()
+    }
+
+    /// D27: a seat that names a verb the RUNNING engine does not offer is not written, the seats that
+    /// do not are, and an engine that offers everything holds nothing back.
+    #[test]
+    fn a_seat_naming_a_verb_the_running_engine_lacks_is_not_deployed() {
+        let (_seats_dir, seats) = loaded_seats("floor-seat");
+        let settings = crate::seat_settings::SeatSettings::default();
+        let mut running = crate::engine_floor::surface_verbs();
+        let verb = crate::engine_floor::a_verb_some_seats_name(&seats);
+        assert!(running.remove(&verb), "control: the vendored surface offers {verb}");
+
+        let (deployable, held) = crate::engine_floor::split_seats(&seats, Some(&running));
+        assert!(!held.is_empty(), "some seat names {verb}");
+        assert!(held.iter().all(|h| h.absent == vec![verb.clone()]), "only {verb} is absent: {held:?}");
+        let dir = unique_tempdir("floor-seat-cmds");
+        write_managed_seat_commands("claude", &dir, &deployable, &settings, false).unwrap();
+        let written = tree_bytes(&dir);
+        for h in &held {
+            let (_, cmd) = crate::conductor::COMMAND_MAP
+                .iter()
+                .find(|(seat, _)| *seat == h.name)
+                .copied()
+                .expect("a held seat has a typed command");
+            assert!(!written.contains_key(&format!("{cmd}/SKILL.md")), "{} must not be written", h.name);
+        }
+        assert!(!written.is_empty(), "control: the seats that name only offered verbs ARE written");
+
+        // control: an engine that offers every verb the surface names holds nothing back
+        let all = crate::engine_floor::surface_verbs();
+        let (all_deployable, none_held) = crate::engine_floor::split_seats(&seats, Some(&all));
+        assert!(none_held.is_empty());
+        let dir_all = unique_tempdir("floor-seat-cmds-all");
+        write_managed_seat_commands("claude", &dir_all, &all_deployable, &settings, false).unwrap();
+        assert!(tree_bytes(&dir_all).len() > written.len(), "the full engine writes the held seats too");
+    }
+
+    /// D27: the same rule for the utility commands, by name.
+    #[test]
+    fn a_held_utility_command_is_not_written_and_the_others_are() {
+        let dir = unique_tempdir("floor-utility");
+        let (held_cmd, _) = crate::conductor::UTILITY_MAP[0];
+        let held: BTreeSet<String> = [held_cmd.to_string()].into_iter().collect();
+        write_managed_utility_commands_below_floor("claude", &dir, false, &held).unwrap();
+        let written = tree_bytes(&dir);
+        assert!(!written.contains_key(&format!("{held_cmd}/SKILL.md")), "{held_cmd} is held back");
+        assert_eq!(written.len(), crate::conductor::UTILITY_MAP.len() - 1, "every other one is written");
+    }
+
+    /// S15 exit, first clause: the studio deploys the same seat skills as before. With an engine that
+    /// offers everything, the deploy that goes through the floor writes exactly the bytes the writer
+    /// wrote without it, for both clients that take seat commands. A seat field dropped on the way
+    /// through the floor changes those bytes and turns this red (planted break).
+    #[test]
+    fn the_floor_changes_no_byte_of_what_an_offering_engine_gets_deployed() {
+        let (_seats_dir, seats) = loaded_seats("floor-bytes");
+        let settings = crate::seat_settings::SeatSettings::default();
+        let running = crate::engine_floor::surface_verbs();
+        let (through_floor, held) = crate::engine_floor::split_seats(&seats, Some(&running));
+        assert!(held.is_empty());
+        for client in ["claude", "cursor"] {
+            let direct = unique_tempdir(&format!("floor-bytes-direct-{client}"));
+            let floored = unique_tempdir(&format!("floor-bytes-floored-{client}"));
+            write_managed_seat_commands(client, &direct, &seats, &settings, false).unwrap();
+            write_managed_seat_commands(client, &floored, &through_floor, &settings, false).unwrap();
+            let before = tree_bytes(&direct);
+            let after = tree_bytes(&floored);
+            assert!(before.len() >= seats.len() / 2, "{client}: control: a real set of skills was written ({})", before.len());
+            assert_eq!(before, after, "{client}: the deployed seat skills differ after the floor");
+        }
+    }
+
+    /// D27, through the deploy itself (the exit clause: "a skill naming an absent verb is not
+    /// deployed"): the section a client's deploy runs asks for the running engine's verbs, holds back
+    /// the seats that name a missing one, says which in its result, and leaves their files unwritten.
+    /// Control: an engine that offers everything, and one that does not answer, hold nothing back.
+    #[test]
+    fn the_deploy_does_not_write_a_seat_that_names_a_verb_the_running_engine_lacks() {
+        let dir = unique_tempdir("floor-section");
+        let mut service = service_over(&dir);
+        let seats_dir = service.config_store.paths().config_dir.join("seats");
+        crate::conductor::materialize_seats(&seats_dir).unwrap();
+        let (seats, _) = crate::runner::load_seat_definitions(&seats_dir);
+        let verb = crate::engine_floor::a_verb_some_seats_name(&seats);
+        let mut missing_one = crate::engine_floor::surface_verbs();
+        assert!(missing_one.remove(&verb));
+        let (_, held) = crate::engine_floor::split_seats(&seats, Some(&missing_one));
+        assert!(!held.is_empty());
+        let (_, held_cmd) = crate::conductor::COMMAND_MAP
+            .iter()
+            .find(|(seat, _)| *seat == held[0].name)
+            .copied()
+            .expect("a held seat has a typed command");
+
+        let run = |service: &ManagerService, label: &str| {
+            let client_cfg = dir.join(label).join(".claude.json");
+            let mut changed = Vec::new();
+            let mut errors = Vec::new();
+            service.deploy_seat_section(
+                "claude",
+                &client_cfg.to_string_lossy(),
+                &DeployMode::Deploy,
+                false,
+                &mut changed,
+                &mut errors,
+            );
+            assert!(errors.is_empty(), "{label}: {errors:?}");
+            let skill = dir.join(label).join(".claude").join("skills").join(held_cmd).join("SKILL.md");
+            (changed, skill.exists())
+        };
+
+        service.engine_verbs_stub = Some(Some(missing_one));
+        let (changed, written) = run(&service, "missing");
+        assert!(!written, "the seat naming {verb} is not written");
+        assert!(
+            changed.iter().any(|c| c.starts_with("seatsHeldByEngineFloor") && c.contains(&verb)),
+            "the result says which seat and which verb: {changed:?}"
+        );
+
+        service.engine_verbs_stub = Some(Some(crate::engine_floor::surface_verbs()));
+        let (changed, written) = run(&service, "offering");
+        assert!(
+            written,
+            "control: an engine that offers every verb gets the seat; written: {:?}, changed: {changed:?}",
+            tree_bytes(&dir.join("offering")).keys().collect::<Vec<_>>()
+        );
+        assert!(!changed.iter().any(|c| c.contains("HeldByEngineFloor")), "{changed:?}");
+
+        service.engine_verbs_stub = Some(None);
+        let (_, written) = run(&service, "silent");
+        assert!(written, "control: with no engine answering, nothing is held back");
+    }
+
+    /// D27: the running engine's tool names come from its own `tools/list`.
+    #[test]
+    fn the_running_engines_verbs_are_read_from_its_tools_list() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let body = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"hire"},{"name":"compile_workspace"}]}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            req
+        });
+        let verbs = list_resident_verbs(&format!("http://{addr}/mcp"), "sekret", 5).unwrap();
+        let request = handle.join().unwrap();
+        assert!(request.contains("tools/list"), "it asked for tools/list: {request}");
+        assert!(request.to_lowercase().contains("bearer sekret"), "with the resident's token");
+        assert_eq!(verbs, ["compile_workspace", "hire"].iter().map(|s| s.to_string()).collect::<BTreeSet<_>>());
+        // control: a resident that offers nothing is not an engine to compare with
+        assert!(list_resident_verbs("http://127.0.0.1:1/mcp", "t", 1).is_err());
     }
 
     // ===== C11: per-seat settings reach the deploy =====
