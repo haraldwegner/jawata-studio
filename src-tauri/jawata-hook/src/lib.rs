@@ -9,6 +9,7 @@
 //!
 //! `main.rs` stays a thin shell over [`run`].
 
+pub mod access;
 pub mod autonomy;
 pub mod bracket;
 pub mod cadence;

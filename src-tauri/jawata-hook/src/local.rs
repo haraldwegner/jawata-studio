@@ -230,7 +230,7 @@ fn inside(path: &str, roots: &[PathBuf]) -> bool {
 /// Case is then folded on the platforms whose filesystems ignore it. Doing that
 /// unconditionally would be wrong on Linux, where two names differing only in
 /// case ARE two files.
-fn normalise(path: &Path) -> PathBuf {
+pub(crate) fn normalise(path: &Path) -> PathBuf {
     let mut existing = path;
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
     let resolved = loop {

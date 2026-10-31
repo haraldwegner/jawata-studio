@@ -1,0 +1,28 @@
+{
+  "about": "The access policy's shared case file (Sprint 28h, S13, D20). The Java AccessCheck and the hook's Rust parser both run these, so the one deliberate duplicate cannot drift. Every path is written with ${home}, ${workspace} (the session's own project), ${sibling} (another project of the same manifest) and ${temp}; each parser binds them to real folders.",
+  "policy": {
+    "allow": ["${workspace}", "${temp}", "${home}/.claude", "/dev/null"],
+    "deny": ["${home}/.claude/settings.json", "${workspace}/private"]
+  },
+  "cases": [
+    {"id": "inside-workspace", "acl": "ACL4", "expect": "allow", "call": {"file_path": "${workspace}/src/A.java"}, "why": "a file in the project the session works on"},
+    {"id": "outside-every-root", "acl": "ACL2", "expect": "deny", "call": {"file_path": "${home}/Documents/notes.txt"}, "why": "a place on neither list is refused"},
+    {"id": "deny-inside-allowed", "acl": "ACL3", "expect": "deny", "call": {"file_path": "${workspace}/private/key.pem"}, "why": "the deny list wins inside an allowed root"},
+    {"id": "sibling-project", "acl": "ACL4", "expect": "deny", "call": {"file_path": "${sibling}/src/B.java"}, "why": "a sibling project of the same manifest is not the session's workspace"},
+    {"id": "relative-into-sibling", "acl": "ACL4", "expect": "deny", "call": {"file_path": "../projB/src/B.java"}, "why": "a relative path is read against the workspace and lands in the sibling"},
+    {"id": "credential-name-unlisted", "acl": "ACL6", "expect": "allow", "call": {"file_path": "${workspace}/credentials.json"}, "why": "nothing is inferred from a name the policy does not list"},
+    {"id": "innocuous-name-listed", "acl": "ACL6", "expect": "deny", "call": {"file_path": "${workspace}/private/readme.txt"}, "why": "a listed place is refused whatever its file is called"},
+    {"id": "prose-names-forbidden-file", "acl": "ACL7", "expect": "allow", "call": {"command": "git commit -m \"see ${home}/Documents/notes.txt for the reason\""}, "why": "a sentence is one quoted word, not a path"},
+    {"id": "summary-field-names-forbidden-file", "acl": "ACL7", "expect": "allow", "call": {"kind": "record", "summary": "${home}/Documents/notes.txt was read once"}, "why": "a field that is not a path names nothing"},
+    {"id": "heredoc-body-names-forbidden-file", "acl": "ACL7", "expect": "allow", "call": {"command": "cat <<EOF\n${home}/Documents/notes.txt\nEOF"}, "why": "a here-document body is data"},
+    {"id": "command-opens-forbidden-file", "acl": "ACL7", "expect": "deny", "call": {"command": "cat ${home}/Documents/notes.txt"}, "why": "a call that opens the file names it"},
+    {"id": "redirect-target", "acl": "ACL7", "expect": "deny", "call": {"command": "echo hi > ${home}/Documents/out.txt"}, "why": "the word after a redirection is a place"},
+    {"id": "flag-with-path", "acl": "ACL7", "expect": "deny", "call": {"command": "tool --out=${home}/Documents/x"}, "why": "a path after --flag= is a place"},
+    {"id": "tilde-spelling", "acl": "ACL7", "expect": "deny", "call": {"file_path": "~/Documents/notes.txt"}, "why": "the home spellings are one boundary, not several"},
+    {"id": "dollar-home-spelling", "acl": "ACL7", "expect": "deny", "call": {"command": "cat $HOME/Documents/notes.txt"}, "why": "the same place under its shell spelling"},
+    {"id": "guard-registration", "acl": "ACL9", "expect": "deny", "call": {"file_path": "${home}/.claude/settings.json"}, "why": "the agent's own guard registration is on the deny list"},
+    {"id": "rest-of-agent-config", "acl": "ACL9", "expect": "allow", "call": {"file_path": "${home}/.claude/projects/x/memory.md"}, "why": "the rest of the agent-config directory stays reachable"},
+    {"id": "declared-device", "acl": "ACL2", "expect": "allow", "call": {"command": "ls /dev/null"}, "why": "a place the policy declares by name"},
+    {"id": "no-place-no-judgement", "acl": "ACL7", "expect": "allow", "call": {"kind": "references", "symbol": "com.foo.Bar#baz"}, "why": "a call that names no place is not this rule's business"}
+  ]
+}
