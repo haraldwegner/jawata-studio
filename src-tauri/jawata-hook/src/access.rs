@@ -428,11 +428,13 @@ mod tests {
             Self { root, home, workspace, sibling, temp, policy }
         }
 
+        /// The case text is JSON, so each folder goes in as a JSON string body: on Windows the backslashes of a path are doubled, or the
+        /// text is not JSON any more (the first 4.4.20 release run failed on exactly this: "invalid escape").
         fn bound(&self, text: &str) -> String {
-            text.replace("${home}", &self.home.to_string_lossy())
-                .replace("${workspace}", &self.workspace.to_string_lossy())
-                .replace("${sibling}", &self.sibling.to_string_lossy())
-                .replace("${temp}", &self.temp.to_string_lossy())
+            text.replace("${home}", &json_body(&self.home))
+                .replace("${workspace}", &json_body(&self.workspace))
+                .replace("${sibling}", &json_body(&self.sibling))
+                .replace("${temp}", &json_body(&self.temp))
         }
 
         fn refuse(&self, call: &Value) -> Option<String> {
@@ -444,6 +446,19 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+
+    /// A path as the body of a JSON string: backslashes doubled, which only a Windows path has.
+    fn json_body(path: &std::path::Path) -> String {
+        path.to_string_lossy().replace('\\', "\\\\")
+    }
+
+    #[test]
+    fn a_windows_path_put_into_case_text_is_still_json_and_reads_back_unchanged() {
+        let path = std::path::Path::new("C:\\Users\\runneradmin\\AppData\\Local\\Temp\\cases");
+        let text = format!("{{\"path\":\"{}\"}}", json_body(path));
+        let parsed: Value = serde_json::from_str(&text).expect("the substituted text is not JSON");
+        assert_eq!(parsed["path"], "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\cases");
     }
 
     #[test]
