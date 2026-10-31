@@ -1493,8 +1493,9 @@ impl ManagerService {
         partition_by_intent(servers, &statuses)
     }
 
-    /// D27: the tools the engine that is RUNNING offers, asked of the first ready resident that
-    /// answers (a short wait each, at most three tried). `None` when none answers.
+    /// D27: the tools the engine that is RUNNING offers: the first of at most three managed servers
+    /// (each with an endpoint and a token, a three-second wait each) whose `tools/list` answers.
+    /// `None` when none does.
     fn running_engine_verbs(&self) -> Option<BTreeSet<String>> {
         if let Some(stub) = &self.engine_verbs_stub {
             return stub.clone();
@@ -5123,15 +5124,8 @@ fn utility_artifact_paths(client: &str, commands_dir: &Path) -> Vec<(String, Pat
     }).collect()
 }
 
-fn write_managed_utility_commands(
-    client: &str,
-    commands_dir: &Path,
-    force_rewrite: bool,
-) -> Result<Vec<String>, String> {
-    write_managed_utility_commands_below_floor(client, commands_dir, force_rewrite, &BTreeSet::new())
-}
-
-/// D27: the utility commands, except those the engine floor holds back (`held` names them).
+/// The utility commands, except those the engine floor (D27) holds back: `held` names them, and an
+/// empty set writes every one.
 fn write_managed_utility_commands_below_floor(
     client: &str,
     commands_dir: &Path,
@@ -11962,7 +11956,7 @@ mod tests {
             let cfg = base.join("config.json");
             fs::write(&cfg, "{}").unwrap();
             let dir = derive_seat_commands_dir(client, &display_path(&cfg)).unwrap();
-            let written = write_managed_utility_commands(client, &dir, false).unwrap();
+            let written = write_managed_utility_commands_below_floor(client, &dir, false, &BTreeSet::new()).unwrap();
             // Sprint 28g: D14 adds /setup, D16 adds /brainstorm and /btw, D46 adds
             // /autocontinue and /autocontinue-off, so the population is seven.
             // Asserted as a count AND by name: a count alone accepts a swap, and the
@@ -12109,7 +12103,7 @@ mod tests {
             for (cmd, _) in crate::conductor::UTILITY_MAP {
                 assert_ne!(cmd, "train", "{client}: /train is retired, it must not deploy");
             }
-            assert!(write_managed_utility_commands(client, &dir, false).unwrap().is_empty(),
+            assert!(write_managed_utility_commands_below_floor(client, &dir, false, &BTreeSet::new()).unwrap().is_empty(),
                 "{client}: second deploy writes nothing");
             assert!(remove_managed_utility_commands(client, &dir).unwrap());
             for (_, path) in utility_artifact_paths(client, &dir) {
@@ -12213,8 +12207,9 @@ mod tests {
 
     /// D27, through the deploy itself (the exit clause: "a skill naming an absent verb is not
     /// deployed"): the section a client's deploy runs asks for the running engine's verbs, holds back
-    /// the seats that name a missing one, says which in its result, and leaves their files unwritten.
-    /// Control: an engine that offers everything, and one that does not answer, hold nothing back.
+    /// the seats AND the utility commands that name a missing one, says which in its result, and
+    /// leaves their files unwritten. Control: an engine that offers everything, and one that does not
+    /// answer, hold nothing back. An older copy of a held skill is left as it is.
     #[test]
     fn the_deploy_does_not_write_a_seat_that_names_a_verb_the_running_engine_lacks() {
         let dir = unique_tempdir("floor-section");
@@ -12223,16 +12218,23 @@ mod tests {
         crate::conductor::materialize_seats(&seats_dir).unwrap();
         let (seats, _) = crate::runner::load_seat_definitions(&seats_dir);
         let verb = crate::engine_floor::a_verb_some_seats_name(&seats);
-        let mut missing_one = crate::engine_floor::surface_verbs();
-        assert!(missing_one.remove(&verb));
-        let (_, held) = crate::engine_floor::split_seats(&seats, Some(&missing_one));
+        // `experience` too: the memorize utility names it, so the utility floor decides in this run.
+        let mut missing = crate::engine_floor::surface_verbs();
+        assert!(missing.remove(&verb));
+        missing.remove("experience");
+        let (_, held) = crate::engine_floor::split_seats(&seats, Some(&missing));
         assert!(!held.is_empty());
+        let held_utils = crate::engine_floor::held_utilities(Some(&missing));
+        assert!(held_utils.iter().any(|h| h.name == "memorize"), "control: memorize is held: {held_utils:?}");
         let (_, held_cmd) = crate::conductor::COMMAND_MAP
             .iter()
             .find(|(seat, _)| *seat == held[0].name)
             .copied()
             .expect("a held seat has a typed command");
 
+        let skill_of = |label: &str, cmd: &str| {
+            dir.join(label).join(".claude").join("skills").join(cmd).join("SKILL.md")
+        };
         let run = |service: &ManagerService, label: &str| {
             let client_cfg = dir.join(label).join(".claude.json");
             let mut changed = Vec::new();
@@ -12246,30 +12248,128 @@ mod tests {
                 &mut errors,
             );
             assert!(errors.is_empty(), "{label}: {errors:?}");
-            let skill = dir.join(label).join(".claude").join("skills").join(held_cmd).join("SKILL.md");
-            (changed, skill.exists())
+            changed
         };
 
-        service.engine_verbs_stub = Some(Some(missing_one));
-        let (changed, written) = run(&service, "missing");
-        assert!(!written, "the seat naming {verb} is not written");
+        service.engine_verbs_stub = Some(Some(missing.clone()));
+        let changed = run(&service, "missing");
+        assert!(!skill_of("missing", held_cmd).exists(), "the seat naming {verb} is not written");
         assert!(
             changed.iter().any(|c| c.starts_with("seatsHeldByEngineFloor") && c.contains(&verb)),
             "the result says which seat and which verb: {changed:?}"
         );
+        assert!(!skill_of("missing", "memorize").exists(), "the utility naming experience is not written");
+        assert!(
+            changed.iter().any(|c| c.starts_with("utility commandsHeldByEngineFloor") && c.contains("memorize")),
+            "the result says which utility and which verb: {changed:?}"
+        );
 
         service.engine_verbs_stub = Some(Some(crate::engine_floor::surface_verbs()));
-        let (changed, written) = run(&service, "offering");
+        let changed = run(&service, "offering");
         assert!(
-            written,
-            "control: an engine that offers every verb gets the seat; written: {:?}, changed: {changed:?}",
+            skill_of("offering", held_cmd).exists() && skill_of("offering", "memorize").exists(),
+            "control: an engine that offers every verb gets the seat and the utility; written: {:?}, changed: {changed:?}",
             tree_bytes(&dir.join("offering")).keys().collect::<Vec<_>>()
         );
         assert!(!changed.iter().any(|c| c.contains("HeldByEngineFloor")), "{changed:?}");
 
         service.engine_verbs_stub = Some(None);
-        let (_, written) = run(&service, "silent");
-        assert!(written, "control: with no engine answering, nothing is held back");
+        run(&service, "silent");
+        assert!(
+            skill_of("silent", held_cmd).exists() && skill_of("silent", "memorize").exists(),
+            "control: with no engine answering, nothing is held back"
+        );
+
+        // An OLDER copy of a held skill stays exactly as it is: deploy fully, then deploy again
+        // against an engine that lacks the verb.
+        service.engine_verbs_stub = Some(Some(crate::engine_floor::surface_verbs()));
+        run(&service, "older");
+        let older_seat = fs::read(skill_of("older", held_cmd)).unwrap();
+        let older_utility = fs::read(skill_of("older", "memorize")).unwrap();
+        service.engine_verbs_stub = Some(Some(missing));
+        let changed = run(&service, "older");
+        assert!(changed.iter().any(|c| c.contains("HeldByEngineFloor")), "the second deploy held them: {changed:?}");
+        assert_eq!(fs::read(skill_of("older", held_cmd)).unwrap(), older_seat, "the older seat skill is left in place");
+        assert_eq!(fs::read(skill_of("older", "memorize")).unwrap(), older_utility, "and so is the older utility");
+    }
+
+    /// S15 exit, first clause, the half the floor-against-writer test cannot see: the shared seat
+    /// loader and the renderers. A SMALL FIXED seat set (`test-fixtures/engine-floor-seats`, a code
+    /// seat and a text seat: never the shipped seats, so a real seat edit does not move it) is deployed
+    /// through `deploy_seat_section`, the floor included, for Claude Code and Cursor, and its two
+    /// autocontinue commands with it; the Antigravity renderers, which the deploy no longer writes, are
+    /// held to the same recorded bytes. A field dropped in the loader, a renderer or the floor changes
+    /// them. Regenerate after an INTENDED change with `UPDATE_ENGINE_FLOOR_GOLDEN=1`.
+    #[test]
+    fn the_deployed_bytes_of_a_fixed_seat_set_match_the_recorded_golden() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures");
+        let golden = fixtures.join("engine-floor-golden");
+        let fixture_seats_dir = fixtures.join("engine-floor-seats");
+
+        let dir = unique_tempdir("golden-deploy");
+        let mut service = service_over(&dir);
+        let seats_dir = service.config_store.paths().config_dir.join("seats");
+        fs::create_dir_all(&seats_dir).unwrap();
+        for file in ["architect.md", "review.md"] {
+            fs::copy(fixture_seats_dir.join(file), seats_dir.join(file)).unwrap();
+        }
+        // Recorded as user-edited, so materialization keeps the fixture seats and seeds the rest.
+        fs::write(seats_dir.join(".seeded.json"), r#"{"architect.md":"fixture","review.md":"fixture"}"#).unwrap();
+        service.engine_verbs_stub = Some(Some(crate::engine_floor::surface_verbs()));
+
+        let wanted = ["refactor", "review", "autocontinue", "autocontinue-off"];
+        let mut actual: std::collections::BTreeMap<String, Vec<u8>> = std::collections::BTreeMap::new();
+        for (client, config) in [("claude", ".claude.json"), ("cursor", ".cursor/mcp.json")] {
+            let path = dir.join("cfgs").join(client).join(config).to_string_lossy().to_string();
+            let (mut changed, mut errors) = (Vec::new(), Vec::new());
+            service.deploy_seat_section(client, &path, &DeployMode::Deploy, false, &mut changed, &mut errors);
+            assert!(errors.is_empty(), "{client}: {errors:?}");
+            let commands_dir = derive_seat_commands_dir(client, &path).unwrap();
+            for (rel, bytes) in tree_bytes(&commands_dir) {
+                let top = rel.split('/').next().unwrap().trim_end_matches(".md");
+                if wanted.contains(&top) {
+                    actual.insert(format!("{client}/{rel}"), bytes);
+                }
+            }
+        }
+        let (fixture_seats, load_errors) = crate::runner::load_seat_definitions(&fixture_seats_dir);
+        assert!(load_errors.is_empty(), "{load_errors:?}");
+        for seat in &fixture_seats {
+            let cmd = crate::conductor::command_for(&seat.name).expect("a fixture seat has a typed command");
+            let body = crate::conductor::render_antigravity_workflow(seat).expect("rendered");
+            actual.insert(format!("antigravity/{cmd}.md"), body.into_bytes());
+        }
+        for (cmd, desc) in crate::conductor::UTILITY_MAP {
+            if cmd == "autocontinue" || cmd == "autocontinue-off" {
+                actual.insert(
+                    format!("antigravity/{cmd}.md"),
+                    crate::conductor::render_antigravity_utility(cmd, desc).into_bytes(),
+                );
+            }
+        }
+        assert_eq!(actual.len(), 2 * 4 + 4, "control: four commands for two clients, four for Antigravity: {:?}", actual.keys());
+
+        if std::env::var("UPDATE_ENGINE_FLOOR_GOLDEN").is_ok() {
+            let _ = fs::remove_dir_all(&golden);
+            for (rel, bytes) in &actual {
+                let target = golden.join(rel);
+                fs::create_dir_all(target.parent().unwrap()).unwrap();
+                fs::write(target, bytes).unwrap();
+            }
+            return;
+        }
+        let recorded = tree_bytes(&golden);
+        assert_eq!(
+            actual.keys().collect::<Vec<_>>(),
+            recorded.keys().collect::<Vec<_>>(),
+            "the set of deployed files differs from the recorded golden"
+        );
+        for (rel, bytes) in &actual {
+            assert!(
+                bytes == &recorded[rel],
+                "{rel}: the deployed bytes differ from the recorded golden (regenerate with UPDATE_ENGINE_FLOOR_GOLDEN=1 only after an intended change)"
+            );
+        }
     }
 
     /// D27: the running engine's tool names come from its own `tools/list`.
@@ -12339,7 +12439,7 @@ mod tests {
         let dir = unique_tempdir("undeploy-own-cmds");
         let settings = crate::seat_settings::SeatSettings::default();
         write_managed_seat_commands("claude", &dir, &seats, &settings, false).unwrap();
-        write_managed_utility_commands("claude", &dir, false).unwrap();
+        write_managed_utility_commands_below_floor("claude", &dir, false, &BTreeSet::new()).unwrap();
 
         let (seat_cmd, seat_path) = seat_artifact_paths("claude", &dir).into_iter().next().unwrap();
         let (util_cmd, util_path) = utility_artifact_paths("claude", &dir).into_iter().next().unwrap();
@@ -12939,7 +13039,7 @@ judge was never told to give"
         assert_eq!(base.join("skills"), dir, "Cursor's own documented location");
 
         write_managed_seat_commands("cursor", &dir, &seats, &crate::seat_settings::SeatSettings::default(), false).unwrap();
-        write_managed_utility_commands("cursor", &dir, false).unwrap();
+        write_managed_utility_commands_below_floor("cursor", &dir, false, &BTreeSet::new()).unwrap();
         let skill = dir.join("cover").join("SKILL.md");
         assert!(skill.is_file(), "a skill is a folder with a SKILL.md: {}", skill.display());
         let body = fs::read_to_string(&skill).unwrap();

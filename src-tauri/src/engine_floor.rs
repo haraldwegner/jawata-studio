@@ -6,13 +6,17 @@
 //!
 //! What counts as a verb a skill names: an identifier in backticks written as a call (`name(`) or
 //! on its own (`name`), that is one of the engine's tools as this studio knows them — the vendored
-//! surface (`engine-surface.json`, refreshed from the published engine at each release) or the
+//! surface (`engine-surface.json`: refreshed by hand with `build/engine-surface.sh`, and CHECKED by
+//! the release job against the tool list of the engine that release bundles, which fails the release
+//! when the two differ — so a release cannot ship a surface other than its own engine's; the
+//! `engineVersion` label inside it says when it was last refreshed, not that it is stale) or the
 //! seat's own `tools:` list. Other backticked words (`kind`, `lane`, a parameter value) are not
 //! verbs and are never judged: the floor refuses on a name it KNOWS is a tool, never on a guess.
 //!
-//! What "the running engine" offers is its own `tools/list`, asked of a ready resident. When no
-//! resident answers there is nothing to compare with and the deploy proceeds as it did before; the
-//! caller says so rather than silently passing.
+//! What "the running engine" offers is its own `tools/list`, asked of the managed servers that have
+//! an endpoint and a token, the first three tried in order, the first that answers taken. When none
+//! answers there is nothing to compare with and the deploy proceeds as it did before (a deploy with
+//! no engine answering is not checked, and holds nothing back).
 
 use std::collections::BTreeSet;
 
@@ -222,6 +226,48 @@ mod tests {
             assert!(deployable.iter().all(|s| s.name != h.name), "{} is not also deployable", h.name);
         }
         assert!(describe(&held).contains(&verb), "the sentence names the verb");
+    }
+
+    /// The seat's own `tools:` list is part of what the floor judges: a verb outside the vendored
+    /// surface that the seat declares and the engine does not offer holds the seat back (and an
+    /// engine that offers it does not).
+    #[test]
+    fn a_verb_only_the_seats_own_tools_list_names_is_judged_too() {
+        let seats = crate::runner::load_seat_definitions(&seats_dir()).0;
+        let mut seat = seats
+            .iter()
+            .find(|s| matches!(s.kind, crate::runner::SeatKind::Code))
+            .cloned()
+            .expect("a code seat is shipped");
+        seat.tools.push("zz_new_verb".to_string());
+        let surface = surface_verbs();
+        assert!(!surface.contains("zz_new_verb"), "control: it is outside the vendored surface");
+        let body = crate::conductor::render_claude_skill(&seat).unwrap();
+        assert!(body.contains("`zz_new_verb`"), "control: the generated skill names it");
+
+        let (deployable, held) = split_seats(&[seat.clone()], Some(&surface));
+        assert!(deployable.is_empty(), "the seat is held back");
+        assert_eq!(held[0].absent, vec!["zz_new_verb".to_string()]);
+
+        let mut offering = surface.clone();
+        offering.insert("zz_new_verb".to_string());
+        assert!(split_seats(&[seat], Some(&offering)).1.is_empty(), "control: an engine that offers it holds nothing");
+    }
+
+    /// The utility floor decides here: the memorize utility names `experience(`, so an engine without
+    /// `experience` holds exactly the utilities that name it, and an engine with everything holds none.
+    #[test]
+    fn a_utility_command_naming_a_verb_the_running_engine_lacks_is_held() {
+        let mut running = surface_verbs();
+        assert!(running.remove("experience"), "control: the surface offers it");
+        let held = held_utilities(Some(&running));
+        let memorize = held.iter().find(|h| h.name == "memorize").unwrap_or_else(|| panic!("memorize is held: {held:?}"));
+        assert_eq!(memorize.absent, vec!["experience".to_string()]);
+        assert!(
+            held.len() < crate::conductor::UTILITY_MAP.len(),
+            "control: a utility that names no missing verb is not held: {held:?}"
+        );
+        assert!(held_utilities(Some(&surface_verbs())).is_empty(), "control: an engine offering everything holds none");
     }
 
     fn seats_dir() -> std::path::PathBuf {
