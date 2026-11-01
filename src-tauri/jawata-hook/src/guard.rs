@@ -387,6 +387,13 @@ const DECLARATION_WORDS: &[&str] = &[
     "import", "package", "extends", "implements",
 ];
 
+/// **INTERIM DRIVER.** This is the guest hook's refusal text, and the guest hook is retired at the switch
+/// (D7). D22 homes the lookup driver in "`Dispatch` in the agent loop" (ARCHITECTURE-28h.md:143), and the
+/// plan names no stage that builds an agent-loop `Dispatch` beyond the tool choke (S14's wire is the
+/// choke calling the rules lane and the steering rule), which cannot see a brain's own shell search. So
+/// this covers three lookups for the clients that have this hook, and nothing else, until Harald decides
+/// where the principal's lookup driver is built (the question is in the plan row).
+///
 /// D22 (Sprint 28h): the lookup tool that answers the question a grep over Java is really asking, named
 /// by the SHAPE of its pattern. The three lookups no agent was told to reach for are the three a grep
 /// is most often a bad stand-in for: the words of a message or log line (`find_string_literals`), a

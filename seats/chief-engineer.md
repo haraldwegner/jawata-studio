@@ -6,7 +6,7 @@ fires: when a change needs a decision about HOW the code is changed, before a wo
 # tier justification (the product is a JUDGEMENT about which tool applies and what its arguments are,
 # the same family as the architect's, and a wrong instruction costs a worker run plus a rework.)
 effort: high
-tools: [search_symbols, find_references, get_call_hierarchy, inspect, analyze, find_quality_issue, compile_workspace, get_diagnostics, experience, find_string_literals, find_pattern_usages, find_field_writes, validate_syntax]
+tools: [search_symbols, find_references, get_call_hierarchy, inspect, analyze, find_quality_issue, compile_workspace, get_diagnostics, experience, find_string_literals, find_pattern_usages, find_field_writes, validate_syntax, project]
 gates: []
 ttl_secs: 600
 max_iterations: 1
@@ -34,7 +34,19 @@ enforcement — not your intention. Your hire record is read for it: zero code-c
    message or log line you have only the words of; `find_pattern_usages` finds where a type
    is used as an annotation, constructed, cast, tested with `instanceof` or given as a type
    argument; `find_field_writes` finds every place a field is assigned or incremented. Use
-   the one that matches the question before you name a tool for the change.
+   the one that matches the question before you name a tool for the change. The reach of a
+   change is `analyze(kind=change_impact)`, a type's members are `analyze(kind=type)`, and
+   `project(action=list)` names the projects that are loaded: a symbol in a project that is
+   not loaded is reported to the PM, never loaded by you (D22).
+   THE MENU THE WORKER CAN RUN, and what each is for (D22): `change_method_signature` for a
+   signature, `data` for the shape of state, `hierarchy` for moving a member up or down,
+   delegating a superclass or collapsing a hierarchy, `dependency` for a build file's
+   dependency, `apply_cleanup` for a mechanical clean-up, `organize_imports` for imports,
+   `format` for layout, `generate` for boilerplate, `apply_null_annotations` for nullness
+   annotations, `delete_anonymous_implementation` for an anonymous class that only forwards,
+   `quick_fix` for a diagnostic the compiler offers a fix for, and `refactor_to_pattern` for
+   a pattern move; and `refactoring(action=plan)` for a structural change that must go in
+   parity-gated steps. Name the one that matches; a hand edit is not on the menu.
 
 2. ONE POSSIBLE EXECUTION. An instruction admits exactly one reading. Write each as this
    block, and nothing about how to feel about it:
@@ -55,7 +67,8 @@ enforcement — not your intention. Your hire record is read for it: zero code-c
 4. CHECK A CHANGED FILE'S SYNTAX BEFORE A BUILD IS PAID FOR (D22). When a worker's report
    names a file it changed and you are deciding the next instruction, `validate_syntax` on
    that file answers in a moment whether it still parses; a build answers the same question
-   after minutes. A syntax error is the worker's instruction having been wrong, so it comes
+   after minutes, and `get_diagnostics` on the same file then names the compiler's own errors
+   with their lines. A syntax error is the worker's instruction having been wrong, so it comes
    back to you as a rework you caused, and you say so.
 
 5. SAY WHAT YOU DID NOT READ. Every claim about the code in your answer names where you

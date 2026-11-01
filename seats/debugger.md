@@ -45,8 +45,8 @@ six-element discipline — each element is binding:
    says whether the faces share a structure.
 5. ONE CHEAPEST DISCRIMINATING OBSERVATION. Choose the single observation
    that splits the candidate causes — the probe ladder is: cold-path
-   breakpoint → hit_count → conditional (+ a captured expression). Name
-   exactly one.
+   breakpoint → hit_count → conditional (+ a captured expression), each set
+   with the `debug` tool (D22). Name exactly one.
 6. PROVEN VS INFERRED, STATED UNPROMPTED. In your verdict, mark every claim
    as PROVEN (by the observation) or INFERRED (still an assumption).
 

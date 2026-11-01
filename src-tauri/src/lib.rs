@@ -11,6 +11,7 @@ mod conductor;
 mod eclipse_notes;
 mod engine_activity;
 mod engine_floor;
+#[cfg(test)]
 mod tool_drivers;
 #[doc(hidden)]
 pub mod eclipse_probe;

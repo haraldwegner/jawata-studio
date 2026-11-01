@@ -654,7 +654,7 @@ mod tests {
         let _ = observe_in(&home, Client::ClaudeCode, &p, None);
         let log = std::fs::read_to_string(dir(&home).join("outcomes.log")).unwrap();
         assert!(log.contains("\tslip\tEdit\tone narrow reason\tsession=s1\n"), "{log}");
-        let report = crate::fallback_rate::read(&log, None);
+        let report = crate::fallback_rate::read(&log, None, None);
         assert_eq!(report.per_session.get("s1"), Some(&1), "and the read-back sees it as one session's slip");
     }
 

@@ -1,72 +1,143 @@
 //! D22 (Sprint 28h): the tools nobody drives. A tool the engine publishes and nothing reaches is built
-//! and invisible: "wired" means a driver reaches it. A driver is one of three things, and each is read
-//! from text that exists, never listed from memory:
+//! and invisible: "wired" means a driver reaches it. This module is the check, and it is TEST-ONLY: it
+//! produces nothing the product runs. It keeps true a fact about the seat files, and says which tool
+//! turns it false.
 //!
-//! - **a seat**: a seat file whose body writes the tool in backticks (the same reading the deploy floor
-//!   uses to decide what a skill names) AND whose own `tools:` list carries it, so the seat both is told
-//!   to reach for it and is allowed to;
-//! - **the hook**: a refusal of a shell habit that names the tool that does the job, in the hook's own
-//!   text (the loop for lookups, where the agent's own client is the loop);
-//! - **the product**: a step the product runs itself (a gate step of a hire it makes), or the engine
-//!   itself, which loads the workspace.
+//! ## Where the eleven come from
 //!
-//! The eleven tools that had no driver on 2026-11-01 are derived, not remembered: the vendored engine
-//! surface (`engine-surface.json`, 44 live tools) against the seat files (32 named in one), less
-//! `health_check`, which the stop-judge hire already runs as its gate step — which leaves the eleven the
-//! sprint's number names. This module keeps that derivation true: the test `no_published_tool_is_left_
-//! without_a_driver` turns red for ANY engine tool, now or when the surface is refreshed, that nothing
-//! reaches, and names it.
+//! D22's eleven were MEASURED, not chosen: the 28f brainstorm, section "The tools nobody drives", counted
+//! the tools published by the built v4.1.0 engine that nothing of ours named, matching STRICTLY (a quoted
+//! string in code, or a backticked name in `seats/` and `skills/`; plain-word matches were discarded
+//! because `move`, `format`, `field`, `data` and `project` are English and Rust words). It found:
+//! `analyze`, `dependency`, `find_duplicate_code`, `find_field_writes`, `find_modernization`,
+//! `find_pattern_usages`, `find_string_literals`, `go_to_definition`, `hierarchy`, `refresh_workspace`,
+//! `validate_syntax`. [`THE_ELEVEN`] is that list. `find_tests`, `get_at_position` and `health_check` are
+//! not in it: the first two were added as drivers by this slice because a seat's job needs them, and
+//! `health_check` is named by a quoted string in the stop judge. They are additions, not the contract.
 //!
-//! `load_project` is driven by the engine and is deliberately not offered to any seat: calling it
-//! re-installs the workspace, and on a studio-managed resident it dropped four of five loaded projects.
-//! The tool stays hidden from agents; the workspace is loaded at engine boot and by the studio's managed
-//! start. The test pins that no seat names it.
+//! ## What "driven" means here: the same strict reading, for every tool
+//!
+//! The project's own strict reader is [`verbs_named`] (a backticked name written as a call or alone).
+//! A tool is driven when
+//!
+//! - a seat file writes it in backticks AND that seat carries it in its own `tools:` list (the seat is
+//!   told to reach for it and is allowed to), or its `tools:` list is empty, which makes it a stance the
+//!   host agent executes with the host's own tools (a text seat such as `report`); or
+//! - a seat that DECIDES which tool an instruction names (the chief engineer, the pm) writes it in
+//!   backticks, and the worker, which RUNS the instruction, carries it (the instruction chain); or
+//! - a quoted string in the studio's own code names it as a step the product runs ([`ROWS`]).
+//!
+//! The eleven are held to one more condition: their driver sentence carries the marker `(D22)` and an
+//! exact phrase, so a seat that merely says "never use `find_tests`" is not a driver.
+//!
+//! ## What is true about `load_project`
+//!
+//! No seat names or carries it. The engine's own messages DO tell an agent to call it
+//! (`ErrorInfo.projectNotLoaded`, "No project loaded. Call load_project first.", `ErrorInfo.java:178`),
+//! and the engine loads a project at boot only when the project path setting is set
+//! (`JawataApplication.autoLoadProjectFromEnv`, `JawataApplication.java:180-183`; otherwise it logs that it
+//! is "waiting for load_project call"). Calling it re-installs the workspace, and on a studio-managed
+//! resident it dropped four of five loaded projects, so no seat is told to. It is therefore ACCEPTED as
+//! undriven by a seat, with the reason below, and the test pins that the accepted set is exactly that.
 
 use std::collections::BTreeSet;
 
 use crate::conductor::EMBEDDED_SEATS;
 use crate::engine_floor::{surface_verbs, verbs_named};
 
-/// What reaches a tool.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Driver {
-    /// A seat file writes the tool and carries it in its `tools:` list. Holds the seat file's name.
-    Seat(&'static str),
-    /// The hook's own text names the tool in a refusal that steers an agent to it.
-    Hook,
-    /// A step the product runs itself (a gate of a hire it makes).
-    Product,
-    /// The engine itself: it loads the workspace at boot, so no agent is told to.
-    Engine,
-}
+/// D22's eleven, as measured at v4.1.0 (see the module doc).
+pub const THE_ELEVEN: [&str; 11] = [
+    "analyze",
+    "dependency",
+    "find_duplicate_code",
+    "find_field_writes",
+    "find_modernization",
+    "find_pattern_usages",
+    "find_string_literals",
+    "go_to_definition",
+    "hierarchy",
+    "refresh_workspace",
+    "validate_syntax",
+];
 
-/// A driver that is not a seat: the file that holds its evidence and the sentence that must be in it.
+/// A tool a product step drives, named by a quoted string in the studio's own code.
 pub struct Row {
     pub tool: &'static str,
-    pub driver: Driver,
-    /// `""` for the engine, whose evidence is outside this repository and is a decision, not a quotation.
+    /// The file the string is in, relative to `src-tauri`.
     pub file: &'static str,
-    /// The text that must appear in `file`, so the row says something the code does.
+    /// The text that must be in that file.
     pub evidence: &'static str,
 }
 
-/// The drivers that are not a seat naming a tool. Kept short on purpose: a seat is read, not listed.
-pub const ROWS: &[Row] = &[
-    Row {
-        tool: "health_check",
-        driver: Driver::Product,
-        file: "jawata-hook/src/judge.rs",
-        evidence: r#""steps": [{ "tool": "health_check", "arguments": {} }]"#,
-    },
-    Row {
-        tool: "load_project",
-        driver: Driver::Engine,
-        file: "",
-        evidence: "the workspace is loaded at engine boot and by the studio's managed start; the tool stays hidden from agents because it re-installs the workspace",
-    },
-];
+/// Tools driven by a product step rather than a seat.
+pub const ROWS: &[Row] = &[Row {
+    tool: "health_check",
+    file: "jawata-hook/src/judge.rs",
+    evidence: r#""steps": [{ "tool": "health_check", "arguments": {} }]"#,
+}];
 
-/// The text of a file this module cites as evidence.
+/// Tools no seat drives, by decision, and why. The test pins this set so it cannot grow quietly.
+pub const ACCEPTED_UNDRIVEN: &[(&str, &str)] = &[(
+    "load_project",
+    "calling it re-installs the workspace (on a studio-managed resident it dropped four of five loaded \
+     projects), so no seat is told to; the engine loads a project at boot when its project path setting \
+     is set (JawataApplication.java:180-183), and the engine's own error text does tell an agent to call \
+     it (ErrorInfo.java:178)",
+)];
+
+/// The tools a seat file's front matter lists, and whether it has a `tools:` line at all.
+fn tools_line(seat_text: &str) -> Option<BTreeSet<String>> {
+    seat_text.lines().find_map(|l| l.strip_prefix("tools:")).map(|rest| {
+        rest.trim()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect()
+    })
+}
+
+/// The tools a seat file's front matter carries.
+fn tools_of(seat_text: &str) -> BTreeSet<String> {
+    tools_line(seat_text).unwrap_or_default()
+}
+
+/// Whether the seat can reach `tool`: it lists it, or it lists NOTHING (`tools: []`), which is a stance
+/// the host agent executes with the host's own tools (the front-door shape of a text seat such as
+/// `report`), so what the stance writes in backticks is what the host agent is told to call.
+fn reaches(seat_text: &str, tool: &str) -> bool {
+    tools_line(seat_text).is_some_and(|set| set.is_empty() || set.contains(tool))
+}
+
+/// The seats whose job is to DECIDE which tool an instruction names; the worker runs what they write.
+const INSTRUCTION_GIVERS: &[&str] = &["chief-engineer.md", "pm.md"];
+const INSTRUCTION_RUNNER: &str = "worker.md";
+
+/// Who drives `tool` under the strict reading, over `seats` (name, text). `Some((namer, carrier))`.
+pub fn strict_driver(seats: &[(&str, &str)], tool: &str, universe: &BTreeSet<String>) -> Option<(String, String)> {
+    for (name, text) in seats {
+        if !verbs_named(text, universe).contains(tool) {
+            continue;
+        }
+        if reaches(text, tool) {
+            return Some((name.to_string(), name.to_string()));
+        }
+        if INSTRUCTION_GIVERS.contains(name) {
+            let runner = seats.iter().find(|(n, _)| *n == INSTRUCTION_RUNNER);
+            if runner.is_some_and(|(_, t)| tools_of(t).contains(tool)) {
+                return Some((name.to_string(), INSTRUCTION_RUNNER.to_string()));
+            }
+        }
+    }
+    None
+}
+
+fn embedded() -> Vec<(&'static str, &'static str)> {
+    EMBEDDED_SEATS.iter().map(|(n, t)| (*n, *t)).collect()
+}
+
+/// The text of a file a [`Row`] cites.
 fn text_of(file: &str) -> &'static str {
     match file {
         "jawata-hook/src/judge.rs" => include_str!("../jawata-hook/src/judge.rs"),
@@ -74,86 +145,19 @@ fn text_of(file: &str) -> &'static str {
     }
 }
 
-/// The `tools:` list of a seat file's front matter.
-fn seat_tools(seat_text: &str) -> BTreeSet<String> {
-    seat_text
-        .lines()
-        .find_map(|l| l.strip_prefix("tools:"))
-        .map(|rest| {
-            rest.trim()
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .split(',')
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// The seat that drives `tool`. First choice: one whose body writes it AND whose own `tools:` list
-/// carries it (it is told to reach for it and is allowed to). Otherwise: a seat whose body writes it
-/// as the tool of an instruction, when some seat carries it in its `tools:` list (the chief engineer
-/// writes `rename_symbol` into an instruction and the worker's list carries it).
-fn seat_driving(tool: &str, universe: &BTreeSet<String>) -> Option<&'static str> {
-    let namer = |own_tools_too: bool| {
-        EMBEDDED_SEATS.iter().find_map(|(name, text)| {
-            let named = verbs_named(text, universe).contains(tool);
-            (named && (!own_tools_too || seat_tools(text).contains(tool))).then_some(*name)
-        })
-    };
-    if let Some(seat) = namer(true) {
-        return Some(seat);
-    }
-    let carried = EMBEDDED_SEATS.iter().any(|(_, text)| seat_tools(text).contains(tool));
-    if carried { namer(false) } else { None }
-}
-
-/// The strictest reading: a seat whose body writes `tool` in backticks AND whose own `tools:` list
-/// carries it. The eleven of D22 are held to this one, so taking either half away turns them red.
-pub fn strict_seat(tool: &str) -> Option<&'static str> {
-    let universe = surface_verbs();
-    EMBEDDED_SEATS.iter().find_map(|(name, text)| {
-        (verbs_named(text, &universe).contains(tool) && seat_tools(text).contains(tool)).then_some(*name)
-    })
-}
-
-/// Whether `text` carries `tool` as a whole word (not inside a longer identifier).
-fn names_as_word(text: &str, tool: &str) -> bool {
-    let bytes = text.as_bytes();
-    let boundary = |b: u8| !(b.is_ascii_alphanumeric() || b == b'_');
-    text.match_indices(tool).any(|(at, _)| {
-        let before = at == 0 || boundary(bytes[at - 1]);
-        let end = at + tool.len();
-        let after = end >= bytes.len() || boundary(bytes[end]);
-        before && after
-    })
-}
-
-/// The first seat whose text names `tool` as a whole word. This is the loosest reading of "a seat
-/// reaches it", and it is the one a tool whose name is also a plain English word (`data`, `field`,
-/// `project`, `debug`, `hire`) can only be held to: the backticked reading cannot tell the tool from
-/// the word. The eleven of D22 all have distinctive names and are held to the strict reading by
-/// `the_eleven_each_have_a_named_driver`.
-fn seat_naming(tool: &str) -> Option<&'static str> {
-    EMBEDDED_SEATS.iter().find(|(_, text)| names_as_word(text, tool)).map(|(name, _)| *name)
-}
-
-/// The named driver of `tool`, or `None` when nothing reaches it.
-pub fn driver_of(tool: &str) -> Option<Driver> {
-    let universe = surface_verbs();
-    if let Some(seat) = seat_driving(tool, &universe) {
-        return Some(Driver::Seat(seat));
-    }
-    if let Some(row) = ROWS.iter().find(|r| r.tool == tool) {
-        return Some(row.driver.clone());
-    }
-    seat_naming(tool).map(Driver::Seat)
-}
-
-/// The published tools nothing reaches.
+/// Published tools nothing reaches under the strict reading, less the product steps and the accepted set.
 pub fn undriven() -> BTreeSet<String> {
-    surface_verbs().into_iter().filter(|t| driver_of(t).is_none()).collect()
+    let universe = surface_verbs();
+    let seats = embedded();
+    universe
+        .iter()
+        .filter(|t| {
+            strict_driver(&seats, t, &universe).is_none()
+                && !ROWS.iter().any(|r| r.tool == t.as_str())
+                && !ACCEPTED_UNDRIVEN.iter().any(|(a, _)| *a == t.as_str())
+        })
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -167,14 +171,11 @@ mod tests {
     }
 
     #[test]
-    fn every_row_says_something_the_files_say() {
+    fn every_product_row_says_something_the_code_says() {
         for row in ROWS {
-            if row.driver == Driver::Engine {
-                continue;
-            }
             assert!(
                 text_of(row.file).contains(row.evidence),
-                "the driver row for {} cites {} but its text does not carry: {}",
+                "the row for {} cites {} but it does not carry: {}",
                 row.tool,
                 row.file,
                 row.evidence
@@ -182,43 +183,108 @@ mod tests {
         }
     }
 
+    /// The eleven, each with the seat that writes it and the phrase that makes it a step. A seat that
+    /// says "never use `find_tests`" carries none of these phrases, so a negative sentence is no driver.
+    const PHRASES: &[(&str, &str, &str)] = &[
+        ("analyze", "chief-engineer.md", "change is `analyze(kind=change_impact)`"),
+        ("dependency", "chief-engineer.md", "hierarchy, `dependency` for a build file's"),
+        ("find_duplicate_code", "architect.md", "(D22): `find_duplicate_code` over the scope a change"),
+        ("find_field_writes", "chief-engineer.md", "argument; `find_field_writes` finds every place"),
+        ("find_modernization", "architect.md", "read; `find_modernization` names the code that could adopt"),
+        ("find_pattern_usages", "chief-engineer.md", "of; `find_pattern_usages` finds where a type"),
+        ("find_string_literals", "chief-engineer.md", "spelling: `find_string_literals` finds the code that emits"),
+        ("go_to_definition", "debugger.md", "there, and `go_to_definition` follows a call"),
+        ("hierarchy", "chief-engineer.md", "state, `hierarchy` for moving a member up or down"),
+        ("refresh_workspace", "pm.md", "exists, call `refresh_workspace` once and repeat"),
+        ("validate_syntax", "chief-engineer.md", "next instruction, `validate_syntax` on that file answers"),
+    ];
+
     #[test]
-    fn the_eleven_each_have_a_named_driver() {
-        for (tool, want) in [
-            ("find_duplicate_code", "architect.md"),
-            ("find_modernization", "architect.md"),
-            ("find_tests", "test-writer.md"),
-            ("get_at_position", "debugger.md"),
-            ("go_to_definition", "debugger.md"),
-            ("find_string_literals", "chief-engineer.md"),
-            ("find_pattern_usages", "chief-engineer.md"),
-            ("find_field_writes", "chief-engineer.md"),
-            ("validate_syntax", "chief-engineer.md"),
-            ("refresh_workspace", "pm.md"),
-        ] {
-            assert_eq!(strict_seat(tool), Some(want), "{tool}: a seat must write it in backticks and carry it in its tools: list");
-            assert_eq!(driver_of(tool), Some(Driver::Seat(want)), "{tool}");
+    fn the_spec_eleven_are_each_driven_by_a_real_seat_step() {
+        let universe = surface_verbs();
+        let seats = embedded();
+        assert_eq!(PHRASES.len(), THE_ELEVEN.len());
+        for tool in THE_ELEVEN {
+            let (_, seat, phrase) = PHRASES.iter().find(|(t, _, _)| *t == tool).unwrap_or_else(|| panic!("no phrase for {tool}"));
+            let text = seats.iter().find(|(n, _)| n == seat).map(|(_, t)| *t).unwrap_or_default();
+            let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(flat(text).contains(&flat(phrase)), "{tool}: {seat} must carry the step `{phrase}`");
+            assert!(text.contains("(D22)"), "{tool}: {seat} carries no (D22) marker");
+            let (namer, carrier) = strict_driver(&seats, tool, &universe).unwrap_or_else(|| panic!("{tool} has no strict driver"));
+            assert_eq!(&namer, seat, "{tool}: the seat that writes it");
+            // dependency and hierarchy change code: the chief engineer decides, the worker runs.
+            let expected_carrier = if matches!(tool, "dependency" | "hierarchy") { "worker.md" } else { *seat };
+            assert_eq!(carrier, expected_carrier, "{tool}: the seat that carries it");
         }
-        assert_eq!(driver_of("load_project"), Some(Driver::Engine));
-        assert_eq!(driver_of("health_check"), Some(Driver::Product));
     }
 
-    /// `load_project` re-installs the workspace; a seat that names it would teach an agent to drop the
-    /// projects the studio loaded. The decision is that no seat names it.
+    /// Additions this slice made beyond the spec's eleven, said plainly and held to the same reading.
     #[test]
-    fn load_project_is_driven_by_the_engine_and_no_seat_names_it() {
+    fn the_additions_are_driven_too_and_are_not_the_contract() {
         let universe = surface_verbs();
-        for (name, text) in EMBEDDED_SEATS.iter() {
+        let seats = embedded();
+        for (tool, seat) in [("find_tests", "test-writer.md"), ("get_at_position", "debugger.md")] {
+            assert!(!THE_ELEVEN.contains(&tool), "{tool} is an addition, not one of the eleven");
+            assert_eq!(strict_driver(&seats, tool, &universe).map(|(n, _)| n).as_deref(), Some(seat), "{tool}");
+        }
+    }
+
+    /// The half-conditions, on fixtures: a seat that writes a tool but does not carry it, or carries it
+    /// but does not write it, drives nothing; a negative sentence still "writes" it, which is why the
+    /// eleven also need their exact phrase (`the_spec_eleven_are_each_driven_by_a_real_seat_step`).
+    #[test]
+    fn a_seat_must_both_write_the_tool_and_carry_it() {
+        let universe = surface_verbs();
+        let writes_only = "---\ntools: [analyze]\n---\nUse `find_tests` first.";
+        let carries_only = "---\ntools: [find_tests]\n---\nNothing about tests here.";
+        let both = "---\ntools: [find_tests]\n---\nUse `find_tests` first.";
+        assert_eq!(strict_driver(&[("a.md", writes_only)], "find_tests", &universe), None, "writes but does not carry");
+        assert_eq!(strict_driver(&[("a.md", carries_only)], "find_tests", &universe), None, "carries but does not write");
+        assert_eq!(
+            strict_driver(&[("a.md", both)], "find_tests", &universe),
+            Some(("a.md".to_string(), "a.md".to_string()))
+        );
+    }
+
+    /// A text seat (`tools: []`) is a stance the host agent executes with its own tools, so the tools it
+/// writes in backticks are driven by it; a file with no `tools:` line at all is no seat and drives nothing.
+#[test]
+fn a_stance_with_an_empty_tools_list_drives_what_it_writes_and_a_file_without_the_line_drives_nothing() {
+    let universe = surface_verbs();
+    let stance = "---\ntools: []\n---\nCall `find_tests` first.";
+    let no_line = "---\nname: x\n---\nCall `find_tests` first.";
+    assert_eq!(strict_driver(&[("report.md", stance)], "find_tests", &universe), Some(("report.md".to_string(), "report.md".to_string())));
+    assert_eq!(strict_driver(&[("x.md", no_line)], "find_tests", &universe), None);
+}
+
+/// An instruction giver that names a change tool the worker does not carry drives nothing; one the
+    /// worker carries is driven through the chain.
+    #[test]
+    fn the_instruction_chain_needs_the_worker_to_carry_the_tool() {
+        let universe = surface_verbs();
+        let giver = "---\ntools: [analyze]\n---\nName `hierarchy` when a member moves.";
+        let worker_without = "---\ntools: [extract]\n---\n";
+        let worker_with = "---\ntools: [hierarchy]\n---\n";
+        assert_eq!(strict_driver(&[("chief-engineer.md", giver), ("worker.md", worker_without)], "hierarchy", &universe), None);
+        assert_eq!(
+            strict_driver(&[("chief-engineer.md", giver), ("worker.md", worker_with)], "hierarchy", &universe),
+            Some(("chief-engineer.md".to_string(), "worker.md".to_string()))
+        );
+        // a seat that is not an instruction giver does not drive through the worker
+        assert_eq!(strict_driver(&[("debugger.md", giver), ("worker.md", worker_with)], "hierarchy", &universe), None);
+    }
+
+    /// `load_project` is accepted undriven, with its reason; the accepted set is exactly that, and no
+    /// seat names or carries it.
+    #[test]
+    fn load_project_is_accepted_undriven_and_no_seat_names_or_carries_it() {
+        let accepted: Vec<&str> = ACCEPTED_UNDRIVEN.iter().map(|(t, _)| *t).collect();
+        assert_eq!(accepted, vec!["load_project"], "the accepted set must not grow quietly");
+        assert!(ACCEPTED_UNDRIVEN[0].1.contains("ErrorInfo.java:178"), "the reason says the engine's own message tells agents to call it");
+        let universe = surface_verbs();
+        for (name, text) in embedded() {
             assert!(!verbs_named(text, &universe).contains("load_project"), "{name} names load_project");
-            assert!(!seat_tools(text).contains("load_project"), "{name} offers load_project");
+            assert!(!tools_of(text).contains("load_project"), "{name} carries load_project");
         }
-    }
-
-    #[test]
-    fn a_tool_a_seat_names_but_is_not_allowed_to_call_is_not_driven_by_that_seat() {
-        let text = "---\ntools: [analyze]\n---\nUse `find_tests` first.";
-        let universe = surface_verbs();
-        assert!(verbs_named(text, &universe).contains("find_tests"));
-        assert!(!seat_tools(text).contains("find_tests"));
     }
 }

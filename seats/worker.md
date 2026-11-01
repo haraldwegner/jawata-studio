@@ -10,7 +10,7 @@ effort: low
 # The one seat hired in a mode that can change code (engine SeatHire: absent means read-only). It
 # changes code through the engine's tools and nothing else: the brain's own editors are not offered.
 changes_code: true
-tools: [rename_symbol, extract, inline, move, hierarchy, change_method_signature, data, generate, organize_imports, apply_cleanup, apply_null_annotations, refactor_to_pattern, delete_anonymous_implementation, format, quick_fix, refactoring, compile_workspace, get_diagnostics, search_symbols, find_references, inspect, analyze]
+tools: [rename_symbol, extract, inline, move, hierarchy, dependency, change_method_signature, data, generate, organize_imports, apply_cleanup, apply_null_annotations, refactor_to_pattern, delete_anonymous_implementation, format, quick_fix, refactoring, compile_workspace, get_diagnostics, search_symbols, find_references, inspect, analyze]
 gates: []
 ttl_secs: 600
 max_iterations: 1

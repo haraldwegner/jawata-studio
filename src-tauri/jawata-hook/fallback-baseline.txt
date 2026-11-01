@@ -1,2 +1,3 @@
-per_active_day=38.28
-window=2026-07-03..2026-11-01 (outcomes.log as of 2026-11-01: 3445 declared fallbacks over 90 active days, none carrying a session)
+per_calendar_day=28.24
+shipped_in=4.4.23
+window=2026-07-03..2026-11-01 (outcomes.log as of 2026-11-01: 3445 declared fallbacks over 122 calendar days, 90 of them active days; none carrying a session)
