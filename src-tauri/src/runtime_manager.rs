@@ -3587,6 +3587,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 28h S15 slice 2 (the last hop of the seats folder): the pair a launch line names reaches the child's
+    /// environment. A stand-in child prints what it was given; the line is teed to the log.
+    #[cfg(unix)]
+    #[test]
+    fn a_child_is_started_with_the_environment_its_launch_line_names() {
+        let dir = unique_test_dir("env-reaches-child");
+        let ws_dir = dir.to_string_lossy().to_string();
+        let log = dir.join("env.log").to_string_lossy().to_string();
+        let manager = RuntimeManager::new(fake_paths_in(&dir));
+        let reference = make_reference("env-1", "env-ws", &ws_dir);
+        let spec = CommandSpec {
+            command: "sh".into(),
+            args: vec![
+                "-c".into(),
+                "printf 'SEATS=%s\\n' \"$JAWATA_AGENT_SEATS_DIR\"; sleep 20".into(),
+            ],
+            env: vec![(SEATS_DIR_ENV.to_string(), "/cfg/jawata/seats".to_string())],
+            log_path: log.clone(),
+        };
+
+        manager.start_runtime_with_spec(&reference, spec).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+
+        let contents = std::fs::read_to_string(&log).expect("read log file");
+        assert!(
+            contents.contains("SEATS=/cfg/jawata/seats"),
+            "the child must see JAWATA_AGENT_SEATS_DIR: {contents:?}"
+        );
+        let _ = manager.stop_workspace_runtime("env-ws");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 2026-09-13: the store reload hangs off this announcement, so it must fire for a
     /// spawned resident — once, however many READY lines it prints — carrying the address,
     /// token and engine the reload needs.

@@ -49,6 +49,9 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_
 # 28k Stage 20: the test that the copy of the engine's note fixtures is byte-identical checks sha256 sums.
 [dev-dependencies]
 sha2 = "0.10"
+# 28h S15 slice 2: the canary round is run for real against a mock app, so the link from the round to the seat
+# deploy is a behaviour and not a line of text.
+tauri = { version = "2.10.3", features = ["test"] }
 
 # Sprint 28 (D-SHIM) — the workspace exists so `jawata-hook` can be a SIBLING
 # crate rather than a module of this one. That is the enforcement, not a

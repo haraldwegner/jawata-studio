@@ -2424,24 +2424,42 @@ mod ui_thread_tests {
 }
 
 /// 28h S15 (D27, the deploy trigger): the engine switch is noticed by the ready listener, but nothing
-/// deploys until the canary round asks. The service method is `pub` on a public type, so no dead-code
-/// check sees its caller disappear; this pin reads the round as written and fails when the call is gone.
+/// deploys until the canary round asks. The round is RUN, against a mock app and a sandboxed service with
+/// a newer engine waiting, and what it did is read back from the disk.
 #[cfg(test)]
 mod canary_duty_tests {
-    fn run_canary_round_source() -> &'static str {
-        let source = include_str!("lib.rs");
-        let start = source.find("fn run_canary_round<R: Runtime>").expect("the canary round is written here");
-        let end = start + source[start..].find("\n}\n").expect("the round ends with its closing brace");
-        &source[start..end]
+    use super::*;
+    use crate::manager_service::engine_switch_fixture::EngineSwitch;
+
+    const NEW_ENGINE: &str = "/engines/4.4.9/jawata.jar";
+
+    fn app_over(fixture: &mut EngineSwitch) -> tauri::App<tauri::test::MockRuntime> {
+        let app = tauri::test::mock_app();
+        app.manage(AppState { manager_service: fixture.take_service() });
+        app
     }
 
     #[test]
-    fn the_canary_round_asks_for_the_seat_redeploy_of_a_changed_engine() {
-        let round = run_canary_round_source();
-        assert!(round.contains("canary_population()"), "control: the scan found the round's own body");
-        assert!(
-            round.contains("redeploy_seats_for_new_engine()"),
-            "the canary round must call redeploy_seats_for_new_engine, or an engine switch never deploys a held skill"
-        );
+    fn the_canary_round_deploys_the_seats_of_a_changed_engine() {
+        let mut fixture = EngineSwitch::new("canary-switch");
+        fixture.mark_pending(NEW_ENGINE);
+        assert!(!fixture.skill_written(), "control: nothing is written before the round");
+        let app = app_over(&mut fixture);
+
+        run_canary_round(app.handle());
+
+        assert!(fixture.skill_written(), "the round must deploy the seats of the engine that came up");
+        assert_eq!(fixture.deployed_against().as_deref(), Some(NEW_ENGINE), "and record the engine");
+    }
+
+    #[test]
+    fn a_canary_round_with_no_engine_change_deploys_nothing() {
+        let mut fixture = EngineSwitch::new("canary-quiet");
+        let app = app_over(&mut fixture);
+
+        run_canary_round(app.handle());
+
+        assert!(!fixture.skill_written(), "no engine is pending, so the round writes no seat");
+        assert_eq!(fixture.deployed_against(), None);
     }
 }

@@ -35,13 +35,26 @@ pub struct Launch {
     pub env: Vec<(String, String)>,
 }
 
+/// The BASE address of a resident, from the address the studio keeps for it. The studio's server
+/// address is the MCP endpoint (`http://127.0.0.1:<port>/mcp`); the `--acp` launcher takes the base
+/// and asks for `<base>/acp`, which is a route at the listener's root, so a `/mcp` left on the end
+/// would send it to `/mcp/acp`, where nothing answers. The only place the suffix is removed.
+pub fn resident_base_url(server_url: &str) -> String {
+    let trimmed = server_url.trim_end_matches('/');
+    trimmed.strip_suffix("/mcp").unwrap_or(trimmed).trim_end_matches('/').to_string()
+}
+
 impl Launch {
     /// The launcher bridge for one resident: `java -jar <jar> --acp`, address and key in the environment.
-    pub fn for_resident(jar: &str, url: &str, key: &str) -> Self {
+    /// `server_url` is the studio's address for the resident (the MCP endpoint); the base is derived here.
+    pub fn for_resident(jar: &str, server_url: &str, key: &str) -> Self {
         Launch {
             command: "java".into(),
             args: vec!["-jar".into(), jar.into(), "--acp".into()],
-            env: vec![("JAWATA_URL".into(), url.into()), ("JAWATA_KEY".into(), key.into())],
+            env: vec![
+                ("JAWATA_URL".into(), resident_base_url(server_url)),
+                ("JAWATA_KEY".into(), key.into()),
+            ],
         }
     }
 
@@ -424,6 +437,15 @@ mod tests {
         assert_eq!(value["env"]["JAWATA_URL"], "http://127.0.0.1:7001");
         assert_eq!(value["env"]["JAWATA_KEY"], "k-1");
         assert!(!value["args"].to_string().contains("k-1"), "the key must not ride on the command line");
+    }
+
+    #[test]
+    fn the_launcher_is_given_the_base_address_never_the_mcp_endpoint() {
+        for given in ["http://127.0.0.1:7001/mcp", "http://127.0.0.1:7001/mcp/", "http://127.0.0.1:7001"] {
+            let value = Launch::for_resident("/e/jawata.jar", given, "k-1").value(false);
+            assert_eq!(value["env"]["JAWATA_URL"], "http://127.0.0.1:7001", "from {given}");
+        }
+        assert_eq!(resident_base_url("http://h:1/mcpx/mcp"), "http://h:1/mcpx");
     }
 
     #[test]

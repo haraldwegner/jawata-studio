@@ -371,7 +371,9 @@ pub(crate) struct ManagedDeployServer {
     workspace_name: String,
     project_names: Vec<String>,
     project_paths: Vec<String>,
-    /// Resident JVM URL (`http://127.0.0.1:<resident_port>`).
+    /// Resident JVM address as the MCP clients use it: `http://127.0.0.1:<resident_port>/mcp`, WITH the
+    /// `/mcp` endpoint. The `--acp` launcher wants the base without it; the registration rows derive that
+    /// from this value in one place (`agent_registration::resident_base_url`).
     url: String,
     /// Bearer token the client sends in `Authorization` headers.
     token: String,
@@ -525,20 +527,30 @@ impl ManagerService {
             if !wait_over {
                 return Ok(false);
             }
+            // The floor can only hold back what the engine's own tool list lacks, so a deploy that runs
+            // before the new engine has answered it would write every skill, held or not, and still be
+            // recorded as done. The engine stays pending until it answers.
+            if self.running_engine_verbs().is_none() {
+                return Ok(false);
+            }
             pending.take().expect("checked above")
         };
-        match self.deploy_seats() {
-            Ok(_) => {
+        let failure = match self.deploy_seats() {
+            Err(error) => Some(error),
+            Ok(result) => seat_deploy_failure(&result),
+        };
+        match failure {
+            None => {
                 remember_seats_deployed_against(&self.config_store.paths().config_dir, &engine)?;
                 crate::studio_log::say(&format!(
                     "seats deployed again: the engine is now {engine}, so a skill held for a verb the older engine lacked is written if this one offers it"
                 ));
                 Ok(true)
             }
-            Err(error) => {
+            Some(error) => {
                 *self.seats_redeploy_pending.lock().expect("pending mutex poisoned") = Some(engine);
                 *self.seats_redeploy_retry_after.lock().expect("retry mutex poisoned") =
-                    Some(Instant::now() + Duration::from_secs(60));
+                    Some(Instant::now() + SEATS_REDEPLOY_RETRY);
                 Err(error)
             }
         }
@@ -7524,6 +7536,28 @@ fn seats_deployed_against(config_dir: &Path) -> Option<String> {
         .filter(|text| !text.is_empty())
 }
 
+/// How long a failed redeploy waits before it is tried again.
+const SEATS_REDEPLOY_RETRY: Duration = Duration::from_secs(60);
+
+/// What counts as a failed seat deploy for the engine switch: at least one client was written to and
+/// EVERY one of them failed, so no client has the skills the new engine allows. A deploy where some
+/// clients succeeded has delivered the skills where it can; the failing client is reported in the deploy
+/// log and would fail the same way a minute later, so it does not hold the record back. A deploy with no
+/// client to write to has nothing to deliver and is not a failure.
+fn seat_deploy_failure(result: &DeployToAgentsResult) -> Option<String> {
+    if result.clients.is_empty()
+        || !result.clients.iter().all(|c| matches!(c.status, DeployClientStatus::Failed))
+    {
+        return None;
+    }
+    let reasons: Vec<String> = result
+        .clients
+        .iter()
+        .map(|c| format!("{}: {}", c.client, c.validation_errors.join("; ")))
+        .collect();
+    Some(format!("every client failed, so no skill was delivered ({})", reasons.join(" | ")))
+}
+
 fn remember_seats_deployed_against(config_dir: &Path, engine: &str) -> Result<(), String> {
     fs::create_dir_all(config_dir).map_err(|e| format!("cannot write {SEATS_DEPLOYED_AGAINST_FILE}: {e}"))?;
     fs::write(config_dir.join(SEATS_DEPLOYED_AGAINST_FILE), engine)
@@ -12758,7 +12792,7 @@ mod tests {
 
 
     /// The skill path a claude-layout client gets for one seat's command.
-    fn claude_seat_file(commands_dir: &Path, seat: &str) -> PathBuf {
+    pub(super) fn claude_seat_file(commands_dir: &Path, seat: &str) -> PathBuf {
         let cmd = crate::conductor::command_for(seat).expect("a command-mapped seat");
         commands_dir.join(cmd).join("SKILL.md")
     }
@@ -13160,7 +13194,8 @@ judge was never told to give"
     #[test]
     fn a_pending_engine_waits_out_the_retry_window_before_it_deploys() {
         let dir = unique_tempdir("engine-switch-retry");
-        let service = service_over(&dir);
+        let mut service = service_over(&dir);
+        service.engine_verbs_stub = Some(Some(crate::engine_floor::surface_verbs()));
         *service.seats_redeploy_pending.lock().unwrap() = Some("/engines/4.4.3/jawata.jar".into());
         *service.seats_redeploy_retry_after.lock().unwrap() = Some(Instant::now() + Duration::from_secs(3600));
 
@@ -19322,6 +19357,58 @@ mod registration_rows_tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// The rows written from REAL servers: two workspaces, a local jar, a client found. What a client reads back is
+    /// what the launcher needs: the jar, `--acp`, the BASE address of its own workspace's resident, and that
+    /// resident's key in the environment, not in the arguments.
+    #[test]
+    fn the_rows_written_from_real_servers_carry_each_residents_base_address_and_key() {
+        use super::engine_switch_fixture::EngineSwitch;
+        let fixture = EngineSwitch::new("regrow-real");
+        let service = fixture.service();
+        service
+            .add_project(crate::config::AddProjectInput {
+                name: "beta".into(),
+                project_path: fixture.dir().join("beta").display().to_string(),
+                workspace_name: "beta-ws".into(),
+            })
+            .expect("a second workspace");
+        let (home, _) = service.client_roots.clone().expect("the fixture sandboxes the client roots");
+        fs::create_dir_all(home.join(".config/zed")).unwrap();
+
+        let result = service
+            .deploy_to_agents(DeployToAgentsInput {
+                mode: DeployMode::Deploy,
+                target_clients: Some(vec![ZED_ROW.to_string()]),
+            })
+            .expect("a deploy run answers");
+        let zed = result.clients.iter().find(|c| c.client == ZED_ROW).unwrap();
+        assert!(matches!(zed.status, DeployClientStatus::Success), "{}", zed.message);
+
+        let text = fs::read_to_string(home.join(".config/zed/settings.json")).unwrap();
+        let root: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let jar = display_path(&fixture.dir().join("jawata.jar"));
+        let servers = service.knowledge_servers();
+        assert_eq!(servers.len(), 2, "control: two workspaces have a resident each");
+        for server in &servers {
+            let entry = &root["agent_servers"][format!("jawata ({})", server.workspace_name)];
+            assert_eq!(entry["type"], "custom", "{}", server.workspace_name);
+            assert_eq!(entry["command"], "java");
+            assert_eq!(entry["args"], serde_json::json!(["-jar", jar, "--acp"]), "the jar the settings name");
+            let url = entry["env"]["JAWATA_URL"].as_str().unwrap();
+            assert!(server.url.ends_with("/mcp"), "control: the studio's own address is the MCP endpoint");
+            assert_eq!(url, server.url.strip_suffix("/mcp").unwrap(), "the base, of this workspace's own resident");
+            assert!(url.starts_with("http://127.0.0.1:") && !url[7..].contains('/'), "no path at all: {url}");
+            assert!(!server.token.is_empty(), "control: the resident has a key");
+            assert_eq!(entry["env"]["JAWATA_KEY"], server.token.as_str(), "this resident's key");
+            assert!(!entry["args"].to_string().contains(&server.token), "the key is not on the command line");
+        }
+        assert_ne!(
+            root["agent_servers"]["jawata (alpha-ws)"]["env"]["JAWATA_URL"],
+            root["agent_servers"]["jawata (beta-ws)"]["env"]["JAWATA_URL"],
+            "two workspaces, two residents"
+        );
+    }
+
     #[test]
     fn the_deploy_writes_the_rows_after_the_roster() {
         let source = include_str!("manager_service.rs");
@@ -19336,5 +19423,208 @@ mod registration_rows_tests {
                 < deploy.find("registration_results_at(").unwrap(),
             "the rows follow the resolve errors, so those ride only on roster rows"
         );
+    }
+}
+
+/// 28h S15 slice 2: the engine switch as one fixture, so the tests of the redeploy and the canary round build the
+/// same sandbox: a Claude client with a config, a local jar, one workspace, and a skill the older engine lacks a
+/// verb for.
+#[cfg(test)]
+pub(crate) mod engine_switch_fixture {
+    use super::tests::{claude_seat_file, service_over, unique_tempdir};
+    use super::*;
+
+    pub(crate) struct EngineSwitch {
+        service: Option<ManagerService>,
+        config_dir: PathBuf,
+        dir: PathBuf,
+        commands: PathBuf,
+        held_seat: String,
+    }
+
+    impl EngineSwitch {
+        pub(crate) fn new(label: &str) -> Self {
+            let dir = unique_tempdir(label);
+            let mut service = service_over(&dir);
+            let jar = dir.join("jawata.jar");
+            fs::write(&jar, b"not really a jar").unwrap();
+            let mut settings = service.config_store.get_settings();
+            settings.global_runtime_source = crate::config::RuntimeSource::LocalJar { jar_path: display_path(&jar) };
+            settings.deploy_targets.claude = true;
+            service.config_store.write_settings(settings).unwrap();
+            service
+                .add_project(crate::config::AddProjectInput {
+                    name: "alpha".into(),
+                    project_path: dir.join("alpha").display().to_string(),
+                    workspace_name: "alpha-ws".into(),
+                })
+                .expect("a workspace to deploy");
+            let settings = service.config_store.get_settings();
+            let mcp_path = service
+                .deploy_targets_for_settings(&settings)
+                .iter()
+                .find(|t| t.id == "claude")
+                .and_then(|t| t.target_path.clone())
+                .expect("a claude config path");
+            fs::create_dir_all(Path::new(&mcp_path).parent().unwrap()).unwrap();
+            fs::write(&mcp_path, "{}\n").unwrap();
+            let commands = derive_seat_commands_dir("claude", &mcp_path).expect("claude has commands");
+            let seats_dir = service.seats_dir();
+            crate::conductor::materialize_seats(&seats_dir).unwrap();
+            let (seats, _) = crate::runner::load_seat_definitions(&seats_dir);
+            let verb = crate::engine_floor::a_verb_some_seats_name(&seats);
+            let mut missing = crate::engine_floor::surface_verbs();
+            assert!(missing.remove(&verb));
+            let (_, held) = crate::engine_floor::split_seats(&seats, Some(&missing));
+            assert!(!held.is_empty(), "control: an engine lacking {verb} holds a seat back");
+            let held_seat = held[0].name.clone();
+            service.engine_verbs_stub = Some(Some(crate::engine_floor::surface_verbs()));
+            let config_dir = service.config_store.paths().config_dir.clone();
+            EngineSwitch { service: Some(service), config_dir, dir, commands, held_seat }
+        }
+
+        pub(crate) fn service(&self) -> &ManagerService {
+            self.service.as_ref().expect("the service is still here")
+        }
+
+        pub(crate) fn service_mut(&mut self) -> &mut ManagerService {
+            self.service.as_mut().expect("the service is still here")
+        }
+
+        /// The service itself, for a test that must hand it to the app state; the sandbox folder stays with the
+        /// fixture and goes when the fixture does.
+        pub(crate) fn take_service(&mut self) -> ManagerService {
+            self.service.take().expect("the service is taken once")
+        }
+
+        pub(crate) fn dir(&self) -> &Path {
+            &self.dir
+        }
+
+        /// A newer engine has come up and is waiting for its deploy.
+        pub(crate) fn mark_pending(&self, engine: &str) {
+            *self.service().seats_redeploy_pending.lock().unwrap() = Some(engine.to_string());
+        }
+
+        pub(crate) fn pending(&self) -> Option<String> {
+            self.service().seats_redeploy_pending.lock().unwrap().clone()
+        }
+
+        pub(crate) fn retry_after(&self) -> Option<Instant> {
+            *self.service().seats_redeploy_retry_after.lock().unwrap()
+        }
+
+        pub(crate) fn clear_retry_window(&self) {
+            *self.service().seats_redeploy_retry_after.lock().unwrap() = None;
+        }
+
+        pub(crate) fn skill_written(&self) -> bool {
+            claude_seat_file(&self.commands, &self.held_seat).exists()
+        }
+
+        pub(crate) fn deployed_against(&self) -> Option<String> {
+            seats_deployed_against(&self.config_dir)
+        }
+
+        /// The Claude client can no longer be written to: its commands folder is a plain file.
+        pub(crate) fn make_the_client_unwritable(&self) {
+            fs::create_dir_all(self.commands.parent().unwrap()).unwrap();
+            fs::write(&self.commands, "in the way").unwrap();
+        }
+
+        pub(crate) fn make_the_client_writable(&self) {
+            let _ = fs::remove_file(&self.commands);
+        }
+    }
+
+    impl Drop for EngineSwitch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+}
+
+#[cfg(test)]
+mod engine_switch_tests {
+    use super::engine_switch_fixture::EngineSwitch;
+    use super::*;
+
+    const NEW_ENGINE: &str = "/engines/4.4.9/jawata.jar";
+
+    fn client(status: DeployClientStatus) -> DeployClientResult {
+        DeployClientResult {
+            client: "claude".into(),
+            target_path: "/x".into(),
+            status,
+            message: String::new(),
+            backup_path: None,
+            changed_sections: Vec::new(),
+            validation_errors: vec!["boom".into()],
+            preview_content: None,
+        }
+    }
+
+    fn result(clients: Vec<DeployClientResult>) -> DeployToAgentsResult {
+        DeployToAgentsResult {
+            mode: DeployMode::Deploy,
+            ok: true,
+            detail: String::new(),
+            duration_ms: 0,
+            clients,
+        }
+    }
+
+    #[test]
+    fn a_seat_deploy_counts_as_failed_only_when_every_client_failed() {
+        let failed = || client(DeployClientStatus::Failed);
+        let written = || client(DeployClientStatus::Success);
+        assert!(seat_deploy_failure(&result(vec![failed()])).is_some(), "the one client failed");
+        assert!(seat_deploy_failure(&result(vec![failed(), failed()])).is_some());
+        assert!(seat_deploy_failure(&result(vec![failed(), written()])).is_none(), "one client got the skills");
+        assert!(seat_deploy_failure(&result(vec![written()])).is_none());
+        assert!(seat_deploy_failure(&result(vec![])).is_none(), "no client to write to is nothing to retry");
+        assert!(seat_deploy_failure(&result(vec![failed()])).unwrap().contains("boom"), "the reason is carried");
+    }
+
+    #[test]
+    fn a_deploy_that_fails_for_every_client_keeps_the_engine_pending_and_waits_a_minute() {
+        let fixture = EngineSwitch::new("switch-fails");
+        fixture.make_the_client_unwritable();
+        fixture.mark_pending(NEW_ENGINE);
+        let before = Instant::now();
+
+        let answer = fixture.service().redeploy_seats_for_new_engine();
+        assert!(answer.is_err(), "a deploy that wrote nowhere is a failure: {answer:?}");
+        assert_eq!(fixture.pending().as_deref(), Some(NEW_ENGINE), "the engine stays pending");
+        assert_eq!(fixture.deployed_against(), None, "and the record does not move");
+        let retry = fixture.retry_after().expect("a retry window is set");
+        assert!(retry >= before + Duration::from_secs(55), "about a minute, not at once");
+        assert!(retry <= Instant::now() + Duration::from_secs(65));
+        assert_eq!(fixture.service().redeploy_seats_for_new_engine(), Ok(false), "inside the window nothing runs");
+
+        // The client is fixed and the window is over: the same engine deploys and the skill arrives.
+        fixture.make_the_client_writable();
+        fixture.clear_retry_window();
+        assert_eq!(fixture.service().redeploy_seats_for_new_engine(), Ok(true));
+        assert!(fixture.skill_written());
+        assert_eq!(fixture.pending(), None);
+        assert_eq!(fixture.deployed_against().as_deref(), Some(NEW_ENGINE));
+    }
+
+    #[test]
+    fn a_redeploy_waits_for_the_new_engine_to_answer_its_tool_list() {
+        let mut fixture = EngineSwitch::new("switch-waits");
+        fixture.service_mut().engine_verbs_stub = Some(None);
+        fixture.mark_pending(NEW_ENGINE);
+
+        assert_eq!(fixture.service().redeploy_seats_for_new_engine(), Ok(false), "no answer yet, no deploy");
+        assert!(!fixture.skill_written(), "nothing was written unfloored");
+        assert_eq!(fixture.pending().as_deref(), Some(NEW_ENGINE), "the engine stays pending");
+        assert_eq!(fixture.deployed_against(), None);
+        assert!(fixture.retry_after().is_none(), "waiting for an answer is not a failure");
+
+        fixture.service_mut().engine_verbs_stub = Some(Some(crate::engine_floor::surface_verbs()));
+        assert_eq!(fixture.service().redeploy_seats_for_new_engine(), Ok(true), "once it answers, the deploy runs");
+        assert!(fixture.skill_written());
     }
 }
