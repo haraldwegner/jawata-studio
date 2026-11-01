@@ -141,7 +141,7 @@ pub fn observe_in(
         let mut slipped = None;
         if is_java(&path) {
             if request_only.to_lowercase().contains("jawata-fallback:") {
-                slipped = Some(slip(&dir, client, tool, &request_only, config));
+                slipped = Some(slip(&dir, client, session, tool, &request_only, config));
             }
         }
         slipped
@@ -167,7 +167,7 @@ pub fn observe_in(
             && flat.to_lowercase().contains(".java")
             && flat.to_lowercase().contains("jawata-fallback:")
         {
-            Some(slip(&dir, client, tool, &request_only, config))
+            Some(slip(&dir, client, session, tool, &request_only, config))
         } else {
             None
         }
@@ -253,9 +253,11 @@ fn slip_record_args(tool: &str, reason: &str) -> serde_json::Value {
 }
 
 /// A slip: log it, bridge it to the store (fail-safe), answer the steering.
-fn slip(dir: &Path, client: Client, tool: &str, request: &str, config: Option<&HookConfig>) -> Outcome {
+fn slip(dir: &Path, client: Client, session: &str, tool: &str, request: &str, config: Option<&HookConfig>) -> Outcome {
     let reason = reason_after_marker(request);
-    emit(dir, "slip", &format!("{tool}\t{reason}"));
+    // D22: the session rides on the line, AFTER the two columns every older reader takes, so a rate
+    // PER SESSION can be read back (`fallback-rate`). Lines written before this carry no session.
+    emit(dir, "slip", &format!("{tool}\t{reason}\tsession={}", session.replace(['\t', '\n', '\r'], " ")));
     if let Some(cfg) = config {
         let args = slip_record_args(tool, &reason);
         let _ = crate::query::ask(
@@ -637,6 +639,23 @@ mod tests {
         }
         let log = std::fs::read_to_string(dir(&home).join("outcomes.log")).unwrap();
         assert!(log.contains("\tslip\tEdit\tone narrow reason"), "{log}");
+    }
+
+    /// D22: the slip line carries the session, after the two columns older readers take, so the
+    /// fallback rate can be read PER SESSION.
+    #[test]
+    fn a_slip_line_carries_the_session_after_its_two_older_columns() {
+        let home = scratch("slip-session");
+        let p = payload("Edit", serde_json::json!({
+            "file_path": "/w/src/A.java",
+            "old_string": "x",
+            "new_string": "y // jawata-fallback: one narrow reason"
+        }));
+        let _ = observe_in(&home, Client::ClaudeCode, &p, None);
+        let log = std::fs::read_to_string(dir(&home).join("outcomes.log")).unwrap();
+        assert!(log.contains("\tslip\tEdit\tone narrow reason\tsession=s1\n"), "{log}");
+        let report = crate::fallback_rate::read(&log, None);
+        assert_eq!(report.per_session.get("s1"), Some(&1), "and the read-back sees it as one session's slip");
     }
 
     #[test]

@@ -324,6 +324,29 @@ fn a_hand_typed_test_skeleton_as_a_new_file_is_refused_by_name_and_a_written_tes
     let _ = std::fs::remove_dir_all(&home);
 }
 
+/// D22: through the REAL binary, a grep over Java for the words of a message is refused with the lookup
+/// tool that answers it named, and one difference (a single word) names no specific lookup.
+#[test]
+fn a_java_grep_for_a_message_is_refused_naming_find_string_literals() {
+    let home = scratch("lookup-steer");
+    let reason_of = |cmd: &str, session: &str| {
+        let out = guard_says(&bash(session, cmd), &home);
+        assert_eq!("deny", decision_of(&out), "a java grep is denied; got {out}");
+        let v: serde_json::Value = serde_json::from_str(&out).expect("JSON");
+        v["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .or_else(|| v["user_message"].as_str())
+            .or_else(|| v["agent_message"].as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let steered = reason_of("grep -rn \"Unable to connect to broker\" src/main/java/Thing.java", "s-lookup-1");
+    assert!(steered.contains("find_string_literals"), "a message pattern names its lookup: {steered}");
+    let plain = reason_of("grep -rn 'foo' src/main/java/Thing.java", "s-lookup-2");
+    assert!(!plain.contains("find_string_literals"), "one word names no specific lookup: {plain}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
 #[test]
 fn the_shell_half_still_works_after_the_edit_half_was_added() {
     // The regression this file's history demands: adding one half must not

@@ -48,6 +48,11 @@ fn main() {
         std::process::exit(jawata_hook::cadence::main(&all_args[2..]));
     }
 
+    // D22: the declared-fallback rate, read back from the outcomes log: a report, no stdin, no store.
+    if jawata_hook::fallback_rate::is_fallback_rate_call(&all_args) {
+        std::process::exit(jawata_hook::fallback_rate::main(&all_args[2..]));
+    }
+
     // REL44-1: which build this binary IS. The integration tests ask it first, because once a
     // stale sidecar copied over target/debug/jawata-hook made a whole run drive an older hook
     // without anything noticing — the one test whose rule the old binary lacked failed, and

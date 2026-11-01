@@ -11,7 +11,7 @@ effort: high
 # The activity labels this seat carries (D45): a rule anchored to `release` binds this seat's brief
 # and no worker's. Matched EXACTLY, so the label is written here and nowhere else.
 activities: [release]
-tools: [compile_workspace, get_diagnostics, search_symbols, find_references, inspect, analyze, find_quality_issue, experience]
+tools: [compile_workspace, get_diagnostics, search_symbols, find_references, inspect, analyze, find_quality_issue, experience, refresh_workspace]
 gates: []
 answer_gates: [upward_message]
 ttl_secs: 900
@@ -79,6 +79,11 @@ asking is the instruction this seat exists to produce.
    failed arrivals' findings were in that fourth class** — every one was a lookup
    somebody could have run in-turn. An arrival spent on the first three is a arrival
    wasted, and it is your call to refuse it.
+   A LOOKUP THAT ANSWERS NOTHING IS NOT AN ABSENCE (D22). The engine has no file watcher,
+   so a change made outside its own tools is invisible to its searches until
+   `refresh_workspace` reconciles it from disk. When `find_references` or `search_symbols`
+   answers nothing for a member you know exists, call `refresh_workspace` once and repeat
+   the lookup before you write that something is absent, or that a member has no callers.
 
 4. ROUTE EACH JOB TO THE CHEAPEST INSTRUMENT THAT ANSWERS IT. You decide which tools
    are used, and that includes deciding when a hired reader is the wrong one. Finding

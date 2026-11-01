@@ -9,7 +9,7 @@ schedule: "0 6 * * *"
 # D13 (the 2026-10-11 amendment): the architect performs no operation the engine classifies as changing code. `refactoring` is flagged,
 # because its apply and undo actions change code, so it is not declared here; the architect NAMES the plan kind and target and the
 # chief engineer turns that into an instruction. Found by the test that reads this list against the engine's own flag (S10-8).
-tools: [find_quality_issue, find_references, inspect, analyze, compile_workspace, experience]
+tools: [find_quality_issue, find_references, inspect, analyze, compile_workspace, experience, find_duplicate_code, find_modernization]
 gates: []
 ttl_secs: 600
 max_iterations: 1
@@ -238,6 +238,12 @@ Rules (each one is binding):
    seat (including as the unblocker when a coverage gate stops a
    refactoring); structural smells → a parity-gated refactoring plan
    (refactoring action=plan), stating the plan kind and target.
+   TWO LOOKUPS FEED THIS RULE (D22): `find_duplicate_code` over the scope a change
+   touched names its clone groups, so a second copy of a job the diff did not
+   announce is found by the compiler's token stream and not by what you happened to
+   read; `find_modernization` names the code that could adopt a newer language idiom,
+   and each candidate you keep goes to the chief engineer with its kind and its
+   apply tool, never applied by you.
 5. CONTRACT CHANGES: DERIVE THE CONSUMERS, AND ASK WHAT YOU CANNOT SEE.
    When a change alters a CONTRACT — a signature, a schema, a response
    payload, a serialized format, a protocol message, a file layout — the

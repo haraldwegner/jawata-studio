@@ -364,15 +364,114 @@ pub fn judge(command: &str) -> Verdict {
     let Some(tool) = text_tool_in(command) else {
         return Verdict::Allow;
     };
+    // D22: the lookup that answers THIS question, named by the shape of the pattern, so the refusal
+    // is a driver and not only a stop.
+    let shaped = lookup_tool_for(command)
+        .map(|hint| format!(" For the shape of this search the tool is {hint}."))
+        .unwrap_or_default();
     Verdict::Deny {
         reason: format!(
             "Shell text search on .java is blocked — `{tool}` cannot see symbols, so it \
              misses references and overmatches names. Call search_symbols / find_references / \
-             get_call_hierarchy via JAWATA MCP instead. If JAWATA genuinely cannot answer this \
+             get_call_hierarchy via JAWATA MCP instead.{shaped} If JAWATA genuinely cannot answer this \
              one, re-run with `{FALLBACK_DECLARATION} <why>` in the command; the declaration is \
              logged."
         ),
     }
+}
+
+/// Words that open a declaration: a pattern that starts with one is a lookup of a definition, which
+/// `search_symbols` answers, so no more specific tool is named for it.
+const DECLARATION_WORDS: &[&str] = &[
+    "class", "interface", "enum", "record", "public", "private", "protected", "static", "void", "final", "abstract",
+    "import", "package", "extends", "implements",
+];
+
+/// D22 (Sprint 28h): the lookup tool that answers the question a grep over Java is really asking, named
+/// by the SHAPE of its pattern. The three lookups no agent was told to reach for are the three a grep
+/// is most often a bad stand-in for: the words of a message or log line (`find_string_literals`), a
+/// type used as an annotation, constructed or tested with `instanceof` (`find_pattern_usages`), and an
+/// assignment to a field (`find_field_writes`). `None` when the pattern fits none of them; the refusal
+/// then names the general tools only, as before. A shape guess is a hint in a refusal, never a block.
+pub(crate) fn lookup_tool_for(command: &str) -> Option<&'static str> {
+    for segment in segments(command) {
+        if !mentions_java_source(segment) {
+            continue;
+        }
+        let pattern = search_pattern_in(segment)?;
+        return classify_pattern(&pattern);
+    }
+    None
+}
+
+/// The search pattern of a grep-like segment: the first quoted string after the tool word, else the
+/// first bare argument that is neither a flag nor a path.
+fn search_pattern_in(segment: &str) -> Option<String> {
+    let after_tool = segment.find(|c: char| c.is_whitespace()).map(|i| &segment[i..]).unwrap_or("");
+    for quote in ['\'', '"'] {
+        if let Some(start) = after_tool.find(quote) {
+            let rest = &after_tool[start + 1..];
+            if let Some(end) = rest.find(quote) {
+                return Some(rest[..end].to_string());
+            }
+        }
+    }
+    after_tool
+        .split_whitespace()
+        .find(|w| !w.starts_with('-') && !w.contains('/') && !w.to_lowercase().ends_with(".java"))
+        .map(str::to_string)
+}
+
+fn is_identifier_path(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+}
+
+/// An assignment or increment of one field: `name = ...`, `this.name = ...`, `name += ...`, `name++`.
+fn is_field_write(p: &str) -> bool {
+    let p = p.trim();
+    if let Some(name) = p.strip_suffix("++").or_else(|| p.strip_suffix("--")) {
+        return is_identifier_path(name.trim());
+    }
+    let Some(eq) = p.find('=') else {
+        return false;
+    };
+    if p[eq + 1..].starts_with('=') {
+        return false;
+    }
+    let target = p[..eq].trim_end().trim_end_matches(['+', '-', '*', '/', '|', '&', '^']).trim_end();
+    is_identifier_path(target)
+}
+
+/// Two or more plain words with no regex shape: what a message or log line looks like.
+fn is_message(p: &str) -> bool {
+    let p = p.trim();
+    if p.contains('=') || p.chars().any(|c| "\\^$[]()|*+?{}".contains(c)) {
+        return false;
+    }
+    let words: Vec<&str> = p.split_whitespace().collect();
+    words.len() >= 2 && words.iter().all(|w| w.chars().any(|c| c.is_alphanumeric())) && !DECLARATION_WORDS.contains(&words[0])
+}
+
+fn classify_pattern(p: &str) -> Option<&'static str> {
+    let p = p.trim();
+    if p.starts_with('@') {
+        return Some("find_pattern_usages(kind=annotation, query=<fully qualified annotation>)");
+    }
+    if p.starts_with("new ") {
+        return Some("find_pattern_usages(kind=instantiation, query=<fully qualified type>)");
+    }
+    if p.contains("instanceof") {
+        return Some("find_pattern_usages(kind=instanceof, query=<fully qualified type>)");
+    }
+    if is_field_write(p) {
+        return Some("find_field_writes(symbol=pkg.Type#field)");
+    }
+    if is_message(p) {
+        return Some("find_string_literals(query=<the words of the message>)");
+    }
+    None
 }
 
 /// Write-capable programs in COMMAND POSITION: interpreters that can rewrite
@@ -847,6 +946,43 @@ mod tests {
             }
             other => panic!("expected a denial: {other:?}"),
         }
+    }
+
+    /// D22: the refusal of a grep over Java names the lookup tool that answers the question the
+    /// pattern asks, by the shape of the pattern. Each shape has a control one difference away.
+    #[test]
+    fn a_java_grep_is_steered_to_the_lookup_its_pattern_shape_asks_for() {
+        let reason_of = |cmd: &str| match judge(cmd) {
+            Verdict::Deny { reason } => reason,
+            other => panic!("expected a denial for {cmd}: {other:?}"),
+        };
+        for (cmd, want) in [
+            (r#"grep -rn "Unable to connect to broker" src/main/java/Thing.java"#, "find_string_literals"),
+            ("rg 'could not load the seat file' Thing.java", "find_string_literals"),
+            ("grep -rn '@Autowired' src/main/java/Thing.java", "find_pattern_usages(kind=annotation"),
+            ("grep -rn 'new ArrayList' src/main/java/Thing.java", "find_pattern_usages(kind=instantiation"),
+            ("grep -rn 'x instanceof Foo' Thing.java", "find_pattern_usages(kind=instanceof"),
+            ("grep -rn 'total = ' src/main/java/Thing.java", "find_field_writes"),
+            ("grep -rn 'this.count++' src/main/java/Thing.java", "find_field_writes"),
+            ("grep -rn 'balance += ' Thing.java", "find_field_writes"),
+        ] {
+            let reason = reason_of(cmd);
+            assert!(reason.contains(want), "{cmd} should be steered to {want}: {reason}");
+            assert!(reason.contains("search_symbols"), "the general alternative stays: {reason}");
+            assert!(reason.contains(FALLBACK_DECLARATION), "and the escape hatch: {reason}");
+        }
+        // Controls, one difference each: a single word, a declaration, a comparison, a regex.
+        for cmd in [
+            "grep -rn 'foo' src/main/java/Thing.java",
+            "grep -rn 'class Foo' src/main/java/Thing.java",
+            "grep -rn 'a == b' Thing.java",
+            "grep -rnE 'foo.*bar baz' Thing.java",
+        ] {
+            let reason = reason_of(cmd);
+            assert!(!reason.contains("For the shape of this search"), "{cmd} fits no lookup shape: {reason}");
+        }
+        // A declared fallback still goes through, exactly as before.
+        assert!(!denied(&format!("grep -rn 'Unable to connect' Thing.java # {FALLBACK_DECLARATION} the log line is not a symbol")));
     }
 
     #[test]

@@ -5,7 +5,7 @@ purpose: Writes tests that pin down how untested code behaves today, before a ch
 fires: the COVERAGE gate: a change that added behaviour, before it is called done
 # tier justification (C13: full D5 chain green both probes (also C10 live) at 1/3 the cost)
 effort: low
-tools: [run_tests, find_quality_issue, inspect, compile_workspace]
+tools: [run_tests, find_quality_issue, inspect, compile_workspace, find_tests]
 gates: [tests]
 ttl_secs: 420
 max_iterations: 1
@@ -27,7 +27,11 @@ Rules (each one is binding):
    determine actual behavior from the source, answer with the single line
    `REFUSE: <why>` instead of a proposal.
 3. COVER THE UNCOVERED. The findings list names the uncovered branches —
-   target exactly those. Exceptions and boundary values included.
+   target exactly those. Exceptions and boundary values included. Before you
+   create a test class, `find_tests` names the tests that already exist for the
+   class (D22): extend the one that is there, and create a new class only when it
+   names none.
 4. NEW TEST FILES ONLY. You create/extend test sources under src/test/java;
    you never touch production code.
-5. You do not use any tools; everything you need is in the prompt.
+5. Under the hosted runner you use no tools and everything you need is in the
+   prompt; on the engine's own start path your tools are the list in the header.

@@ -13,6 +13,7 @@ pub mod access;
 pub mod autonomy;
 pub mod bracket;
 pub mod cadence;
+pub mod fallback_rate;
 pub mod config;
 pub mod cue;
 pub mod areamemo;
