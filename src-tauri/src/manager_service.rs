@@ -432,6 +432,8 @@ pub struct ManagerService {
     /// test supplies in place of asking a resident (`Some(None)` = no engine answered). `None` in
     /// production: the resident is asked.
     engine_verbs_stub: Option<Option<BTreeSet<String>>>,
+    /// With a stubbed answer: how long the lookup takes, as a slow resident's would.
+    engine_verbs_delay: Option<Duration>,
     /// 28h S15 (the deploy trigger of D27): the engine a resident has just come up on, when it is not the
     /// engine the seats were last deployed against. Set by the ready listener (which cannot deploy: it
     /// runs on the runtime manager's threads and holds no service), taken by
@@ -503,6 +505,7 @@ impl ManagerService {
             }),
             eclipse_liveness: Arc::new(eclipse_notes::os_liveness),
             engine_verbs_stub: None,
+            engine_verbs_delay: None,
             seats_redeploy_pending,
             seats_redeploy_retry_after: Arc::new(Mutex::new(None)),
         }
@@ -527,14 +530,18 @@ impl ManagerService {
             if !wait_over {
                 return Ok(false);
             }
-            // The floor can only hold back what the engine's own tool list lacks, so a deploy that runs
-            // before the new engine has answered it would write every skill, held or not, and still be
-            // recorded as done. The engine stays pending until it answers.
-            if self.running_engine_verbs().is_none() {
-                return Ok(false);
-            }
             pending.take().expect("checked above")
         };
+        // The floor can only hold back what the engine's own tool list lacks, so a deploy that runs before
+        // the new engine has answered it would write every skill, held or not, and still be recorded as done.
+        // The engine stays pending until it answers. The lookup asks up to three residents for up to three
+        // seconds each, so it runs OUTSIDE the lock: the resident-ready listener takes the same lock on the
+        // thread that reads the resident's stdout, and must never wait for this. An engine that came up in the
+        // meantime is newer than the one taken out and keeps the slot.
+        if self.running_engine_verbs().is_none() {
+            self.seats_redeploy_pending.lock().expect("pending mutex poisoned").get_or_insert(engine);
+            return Ok(false);
+        }
         let failure = match self.deploy_seats() {
             Err(error) => Some(error),
             Ok(result) => seat_deploy_failure(&result),
@@ -548,7 +555,7 @@ impl ManagerService {
                 Ok(true)
             }
             Some(error) => {
-                *self.seats_redeploy_pending.lock().expect("pending mutex poisoned") = Some(engine);
+                self.seats_redeploy_pending.lock().expect("pending mutex poisoned").get_or_insert(engine);
                 *self.seats_redeploy_retry_after.lock().expect("retry mutex poisoned") =
                     Some(Instant::now() + SEATS_REDEPLOY_RETRY);
                 Err(error)
@@ -1617,6 +1624,9 @@ impl ManagerService {
     /// `None` when none does.
     fn running_engine_verbs(&self) -> Option<BTreeSet<String>> {
         if let Some(stub) = &self.engine_verbs_stub {
+            if let Some(delay) = self.engine_verbs_delay {
+                std::thread::sleep(delay);
+            }
             return stub.clone();
         }
         self.knowledge_servers()
@@ -19609,6 +19619,69 @@ mod engine_switch_tests {
         assert!(fixture.skill_written());
         assert_eq!(fixture.pending(), None);
         assert_eq!(fixture.deployed_against().as_deref(), Some(NEW_ENGINE));
+    }
+
+    /// A slow lookup of the engine's tool list must not hold the lock the resident-ready listener takes: that
+    /// listener runs on the thread reading the resident's stdout. An engine that comes up during the lookup is
+    /// kept, not overwritten by the one that was taken out.
+    #[test]
+    fn a_slow_tool_list_lookup_does_not_block_a_resident_coming_up() {
+        let mut fixture = EngineSwitch::new("switch-slow-lookup");
+        fixture.service_mut().engine_verbs_delay = Some(Duration::from_millis(1500));
+        let ready = fixture.service().runtime_manager.ready_listener().expect("the service installs a ready listener");
+        let up = |engine: &str| crate::runtime_manager::ResidentUp {
+            url: "http://127.0.0.1:1/mcp".into(),
+            token: "t".into(),
+            engine: engine.into(),
+        };
+        ready(up("/engines/4.4.1/jawata.jar"));
+        fixture.mark_pending("/engines/4.4.2/jawata.jar");
+
+        let service = fixture.service();
+        let (during, answer) = std::thread::scope(|scope| {
+            let redeploy = scope.spawn(|| service.redeploy_seats_for_new_engine());
+            std::thread::sleep(Duration::from_millis(300));
+            let started = Instant::now();
+            ready(up("/engines/4.4.3/jawata.jar"));
+            (started.elapsed(), redeploy.join().expect("the redeploy thread ends"))
+        });
+
+        assert!(during < Duration::from_millis(700), "the listener waited {during:?} for the lookup");
+        assert_eq!(answer, Ok(true), "the lookup answered and the older engine was deployed");
+        assert_eq!(
+            fixture.pending().as_deref(),
+            Some("/engines/4.4.3/jawata.jar"),
+            "the engine that came up meanwhile is still waiting for its deploy"
+        );
+    }
+
+    /// The same, when the lookup finds no answer: the engine that was taken out goes back, but never over one that
+    /// came up while the lookup ran.
+    #[test]
+    fn an_engine_that_comes_up_during_an_unanswered_lookup_keeps_the_slot() {
+        let mut fixture = EngineSwitch::new("switch-slow-unanswered");
+        fixture.service_mut().engine_verbs_stub = Some(None);
+        fixture.service_mut().engine_verbs_delay = Some(Duration::from_millis(600));
+        let ready = fixture.service().runtime_manager.ready_listener().expect("the service installs a ready listener");
+        let up = |engine: &str| crate::runtime_manager::ResidentUp {
+            url: "http://127.0.0.1:1/mcp".into(),
+            token: "t".into(),
+            engine: engine.into(),
+        };
+        ready(up("/engines/4.4.1/jawata.jar"));
+        fixture.mark_pending("/engines/4.4.2/jawata.jar");
+
+        let service = fixture.service();
+        let answer = std::thread::scope(|scope| {
+            let redeploy = scope.spawn(|| service.redeploy_seats_for_new_engine());
+            std::thread::sleep(Duration::from_millis(200));
+            ready(up("/engines/4.4.3/jawata.jar"));
+            redeploy.join().expect("the redeploy thread ends")
+        });
+
+        assert_eq!(answer, Ok(false), "no answer, no deploy");
+        assert_eq!(fixture.pending().as_deref(), Some("/engines/4.4.3/jawata.jar"), "the newer engine keeps the slot");
+        assert!(!fixture.skill_written());
     }
 
     #[test]
