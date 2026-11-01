@@ -1,3 +1,4 @@
+mod agent_registration;
 mod backups;
 mod brains;
 mod client_dialect;
@@ -1078,6 +1079,11 @@ pub(crate) fn request_canary_round() {
 ///
 /// Returns the verdict so the caller can decide how soon to ask again.
 fn run_canary_round<R: Runtime>(app: &AppHandle<R>) -> field_view::CanaryHealth {
+    // 28h S15 (D27): a resident that has come up on a newer engine is the moment a held skill may be
+    // written. Cheap when nothing is pending: one lock and a return.
+    if let Err(error) = app.state::<AppState>().manager_service.redeploy_seats_for_new_engine() {
+        studio_log::say(&format!("seats not deployed again after an engine change: {error}"));
+    }
     let population = app.state::<AppState>().manager_service.canary_population();
     if population.probe.is_empty() && population.switched_off.is_empty() {
         // Nothing deployed yet — an absence, not a failure, and the SAME truth as
@@ -2414,5 +2420,28 @@ mod ui_thread_tests {
         let names: Vec<String> = commands().into_iter().map(|(_, name, _)| name).collect();
         assert!(names.iter().any(|n| n == "start_all_runtimes"), "{names:?}");
         assert!(names.iter().any(|n| n == "reload_all_runtimes"), "{names:?}");
+    }
+}
+
+/// 28h S15 (D27, the deploy trigger): the engine switch is noticed by the ready listener, but nothing
+/// deploys until the canary round asks. The service method is `pub` on a public type, so no dead-code
+/// check sees its caller disappear; this pin reads the round as written and fails when the call is gone.
+#[cfg(test)]
+mod canary_duty_tests {
+    fn run_canary_round_source() -> &'static str {
+        let source = include_str!("lib.rs");
+        let start = source.find("fn run_canary_round<R: Runtime>").expect("the canary round is written here");
+        let end = start + source[start..].find("\n}\n").expect("the round ends with its closing brace");
+        &source[start..end]
+    }
+
+    #[test]
+    fn the_canary_round_asks_for_the_seat_redeploy_of_a_changed_engine() {
+        let round = run_canary_round_source();
+        assert!(round.contains("canary_population()"), "control: the scan found the round's own body");
+        assert!(
+            round.contains("redeploy_seats_for_new_engine()"),
+            "the canary round must call redeploy_seats_for_new_engine, or an engine switch never deploys a held skill"
+        );
     }
 }

@@ -420,7 +420,17 @@ pub struct RuntimeReference {
     /// because an engine that ignores the file would generate its own token and
     /// 401 every client the manager just configured.
     pub engine_version: Option<String>,
+    /// 28h S15 (the carry from S12 slice 7): the folder of the deployed seat files, handed to the engine in
+    /// its environment as [`SEATS_DIR_ENV`]. The engine reads it to give the seats that declare a `schedule:`
+    /// to its seat scheduler; without it an engine this studio starts schedules nothing and the schedule the
+    /// old runner had would never run on the new start path. `None` only for a reference built by hand
+    /// (a test), never by `resolve_runtime_reference_with`.
+    pub seats_dir: Option<String>,
 }
+
+/// The engine's environment name for the seat-files folder (jawata-mcp `DefaultEngineSettings`:
+/// `jawata.agent.seatsDir`). An engine that does not read it ignores it.
+pub const SEATS_DIR_ENV: &str = "JAWATA_AGENT_SEATS_DIR";
 
 /// Launch request for one jawata spawn. Manager_service has already
 /// written `<workspace_dir>/workspace.json` with the full project list of
@@ -634,7 +644,7 @@ impl RuntimeManager {
         *self.ready_listener.lock().expect("ready listener mutex poisoned") = Some(listener);
     }
 
-    fn ready_listener(&self) -> Option<ReadyListener> {
+    pub(crate) fn ready_listener(&self) -> Option<ReadyListener> {
         self.ready_listener.lock().expect("ready listener mutex poisoned").clone()
     }
 
@@ -1329,10 +1339,18 @@ impl RuntimeManager {
             }
         }
 
+        // 28h S15: the seat-files folder reaches the engine through its environment, so the seat
+        // schedules the engine now runs (`ScheduledHires`) are on in the product.
+        let env: Vec<(String, String)> = reference
+            .seats_dir
+            .iter()
+            .map(|dir| (SEATS_DIR_ENV.to_string(), dir.clone()))
+            .collect();
+
         CommandSpec {
             command: "java".into(),
             args,
-            env: vec![],
+            env,
             log_path,
         }
     }
@@ -1996,6 +2014,7 @@ mod tests {
                 // Deliberately an OLD engine: this request drives the
                 // argv-token path, which stays supported (studio#14).
                 engine_version: Some("1.4.0".into()),
+                seats_dir: None,
             },
         }
     }
@@ -2104,6 +2123,31 @@ mod tests {
         assert!(names.iter().any(|n| n == "health_check"));
         assert!(names.iter().any(|n| n == "search_symbols"));
         assert!(token_file_mode_ok, "the token file is owner-only");
+    }
+
+    /// 28h S15 (the carry from S12 slice 7): the engine's seat scheduler is switched on by the setting
+    /// `jawata.agent.seatsDir`, and a studio that never writes it starts engines that schedule nothing. The
+    /// reference names the folder of the deployed seat files, and the launch line puts it in the engine's
+    /// environment under the name the engine maps (`JAWATA_AGENT_SEATS_DIR`, spelled out here on purpose:
+    /// a rename on either side would otherwise fail silently).
+    #[test]
+    fn an_engine_is_started_with_the_folder_of_the_deployed_seat_files() {
+        let manager = RuntimeManager::new(fake_paths());
+        let mut request = fake_launch_request();
+        request.reference.seats_dir = Some("/cfg/jawata/seats".into());
+
+        let spec = manager.command_spec_for(&request);
+
+        assert_eq!(
+            spec.env,
+            vec![("JAWATA_AGENT_SEATS_DIR".to_string(), "/cfg/jawata/seats".to_string())],
+            "the engine gets the seats folder in its environment"
+        );
+        assert_eq!(SEATS_DIR_ENV, "JAWATA_AGENT_SEATS_DIR");
+
+        // Control: a reference that names no folder adds nothing to the environment.
+        let spec = manager.command_spec_for(&fake_launch_request());
+        assert!(spec.env.is_empty(), "no folder named, nothing written: {:?}", spec.env);
     }
 
     #[test]
@@ -2592,6 +2636,7 @@ mod tests {
             // These lifecycle tests never spawn a real engine, so the token
             // channel is irrelevant to them; None keeps them off the file path.
             engine_version: None,
+            seats_dir: None,
         }
     }
 

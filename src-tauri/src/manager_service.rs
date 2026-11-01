@@ -421,12 +421,22 @@ pub struct ManagerService {
     /// 28k Stage 20: where an Eclipse with the jawata plug-in leaves its notes (the OS cache folder, independent of
     /// `data_root`). Studio only ever READS this folder.
     eclipse_notes_dir: Option<PathBuf>,
+    /// The user's home and the OS config directory, where the D5 registration rows look for the
+    /// ACP clients. A field, like the notes directory, so a test never reaches the real machine.
+    client_roots: Option<(PathBuf, PathBuf)>,
     /// 28k Stage 20: whether the process behind a note still runs. The real check in production; a test supplies its own.
     eclipse_liveness: Arc<dyn Fn(u32, Option<i64>) -> bool + Send + Sync>,
     /// D27: the answer of the engine floor's question "what does the running engine offer?", which a
     /// test supplies in place of asking a resident (`Some(None)` = no engine answered). `None` in
     /// production: the resident is asked.
     engine_verbs_stub: Option<Option<BTreeSet<String>>>,
+    /// 28h S15 (the deploy trigger of D27): the engine a resident has just come up on, when it is not the
+    /// engine the seats were last deployed against. Set by the ready listener (which cannot deploy: it
+    /// runs on the runtime manager's threads and holds no service), taken by
+    /// [`Self::redeploy_seats_for_new_engine`], which the canary round calls.
+    seats_redeploy_pending: Arc<Mutex<Option<String>>>,
+    /// When a failed redeploy may be tried again: a retry every canary round would redeploy in a loop.
+    seats_redeploy_retry_after: Arc<Mutex<Option<Instant>>>,
 }
 
 impl ManagerService {
@@ -455,7 +465,15 @@ impl ManagerService {
         // Only a deploy used to, so an engine update restarted every resident onto a new
         // loader and left the store as the old loader wrote it.
         let paths = config_store.paths();
+        // 28h S15 (D27): the same moment, for the seats. A held skill (one naming a verb the engine
+        // then running lacked) is only written when a deploy runs; an engine that comes up on a NEWER
+        // build is the moment such a skill may now be written, so the listener notes it and the
+        // canary round deploys.
+        let seats_redeploy_pending = Arc::new(Mutex::new(None::<String>));
+        let pending_for_listener = Arc::clone(&seats_redeploy_pending);
+        let seats_record_dir = paths.config_dir.clone();
         runtime_manager.on_resident_ready(Arc::new(move |up: crate::runtime_manager::ResidentUp| {
+            note_engine_came_up(&seats_record_dir, &pending_for_listener, &up.engine);
             if crate::config::auto_seed_enabled(&paths) {
                 crate::store_seed::seed_in_background(
                     crate::store_seed::SeedTarget {
@@ -477,8 +495,52 @@ impl ManagerService {
             release_sync_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             last_release_sync: Arc::new(Mutex::new(None)),
             eclipse_notes_dir: eclipse_notes::default_notes_dir(),
+            client_roots: dirs::home_dir().map(|home| {
+                let config = dirs::config_dir().unwrap_or_else(|| home.join(".config"));
+                (home, config)
+            }),
             eclipse_liveness: Arc::new(eclipse_notes::os_liveness),
             engine_verbs_stub: None,
+            seats_redeploy_pending,
+            seats_redeploy_retry_after: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// 28h S15 (D27, the deploy trigger): deploy the seats again when a resident has come up on an engine
+    /// other than the one the seats were last deployed against, so a skill the floor held back for a verb
+    /// the older engine lacked is written as soon as a newer engine offers it. Called by the canary round,
+    /// which is cheap when nothing is pending. A failed deploy keeps the engine pending and is tried again
+    /// after a minute. Answers whether a deploy ran and succeeded.
+    pub fn redeploy_seats_for_new_engine(&self) -> Result<bool, String> {
+        let engine = {
+            let mut pending = self.seats_redeploy_pending.lock().expect("pending mutex poisoned");
+            if pending.is_none() {
+                return Ok(false);
+            }
+            let wait_over = self
+                .seats_redeploy_retry_after
+                .lock()
+                .expect("retry mutex poisoned")
+                .is_none_or(|at| Instant::now() >= at);
+            if !wait_over {
+                return Ok(false);
+            }
+            pending.take().expect("checked above")
+        };
+        match self.deploy_seats() {
+            Ok(_) => {
+                remember_seats_deployed_against(&self.config_store.paths().config_dir, &engine)?;
+                crate::studio_log::say(&format!(
+                    "seats deployed again: the engine is now {engine}, so a skill held for a verb the older engine lacked is written if this one offers it"
+                ));
+                Ok(true)
+            }
+            Err(error) => {
+                *self.seats_redeploy_pending.lock().expect("pending mutex poisoned") = Some(engine);
+                *self.seats_redeploy_retry_after.lock().expect("retry mutex poisoned") =
+                    Some(Instant::now() + Duration::from_secs(60));
+                Err(error)
+            }
         }
     }
 
@@ -1266,6 +1328,24 @@ impl ManagerService {
         // client result + the summary line — partial deploys are visible.
         merge_resolve_errors(&mut results, &resolve_errors);
 
+        // Sprint 28h S15 (D5): the three places where an ACP client is told how to start jawata
+        // as its agent. They are not MCP clients of the roster (no settings flag, no seat files),
+        // so they follow the roster's rows rather than join its loop.
+        let registration_entries = self.registration_entries(&settings, &servers);
+        let (home, config_dir) = match &self.client_roots {
+            Some((home, config_dir)) => (Some(home.as_path()), config_dir.clone()),
+            None => (None, PathBuf::new()),
+        };
+        results.extend(registration_results_at(
+            home,
+            &config_dir,
+            cfg!(windows),
+            &registration_entries,
+            &input.mode,
+            requested_targets.as_ref(),
+            settings.mcp_backup_before_write,
+        ));
+
         let ok = results
             .iter()
             .all(|entry| !matches!(entry.status, DeployClientStatus::Failed));
@@ -1327,6 +1407,33 @@ impl ManagerService {
         };
         self.append_deploy_log(&result);
         Ok(result)
+    }
+
+    /// What the registration rows write: one agent per workspace, each started by the resident's
+    /// own address and key. The `Err` is the reason there is no engine to start, which the rows
+    /// repeat instead of staying silent.
+    fn registration_entries(
+        &self,
+        settings: &ManagerSettings,
+        servers: &[ManagedDeployServer],
+    ) -> Result<Vec<(String, crate::agent_registration::Launch)>, String> {
+        let runtime = self.resolve_probe_runtime(settings)?;
+        let workspaces: Vec<String> = servers.iter().map(|s| s.workspace_name.clone()).collect();
+        let names = crate::agent_registration::agent_names(&workspaces);
+        Ok(names
+            .into_iter()
+            .zip(servers)
+            .map(|(name, server)| {
+                (
+                    name,
+                    crate::agent_registration::Launch::for_resident(
+                        &runtime.jar_path,
+                        &server.url,
+                        &server.token,
+                    ),
+                )
+            })
+            .collect())
     }
 
     /// The SEAT part of a deploy and nothing else — C11-4.
@@ -2596,6 +2703,7 @@ impl ManagerService {
                     // studio#14: a managed runtime knows its version, so the
                     // spawn can choose the token file over argv.
                     engine_version: Some(runtime.version.clone()),
+                    seats_dir: Some(crate::config::display_path(&self.seats_dir())),
                 })
             }
             RuntimeSource::LocalJar { jar_path } => Ok(RuntimeReference {
@@ -2613,6 +2721,7 @@ impl ManagerService {
                 // on argv rather than risk an engine that ignores the file and
                 // generates its own (401 for every deployed client).
                 engine_version: None,
+                seats_dir: Some(crate::config::display_path(&self.seats_dir())),
             }),
         }
     }
@@ -4590,7 +4699,9 @@ fn normalize_requested_deploy_targets(
     let Some(targets) = targets else {
         return Ok(None);
     };
-    let known = known_deploy_client_ids();
+    // The registration rows (D5) are asked for by id like any client; they are not roster rows.
+    let mut known = known_deploy_client_ids();
+    known.extend(crate::agent_registration::ROW_IDS);
     let normalized: Vec<String> = targets
         .iter()
         .map(|target| target.trim().to_ascii_lowercase())
@@ -4666,6 +4777,67 @@ fn deploy_targets_for_paths(
             enabled_by_settings: flags.grok,
         },
     ]
+}
+
+/// The registration rows of one deploy run. `requested` is the deploy's target list: with none,
+/// a row is written when its client is found on this machine; with a list, only the rows named in
+/// it are touched, and a named row creates its file even for a client that is not found.
+fn registration_results_at(
+    home: Option<&Path>,
+    config_dir: &Path,
+    windows: bool,
+    entries: &Result<Vec<(String, crate::agent_registration::Launch)>, String>,
+    mode: &DeployMode,
+    requested: Option<&HashSet<String>>,
+    backup_before_write: bool,
+) -> Vec<DeployClientResult> {
+    use crate::agent_registration::{apply_row, rows, RowAction, RowState};
+    let Some(home) = home else {
+        return crate::agent_registration::ROW_IDS
+            .iter()
+            .map(|id| skipped_client_result(id, None, "Skipped: this machine has no user home directory."))
+            .collect();
+    };
+    let action = match mode {
+        DeployMode::Deploy | DeployMode::Regenerate => RowAction::Write,
+        DeployMode::DryRun | DeployMode::Preview => RowAction::Preview,
+        DeployMode::Delete => RowAction::Delete,
+    };
+    let backup = |path: &Path| -> Result<Option<PathBuf>, String> {
+        if backup_before_write {
+            crate::backups::backup_before_write(path)
+        } else {
+            Ok(None)
+        }
+    };
+    rows(home, config_dir, windows)
+        .iter()
+        .map(|target| {
+            let named = requested.is_some_and(|set| set.contains(target.id));
+            if requested.is_some() && !named {
+                return skipped_client_result(
+                    target.id,
+                    Some(target.path.to_string_lossy().into_owned()),
+                    "Skipped: not selected in this deploy run.",
+                );
+            }
+            let outcome = apply_row(target, entries, action, named, &backup);
+            DeployClientResult {
+                client: outcome.client,
+                target_path: outcome.target_path,
+                status: match outcome.state {
+                    RowState::Success => DeployClientStatus::Success,
+                    RowState::Skipped => DeployClientStatus::Skipped,
+                    RowState::Failed => DeployClientStatus::Failed,
+                },
+                message: outcome.message,
+                backup_path: outcome.backup_path,
+                changed_sections: outcome.changed_sections,
+                validation_errors: outcome.validation_errors,
+                preview_content: outcome.preview_content,
+            }
+        })
+        .collect()
 }
 
 fn skipped_client_result(
@@ -7342,6 +7514,59 @@ exit 0
 
 /// Sprint 21a (item F): knowledge-store + memory-crawl configuration handed to the
 /// resident JVM as `-D` system properties (they MUST precede `-jar`).
+/// 28h S15 (D27): where the studio records the engine the seats were last deployed against.
+const SEATS_DEPLOYED_AGAINST_FILE: &str = "seats-deployed-against-engine.txt";
+
+fn seats_deployed_against(config_dir: &Path) -> Option<String> {
+    fs::read_to_string(config_dir.join(SEATS_DEPLOYED_AGAINST_FILE))
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
+fn remember_seats_deployed_against(config_dir: &Path, engine: &str) -> Result<(), String> {
+    fs::create_dir_all(config_dir).map_err(|e| format!("cannot write {SEATS_DEPLOYED_AGAINST_FILE}: {e}"))?;
+    fs::write(config_dir.join(SEATS_DEPLOYED_AGAINST_FILE), engine)
+        .map_err(|e| format!("cannot write {SEATS_DEPLOYED_AGAINST_FILE}: {e}"))
+}
+
+/// What a resident coming up on `engine` means for the deployed seats. The first sighting is only
+/// remembered: nothing was deployed against an engine we never saw, and deploying unasked on the first
+/// start after an update of the studio would surprise. The same engine is a restart. A different one is the
+/// moment a held skill may be written.
+#[derive(Debug, PartialEq, Eq)]
+enum EngineSighting {
+    First,
+    Same,
+    Changed,
+}
+
+fn judge_engine_sighting(recorded: Option<&str>, engine: &str) -> EngineSighting {
+    match recorded {
+        None => EngineSighting::First,
+        Some(seen) if seen == engine => EngineSighting::Same,
+        Some(_) => EngineSighting::Changed,
+    }
+}
+
+/// The effect of a resident coming up: remember a first sighting, mark a changed engine for the deploy.
+fn note_engine_came_up(config_dir: &Path, pending: &Mutex<Option<String>>, engine: &str) {
+    if engine.is_empty() {
+        return;
+    }
+    match judge_engine_sighting(seats_deployed_against(config_dir).as_deref(), engine) {
+        EngineSighting::First => {
+            let _ = remember_seats_deployed_against(config_dir, engine);
+        }
+        EngineSighting::Same => {}
+        EngineSighting::Changed => {
+            if let Ok(mut slot) = pending.lock() {
+                *slot = Some(engine.to_string());
+            }
+        }
+    }
+}
+
 fn knowledge_jvm_properties(settings: &ManagerSettings) -> Vec<String> {
     let mut props = vec![format!(
         "-Djawata.experience.store={}",
@@ -10744,7 +10969,7 @@ mod tests {
 
     /// Returns a unique tempdir per call so concurrent tests don't
     /// collide. Caller is responsible for cleanup (best-effort).
-    fn unique_tempdir(label: &str) -> PathBuf {
+    pub(super) fn unique_tempdir(label: &str) -> PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let nanos = SystemTime::now()
@@ -12774,14 +12999,182 @@ judge was never told to give"
     /// `RuntimeManager::new` reads one optional state file, and the gateway
     /// spawn inside `ManagerService::new` is behind `gateway_enabled`, which a
     /// default settings file leaves off.
-    fn service_over(dir: &Path) -> ManagerService {
+    pub(super) fn service_over(dir: &Path) -> ManagerService {
         let store = crate::config::ConfigStore::over(dir);
         let paths = store.paths();
-        ManagerService::new(
+        let mut service = ManagerService::new(
             store,
             crate::release_manager::ReleaseManager::new().expect("http clients"),
             crate::runtime_manager::RuntimeManager::new(paths),
-        )
+        );
+        // D5: the registration rows look for the ACP clients under the sandbox, never the real home.
+        service.client_roots = Some((dir.join("home"), dir.join("home").join("cfg")));
+        service
+    }
+
+    /// 28h S15 (the carry from S12 slice 7): every reference the studio resolves for an engine it starts
+    /// names the folder of the deployed seat files, the same folder `materialize_seats` and the seat deploy
+    /// use, for a managed runtime and for a hand-built jar alike. Without it the engine's seat schedules
+    /// (`ScheduledHires`) stay off in the product.
+    #[test]
+    fn every_engine_the_studio_starts_is_told_where_the_seat_files_are() {
+        let dir = unique_tempdir("seats-dir-reference");
+        let service = service_over(&dir);
+        let settings = service.config_store.get_settings();
+        let project = crate::config::ProjectRecord {
+            id: "p1".into(),
+            name: "p1".into(),
+            project_path: dir.join("p1").to_string_lossy().into_owned(),
+            workspace_name: "ws-seats".into(),
+            assigned_port: 0,
+            source_roots: Default::default(),
+        };
+        let expected = Some(crate::config::display_path(&service.seats_dir()));
+        let runtime = ManagedRuntimeRecord {
+            version: "4.4.22".into(),
+            install_dir: "/tools/jawata".into(),
+            jar_path: "/tools/jawata/jawata.jar".into(),
+            asset_name: "jawata.jar".into(),
+            installed_at: "2026-11-01T00:00:00Z".into(),
+        };
+
+        let managed = service
+            .resolve_runtime_reference_with(&project, &settings, Some(&runtime))
+            .expect("a managed runtime resolves");
+        assert_eq!(managed.seats_dir, expected, "a managed runtime");
+
+        let mut local = settings.clone();
+        local.global_runtime_source = RuntimeSource::LocalJar { jar_path: "/tools/local/jawata.jar".into() };
+        let reference = service
+            .resolve_runtime_reference_with(&project, &local, None)
+            .expect("a hand-built jar resolves");
+        assert_eq!(reference.seats_dir, expected, "a hand-built jar");
+
+        // And the folder is the one the deploy writes seats into.
+        assert!(expected.as_deref().unwrap().ends_with("seats"), "{expected:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 28h S15 (D27, the deploy trigger): the three things a resident coming up can mean for the deployed
+    /// seats, decided by the pure rule and carried out by the note the ready listener makes.
+    #[test]
+    fn the_first_engine_seen_is_remembered_a_restart_is_nothing_and_a_new_engine_marks_the_deploy() {
+        assert_eq!(judge_engine_sighting(None, "/e/a/jawata.jar"), EngineSighting::First);
+        assert_eq!(judge_engine_sighting(Some("/e/a/jawata.jar"), "/e/a/jawata.jar"), EngineSighting::Same);
+        assert_eq!(judge_engine_sighting(Some("/e/a/jawata.jar"), "/e/b/jawata.jar"), EngineSighting::Changed);
+
+        let dir = unique_tempdir("engine-sighting");
+        let pending = Mutex::new(None::<String>);
+        note_engine_came_up(&dir, &pending, "/e/a/jawata.jar");
+        assert_eq!(seats_deployed_against(&dir).as_deref(), Some("/e/a/jawata.jar"), "a first sighting is remembered");
+        assert!(pending.lock().unwrap().is_none(), "and deploys nothing unasked");
+        note_engine_came_up(&dir, &pending, "/e/a/jawata.jar");
+        assert!(pending.lock().unwrap().is_none(), "a restart of the same engine marks nothing");
+        note_engine_came_up(&dir, &pending, "");
+        assert!(pending.lock().unwrap().is_none(), "an engine with no name marks nothing");
+        note_engine_came_up(&dir, &pending, "/e/b/jawata.jar");
+        assert_eq!(pending.lock().unwrap().as_deref(), Some("/e/b/jawata.jar"), "a new engine marks the deploy");
+        assert_eq!(
+            seats_deployed_against(&dir).as_deref(),
+            Some("/e/a/jawata.jar"),
+            "the record moves only when the deploy has run, not when the engine is seen"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 28h S15 (D27, the deploy trigger), whole: a skill the floor held back for a verb the OLDER engine
+    /// lacked is written when a NEWER engine comes up, without anyone pressing Deploy. The resident-ready
+    /// listener the service itself installs is fired for real; the engine's verbs are stubbed (no JVM).
+    #[test]
+    fn a_skill_held_for_an_older_engine_is_written_when_a_newer_engine_comes_up() {
+        let dir = unique_tempdir("engine-switch-deploy");
+        let mut service = service_over(&dir);
+        let jar = dir.join("jawata.jar");
+        fs::write(&jar, b"not really a jar").unwrap();
+        let mut settings = service.config_store.get_settings();
+        settings.global_runtime_source = crate::config::RuntimeSource::LocalJar { jar_path: display_path(&jar) };
+        settings.deploy_targets.claude = true;
+        service.config_store.write_settings(settings).unwrap();
+        service
+            .add_project(crate::config::AddProjectInput {
+                name: "alpha".into(),
+                project_path: dir.join("alpha").display().to_string(),
+                workspace_name: "alpha-ws".into(),
+            })
+            .expect("a workspace to deploy");
+        let settings = service.config_store.get_settings();
+        let targets = service.deploy_targets_for_settings(&settings);
+        let mcp_path = targets
+            .iter()
+            .find(|t| t.id == "claude")
+            .and_then(|t| t.target_path.clone())
+            .expect("a claude config path");
+        fs::create_dir_all(Path::new(&mcp_path).parent().unwrap()).unwrap();
+        fs::write(&mcp_path, "{}\n").unwrap();
+        let commands = derive_seat_commands_dir("claude", &mcp_path).expect("claude has commands");
+
+        let seats_dir = service.seats_dir();
+        crate::conductor::materialize_seats(&seats_dir).unwrap();
+        let (seats, _) = crate::runner::load_seat_definitions(&seats_dir);
+        let verb = crate::engine_floor::a_verb_some_seats_name(&seats);
+        let mut missing = crate::engine_floor::surface_verbs();
+        assert!(missing.remove(&verb));
+        let (_, held) = crate::engine_floor::split_seats(&seats, Some(&missing));
+        assert!(!held.is_empty(), "control: the older engine lacks {verb}, so a seat is held");
+        let held_seat = held[0].name.clone();
+        let ready = service.runtime_manager.ready_listener().expect("the service installs a ready listener");
+        let up = |engine: &str| crate::runtime_manager::ResidentUp {
+            url: "http://127.0.0.1:1/mcp".into(),
+            token: "t".into(),
+            engine: engine.into(),
+        };
+
+        // The older engine comes up and a deploy runs against it: the seat is held back.
+        service.engine_verbs_stub = Some(Some(missing));
+        ready(up("/engines/4.4.1/jawata.jar"));
+        service.deploy_seats().expect("the deploy answers");
+        assert!(!claude_seat_file(&commands, &held_seat).exists(), "held for the older engine");
+        assert_eq!(service.redeploy_seats_for_new_engine(), Ok(false), "nothing is pending yet");
+
+        // The same engine restarting changes nothing.
+        ready(up("/engines/4.4.1/jawata.jar"));
+        assert_eq!(service.redeploy_seats_for_new_engine(), Ok(false), "a restart is not a switch");
+        assert!(!claude_seat_file(&commands, &held_seat).exists());
+
+        // A newer engine comes up and offers every verb: the held seat is written without a deploy being asked for.
+        service.engine_verbs_stub = Some(Some(crate::engine_floor::surface_verbs()));
+        ready(up("/engines/4.4.2/jawata.jar"));
+        assert_eq!(service.redeploy_seats_for_new_engine(), Ok(true), "the switch deploys the seats");
+        assert!(claude_seat_file(&commands, &held_seat).exists(), "the held skill is written by the newer engine");
+        assert_eq!(
+            seats_deployed_against(&service.config_store.paths().config_dir).as_deref(),
+            Some("/engines/4.4.2/jawata.jar"),
+            "and the record moves to the engine the seats were deployed against"
+        );
+        assert_eq!(service.redeploy_seats_for_new_engine(), Ok(false), "once, not on every round");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 28h S15 (D27, the deploy trigger): a failed deploy keeps the engine pending and is not retried on
+    /// every canary round: the wait is a minute.
+    #[test]
+    fn a_pending_engine_waits_out_the_retry_window_before_it_deploys() {
+        let dir = unique_tempdir("engine-switch-retry");
+        let service = service_over(&dir);
+        *service.seats_redeploy_pending.lock().unwrap() = Some("/engines/4.4.3/jawata.jar".into());
+        *service.seats_redeploy_retry_after.lock().unwrap() = Some(Instant::now() + Duration::from_secs(3600));
+
+        assert_eq!(service.redeploy_seats_for_new_engine(), Ok(false), "inside the window nothing runs");
+        assert_eq!(
+            service.seats_redeploy_pending.lock().unwrap().as_deref(),
+            Some("/engines/4.4.3/jawata.jar"),
+            "and the engine stays pending"
+        );
+
+        *service.seats_redeploy_retry_after.lock().unwrap() = None;
+        assert_eq!(service.redeploy_seats_for_new_engine(), Ok(true), "after it the deploy runs");
+        assert!(service.seats_redeploy_pending.lock().unwrap().is_none());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// The whole trial against a REAL engine, by hand: `JAWATA_TRIAL_JAR=<path to a published jawata.jar> cargo test
@@ -18825,5 +19218,123 @@ mod eclipse_rows_tests {
         let second = fs::metadata(&settings_file).and_then(|m| m.modified()).unwrap();
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(first, second, "the tray asks every second; an unchanged list must not be a write");
+    }
+}
+
+#[cfg(test)]
+mod registration_rows_tests {
+    use super::*;
+    use crate::agent_registration::{Launch, CHAT_ROW, INTELLIJ_ROW, ROW_IDS, ZED_ROW};
+    use super::tests::{service_over, unique_tempdir};
+
+    fn entries() -> Result<Vec<(String, Launch)>, String> {
+        Ok(vec![("jawata".to_string(), Launch::for_resident("/e/jawata.jar", "http://u", "k"))])
+    }
+
+    fn scratch(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("jawata-studio-regwire-{label}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn run(
+        home: &Path,
+        mode: &DeployMode,
+        requested: Option<&HashSet<String>>,
+    ) -> Vec<DeployClientResult> {
+        registration_results_at(Some(home), &home.join("cfg"), false, &entries(), mode, requested, false)
+    }
+
+    #[test]
+    fn a_full_deploy_writes_the_rows_of_the_clients_found_and_skips_the_rest() {
+        let home = scratch("full");
+        fs::create_dir_all(home.join(".config/zed")).unwrap();
+        let results = run(&home, &DeployMode::Deploy, None);
+        let by_id = |id: &str| results.iter().find(|r| r.client == id).unwrap();
+        assert!(matches!(by_id(ZED_ROW).status, DeployClientStatus::Success), "{}", by_id(ZED_ROW).message);
+        assert!(matches!(by_id(CHAT_ROW).status, DeployClientStatus::Skipped));
+        assert!(matches!(by_id(INTELLIJ_ROW).status, DeployClientStatus::Skipped));
+        assert!(home.join(".config/zed/settings.json").exists());
+        assert!(!home.join(".jetbrains").exists(), "a client that is not found gets no file");
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_requested_row_creates_its_file_and_an_unrequested_one_is_not_touched() {
+        let home = scratch("requested");
+        let only_intellij: HashSet<String> = [INTELLIJ_ROW.to_string()].into_iter().collect();
+        let results = run(&home, &DeployMode::Deploy, Some(&only_intellij));
+        assert!(matches!(
+            results.iter().find(|r| r.client == INTELLIJ_ROW).unwrap().status,
+            DeployClientStatus::Success
+        ));
+        for other in [CHAT_ROW, ZED_ROW] {
+            let row = results.iter().find(|r| r.client == other).unwrap();
+            assert!(row.message.contains("not selected"), "{}", row.message);
+        }
+        assert!(home.join(".jetbrains/acp.json").exists());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_deploy_may_ask_for_a_registration_row_by_its_id_and_still_refuses_an_unknown_one() {
+        for id in ROW_IDS {
+            assert!(normalize_requested_deploy_targets(Some(&vec![id.to_string()])).is_ok(), "{id}");
+        }
+        assert!(normalize_requested_deploy_targets(Some(&vec!["sublime".to_string()])).is_err());
+    }
+
+    #[test]
+    fn delete_takes_jawatas_entry_out_of_the_row_files() {
+        let home = scratch("delete");
+        fs::create_dir_all(home.join(".config/zed")).unwrap();
+        run(&home, &DeployMode::Deploy, None);
+        let results = run(&home, &DeployMode::Delete, None);
+        assert!(matches!(
+            results.iter().find(|r| r.client == ZED_ROW).unwrap().status,
+            DeployClientStatus::Success
+        ));
+        let text = fs::read_to_string(home.join(".config/zed/settings.json")).unwrap();
+        assert!(!text.contains("--acp"), "{text}");
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_whole_deploy_run_reports_the_registration_rows_beside_the_roster() {
+        let dir = unique_tempdir("regrow-deploy");
+        let service = service_over(&dir);
+        let result = service
+            .deploy_to_agents(DeployToAgentsInput {
+                mode: DeployMode::Deploy,
+                target_clients: Some(vec![ZED_ROW.to_string()]),
+            })
+            .expect("a deploy run answers");
+        let ids: Vec<&str> = result.clients.iter().map(|c| c.client.as_str()).collect();
+        for id in ROW_IDS {
+            assert!(ids.contains(&id), "the run reports {id}: {ids:?}");
+        }
+        let zed = result.clients.iter().find(|c| c.client == ZED_ROW).unwrap();
+        assert!(matches!(zed.status, DeployClientStatus::Skipped), "{}", zed.message);
+        assert!(zed.message.contains("no engine"), "the row says why: {}", zed.message);
+        assert!(!dir.join("home").join(".config").join("zed").exists(), "nothing reached a client folder");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_deploy_writes_the_rows_after_the_roster() {
+        let source = include_str!("manager_service.rs");
+        let deploy = source.split("pub fn deploy_to_agents(").nth(1).unwrap();
+        let deploy = deploy.split("pub fn deploy_seats(").next().unwrap();
+        assert!(
+            deploy.contains("registration_results_at("),
+            "deploy_to_agents must write the D5 registration rows"
+        );
+        assert!(
+            deploy.find("merge_resolve_errors(&mut results").unwrap()
+                < deploy.find("registration_results_at(").unwrap(),
+            "the rows follow the resolve errors, so those ride only on roster rows"
+        );
     }
 }
