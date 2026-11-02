@@ -268,11 +268,16 @@ fn a_compaction_is_preceded_by_the_save_and_the_stop_gate_judges_nothing() {
     // PreCompact that ran the turn-end rules would block, and one that stores and goes ahead does not.
     let path = write_transcript(&home, "He said \"we should rewrite everything in Rust tonight\" earlier.");
     let resident = Resident::start(json!({"checked": true, "found": false}));
+    let stories = home.join(".claude").join("jawata-studio").join("transcript");
+    std::fs::create_dir_all(&stories).unwrap();
+    std::fs::write(stories.join("s-e2e.stories"), "the switch for the works council is per project\n").unwrap();
     let out = run_as("stop", &home, &resident.url, &pre_compact(&path));
 
     let appends = resident.requests_of("transcript_append");
-    assert_eq!(2, appends.len(), "PROOF OF LIFE: both windows are in the lane before the compaction: {:?}", resident.kinds());
+    assert_eq!(3, appends.len(), "PROOF OF LIFE: both windows and the story list are in the lane before the compaction: {:?}", resident.kinds());
     assert!(appends.iter().all(|r| r["capture"] == "compaction"), "{appends:?}");
+    assert!(appends.iter().any(|r| r["agent"].as_str().is_some_and(|a| a.contains("STORY LIST") && a.contains("works council"))), "{appends:?}");
+    assert!(!stories.join("s-e2e.stories").exists(), "the list is consumed once recorded");
     assert!(out.trim().is_empty(), "a saved transcript holds nothing, so nothing is printed: {out}");
     assert!(resident.requests_of("transcript_verify").is_empty(),
         "and the turn-end checks did not run on a compaction: {:?}", resident.kinds());
@@ -292,4 +297,17 @@ fn a_compaction_whose_save_cannot_be_made_is_held_in_the_clients_own_words() {
     assert_eq!("block", v["decision"], "{out}");
     assert!(v["reason"].as_str().is_some_and(|r| r.contains("not fully saved") && r.contains("run the compaction again")), "{out}");
     assert!(outcomes(&home).contains("transcript-precompact-refused"), "and the log says so: {}", outcomes(&home));
+}
+
+#[test]
+fn a_compaction_with_the_transcript_saved_but_no_story_list_is_held_and_names_the_file() {
+    let home = scratch("precompact-nolist");
+    let path = write_transcript(&home, "Understood.");
+    let resident = Resident::start(json!({}));
+    let out = run_as("stop", &home, &resident.url, &pre_compact(&path));
+    let v: Value = serde_json::from_str(out.trim()).unwrap_or_else(|_| panic!("a decision is printed as JSON: {out:?}"));
+    assert_eq!("block", v["decision"], "{out}");
+    let reason = v["reason"].as_str().unwrap_or("");
+    assert!(reason.contains("story list is missing") && reason.contains("s-e2e.stories"), "{out}");
+    assert_eq!(2, resident.requests_of("transcript_append").len(), "the transcript was still saved: {:?}", resident.kinds());
 }
