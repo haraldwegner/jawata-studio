@@ -42,6 +42,7 @@ mod resident;
 // sprint's doc so the decision starts from evidence.
 #[allow(dead_code)]
 mod runner;
+mod seat_file;
 mod runtime_manager;
 mod seat_settings;
 mod store_seed;

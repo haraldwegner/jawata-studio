@@ -3737,7 +3737,7 @@ impl ManagerService {
                             seat_report.shadowed.join(", ")
                         ));
                     }
-                    let (seats, seat_errors) = crate::runner::load_seat_definitions(&seats_dir);
+                    let (seats, seat_errors) = crate::seat_file::load_seat_definitions(&seats_dir);
                     for (seat_path, error) in &seat_errors {
                         errors.push(format!(
                             "{client}: seat definition {}: {error}",
@@ -5127,7 +5127,7 @@ fn deploy_seat_commands(
     client: &str,
     commands_dir: &Path,
     seats_dir: &Path,
-    seats: &[crate::runner::SeatDefinition],
+    seats: &[crate::seat_file::SeatDefinition],
     force_rewrite: bool,
 ) -> Result<Vec<String>, String> {
     let settings = crate::seat_settings::SeatSettings::load(seats_dir)
@@ -5230,7 +5230,7 @@ fn is_studio_generated(path: &Path) -> bool {
 fn write_managed_seat_commands(
     client: &str,
     commands_dir: &Path,
-    seats: &[crate::runner::SeatDefinition],
+    seats: &[crate::seat_file::SeatDefinition],
     settings: &crate::seat_settings::SeatSettings,
     force_rewrite: bool,
 ) -> Result<Vec<String>, String> {
@@ -12462,10 +12462,10 @@ mod tests {
         }
     }
 
-    fn loaded_seats(label: &str) -> (PathBuf, Vec<crate::runner::SeatDefinition>) {
+    fn loaded_seats(label: &str) -> (PathBuf, Vec<crate::seat_file::SeatDefinition>) {
         let seats_dir = unique_tempdir(label).join("seats");
         crate::conductor::materialize_seats(&seats_dir).expect("materialize");
-        let (seats, errors) = crate::runner::load_seat_definitions(&seats_dir);
+        let (seats, errors) = crate::seat_file::load_seat_definitions(&seats_dir);
         assert!(errors.is_empty(), "embedded seats must load clean: {errors:?}");
         (seats_dir, seats)
     }
@@ -12566,7 +12566,7 @@ mod tests {
         let mut service = service_over(&dir);
         let seats_dir = service.config_store.paths().config_dir.join("seats");
         crate::conductor::materialize_seats(&seats_dir).unwrap();
-        let (seats, _) = crate::runner::load_seat_definitions(&seats_dir);
+        let (seats, _) = crate::seat_file::load_seat_definitions(&seats_dir);
         let verb = crate::engine_floor::a_verb_some_seats_name(&seats);
         // `experience` too: the memorize utility names it, so the utility floor decides in this run.
         let mut missing = crate::engine_floor::surface_verbs();
@@ -12682,7 +12682,7 @@ mod tests {
                 }
             }
         }
-        let (fixture_seats, load_errors) = crate::runner::load_seat_definitions(&fixture_seats_dir);
+        let (fixture_seats, load_errors) = crate::seat_file::load_seat_definitions(&fixture_seats_dir);
         assert!(load_errors.is_empty(), "{load_errors:?}");
         for seat in &fixture_seats {
             let cmd = crate::conductor::command_for(&seat.name).expect("a fixture seat has a typed command");
@@ -13240,7 +13240,7 @@ judge was never told to give"
 
         let seats_dir = service.seats_dir();
         crate::conductor::materialize_seats(&seats_dir).unwrap();
-        let (seats, _) = crate::runner::load_seat_definitions(&seats_dir);
+        let (seats, _) = crate::seat_file::load_seat_definitions(&seats_dir);
         let verb = crate::engine_floor::a_verb_some_seats_name(&seats);
         let mut missing = crate::engine_floor::surface_verbs();
         assert!(missing.remove(&verb));
@@ -13647,7 +13647,7 @@ judge was never told to give"
             .unwrap()
             .replace("GROUNDED PROSE ONLY", "GROUNDED PROSE ONLY (EDIT-MARKER)");
         fs::write(&seat_path, &edited).unwrap();
-        let (reloaded, errors) = crate::runner::load_seat_definitions(&seats_dir);
+        let (reloaded, errors) = crate::seat_file::load_seat_definitions(&seats_dir);
         assert!(errors.is_empty());
         for (client, dir) in &trees {
             let written = write_managed_seat_commands(client, dir, &reloaded, &crate::seat_settings::SeatSettings::default(), false).unwrap();
@@ -15254,6 +15254,17 @@ judge was never told to give"
         assert_eq!(2, commands.len(), "the user's entry and ours: {commands:?}");
         assert!(commands.iter().any(|c| c.ends_with("my-own-precompact.sh")), "the user's own stays: {commands:?}");
         assert!(commands.iter().any(|c| c.contains("jawata-hook-stop")), "ours names the stop role's binary: {commands:?}");
+
+        // The client waits long enough for the hook's own work: the capture stops at about two
+        // seconds and the hook's watchdog at four, so an entry that allowed less would have the
+        // client kill the hook mid-save.
+        let ours = precompact_entries(&settings)
+            .into_iter()
+            .find(|e| is_managed_stop_entry(e))
+            .expect("our entry");
+        assert_eq!(Some(HOOK_TIMEOUT_SECS as u64), ours["hooks"][0]["timeout"].as_u64());
+        assert!(HOOK_TIMEOUT_SECS >= 5, "above the hook's 4 s watchdog, so the watchdog answers first");
+        assert!(ours.get("matcher").is_none(), "no matcher: manual and automatic compactions both");
 
         // Idempotent: a second deploy changes nothing, and does not add a second entry of ours.
         assert!(!write_managed_stop(s, &stop, "http://u/mcp", "t", false, false).unwrap());
@@ -17792,7 +17803,7 @@ judge was never told to give"
                 .iter()
                 .find(|(file, _)| file.trim_end_matches(".md") == name)
                 .unwrap_or_else(|| panic!("{name} is not an embedded seat"));
-            crate::runner::parse_seat_definition(body).expect("parses").tools
+            crate::seat_file::parse_seat_definition(body).expect("parses").tools
         };
         for seat in ["pm", "architect", "ux", "chief-engineer", "test-manager"] {
             let tools = tools_of(seat);
@@ -19652,7 +19663,7 @@ pub(crate) mod engine_switch_fixture {
             let commands = derive_seat_commands_dir("claude", &mcp_path).expect("claude has commands");
             let seats_dir = service.seats_dir();
             crate::conductor::materialize_seats(&seats_dir).unwrap();
-            let (seats, _) = crate::runner::load_seat_definitions(&seats_dir);
+            let (seats, _) = crate::seat_file::load_seat_definitions(&seats_dir);
             let verb = crate::engine_floor::a_verb_some_seats_name(&seats);
             let mut missing = crate::engine_floor::surface_verbs();
             assert!(missing.remove(&verb));

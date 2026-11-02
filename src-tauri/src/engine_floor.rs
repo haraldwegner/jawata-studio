@@ -20,7 +20,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::runner::SeatDefinition;
+use crate::seat_file::SeatDefinition;
 
 const ENGINE_SURFACE_JSON: &str = include_str!("../engine-surface.json");
 
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn with_no_answer_from_an_engine_nothing_is_held() {
-        let seat = crate::runner::load_seat_definitions(&seats_dir()).0;
+        let seat = crate::seat_file::load_seat_definitions(&seats_dir()).0;
         assert!(!seat.is_empty());
         let (deployable, held) = split_seats(&seat, None);
         assert_eq!(deployable.len(), seat.len());
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn an_engine_that_offers_everything_the_surface_names_holds_nothing_back() {
-        let seats = crate::runner::load_seat_definitions(&seats_dir()).0;
+        let seats = crate::seat_file::load_seat_definitions(&seats_dir()).0;
         let running = surface_verbs();
         let (deployable, held) = split_seats(&seats, Some(&running));
         assert!(held.is_empty(), "held: {held:?}");
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn a_seat_that_names_a_verb_the_running_engine_lacks_is_held_and_the_others_are_not() {
-        let seats = crate::runner::load_seat_definitions(&seats_dir()).0;
+        let seats = crate::seat_file::load_seat_definitions(&seats_dir()).0;
         let verb = a_verb_some_seats_name(&seats);
         let mut running = surface_verbs();
         assert!(running.remove(&verb), "control: the surface offers {verb}");
@@ -233,10 +233,10 @@ mod tests {
     /// engine that offers it does not).
     #[test]
     fn a_verb_only_the_seats_own_tools_list_names_is_judged_too() {
-        let seats = crate::runner::load_seat_definitions(&seats_dir()).0;
+        let seats = crate::seat_file::load_seat_definitions(&seats_dir()).0;
         let mut seat = seats
             .iter()
-            .find(|s| matches!(s.kind, crate::runner::SeatKind::Code))
+            .find(|s| matches!(s.kind, crate::seat_file::SeatKind::Code))
             .cloned()
             .expect("a code seat is shipped");
         seat.tools.push("zz_new_verb".to_string());

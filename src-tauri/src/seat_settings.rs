@@ -40,7 +40,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::runner::SeatDefinition;
+use crate::seat_file::SeatDefinition;
 
 /// Beside the seats, dot-named, never rendered — and, critically, NEVER written by
 /// `materialize_seats`. That omission is what makes every setting survive a redeploy.
@@ -355,7 +355,7 @@ pub struct SeatsView {
 fn shipped_seat(name: &str) -> Option<SeatDefinition> {
     let file = format!("{name}.md");
     let (_, body) = crate::conductor::EMBEDDED_SEATS.iter().find(|(f, _)| *f == file)?;
-    crate::runner::parse_seat_definition(body).ok()
+    crate::seat_file::parse_seat_definition(body).ok()
 }
 
 fn or_shipped(value: &str, name: &str, field: fn(&SeatDefinition) -> &String) -> String {
@@ -378,7 +378,7 @@ fn stance_edited(seats_dir: &Path, name: &str) -> bool {
 /// seat commands is the deploy's knowledge, not this module's — holding a list here would be
 /// the copy this file's header rules out.
 pub fn seats_view(seats_dir: &Path, clients: Vec<ClientChoice>) -> SeatsView {
-    let (seats, load_errors) = crate::runner::load_seat_definitions(seats_dir);
+    let (seats, load_errors) = crate::seat_file::load_seat_definitions(seats_dir);
     let mut errors: Vec<String> = load_errors
         .iter()
         .map(|(path, error)| format!("{}: {error}", path.display()))
@@ -441,7 +441,7 @@ pub fn change_seat(
     seat_name: &str,
     change: SeatChange,
 ) -> Result<(), String> {
-    let (seats, _) = crate::runner::load_seat_definitions(seats_dir);
+    let (seats, _) = crate::seat_file::load_seat_definitions(seats_dir);
     if !seats.iter().any(|s| s.name == seat_name) {
         return Err(format!("no seat named '{seat_name}'"));
     }
@@ -682,7 +682,7 @@ mod tests {
         change_seat(&dir, &valid(), "pm", SeatChange::Enabled { value: false }).unwrap();
         let file = fs::read_to_string(dir.join("pm.md")).unwrap();
         assert!(file.contains("\nenabled: false\n"), "the off switch is in the file: {file}");
-        let (seats, errors) = crate::runner::load_seat_definitions(&dir);
+        let (seats, errors) = crate::seat_file::load_seat_definitions(&dir);
         assert!(errors.is_empty(), "{errors:?}");
         assert!(!seats.iter().find(|s| s.name == "pm").unwrap().enabled, "and a reader sees it");
 

@@ -4,7 +4,6 @@ src/runner.rs|associated function `from_config_dir` is never used
 src/runner.rs|associated function `java_files_under` is never used
 src/runner.rs|associated functions `pass` and `fail` are never used
 src/runner.rs|associated items `new`, `call_tool`, `compile_verify`, and `doclint` are never used
-src/runner.rs|associated items `parse` and `matches` are never used
 src/runner.rs|constant `DELIBERATE_DUPLICATE` is never used
 src/runner.rs|constant `FILE_BLOCK_END` is never used
 src/runner.rs|constant `FILE_BLOCK_PREFIX` is never used
@@ -15,7 +14,6 @@ src/runner.rs|constant `PROPOSAL_BEGIN` is never used
 src/runner.rs|constant `PROPOSAL_END` is never used
 src/runner.rs|constant `WORK_PREFIX` is never used
 src/runner.rs|enum `CeilingKind` is never used
-src/runner.rs|enum `CronField` is never used
 src/runner.rs|enum `DeclarationState` is never used
 src/runner.rs|enum `Verdict` is never used
 src/runner.rs|function `append_journal` is never used
@@ -71,7 +69,6 @@ src/runner.rs|struct `ResidentStoreRecorder` is never constructed
 src/runner.rs|struct `RunReport` is never constructed
 src/runner.rs|struct `RunRequest` is never constructed
 src/runner.rs|struct `RunnerPaths` is never constructed
-src/runner.rs|struct `Schedule` is never constructed
 src/runner.rs|struct `ScriptAdapter` is never constructed
 src/runner.rs|struct `ShadowJavaGateExecutor` is never constructed
 src/runner.rs|struct `TestWriterBaseline` is never constructed
@@ -80,3 +77,6 @@ src/runner.rs|trait `CliAdapter` is never used
 src/runner.rs|trait `GateExecutor` is never used
 src/runner.rs|trait `StoreRecorder` is never used
 src/runtime_manager.rs|function `parse_netstat_pid` is never used
+src/seat_file.rs|associated items `parse` and `matches` are never used
+src/seat_file.rs|enum `CronField` is never used
+src/seat_file.rs|struct `Schedule` is never constructed

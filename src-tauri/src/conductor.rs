@@ -3,7 +3,7 @@
 //! except `materialize_seats`; the deploy layer in `manager_service.rs` is
 //! the only writer into client trees. Architecture: ARCHITECTURE-conductor.md.
 
-use crate::runner::{parse_seat_definition, GateClass, SeatDefinition};
+use crate::seat_file::{parse_seat_definition, GateClass, SeatDefinition};
 use std::fs;
 use std::path::Path;
 
@@ -264,7 +264,7 @@ fn lane1_contract(seat: &SeatDefinition, command: &str) -> String {
          use tools\"), the loop above wins on MECHANICS; the stance's content\n\
          rules bind unchanged.\n",
         name = seat.name,
-        decl = crate::runner::PROJECT_DECLARATION_FILE,
+        decl = crate::seat_file::PROJECT_DECLARATION_FILE,
         gates = gates,
         instruments = instrument_discipline(seat),
     )
@@ -280,7 +280,7 @@ fn lane1_contract(seat: &SeatDefinition, command: &str) -> String {
 /// wrote the false one. One renderer cannot drift from the fields it reads.
 fn instrument_discipline(seat: &SeatDefinition) -> String {
     match seat.kind {
-        crate::runner::SeatKind::Code => format!(
+        crate::seat_file::SeatKind::Code => format!(
             "## Instrument discipline (binding)\n\n\
              This seat reads the CODEBASE, so every question it asks has a compiler-accurate\n\
              answer and reaching for one is not optional. Drive these, by name:\n\n\
@@ -297,7 +297,7 @@ fn instrument_discipline(seat: &SeatDefinition) -> String {
                 .collect::<Vec<_>>()
                 .join("\n"),
         ),
-        crate::runner::SeatKind::Text => "## Instrument discipline (binding)\n\n\
+        crate::seat_file::SeatKind::Text => "## Instrument discipline (binding)\n\n\
              This seat's input is an ARTIFACT — a document, a diff, a report.\n\
              There is no compiler fact to fetch — that is why `tools` is empty — and your\n\
              judgement IS the product. The discipline runs the other way round: every claim is\n\
@@ -1031,7 +1031,7 @@ mod tests {
                     assert_eq!(
                         EMBEDDED_SEATS
                             .iter()
-                            .filter_map(|(_, b)| crate::runner::parse_seat_definition(b).ok())
+                            .filter_map(|(_, b)| crate::seat_file::parse_seat_definition(b).ok())
                             .filter(|s| command_for(&s.name).is_none())
                             .count(),
                         EMBEDDED_SEATS.len() - COMMAND_MAP.len(),
@@ -1046,7 +1046,7 @@ mod tests {
                 }
             };
             match seat.kind {
-                crate::runner::SeatKind::Code => {
+                crate::seat_file::SeatKind::Code => {
                     // It must name the seat's OWN tools, so the rule is actionable rather than
                     // an exhortation to "use jawata".
                     for tool in &seat.tools {
@@ -1062,7 +1062,7 @@ mod tests {
                         seat.name
                     );
                 }
-                crate::runner::SeatKind::Text => {
+                crate::seat_file::SeatKind::Text => {
                     // AND THE TEXT SEATS MUST NOT BE TOLD TO FETCH FACTS. Before this, step 1
                     // of the shared loop told every seat to "find the work with the seat's own
                     // detectors (jawata tools)" — false for a seat whose input is an artifact,
@@ -1107,16 +1107,16 @@ mod tests {
         let mut text = Vec::new();
         let mut code = Vec::new();
         for (file, body) in EMBEDDED_SEATS {
-            let seat = crate::runner::parse_seat_definition(body)
+            let seat = crate::seat_file::parse_seat_definition(body)
                 .unwrap_or_else(|e| panic!("{file} does not parse: {e}"));
             match seat.kind {
-                crate::runner::SeatKind::Text => {
+                crate::seat_file::SeatKind::Text => {
                     // The parser already refuses tools here; asserted anyway, because this is
                     // the claim a reader of the seat files is relying on.
                     assert!(seat.tools.is_empty(), "{file} is text and names tools");
                     text.push(seat.name);
                 }
-                crate::runner::SeatKind::Code => {
+                crate::seat_file::SeatKind::Code => {
                     assert!(!seat.tools.is_empty(), "{file} is code and names none");
                     code.push(seat.name);
                 }
@@ -1223,14 +1223,14 @@ mod tests {
             .iter()
             .find(|(f, _)| *f == "review.md")
             .expect("review.md is embedded");
-        let seat = crate::runner::parse_seat_definition(body).expect("review.md parses");
+        let seat = crate::seat_file::parse_seat_definition(body).expect("review.md parses");
 
         // A declared cadence, parsed — not merely a line in the file.
         let schedule = seat
             .schedule
             .as_deref()
             .expect("the review seat declares no schedule, so its housekeeping is hand-run only");
-        crate::runner::Schedule::parse(schedule)
+        crate::seat_file::Schedule::parse(schedule)
             .unwrap_or_else(|e| panic!("review.md's schedule '{schedule}' does not parse: {e}"));
 
         // The scheduled half: no list goes up, and steps 4 and 5 are named as
@@ -1289,9 +1289,9 @@ mod tests {
     /// that runs, runs by stance handoff from one of these texts.
     #[test]
     fn every_rendered_seat_is_told_to_read_the_projects_declaration() {
-        let decl = crate::runner::PROJECT_DECLARATION_FILE;
+        let decl = crate::seat_file::PROJECT_DECLARATION_FILE;
         for (file, body) in EMBEDDED_SEATS {
-            let seat = crate::runner::parse_seat_definition(body)
+            let seat = crate::seat_file::parse_seat_definition(body)
                 .unwrap_or_else(|e| panic!("{file} does not parse: {e}"));
             // All eleven, including the two that render no command of their own —
             // asserting only the rendered channel would skip them silently, and
@@ -1327,14 +1327,14 @@ mod tests {
         // by the Claude gate alone and by nothing on the client the user
         // actually runs.
         for (channel, render) in [
-            ("claude", render_claude_skill as fn(&crate::runner::SeatDefinition) -> Option<String>),
+            ("claude", render_claude_skill as fn(&crate::seat_file::SeatDefinition) -> Option<String>),
             ("cursor", render_cursor_command),
             ("antigravity", render_antigravity_workflow),
         ] {
             let rendered: Vec<String> = EMBEDDED_SEATS
                 .iter()
                 .filter_map(|(_, body)| {
-                    let seat = crate::runner::parse_seat_definition(body).ok()?;
+                    let seat = crate::seat_file::parse_seat_definition(body).ok()?;
                     render(&seat)
                 })
                 .collect();
@@ -1617,7 +1617,7 @@ mod tests {
     #[test]
     fn every_shipped_seat_declares_what_it_is_for_and_when_it_fires() {
         for (file, body) in EMBEDDED_SEATS {
-            let seat = crate::runner::parse_seat_definition(body)
+            let seat = crate::seat_file::parse_seat_definition(body)
                 .unwrap_or_else(|e| panic!("{file} does not parse: {e}"));
             assert!(!seat.purpose.trim().is_empty(), "{file} declares no 'purpose:'");
             assert!(!seat.fires.trim().is_empty(), "{file} declares no 'fires:'");
@@ -1636,7 +1636,7 @@ mod tests {
                 "{file} does not declare max_tool_steps — it would be bounded by the \
                  runner's default, which no reader of the seat file can see"
             );
-            let seat = crate::runner::parse_seat_definition(body)
+            let seat = crate::seat_file::parse_seat_definition(body)
                 .unwrap_or_else(|e| panic!("{file} does not parse: {e}"));
             assert!(
                 seat.ceilings.max_tool_steps > 0,
@@ -1648,11 +1648,11 @@ mod tests {
             // judgement that may move, the ordering is the claim.
             let bound = seat.ceilings.max_tool_steps;
             match seat.kind {
-                crate::runner::SeatKind::Code => assert!(
+                crate::seat_file::SeatKind::Code => assert!(
                     bound >= 40,
                     "{file} is a code seat with only {bound} tool steps"
                 ),
-                crate::runner::SeatKind::Text => assert!(
+                crate::seat_file::SeatKind::Text => assert!(
                     bound <= 30,
                     "{file} is a text seat budgeted {bound} tool steps — its input is an artifact"
                 ),
@@ -2159,7 +2159,7 @@ mod tests {
         let seats_dir = unique_tempdir("corrupt").join("seats");
         materialize_seats(&seats_dir).unwrap();
         fs::write(seats_dir.join("broken.md"), "not a seat").unwrap();
-        let (ok, errors) = crate::runner::load_seat_definitions(&seats_dir);
+        let (ok, errors) = crate::seat_file::load_seat_definitions(&seats_dir);
         assert_eq!(
             ok.len(),
             EMBEDDED_SEATS.len(),
