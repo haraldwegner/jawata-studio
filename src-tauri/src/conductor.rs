@@ -598,6 +598,10 @@ Two agents agreeing is the common case and costs him nothing. A disagreement is 
 
 **Project state does not go in the store at all.** A sprint phase, a release announcement, "X is executing" — those are true on the day and false a month later, and nothing retires them. They go to the client's own file memory.
 
+## When a compaction was held for the story list
+
+If the person says a compaction was held because the story list is missing, they will give you a file path. Write STEP 1's story list there: one line per candidate, or the single line `nothing worth storing`. Then tell them to compact again. The hook records the file to the discussion lane and removes it, so a compaction cannot erase the list. Nothing is stored in the store by this.
+
 ## What the run reports
 
     ── 2 candidates from this session ──

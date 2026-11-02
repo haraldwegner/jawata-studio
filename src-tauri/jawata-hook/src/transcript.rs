@@ -487,10 +487,11 @@ fn before_compaction_in(
         record(signals, "transcript-precompact-no-session", "the payload named no session");
         return None;
     };
+    let until = ends_by(budget);
     let how = Capture {
         kind: "compaction",
         without_stamp: stop::MAX_CLOSED_WINDOWS,
-        until: ends_by(budget),
+        until,
         reach: REACH_LIMIT_BYTES,
     };
     let saving = store_unsaved(state, signals, client, payload, store, &how);
@@ -501,7 +502,7 @@ fn before_compaction_in(
     let why = match saving.failure.clone() {
         Some(why) => Some(why),
         None if saving.lane_off => None,
-        None => story_list_missing(state, signals, client, &session, store, budget),
+        None => story_list_missing(state, signals, client, &session, store, until),
     };
     let Some(why) = why else {
         let _ = std::fs::remove_file(&counted);
@@ -511,6 +512,8 @@ fn before_compaction_in(
     let refused: u32 = std::fs::read_to_string(&counted).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
     if refused >= MAX_COMPACTION_REFUSALS {
         let _ = std::fs::remove_file(&counted);
+        // A list left behind belongs to this compaction, not the next one.
+        let _ = std::fs::remove_file(stories_file(state, &session));
         record(signals, "transcript-precompact-given-up", &format!("refused={refused}|{why}"));
         return None;
     }
@@ -529,9 +532,10 @@ fn before_compaction_in(
     } else {
         format!(
             "The compaction was held because the story list is missing ({why}). The transcript is \
-             saved. Ask the agent to write the list to {}: one line per lesson this session \
-             produced that is worth keeping (what happened and what to do about it), or the single \
-             line `nothing worth storing`. Then run the compaction again. After \
+             saved. The client shows this message to you, not to the agent, so tell the agent: write \
+             the story list to {} (the /memorize command describes it): one line per lesson this \
+             session produced that is worth keeping (what happened and what to do about it), or the \
+             single line `nothing worth storing`. Then run the compaction again. After \
              {MAX_COMPACTION_REFUSALS} refused attempts in a row it goes ahead without one.",
             story_file.display()
         )
@@ -543,25 +547,31 @@ fn stories_file(dir: &Path, session: &str) -> PathBuf {
 }
 
 /// `None` when the story list the agent wrote for this session has been recorded to the lane (the
-/// file is then consumed, so the next compaction asks again); otherwise why it has not.
+/// file is then consumed, so the next compaction asks again) or the lane is switched off; otherwise
+/// why it has not.
+///
+/// The record is keyed by the list's own text, so a retry after an answer that never arrived (the
+/// engine stored it, the hook did not hear) replaces the same record instead of adding a second.
 fn story_list_missing(
     state: &Path,
     signals: Option<&Path>,
     client: Client,
     session: &str,
     store: &dyn Store,
-    budget: std::time::Duration,
+    until: std::time::Instant,
 ) -> Option<String> {
     let file = stories_file(state, session);
     let list = std::fs::read_to_string(&file).unwrap_or_default();
     if list.trim().is_empty() {
         return Some("no story list has been written for this session".to_string());
     }
-    let within = left_before(ends_by(budget)).unwrap_or(SMALLEST_ASK);
+    let Some(within) = left_before(until) else {
+        return Some("it ran out of time before the story list could be recorded".to_string());
+    };
     let request = json!({
         "kind": "transcript_append",
         "session": session,
-        "key": format!("stories-{}", now_secs()),
+        "key": format!("stories-{:016x}", fnv1a(list.trim())),
         "client": client_name(client),
         "capture": "compaction",
         "his": "",
@@ -569,6 +579,12 @@ fn story_list_missing(
         "tools": [],
     });
     match store.ask_value_within(request, within) {
+        Ok(answer) if answer.get("appended").and_then(Value::as_str) == Some("disabled") => {
+            // The lane is off on this deployment: nothing was recorded and nothing can be, so none
+            // is demanded and the file is not consumed as though it had been.
+            record(signals, "transcript-capture-off", "the lane is switched off on this deployment");
+            None
+        }
         Ok(_) => {
             let _ = std::fs::remove_file(&file);
             record(signals, "transcript-precompact-stories", &format!("bytes={}", list.len()));
@@ -576,6 +592,11 @@ fn story_list_missing(
         }
         Err(e) => Some(format!("the engine did not take the story list ({e:?})")),
     }
+}
+
+/// A stable 64-bit hash of a text (FNV-1a), for a record key that is the same on every retry.
+fn fnv1a(text: &str) -> u64 {
+    text.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3))
 }
 
 // --- before something is attributed to him -------------------------------------------------
@@ -1553,5 +1574,74 @@ mod tests {
         assert!(ask().is_none(), "then it goes ahead: an idle session has no agent to write the list");
         let log = std::fs::read_to_string(signals.join("outcomes.log")).unwrap_or_default();
         assert!(log.contains("transcript-precompact-given-up") && log.contains("no story list"), "{log}");
+    }
+
+    #[test]
+    fn a_lane_that_answers_disabled_to_the_list_asks_for_none_and_keeps_the_file() {
+        // Asked directly: through the whole hold the lane's off state is learned from the first
+        // window sent, and the list is never reached.
+        struct Off;
+        impl Store for Off {
+            fn ask(&self, _: Value) -> Result<Answer, QueryError> {
+                Ok(Answer::Nothing)
+            }
+            fn ask_value(&self, _: Value) -> Result<Value, QueryError> {
+                Ok(json!({"appended": "disabled"}))
+            }
+        }
+        let state = scratch("pre-listoff-state");
+        write_stories(&state, "a lesson");
+        let missing = story_list_missing(&state, None, Client::ClaudeCode, "s-1", &Off, soon());
+        assert!(missing.is_none(), "{missing:?}");
+        assert!(stories_file(&state, "s-1").exists(), "nothing was recorded, so the file is not consumed");
+    }
+
+    #[test]
+    fn a_story_list_is_not_asked_for_when_no_time_is_left() {
+        let state = scratch("pre-listlate-state");
+        write_stories(&state, "a lesson");
+        let store = Stub::quiet();
+        let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        let missing = story_list_missing(&state, None, Client::ClaudeCode, "s-1", &store, past);
+        assert!(missing.is_some_and(|m| m.contains("ran out of time")));
+        assert!(store.seen.borrow().is_empty(), "no ask is made past the deadline");
+        assert!(stories_file(&state, "s-1").exists(), "and the list waits for the next try");
+    }
+
+    #[test]
+    fn the_same_list_sent_twice_has_the_same_key_and_a_different_list_a_different_one() {
+        let dir = scratch("pre-listkey");
+        let path = transcript_file(&dir, "Understood.");
+        let key_of = |text: &str, tag: &str| {
+            let state = scratch(tag);
+            write_stories(&state, text);
+            let store = Stub::quiet();
+            before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact(&path), &store, TEST_BUDGET);
+            let seen = store.seen.borrow();
+            seen.iter().find(|r| r["key"].as_str().is_some_and(|k| k.starts_with("stories-"))).unwrap()["key"].as_str().unwrap().to_string()
+        };
+        assert_eq!(key_of("one lesson", "pre-listkey-a"), key_of("one lesson", "pre-listkey-b"));
+        assert_ne!(key_of("one lesson", "pre-listkey-c"), key_of("another lesson", "pre-listkey-d"));
+    }
+
+    #[test]
+    fn a_story_list_left_behind_by_a_give_up_is_gone_for_the_next_compaction() {
+        let dir = scratch("pre-stale");
+        let path = transcript_file(&dir, "Understood.");
+        let state = scratch("pre-stale-state");
+        let down = Refusing(RefCell::new(0));
+        write_stories(&state, "a list the engine never took");
+        let ask = || before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact(&path), &down, TEST_BUDGET);
+        assert!(ask().is_some() && ask().is_some());
+        assert!(ask().is_none(), "the third attempt goes ahead");
+        assert!(!stories_file(&state, "s-1").exists(), "and the old list does not satisfy the next compaction");
+    }
+
+    #[test]
+    fn the_hold_tells_the_person_to_tell_the_agent() {
+        let dir = scratch("pre-relay");
+        let path = transcript_file(&dir, "Understood.");
+        let held = before_compaction_in(&scratch("pre-relay-state"), None, Client::ClaudeCode, &pre_compact(&path), &Stub::quiet(), TEST_BUDGET).unwrap();
+        assert!(held.contains("shows this message to you, not to the agent"), "{held}");
     }
 }
