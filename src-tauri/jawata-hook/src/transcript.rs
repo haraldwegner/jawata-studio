@@ -301,6 +301,16 @@ fn store_unsaved(
     let mut resume_at: Option<String> = None;
     let mut stored = 0usize;
     let mut failure: Option<String> = None;
+    // The window the stamp names is not in what was read (it scrolled out of reach, or the read
+    // stopped for want of time): the windows between it and the ones about to be stored are not
+    // stored by this run. Say so. The windows that were read are still stored and the stamp still
+    // moves to the newest, so the next capture does not meet the same gap.
+    if let Some(k) = last.as_deref() {
+        let held = turn.closed.iter().chain(std::iter::once(&turn.capture)).any(|w| w.key.as_deref() == Some(k));
+        if !held {
+            failure = Some("part of the transcript lay beyond what could be read in time".to_string());
+        }
+    }
     for window in unsaved(&turn, last.as_deref(), how.without_stamp) {
         let Some(within) = left_before(how.until) else {
             record(signals, "transcript-capture-slow", &format!("{}|stored={stored}", how.kind));
@@ -440,6 +450,12 @@ fn refusals_file(dir: &Path, session: &str) -> PathBuf {
     dir.join(format!("{}.compaction-refusals", pipeline::sanitize_session(session)))
 }
 
+/// Claude Code's contract for this event, read from its hooks reference on 2026-11-02: the event
+/// is `PreCompact` with the matcher values `manual` and `auto`; "exit code 2" blocks the
+/// compaction, and the JSON form is the top-level `{"decision": "block", "reason": ...}` printed
+/// with exit 0 (the page lists PreCompact under that decision pattern). This hook uses the JSON
+/// form, the same shape the Stop gate prints.
+///
 /// Fired just before the client compacts a session (a manual `/compact`, or automatic): store the
 /// windows the transcript holds that were not stored, so the compaction removes nothing the lane
 /// does not hold. `Some(reason)` is a refusal: the save did not complete, the reason says what and
@@ -450,7 +466,7 @@ fn refusals_file(dir: &Path, session: &str) -> PathBuf {
 /// lane is switched off on this deployment) clears the count of refusals; the third failure in a
 /// row lets the compaction through and says so in the outcomes log.
 pub fn before_compaction(client: Client, payload: &str, store: &dyn Store) -> Option<String> {
-    before_compaction_in(&state_dir()?, signal_dir().as_deref(), client, payload, store)
+    before_compaction_in(&state_dir()?, signal_dir().as_deref(), client, payload, store, COMPACTION_CAPTURE_BUDGET)
 }
 
 fn before_compaction_in(
@@ -459,12 +475,17 @@ fn before_compaction_in(
     client: Client,
     payload: &str,
     store: &dyn Store,
+    budget: std::time::Duration,
 ) -> Option<String> {
-    let session = pipeline::session_id_in(payload)?;
+    let Some(session) = pipeline::session_id_in(payload) else {
+        // Nothing to key a save or a count by: the compaction goes ahead, and the log says why.
+        record(signals, "transcript-precompact-no-session", "the payload named no session");
+        return None;
+    };
     let how = Capture {
         kind: "compaction",
         without_stamp: stop::MAX_CLOSED_WINDOWS,
-        until: ends_by(COMPACTION_CAPTURE_BUDGET),
+        until: ends_by(budget),
         reach: REACH_LIMIT_BYTES,
     };
     let saving = store_unsaved(state, signals, client, payload, store, &how);
@@ -1200,6 +1221,9 @@ mod tests {
 
     // ---- before a compaction (28h S15, D40) -----------------------------------------------------
 
+    /// Long enough that a test of something else never meets it.
+    const TEST_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
     fn pre_compact(path: &str) -> String {
         payload(path, json!({"hook_event_name": "PreCompact", "trigger": "manual"}))
     }
@@ -1230,7 +1254,7 @@ mod tests {
         let path = transcript_file(&dir, "Understood.");
         let state = scratch("pre-saved-state");
         let store = Stub::quiet();
-        let held = before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact(&path), &store);
+        let held = before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact(&path), &store, TEST_BUDGET);
         assert!(held.is_none(), "a save that completed holds nothing: {held:?}");
         let seen = store.seen.borrow();
         let appends: Vec<&Value> = seen.iter().filter(|r| r["kind"] == "transcript_append").collect();
@@ -1245,7 +1269,7 @@ mod tests {
         let path = transcript_file(&dir, "Understood.");
         let state = scratch("pre-failed-state");
         let refusing = Refusing(RefCell::new(0));
-        let held = before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact(&path), &refusing)
+        let held = before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact(&path), &refusing, TEST_BUDGET)
             .expect("the engine took nothing, so the compaction is held");
         assert!(held.contains("not fully saved"), "{held}");
         assert!(held.contains("connection refused"), "the cause is named: {held}");
@@ -1255,7 +1279,7 @@ mod tests {
     #[test]
     fn a_transcript_that_cannot_be_read_holds_the_compaction_too() {
         let state = scratch("pre-unreadable-state");
-        let held = before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact("/no/such/transcript.jsonl"), &Stub::quiet());
+        let held = before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact("/no/such/transcript.jsonl"), &Stub::quiet(), TEST_BUDGET);
         assert!(held.is_some_and(|r| r.contains("could not be read")), "nothing was saved because nothing was read");
     }
 
@@ -1266,7 +1290,7 @@ mod tests {
         let state = scratch("pre-bound-state");
         let signals = scratch("pre-bound-signals");
         let down = Refusing(RefCell::new(0));
-        let ask = |store: &dyn Store| before_compaction_in(&state, Some(&signals), Client::ClaudeCode, &pre_compact(&path), store);
+        let ask = |store: &dyn Store| before_compaction_in(&state, Some(&signals), Client::ClaudeCode, &pre_compact(&path), store, TEST_BUDGET);
         assert!(ask(&down).is_some(), "first refusal");
         assert!(ask(&down).is_some(), "second refusal");
         assert!(ask(&down).is_none(), "the third attempt goes ahead: a broken engine does not freeze the session");
@@ -1291,7 +1315,7 @@ mod tests {
         }
         let dir = scratch("pre-off");
         let path = transcript_file(&dir, "Understood.");
-        let held = before_compaction_in(&scratch("pre-off-state"), None, Client::ClaudeCode, &pre_compact(&path), &Off);
+        let held = before_compaction_in(&scratch("pre-off-state"), None, Client::ClaudeCode, &pre_compact(&path), &Off, TEST_BUDGET);
         assert!(held.is_none(), "there is nowhere to save into, so nothing to hold for: {held:?}");
     }
 
@@ -1301,10 +1325,81 @@ mod tests {
         let path = transcript_file(&dir, "Understood.");
         let state = scratch("pre-resume-state");
         let store = Stub::quiet();
-        before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact(&path), &store);
+        before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact(&path), &store, TEST_BUDGET);
         store.seen.borrow_mut().clear();
-        before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact(&path), &store);
+        before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact(&path), &store, TEST_BUDGET);
         let seen = store.seen.borrow();
         assert_eq!(1, seen.len(), "only the window the stamp names, which may have grown: {seen:?}");
+    }
+
+    #[test]
+    fn a_save_that_ran_out_of_time_holds_the_compaction() {
+        // The windows not reached are still unsaved, so this is not a save that completed.
+        struct SlowAsk;
+        impl Store for SlowAsk {
+            fn ask(&self, _: Value) -> Result<Answer, QueryError> {
+                Ok(Answer::Nothing)
+            }
+            fn ask_value(&self, _: Value) -> Result<Value, QueryError> {
+                std::thread::sleep(std::time::Duration::from_millis(120));
+                Ok(json!({"appended": "stored"}))
+            }
+        }
+        let dir = scratch("pre-slow");
+        let mut lines = vec![];
+        for i in 0..6 {
+            lines.push(json!({"type": "user", "uuid": format!("u{i}"), "timestamp": "2026-10-17T09:00:00Z",
+                "message": {"role": "user", "content": format!("message number {i} of the session")}}));
+            lines.push(json!({"type": "assistant", "uuid": format!("a{i}"), "message": {"content": [
+                {"type": "text", "text": format!("answer {i}")}]}}));
+        }
+        let path = dir.join("slow.jsonl");
+        std::fs::write(&path, lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).unwrap();
+        let held = before_compaction_in(
+            &scratch("pre-slow-state"), None, Client::ClaudeCode,
+            &pre_compact(&path.to_string_lossy()), &SlowAsk, std::time::Duration::from_millis(400),
+        );
+        assert!(held.is_some_and(|r| r.contains("ran out of time")), "an incomplete save is not a saved one");
+    }
+
+    #[test]
+    fn a_stamp_the_read_cannot_find_means_part_of_the_transcript_was_not_reached_and_the_next_try_is_clean() {
+        let dir = scratch("pre-gap");
+        let path = transcript_file(&dir, "Understood.");
+        let state = scratch("pre-gap-state");
+        // The last window stored was one the read does not hold (it scrolled out of reach).
+        std::fs::write(stamp_file(&state, "s-1"), "a-window-that-is-gone").unwrap();
+        let store = Stub::quiet();
+        let held = before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact(&path), &store, TEST_BUDGET);
+        assert!(held.is_some_and(|r| r.contains("beyond what could be read")), "the gap is named, not passed as saved");
+        assert_eq!(2, store.seen.borrow().iter().filter(|r| r["kind"] == "transcript_append").count(),
+            "what was read is still stored");
+        let again = before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact(&path), &store, TEST_BUDGET);
+        assert!(again.is_none(), "and the stamp moved, so the next attempt meets no gap: {again:?}");
+    }
+
+    #[test]
+    fn each_session_has_its_own_count_of_refusals() {
+        let dir = scratch("pre-sessions");
+        let path = transcript_file(&dir, "Understood.");
+        let state = scratch("pre-sessions-state");
+        let down = Refusing(RefCell::new(0));
+        let other = payload(&path, json!({"hook_event_name": "PreCompact", "session_id": "s-other"}));
+        let ask = |p: &str| before_compaction_in(&state, None, Client::ClaudeCode, p, &down, TEST_BUDGET);
+        assert!(ask(&pre_compact(&path)).is_some());
+        assert!(ask(&pre_compact(&path)).is_some());
+        assert!(ask(&other).is_some(), "the other session's first failure is its first: one session's refusals are not another's");
+    }
+
+    #[test]
+    fn a_payload_naming_no_session_goes_ahead_and_says_so_in_the_log() {
+        let signals = scratch("pre-nosession-signals");
+        let held = before_compaction_in(
+            &scratch("pre-nosession-state"), Some(&signals), Client::ClaudeCode,
+            r#"{"hook_event_name":"PreCompact"}"#, &Stub::quiet(), TEST_BUDGET,
+        );
+        assert!(held.is_none());
+        let log = std::fs::read_to_string(signals.join("outcomes.log")).unwrap_or_default();
+        assert!(log.contains("transcript-precompact-no-session"), "{log}");
     }
 }
