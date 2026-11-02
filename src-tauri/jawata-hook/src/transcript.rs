@@ -262,7 +262,16 @@ fn reach_signals(signals: Option<&Path>, turn: &stop::Turn, last: Option<&str>, 
     }
 }
 
-/// Store the windows not yet stored, oldest first, and return how many the engine took. Stops at
+/// What a capture came to: how many windows the engine took, and, when it could not take them
+/// all, why. A capture that has nothing left to store is NOT a failure; one that could not read the
+/// transcript, was refused by the engine, or ran out of time is, because windows are still unsaved.
+/// A lane switched off on this deployment is neither: there is nowhere to save into.
+struct Saving {
+    stored: usize,
+    failure: Option<String>,
+}
+
+/// Store the windows not yet stored, oldest first, and say how many the engine took. Stops at
 /// `how.until`, and no ask is given longer than what is left: the stamp stays at the last window stored, so the next capture resumes where this
 /// one stopped and no window is ever skipped over.
 fn store_unsaved(
@@ -272,8 +281,8 @@ fn store_unsaved(
     payload: &str,
     store: &dyn Store,
     how: &Capture,
-) -> usize {
-    let Some(session) = pipeline::session_id_in(payload) else { return 0 };
+) -> Saving {
+    let Some(session) = pipeline::session_id_in(payload) else { return Saving { stored: 0, failure: None } };
     let last = std::fs::read_to_string(stamp_file(state, &session)).ok().map(|k| k.trim().to_string());
     let reached = |t: &stop::Turn| {
         if t.capture.key.is_none() {
@@ -286,20 +295,23 @@ fn store_unsaved(
     };
     let Some((_, turn)) = turn_reaching(payload, &reached, how.reach, how.until) else {
         record(signals, "transcript-unreadable", &format!("{}|nothing could be read from the transcript", how.kind));
-        return 0;
+        return Saving { stored: 0, failure: Some("the transcript could not be read".to_string()) };
     };
     reach_signals(signals, &turn, last.as_deref(), how.kind);
     let mut resume_at: Option<String> = None;
     let mut stored = 0usize;
+    let mut failure: Option<String> = None;
     for window in unsaved(&turn, last.as_deref(), how.without_stamp) {
         let Some(within) = left_before(how.until) else {
             record(signals, "transcript-capture-slow", &format!("{}|stored={stored}", how.kind));
+            failure = Some(format!("it ran out of time after {stored} window(s)"));
             break;
         };
         match append_window(store, &session, client, how.kind, window, within) {
             Some(Err(e)) => {
                 // Not advanced past a window the engine could not take: the next capture retries it.
                 record(signals, "transcript-capture-failed", &format!("{}|{e}", how.kind));
+                failure = Some(format!("the engine did not take a window ({e})"));
                 break;
             }
             Some(Ok(outcome)) => {
@@ -317,7 +329,7 @@ fn store_unsaved(
         let _ = std::fs::create_dir_all(state);
         let _ = std::fs::write(stamp_file(state, &session), key);
     }
-    stored
+    Saving { stored, failure }
 }
 
 /// Store the window so far, at most once every [`MIN_GAP_SECS`] per session. Fired by the observer
@@ -386,7 +398,7 @@ fn after_compaction_in(
         until: ends_by(COMPACTION_CAPTURE_BUDGET),
         reach: REACH_LIMIT_BYTES,
     };
-    let stored = store_unsaved(state, signals, client, payload, store, &how);
+    let stored = store_unsaved(state, signals, client, payload, store, &how).stored;
     record(signals, "transcript-compaction-catchup", &format!("windows={stored}"));
     let request = json!({
         "kind": "recall",
@@ -406,6 +418,78 @@ fn after_compaction_in(
         )),
         _ => None,
     }
+}
+
+// --- before a compaction -------------------------------------------------------------------
+
+/// How many times in a row a compaction is refused because its save failed. After that it goes
+/// ahead: a compaction refused for good would leave a session that can neither shrink nor go on,
+/// and a save that fails three times running is a broken engine, which the log names, not a reason
+/// to stop the person working. The same reasoning as the stop gate's two-attempt bound.
+pub const MAX_COMPACTION_REFUSALS: u32 = 2;
+
+/// Whether this payload is the client's before-a-compaction event.
+pub fn is_pre_compact(payload: &str) -> bool {
+    let event = serde_json::from_str::<Value>(payload)
+        .ok()
+        .and_then(|v| v.get("hook_event_name").and_then(Value::as_str).map(str::to_string));
+    event.is_some_and(|e| crate::roles::ALSO_HANDLED.iter().any(|(role, handled)| *role == crate::roles::Role::Stop && *handled == e))
+}
+
+fn refusals_file(dir: &Path, session: &str) -> PathBuf {
+    dir.join(format!("{}.compaction-refusals", pipeline::sanitize_session(session)))
+}
+
+/// Fired just before the client compacts a session (a manual `/compact`, or automatic): store the
+/// windows the transcript holds that were not stored, so the compaction removes nothing the lane
+/// does not hold. `Some(reason)` is a refusal: the save did not complete, the reason says what and
+/// what to do, and the client does not compact.
+///
+/// The save resumes from the stamp the other captures keep, so a refused attempt has stored what it
+/// could and the next one finishes. A save that completes (or has nothing left to store, or whose
+/// lane is switched off on this deployment) clears the count of refusals; the third failure in a
+/// row lets the compaction through and says so in the outcomes log.
+pub fn before_compaction(client: Client, payload: &str, store: &dyn Store) -> Option<String> {
+    before_compaction_in(&state_dir()?, signal_dir().as_deref(), client, payload, store)
+}
+
+fn before_compaction_in(
+    state: &Path,
+    signals: Option<&Path>,
+    client: Client,
+    payload: &str,
+    store: &dyn Store,
+) -> Option<String> {
+    let session = pipeline::session_id_in(payload)?;
+    let how = Capture {
+        kind: "compaction",
+        without_stamp: stop::MAX_CLOSED_WINDOWS,
+        until: ends_by(COMPACTION_CAPTURE_BUDGET),
+        reach: REACH_LIMIT_BYTES,
+    };
+    let saving = store_unsaved(state, signals, client, payload, store, &how);
+    let counted = refusals_file(state, &session);
+    let Some(why) = saving.failure else {
+        let _ = std::fs::remove_file(&counted);
+        record(signals, "transcript-precompact-saved", &format!("windows={}", saving.stored));
+        return None;
+    };
+    let refused: u32 = std::fs::read_to_string(&counted).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+    if refused >= MAX_COMPACTION_REFUSALS {
+        let _ = std::fs::remove_file(&counted);
+        record(signals, "transcript-precompact-given-up", &format!("refused={refused}|{why}"));
+        return None;
+    }
+    let _ = std::fs::create_dir_all(state);
+    let _ = std::fs::write(&counted, (refused + 1).to_string());
+    record(signals, "transcript-precompact-refused", &format!("refusal={}|{why}", refused + 1));
+    Some(format!(
+        "The compaction was held because this session's transcript was not fully saved to the \
+         discussion lane ({why}). {} window(s) were saved by this attempt and the next attempt \
+         resumes where it stopped: run the compaction again. After {MAX_COMPACTION_REFUSALS} refused \
+         attempts in a row it goes ahead without waiting.",
+        saving.stored
+    ))
 }
 
 // --- before something is attributed to him -------------------------------------------------
@@ -835,7 +919,7 @@ mod tests {
         let p = payload(&path.to_string_lossy(), json!({}));
 
         let first = Slow(RefCell::new(vec![]));
-        let n1 = store_unsaved(&state, None, Client::ClaudeCode, &p, &first, &how);
+        let n1 = store_unsaved(&state, None, Client::ClaudeCode, &p, &first, &how).stored;
         assert!(n1 >= 1 && n1 < 6, "stopped before the end: {n1}");
         let second = Slow(RefCell::new(vec![]));
         let how2 = Capture {
@@ -1112,5 +1196,115 @@ mod tests {
         let retry = payload(&path, json!({"stop_hook_active": true}));
         assert!(name_back_in(&scratch("q3"), None, Client::ClaudeCode, &retry, &unfound, soon()).is_none(), "a retry is never held again");
         assert!(unfound.seen.borrow().is_empty(), "and the engine is not even asked");
+    }
+
+    // ---- before a compaction (28h S15, D40) -----------------------------------------------------
+
+    fn pre_compact(path: &str) -> String {
+        payload(path, json!({"hook_event_name": "PreCompact", "trigger": "manual"}))
+    }
+
+    /// An engine that is up but refuses what it is sent.
+    struct Refusing(RefCell<usize>);
+    impl Store for Refusing {
+        fn ask(&self, _: Value) -> Result<Answer, QueryError> {
+            Ok(Answer::Nothing)
+        }
+        fn ask_value(&self, _: Value) -> Result<Value, QueryError> {
+            *self.0.borrow_mut() += 1;
+            Err(QueryError::Unreachable("connection refused".into()))
+        }
+    }
+
+    #[test]
+    fn only_the_before_compaction_event_is_one() {
+        assert!(is_pre_compact(&pre_compact("/x")));
+        assert!(!is_pre_compact(&payload("/x", json!({"hook_event_name": "Stop"}))));
+        assert!(!is_pre_compact(&payload("/x", json!({}))), "a payload with no event is a turn end, as before");
+        assert!(!is_pre_compact("not json"));
+    }
+
+    #[test]
+    fn before_a_compaction_every_unsaved_window_is_stored_as_a_compaction_capture_and_the_compaction_goes_ahead() {
+        let dir = scratch("pre-saved");
+        let path = transcript_file(&dir, "Understood.");
+        let state = scratch("pre-saved-state");
+        let store = Stub::quiet();
+        let held = before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact(&path), &store);
+        assert!(held.is_none(), "a save that completed holds nothing: {held:?}");
+        let seen = store.seen.borrow();
+        let appends: Vec<&Value> = seen.iter().filter(|r| r["kind"] == "transcript_append").collect();
+        assert_eq!(2, appends.len(), "both windows of the transcript are in the lane: {seen:?}");
+        assert!(appends.iter().all(|r| r["capture"] == "compaction"), "named for what it is: {appends:?}");
+        assert_eq!("u2", appends[1]["key"]);
+    }
+
+    #[test]
+    fn a_compaction_whose_save_failed_is_held_with_a_reason_that_says_what_to_do() {
+        let dir = scratch("pre-failed");
+        let path = transcript_file(&dir, "Understood.");
+        let state = scratch("pre-failed-state");
+        let refusing = Refusing(RefCell::new(0));
+        let held = before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact(&path), &refusing)
+            .expect("the engine took nothing, so the compaction is held");
+        assert!(held.contains("not fully saved"), "{held}");
+        assert!(held.contains("connection refused"), "the cause is named: {held}");
+        assert!(held.contains("run the compaction again"), "and what to do: {held}");
+    }
+
+    #[test]
+    fn a_transcript_that_cannot_be_read_holds_the_compaction_too() {
+        let state = scratch("pre-unreadable-state");
+        let held = before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact("/no/such/transcript.jsonl"), &Stub::quiet());
+        assert!(held.is_some_and(|r| r.contains("could not be read")), "nothing was saved because nothing was read");
+    }
+
+    #[test]
+    fn the_third_failed_save_in_a_row_lets_the_compaction_through_and_a_good_save_resets_the_count() {
+        let dir = scratch("pre-bound");
+        let path = transcript_file(&dir, "Understood.");
+        let state = scratch("pre-bound-state");
+        let signals = scratch("pre-bound-signals");
+        let down = Refusing(RefCell::new(0));
+        let ask = |store: &dyn Store| before_compaction_in(&state, Some(&signals), Client::ClaudeCode, &pre_compact(&path), store);
+        assert!(ask(&down).is_some(), "first refusal");
+        assert!(ask(&down).is_some(), "second refusal");
+        assert!(ask(&down).is_none(), "the third attempt goes ahead: a broken engine does not freeze the session");
+        let log = std::fs::read_to_string(signals.join("outcomes.log")).unwrap_or_default();
+        assert!(log.contains("transcript-precompact-given-up"), "and the log says it gave up: {log}");
+        // The count starts again after that, and a save that works clears it.
+        assert!(ask(&down).is_some(), "counted afresh");
+        assert!(ask(&Stub::quiet()).is_none(), "the engine is back: saved, nothing held");
+        assert!(ask(&down).is_some() && ask(&down).is_some(), "the good save reset the count to zero");
+    }
+
+    #[test]
+    fn a_lane_switched_off_on_this_deployment_does_not_hold_a_compaction() {
+        struct Off;
+        impl Store for Off {
+            fn ask(&self, _: Value) -> Result<Answer, QueryError> {
+                Ok(Answer::Nothing)
+            }
+            fn ask_value(&self, _: Value) -> Result<Value, QueryError> {
+                Ok(json!({"appended": "disabled"}))
+            }
+        }
+        let dir = scratch("pre-off");
+        let path = transcript_file(&dir, "Understood.");
+        let held = before_compaction_in(&scratch("pre-off-state"), None, Client::ClaudeCode, &pre_compact(&path), &Off);
+        assert!(held.is_none(), "there is nowhere to save into, so nothing to hold for: {held:?}");
+    }
+
+    #[test]
+    fn a_second_attempt_resumes_where_the_first_stopped() {
+        let dir = scratch("pre-resume");
+        let path = transcript_file(&dir, "Understood.");
+        let state = scratch("pre-resume-state");
+        let store = Stub::quiet();
+        before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact(&path), &store);
+        store.seen.borrow_mut().clear();
+        before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact(&path), &store);
+        let seen = store.seen.borrow();
+        assert_eq!(1, seen.len(), "only the window the stamp names, which may have grown: {seen:?}");
     }
 }

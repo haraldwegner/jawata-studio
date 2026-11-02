@@ -33,6 +33,10 @@
     "observer": "PostToolUse",
     "stop": "Stop"
   },
+  "claude-code_also": {
+    "_why": "Events a role's binary answers BESIDES the one in its row above. The stop role's binary also answers PreCompact (Sprint 28h S15, D40): it saves the transcript to the discussion lane before the client compacts and holds the compaction when the save fails. One binary, two events, because both are the same job: the boundary where what the session has said is stored. The deploy writes the PreCompact entry only when the stop role is a binary; the generation-2 stop script would misread a compaction payload.",
+    "stop": ["PreCompact"]
+  },
   "cursor": {
     "primer": "sessionStart",
     "userprompt": "beforeSubmitPrompt",

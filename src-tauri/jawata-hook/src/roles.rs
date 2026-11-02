@@ -213,6 +213,12 @@ pub const ROLES: &[RoleSpec] = &[
 
 /// Resolve `argv[0]` to a role. Returns `None` for a name we do not own —
 /// which is a fact worth recording, not a reason to guess.
+/// Events a role's binary answers besides the one in its row, on Claude Code. The stop role also
+/// answers the event before a compaction (Sprint 28h S15, D40). Declared beside the table, and in
+/// `hook-events.json` under `claude-code_also`, so a deploy that registers the binary for an event
+/// the hook does not handle (or the reverse) fails a test on one side or the other.
+pub const ALSO_HANDLED: &[(Role, &str)] = &[(Role::Stop, "PreCompact")];
+
 impl Role {
     /// The stable log/diagnostic tag for this role.
     ///

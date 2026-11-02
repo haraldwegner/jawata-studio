@@ -237,6 +237,19 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
         // tests exercising `Granted` all passed. The rule was built, covered and
         // never given its input.
         Role::Stop => {
+            // Sprint 28h S15 (D40): the client's before-a-compaction event is delivered to this
+            // role's binary (one boundary role, two events), and it is NOT a turn end: the stop
+            // gate judges nothing here. The transcript is saved first and a failed save holds the
+            // compaction.
+            if crate::transcript::is_pre_compact(payload) {
+                return match crate::transcript::before_compaction(client, payload, store) {
+                    Some(reason) => match crate::emit::render(client, &crate::emit::Emission::StopDecision { reason }) {
+                        Some(rendered) => Outcome::Emitted(rendered),
+                        None => Outcome::Silent(SilenceReason::CannotInject),
+                    },
+                    None => Outcome::Silent(SilenceReason::StopAllowed),
+                };
+            }
             let autonomy = crate::pipeline::session_autonomy(payload);
             let decided = stop_gate(client, payload, autonomy, store);
             // Sprint 28g S21 — the discussion lane, after the gate has decided and whatever it

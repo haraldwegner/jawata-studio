@@ -254,3 +254,42 @@ fn any_other_start_asks_the_discussion_nothing() {
     assert!(resident.requests_of("recall").iter().all(|r| r["lanes"] != json!(["transcript"])),
         "the discussion is asked on a compaction only: {:?}", resident.kinds());
 }
+
+// ---- 28h S15 (D40): the save BEFORE a compaction, through the real binary ------------------------
+
+fn pre_compact(path: &str) -> String {
+    payload(path, json!({"hook_event_name": "PreCompact", "trigger": "auto"}))
+}
+
+#[test]
+fn a_compaction_is_preceded_by_the_save_and_the_stop_gate_judges_nothing() {
+    let home = scratch("precompact");
+    // A final answer the stop role WOULD name back at a turn end (words he never said), so a
+    // PreCompact that ran the turn-end rules would block, and one that stores and goes ahead does not.
+    let path = write_transcript(&home, "He said \"we should rewrite everything in Rust tonight\" earlier.");
+    let resident = Resident::start(json!({"checked": true, "found": false}));
+    let out = run_as("stop", &home, &resident.url, &pre_compact(&path));
+
+    let appends = resident.requests_of("transcript_append");
+    assert_eq!(2, appends.len(), "PROOF OF LIFE: both windows are in the lane before the compaction: {:?}", resident.kinds());
+    assert!(appends.iter().all(|r| r["capture"] == "compaction"), "{appends:?}");
+    assert!(out.trim().is_empty(), "a saved transcript holds nothing, so nothing is printed: {out}");
+    assert!(resident.requests_of("transcript_verify").is_empty(),
+        "and the turn-end checks did not run on a compaction: {:?}", resident.kinds());
+}
+
+#[test]
+fn a_compaction_whose_save_cannot_be_made_is_held_in_the_clients_own_words() {
+    let home = scratch("precompact-down");
+    let path = write_transcript(&home, "Understood.");
+    // An address nothing listens on: the engine is down.
+    let dead = {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}/mcp", l.local_addr().unwrap())
+    };
+    let out = run_as("stop", &home, &dead, &pre_compact(&path));
+    let v: Value = serde_json::from_str(out.trim()).unwrap_or_else(|_| panic!("a decision is printed as JSON: {out:?}"));
+    assert_eq!("block", v["decision"], "{out}");
+    assert!(v["reason"].as_str().is_some_and(|r| r.contains("not fully saved") && r.contains("run the compaction again")), "{out}");
+    assert!(outcomes(&home).contains("transcript-precompact-refused"), "and the log says so: {}", outcomes(&home));
+}

@@ -16,7 +16,7 @@
 //! A committed data file is the one thing both sides can read with no edge
 //! between them.
 
-use jawata_hook::roles::{Availability, Client, ROLES};
+use jawata_hook::roles::{Availability, Client, ALSO_HANDLED, ROLES};
 
 const EVENTS: &str = include_str!("../../hook-events.json");
 
@@ -103,4 +103,30 @@ fn the_absences_are_declared_in_both_places_with_the_same_reason() {
         }
     }
     assert_eq!(absent.len(), seen, "every declared absence must exist in the table");
+}
+
+#[test]
+fn the_events_a_role_answers_besides_its_own_are_declared_in_both_places() {
+    // Sprint 28h S15 (D40): the stop role's binary also answers the event before a compaction.
+    let doc = table();
+    let also = doc["claude-code_also"].as_object().expect("claude-code_also");
+    let mut declared: Vec<(String, String)> = also
+        .iter()
+        .filter(|(k, _)| !k.starts_with('_'))
+        .flat_map(|(role, events)| {
+            events.as_array().expect("a list of events").iter().map(|e| (role.clone(), e.as_str().unwrap().to_string()))
+        })
+        .collect();
+    let mut known: Vec<(String, String)> =
+        ALSO_HANDLED.iter().map(|(role, event)| (role.name().to_string(), event.to_string())).collect();
+    declared.sort();
+    known.sort();
+    assert_eq!(declared, known, "the contract file and the table disagree about who answers a second event");
+    for (role, _) in ALSO_HANDLED {
+        assert!(
+            ROLES.iter().any(|s| s.role == *role && s.client == Client::ClaudeCode
+                && matches!(s.availability, Availability::Handled { .. })),
+            "{role:?} answers a second event but has no handled Claude row of its own"
+        );
+    }
 }

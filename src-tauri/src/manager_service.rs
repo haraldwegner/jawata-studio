@@ -9490,7 +9490,7 @@ fn write_managed_stop(
     backup_before_write: bool,
     force_rewrite: bool,
 ) -> Result<bool, String> {
-    write_managed_hook_section(
+    let stop_changed = write_managed_hook_section(
         settings_path,
         stop_path,
         &build_stop_script(mcp_url, token),
@@ -9499,11 +9499,92 @@ fn write_managed_stop(
         is_managed_stop_entry,
         backup_before_write,
         force_rewrite,
-    )
+    )?;
+    // Sprint 28h S15 (D40): the same binary also answers the client's before-a-compaction event,
+    // saving the transcript to the discussion lane first and holding the compaction when the save
+    // fails. Only the BINARY does: the generation-2 stop script judges a final message and would
+    // misread a compaction payload, so with a script behind the Stop entry no PreCompact entry is
+    // written and any earlier one is taken out.
+    let pre_compact = path_is_role_binary(stop_path).then(|| build_managed_stop_entry(stop_path));
+    let pre_changed = set_managed_hook_entry(
+        settings_path,
+        PRE_COMPACT_SECTION,
+        pre_compact,
+        is_managed_stop_entry,
+        backup_before_write,
+    )?;
+    Ok(stop_changed || pre_changed)
+}
+
+/// The settings section the client fires before it compacts a session.
+const PRE_COMPACT_SECTION: &str = "PreCompact";
+
+/// Make `hooks.<section>` hold exactly one managed entry (`Some`) or none (`None`), leaving every
+/// entry that is not ours as it was, and write the settings file only when that changed it. The
+/// hook binary itself is not touched, which is why this is not [`write_managed_hook_section`]: the
+/// PreCompact entry names the stop role's binary, whose file belongs to the Stop section.
+fn set_managed_hook_entry(
+    settings_path: &str,
+    section: &str,
+    entry: Option<serde_json::Value>,
+    is_managed: fn(&serde_json::Value) -> bool,
+    backup_before_write: bool,
+) -> Result<bool, String> {
+    let settings_buf = PathBuf::from(settings_path);
+    let existing = fs::read_to_string(&settings_buf).ok();
+    if existing.is_none() && entry.is_none() {
+        return Ok(false);
+    }
+    let mut root = existing
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !root.is_object() {
+        root = serde_json::json!({});
+    }
+    {
+        let object = root.as_object_mut().expect("root is an object");
+        let hooks = object.entry("hooks").or_insert_with(|| serde_json::json!({}));
+        if !hooks.is_object() {
+            *hooks = serde_json::json!({});
+        }
+        let hooks_object = hooks.as_object_mut().expect("hooks is an object");
+        let mut arr = hooks_object.get(section).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        arr.retain(|candidate| !is_managed(candidate));
+        arr.extend(entry);
+        if arr.is_empty() {
+            hooks_object.remove(section);
+        } else {
+            hooks_object.insert(section.to_string(), serde_json::Value::Array(arr));
+        }
+        if hooks_object.is_empty() {
+            object.remove("hooks");
+        }
+    }
+    let next_json = serde_json::to_string_pretty(&root)
+        .map_err(|error| format!("failed serializing settings json: {error}"))?;
+    if existing.as_deref().is_some_and(|before| before.trim() == next_json.trim()) {
+        return Ok(false);
+    }
+    if let Some(parent) = settings_buf.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create settings dir {}: {error}", parent.display()))?;
+    }
+    if backup_before_write && settings_buf.exists() {
+        crate::backups::backup_before_write(&settings_buf)
+            .map_err(|error| format!("failed creating centralized settings backup: {error}"))?;
+    }
+    fs::write(&settings_buf, format!("{next_json}\n"))
+        .map_err(|error| format!("failed writing settings {}: {error}", settings_buf.display()))?;
+    Ok(true)
 }
 
 fn remove_managed_stop(settings_path: &str, stop_path: &Path, backup_before_write: bool) -> Result<bool, String> {
-    remove_managed_hook_section(settings_path, stop_path, "Stop", is_managed_stop_entry, backup_before_write)
+    let pre_changed =
+        set_managed_hook_entry(settings_path, PRE_COMPACT_SECTION, None, is_managed_stop_entry, backup_before_write)?;
+    let stop_changed =
+        remove_managed_hook_section(settings_path, stop_path, "Stop", is_managed_stop_entry, backup_before_write)?;
+    Ok(pre_changed || stop_changed)
 }
 
 fn write_managed_primer(
@@ -15140,6 +15221,85 @@ judge was never told to give"
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // ---- 28h S15 (D40): the before-a-compaction entry --------------------------------------
+
+    fn precompact_entries(settings: &Path) -> Vec<serde_json::Value> {
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(settings).unwrap()).unwrap();
+        v["hooks"]["PreCompact"].as_array().cloned().unwrap_or_default()
+    }
+
+    fn commands_of(entries: &[serde_json::Value]) -> Vec<String> {
+        entries
+            .iter()
+            .flat_map(|e| e["hooks"].as_array().cloned().unwrap_or_default())
+            .filter_map(|h| h["command"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn a_stop_binary_is_also_registered_for_the_event_before_a_compaction_and_a_users_own_entry_stays() {
+        let dir = unique_tempdir("precompact-binary");
+        let settings = dir.join("settings.json");
+        std::fs::write(
+            &settings,
+            r#"{"hooks":{"PreCompact":[{"hooks":[{"type":"command","command":"/home/u/my-own-precompact.sh"}]}]}}"#,
+        )
+        .unwrap();
+        let stop = dir.join("jawata-hook-stop");
+        std::fs::write(&stop, b"\x7fELF fake role binary").unwrap();
+        let s = settings.to_str().unwrap();
+        assert!(write_managed_stop(s, &stop, "http://u/mcp", "t", false, false).unwrap());
+
+        let commands = commands_of(&precompact_entries(&settings));
+        assert_eq!(2, commands.len(), "the user's entry and ours: {commands:?}");
+        assert!(commands.iter().any(|c| c.ends_with("my-own-precompact.sh")), "the user's own stays: {commands:?}");
+        assert!(commands.iter().any(|c| c.contains("jawata-hook-stop")), "ours names the stop role's binary: {commands:?}");
+
+        // Idempotent: a second deploy changes nothing, and does not add a second entry of ours.
+        assert!(!write_managed_stop(s, &stop, "http://u/mcp", "t", false, false).unwrap());
+        assert_eq!(2, commands_of(&precompact_entries(&settings)).len());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stop_script_gets_no_precompact_entry_and_an_earlier_one_is_taken_out() {
+        // The generation-2 stop script judges a final message; handed a compaction payload it
+        // would misread it, so only the binary is ever registered for this event.
+        let dir = unique_tempdir("precompact-script");
+        let settings = dir.join("settings.json");
+        let stop_binary = dir.join("jawata-hook-stop");
+        std::fs::write(&stop_binary, b"x").unwrap();
+        let s = settings.to_str().unwrap();
+        write_managed_stop(s, &stop_binary, "http://u/mcp", "t", false, false).unwrap();
+        assert_eq!(1, precompact_entries(&settings).len(), "set up: the binary registered it");
+
+        let script = dir.join("stop-gate.sh");
+        write_managed_stop(s, &script, "http://u/mcp", "t", false, false).unwrap();
+        assert!(precompact_entries(&settings).is_empty(), "a script behind Stop means no PreCompact entry");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undeploying_the_stop_gate_takes_the_precompact_entry_out_and_nothing_of_the_users() {
+        let dir = unique_tempdir("precompact-remove");
+        let settings = dir.join("settings.json");
+        std::fs::write(
+            &settings,
+            r#"{"hooks":{"PreCompact":[{"hooks":[{"type":"command","command":"/home/u/my-own-precompact.sh"}]}]}}"#,
+        )
+        .unwrap();
+        let stop = dir.join("jawata-hook-stop");
+        std::fs::write(&stop, b"x").unwrap();
+        let s = settings.to_str().unwrap();
+        write_managed_stop(s, &stop, "http://u/mcp", "t", false, false).unwrap();
+        assert!(remove_managed_stop(s, &stop, false).unwrap());
+
+        let commands = commands_of(&precompact_entries(&settings));
+        assert_eq!(1, commands.len(), "only the user's remains: {commands:?}");
+        assert!(commands[0].ends_with("my-own-precompact.sh"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The 3.7.2 dogfood clobber, reproduced END TO END: binaries land first
     /// (the production order since v3.7.3), then EVERY section writer runs
     /// with `force_rewrite` — the strongest clobber attempt. 3.7.2 shipped
@@ -16697,7 +16857,9 @@ judge was never told to give"
         write_managed_hook(&settings_path, &p("guard.sh"), "http://u/health", false, false).unwrap();
         write_managed_posthook(&settings_path, &p("observer.sh"), "http://u/mcp", "t", false, false)
             .unwrap();
-        write_managed_stop(&settings_path, &p("stop.sh"), "http://u/mcp", "t", false, false)
+        // The stop role as the BINARY it ships as (Sprint 28h S15): the binary also answers the
+        // event before a compaction, which a script is never registered for.
+        write_managed_stop(&settings_path, &p("jawata-hook-stop"), "http://u/mcp", "t", false, false)
             .unwrap();
         write_managed_primer(&settings_path, &p("primer.sh"), "http://u/mcp", "t", false, false)
             .unwrap();
@@ -16722,6 +16884,15 @@ judge was never told to give"
             .values()
             .map(|v| v.as_str().expect("an event name").to_string())
             .collect();
+        // Events a role's binary answers besides its own (hook-events.json `claude-code_also`).
+        for (role, events) in contract["claude-code_also"].as_object().expect("claude-code_also") {
+            if role.starts_with('_') {
+                continue;
+            }
+            for event in events.as_array().expect("a list of events") {
+                expected.push(event.as_str().expect("an event name").to_string());
+            }
+        }
         expected.sort();
         expected.dedup();
 
