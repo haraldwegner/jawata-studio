@@ -532,7 +532,7 @@ fn before_compaction_in(
     } else {
         format!(
             "The compaction was held because the story list is missing ({why}). The transcript is \
-             saved. The client shows this message to you, not to the agent, so tell the agent: write \
+             saved. The client may show this message only to you, so tell the agent: write \
              the story list to {} (the /memorize command describes it): one line per lesson this \
              session produced that is worth keeping (what happened and what to do about it), or the \
              single line `nothing worth storing`. Then run the compaction again. After \
@@ -552,6 +552,8 @@ fn stories_file(dir: &Path, session: &str) -> PathBuf {
 ///
 /// The record is keyed by the list's own text, so a retry after an answer that never arrived (the
 /// engine stored it, the hook did not hear) replaces the same record instead of adding a second.
+/// The same follows for two compactions of one session whose lists read identically (`nothing worth
+/// storing` twice): the lane keeps one record of that text, and both compactions are let through.
 fn story_list_missing(
     state: &Path,
     signals: Option<&Path>,
@@ -1642,6 +1644,6 @@ mod tests {
         let dir = scratch("pre-relay");
         let path = transcript_file(&dir, "Understood.");
         let held = before_compaction_in(&scratch("pre-relay-state"), None, Client::ClaudeCode, &pre_compact(&path), &Stub::quiet(), TEST_BUDGET).unwrap();
-        assert!(held.contains("shows this message to you, not to the agent"), "{held}");
+        assert!(held.contains("may show this message only to you"), "{held}");
     }
 }
