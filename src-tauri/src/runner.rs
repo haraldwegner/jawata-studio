@@ -4823,4 +4823,67 @@ mod tests {
         assert_eq!(classes.len(), 4, "all four classes present: {classes:?}");
         assert!(outcomes.iter().all(|g| g.passed));
     }
+
+    /// The names that start a seat on the old path: the runner itself, its two seat wrappers, the scheduler tick and the two program
+    /// adapters. A call to any of them from another file puts the old start path back in use.
+    const OLD_PATH_ENTRIES: [&str; 6] =
+        ["run_seat(", "run_javadoc_writer(", "run_test_writer(", "scheduler_tick(", "ClaudeCodeAdapter", "ScriptAdapter"];
+
+    /// Every `.rs` file under `folder` except this one, as (file name, text).
+    fn other_sources(folder: &Path, found: &mut Vec<(String, String)>) {
+        for entry in fs::read_dir(folder).expect("a source folder is listable") {
+            let path = entry.expect("a folder entry").path();
+            if path.is_dir() {
+                other_sources(&path, found);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") && path.file_name().and_then(|n| n.to_str()) != Some("runner.rs") {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string();
+                found.push((name, fs::read_to_string(&path).expect("a source file is readable")));
+            }
+        }
+    }
+
+    /// The lines of other files that name the runner's module or one of its starting points, comments left out.
+    fn callers_of_the_old_path(sources: &[(String, String)]) -> Vec<String> {
+        let mut callers = Vec::new();
+        for (name, text) in sources {
+            for (number, line) in text.lines().enumerate() {
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    continue;
+                }
+                if code.contains("runner::") || code.contains("crate::runner") || OLD_PATH_ENTRIES.iter().any(|entry| code.contains(entry)) {
+                    callers.push(format!("{name}:{}: {}", number + 1, code.trim()));
+                }
+            }
+        }
+        callers
+    }
+
+    /// Sprint 28h S12: until the switch the old seat start path stays in place and uncalled. The seats start through the engine's hire tool;
+    /// a call into this module from any other file would be a second start path in use, which is the thing the new path replaces. S20 deletes
+    /// this module and this test with it.
+    #[test]
+    fn the_old_start_path_has_no_caller_outside_this_module() {
+        let mut sources = Vec::new();
+        other_sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut sources);
+        assert!(sources.len() > 20, "the scan found {} files, so it is looking at nothing", sources.len());
+
+        // The control: every starting point the scan looks for still exists here, so a rename cannot make the scan pass by missing it.
+        let own = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runner.rs")).expect("this module's source");
+        for entry in OLD_PATH_ENTRIES {
+            assert!(own.contains(entry), "{entry} is no longer defined here, so this test no longer watches it: retire the test with it");
+        }
+
+        let callers = callers_of_the_old_path(&sources);
+        assert!(callers.is_empty(), "these lines put the old seat start path back in use: {callers:#?}");
+    }
+
+    /// The scan can fail: a file that calls into the module is found, and a comment that only mentions it is not.
+    #[test]
+    fn the_scan_for_the_old_path_finds_a_call_and_ignores_a_comment() {
+        let planted = vec![("conductor.rs".to_string(), "fn start() {\n    let _ = crate::runner::run_seat;\n}\n// run_seat( is described here\n".to_string())];
+        let found = callers_of_the_old_path(&planted);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].starts_with("conductor.rs:2:"), "{found:?}");
+    }
 }
