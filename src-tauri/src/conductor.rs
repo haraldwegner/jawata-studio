@@ -846,6 +846,39 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// The `command:` line of a seat file's frontmatter, when it has one.
+    fn command_key(seat_file: &str) -> Option<String> {
+        let mut lines = seat_file.lines();
+        if lines.next()? != "---" {
+            return None;
+        }
+        lines
+            .take_while(|line| *line != "---")
+            .find_map(|line| line.strip_prefix("command:").map(|value| value.trim().to_string()))
+    }
+
+    /// 28h S9 (`seatCommand`): the engine shows the command a person types for a hired seat, and it reads it from the
+    /// seat file's `command:` key. The studio's table of commands must be that same word, or the panel and the
+    /// command picker would name one seat two ways: every row of the table is a key in its seat file, and every seat
+    /// file that names a command is a row of the table.
+    #[test]
+    fn the_command_table_is_the_seat_files_own_command_key() {
+        for (seat, command) in COMMAND_MAP {
+            let file = EMBEDDED_SEATS
+                .iter()
+                .find(|(name, _)| *name == format!("{seat}.md"))
+                .map(|(_, body)| *body)
+                .unwrap_or_else(|| panic!("no embedded seat file for {seat}"));
+            assert_eq!(command_key(file).as_deref(), Some(command), "{seat}.md does not carry `command: {command}`");
+        }
+        for (name, body) in EMBEDDED_SEATS {
+            if let Some(command) = command_key(body) {
+                let seat = name.trim_end_matches(".md");
+                assert_eq!(command_for(seat), Some(command.as_str()), "{name} names a command the table does not have");
+            }
+        }
+    }
+
     /// 28g D23: the plan auditor checks the wire, not the part. The clause lives in two
     /// texts — the hosted seat and the /sprint skill the front-door agent reads — and a
     /// clause in one of them is a clause the other auditor never applies.

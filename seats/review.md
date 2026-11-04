@@ -1,6 +1,7 @@
 ---
 name: review
 kind: text
+command: review
 purpose: Keeps your knowledge store healthy: it repairs the entries it can fix itself and shows you only what it cannot resolve. It deletes only the entries you name.
 fires: on request
 # tier justification (the product is a REPAIR to the user's own knowledge store, and

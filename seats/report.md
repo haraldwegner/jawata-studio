@@ -1,6 +1,7 @@
 ---
 name: report
 kind: text
+command: report
 purpose: Turns failures jawata has recorded on this machine into a bug report you post from your own GitHub account. It only drafts: you read it and decide whether it is posted.
 fires: when a failure shape has recurred and nobody has filed it
 # tier justification (the product is a PUBLIC post under the user's own name — the

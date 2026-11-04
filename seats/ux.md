@@ -1,6 +1,7 @@
 ---
 name: ux
 kind: code
+command: ux
 purpose: Looks at a changed screen as the person using it: can every part be reached, does each part help you decide or change something, and is each explanation enough to act on. It proposes a lean view and never edits the screen itself.
 fires: on a diff that changes a view
 # tier justification (the product IS a judgement about whether a human would use a thing, which is

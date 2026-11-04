@@ -1,6 +1,7 @@
 ---
 name: rottenmeier
 kind: code
+command: rottenmeier
 purpose: Reads what made him angry or interrupt in the discussion, names what the agent did wrong, and proposes a rule that would have prevented it. He accepts or rejects each one; an accepted rule is injected into the agents it binds.
 fires: when he is rude or interrupts, and when he types /rottenmeier
 # tier justification (the product is a JUDGEMENT about what the agent did wrong and how that is

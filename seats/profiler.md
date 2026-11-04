@@ -1,6 +1,7 @@
 ---
 name: profiler
 kind: code
+command: profile
 purpose: Measures a running Java program and names, method by method, where the time goes. It replaces timers added to the code.
 fires: the runtime reflex: performance or latency, instead of a hand-rolled stopwatch
 # tier justification (C12: symbol-named report + percentiles + proven/inferred clean on the small tier)

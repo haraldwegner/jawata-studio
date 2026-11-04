@@ -134,6 +134,11 @@ pub struct SeatDefinition {
     /// hire was one studio could not load.
     #[serde(default)]
     pub brain: Option<String>,
+    /// The slash command a person types for this seat (architect is `refactor`), written once in the
+    /// seat's own file. The engine's hire path reads the same key so the Agent Control panel names the
+    /// seat the way the command picker does; the studio's command table is held equal to it by a test.
+    #[serde(default)]
+    pub command: Option<String>,
     /// The executable a `brain: script` seat runs (S16-6) — the engine's escape hatch for a CLI
     /// with no dialect of its own. Read here under the engine's own two rules, so one file never
     /// gets two answers: a script brain must name one, and no other brain may carry one (the
@@ -233,6 +238,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     let mut name = None;
     let mut model = None;
     let mut brain = None;
+    let mut command = None;
     let mut script: Option<String> = None;
     let mut effort = None;
     let mut kind = None;
@@ -275,6 +281,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
             "name" => name = Some(value.to_string()),
             "model" => model = Some(value.to_string()),
             "brain" => brain = Some(value.to_string()),
+            "command" => command = Some(value.to_string()),
             "script" => script = Some(value.to_string()).filter(|s| !s.is_empty()),
             "effort" => effort = Some(value.to_string()),
             "kind" => kind = Some(SeatKind::parse(value)?),
@@ -424,6 +431,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
         name,
         model,
         brain,
+        command,
         script,
         kind,
         effort,

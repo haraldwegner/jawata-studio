@@ -1,6 +1,7 @@
 ---
 name: main
 kind: code
+command: main
 purpose: Runs work that has several steps as a workflow: it declares the steps, drives them one at a time, and refuses to call a step done until that step's check has actually run.
 fires: whenever the work has more than one step
 # tier justification (the product is a JUDGEMENT about what the open step is and whether its
