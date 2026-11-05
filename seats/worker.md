@@ -1,6 +1,7 @@
 ---
 name: worker
 kind: code
+command: worker
 purpose: Carries out one instruction from the PM or the chief engineer with the tool the instruction names, exactly as written, and reports what the tool did. It is the only seat that changes code, and it never edits a file by hand.
 fires: when the PM or the chief engineer issues an instruction that changes code
 # tier justification (the product is EXECUTION, not judgement: the instruction already names the tool

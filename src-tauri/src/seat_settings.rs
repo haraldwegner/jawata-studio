@@ -801,16 +801,18 @@ mod tests {
         // seat's NAME is not what anyone types.
         assert_eq!(architect.command.as_deref(), Some("/refactor"));
         assert!(!architect.pipeline);
-        // A /sprint seat has no command and says where it runs instead; a hired seat has neither.
+        // A /sprint seat has no command and says where it runs instead; a hired helper has a word of its own, since a
+        // person may call the project manager directly (his ruling of 2026-11-05).
         let auditor = view.seats.iter().find(|s| s.name == "spec-auditor").unwrap();
         assert!(auditor.command.is_none() && auditor.pipeline);
         let pm = view.seats.iter().find(|s| s.name == "pm").unwrap();
-        assert!(pm.command.is_none() && !pm.pipeline);
+        assert_eq!(pm.command.as_deref(), Some("/pm"));
+        assert!(!pm.pipeline);
 
-        // A typed seat and a /sprint seat run on the caller's agent when called; every seat, when
-        // HIRED, starts the engine's default brain until the user chooses another. No shipped
-        // seat names a model.
-        assert!(architect.runs_in_agent && auditor.runs_in_agent && !pm.runs_in_agent);
+        // A typed seat and a /sprint seat run on the caller's agent when called, a hired helper included now that
+        // it has a word; every seat, when HIRED, starts the engine's default brain until the user chooses another.
+        // No shipped seat names a model.
+        assert!(architect.runs_in_agent && auditor.runs_in_agent && pm.runs_in_agent);
         assert_eq!(architect.brain, "claude-code");
         assert_eq!(pm.brain, "claude-code");
         assert!(architect.model.is_none() && pm.model.is_none());

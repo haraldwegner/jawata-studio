@@ -43,7 +43,7 @@ pub const EMBEDDED_SEATS: [(&str, &str); 18] = [
 /// are the seat's own `purpose:` (see [`seat_description`]); a second copy here had drifted from
 /// the seat file for every seat, because the purposes were rewritten in plain language and these
 /// lines were not.
-pub const COMMAND_MAP: [(&str, &str); 11] = [
+pub const COMMAND_MAP: [(&str, &str); 16] = [
     ("main", "main"),
     ("cataloguer", "catalogue"),
     ("javadoc-writer", "javadocs"),
@@ -55,10 +55,23 @@ pub const COMMAND_MAP: [(&str, &str); 11] = [
     ("review", "review"),
     ("rottenmeier", "rottenmeier"),
     ("ux", "ux"),
+    // The hired seats (28h, his ruling 2026-11-05): a person may call the project manager or any helper directly, so each has a
+    // typed word like the rest, and its card in the chat shows it.
+    ("pm", "pm"),
+    ("chief-engineer", "chief-engineer"),
+    ("worker", "worker"),
+    ("observer", "observer"),
+    ("test-manager", "test-manager"),
 ];
 
 /// The two seats that live inside `/sprint` and render no command of their own.
 pub const PIPELINE_SEATS: [&str; 2] = ["spec-editor", "spec-auditor"];
+
+/// The seats the principal hires, which a person may also call by their word (his ruling of 2026-11-05: "Why shouldn't I
+/// call the project manager directly?"). Each is a row of [`COMMAND_MAP`] like any typed seat; this list only says which rows
+/// are helpers, so the roster block that sits in every session's context names them on ONE line instead of five — the block
+/// has a recorded line budget, and a row each would have taken it over.
+pub const HIRED_SEATS: [&str; 5] = ["pm", "chief-engineer", "worker", "observer", "test-manager"];
 
 pub fn command_for(seat_name: &str) -> Option<&'static str> {
     COMMAND_MAP
@@ -719,16 +732,18 @@ pub fn render_conductor_section(seats: &[SeatDefinition], client: &str) -> Vec<S
     // added and the prose would keep announcing the old roster. The counts
     // now come from the arrays themselves, and a test pins that they do.
     let total = EMBEDDED_SEATS.len();
-    let direct = COMMAND_MAP.len();
+    let direct = COMMAND_MAP.len() - HIRED_SEATS.len();
     let pipeline = PIPELINE_SEATS.len();
-    // The seats that have no typed command and are not the /sprint pair: the principal hires
-    // them. Derived from the embedded files, because the old sum (total minus direct) counted
+    // The helpers the principal hires, each with the word a person may also type for it. Derived
+    // from the embedded files in their order, because the old sum (total minus direct) counted
     // them as /sprint's and announced five where two live there (C7-3).
     let hired: Vec<String> = EMBEDDED_SEATS
         .iter()
         .map(|(file, _)| file.trim_end_matches(".md").to_string())
-        .filter(|name| {
-            !COMMAND_MAP.iter().any(|(seat, _)| seat == name) && !PIPELINE_SEATS.contains(&name.as_str())
+        .filter(|name| HIRED_SEATS.contains(&name.as_str()))
+        .map(|name| match command_for(&name) {
+            Some(command) => format!("{name} (`/{command}`)"),
+            None => name,
         })
         .collect();
     let mut lines = vec![
@@ -736,12 +751,15 @@ pub fn render_conductor_section(seats: &[SeatDefinition], client: &str) -> Vec<S
         String::new(),
         format!(
             "jawata ships {total} SEATS. {direct} are direct roles; \
-             {pipeline} live in /sprint; {} are hired and have no typed command:",
+             {pipeline} live in /sprint; {} are hired helpers you can also call by their word:",
             hired.len()
         ),
         String::new(),
     ];
     for (seat_name, command) in &COMMAND_MAP {
+        if HIRED_SEATS.contains(seat_name) {
+            continue;
+        }
         if let Some(seat) = seats.iter().find(|s| s.name == *seat_name) {
             let desc = seat_description(seat);
             lines.push(format!("- {seat_name} (`/{command}`) — {desc}"));
@@ -751,8 +769,8 @@ pub fn render_conductor_section(seats: &[SeatDefinition], client: &str) -> Vec<S
         "- spec-editor + spec-auditor — the /sprint two-seat artifact pipeline".to_string()
     } else {
         format!(
-            "- spec-editor + spec-auditor — the /sprint two-seat artifact pipeline; {} — hired, \
-             not typed",
+            "- spec-editor + spec-auditor — the /sprint two-seat artifact pipeline; {} — hired by the \
+             principal, and each also runs when you type its word",
             hired.join(" + ")
         )
     });
@@ -1728,8 +1746,14 @@ mod tests {
         // …and every command actually renders into the deployed list.
         let rendered = render_conductor_section(&definitions, "claude").join("\n");
         for (seat_name, command) in COMMAND_MAP {
+            // A direct role has a line of its own; a hired helper is named with its word on the one shared line.
+            let shown = if HIRED_SEATS.contains(&seat_name) {
+                format!("{seat_name} (`/{command}`)")
+            } else {
+                format!("- {seat_name} (`/{command}`)")
+            };
             assert!(
-                rendered.contains(&format!("- {seat_name} (`/{command}`)")),
+                rendered.contains(&shown),
                 "/{command} is registered but renders into no client's command list:\n{rendered}"
             );
         }
@@ -1741,7 +1765,7 @@ mod tests {
             "the generated prose must count the seats it actually ships:\n{rendered}"
         );
         assert!(
-            rendered.contains(&format!("{} are direct roles", COMMAND_MAP.len())),
+            rendered.contains(&format!("{} are direct roles", COMMAND_MAP.len() - HIRED_SEATS.len())),
             "the generated prose must count the direct roles it actually renders:\n{rendered}"
         );
 
@@ -1766,10 +1790,16 @@ mod tests {
             let skill = render_claude_skill(seat).unwrap();
             let line = skill.lines().find(|l| l.starts_with("description:")).unwrap();
             assert!(line.contains(first), "{seat_name}: the picker reads its purpose: {line}");
-            assert!(
-                roster.contains(&format!("- {seat_name} (`/{command}`) — {first}")),
-                "{seat_name}: the roster line is its purpose:\n{roster}"
-            );
+            if HIRED_SEATS.contains(&seat_name) {
+                // The helpers share one line, which names each with its word and carries no purposes: the block sits in every
+                // session's context under a line budget. Their purpose is in the picker line checked above.
+                assert!(roster.contains(&format!("{seat_name} (`/{command}`)")), "{seat_name}: named with its word:\n{roster}");
+            } else {
+                assert!(
+                    roster.contains(&format!("- {seat_name} (`/{command}`) — {first}")),
+                    "{seat_name}: the roster line is its purpose:\n{roster}"
+                );
+            }
             if PHRASE_MAP.iter().any(|(_, c)| *c == command) {
                 assert!(phrases.contains(first), "{seat_name}: and so is its phrase row");
             }
@@ -1829,15 +1859,30 @@ mod tests {
             rendered.contains(&format!("{} live in /sprint", PIPELINE_SEATS.len())),
             "{rendered}"
         );
-        assert!(rendered.contains("2 live in /sprint; 5 are hired and have no typed command"), "{rendered}");
         assert!(
-            rendered.contains("chief-engineer + observer + pm + test-manager + worker — hired, not typed"),
+            rendered.contains("11 are direct roles; 2 live in /sprint; 5 are hired helpers you can also call by their word"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(
+                "chief-engineer (`/chief-engineer`) + observer (`/observer`) + pm (`/pm`) + test-manager (`/test-manager`) \
+                 + worker (`/worker`) — hired by the principal, and each also runs when you type its word"
+            ),
             "{rendered}"
         );
         assert_eq!(
-            COMMAND_MAP.len() + PIPELINE_SEATS.len() + 5,
+            COMMAND_MAP.len() + PIPELINE_SEATS.len(),
             EMBEDDED_SEATS.len(),
-            "every embedded seat is typed, in the pipeline, or hired — none uncounted"
+            "every embedded seat is typed or in the pipeline — none uncounted; the hired helpers are typed too"
+        );
+        assert!(
+            HIRED_SEATS.iter().all(|seat| command_for(seat).is_some()),
+            "a hired helper without a word of its own could not be called, which is the ruling this list carries out"
+        );
+        assert_eq!(
+            rendered.lines().filter(|line| line.starts_with("- pm") || line.starts_with("- chief-engineer")).count(),
+            0,
+            "the hired helpers share the one line; a row each would take the block over its line budget"
         );
     }
 
@@ -2113,8 +2158,11 @@ mod tests {
     #[test]
     fn phrase_table_covers_every_command() {
         let table = render_phrase_table(&seats());
-        for (_, command) in COMMAND_MAP {
-            let (seat_name, _) = COMMAND_MAP.iter().find(|(_, c)| *c == command).unwrap();
+        for (seat_name, command) in COMMAND_MAP {
+            if HIRED_SEATS.contains(&seat_name) {
+                // A helper the principal hires has no plain-words way in: nobody says "adopt the worker"; its word is typed.
+                continue;
+            }
             assert!(
                 table.contains(&format!("**{seat_name}**")),
                 "/{command}'s seat in the table:\n{table}"

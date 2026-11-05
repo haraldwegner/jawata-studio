@@ -1,6 +1,7 @@
 ---
 name: test-manager
 kind: code
+command: test-manager
 purpose: Decides which tests a change actually needs and runs only those, instead of the whole suite. It runs the tests; whether the result passes is the project manager's decision.
 fires: at a gate, in place of running everything
 # tier justification (every question this seat answers is MECHANICAL — the engine computes

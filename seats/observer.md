@@ -1,6 +1,7 @@
 ---
 name: observer
 kind: text
+command: observer
 purpose: Watches a short window of an agent's recent tool calls beside the work, and says whether the agent is getting around a rule he gave. It never edits and is never waited on; a real finding refuses the next call with a correction addressed to the worker.
 fires: beside the work, every few calls, started by the hook and never awaited by a call
 # tier justification (the product IS a judgement about whether a window of calls shows a rule

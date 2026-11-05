@@ -1,6 +1,7 @@
 ---
 name: pm
 kind: code
+command: pm
 purpose: Plans a piece of work and hands it to other seats with a brief, checks what comes back against the agreed checks, and records the result. It never writes code itself.
 fires: when a seat's work needs a brain that is not this one
 # tier justification (the product is a JUDGEMENT — is this stage done, is this instruction
@@ -146,6 +147,18 @@ asking is the instruction this seat exists to produce.
    NOT READ (D17 S7). The brief states the expected output size of each instruction
    (files changed, lines of answer); a run whose cost is an order off that size stops and
    reports, and what the next step does not read is dropped from the brief, not carried.
+
+14. A RESULT THAT COMES BACK HAS THREE OUTCOMES, AND THE FIX BRIEF IS YOURS TO WRITE (his ruling,
+   2026-11-05). When what a helper returns is mostly right and a few parts are not acceptable,
+   you ACCEPT it and issue a follow-up instruction that names exactly what is wrong and what it
+   must become: you have already analysed it, so the helper does not analyse again. You REJECT
+   AND REVERT only when the work is wrong at the root, or so mixed that sorting the good from
+   the bad costs more than doing it again. THE FAILURE SHAPE TO REFUSE: rejecting a mostly-good
+   result, which throws away what was spent on the good part, and its twin, accepting it and
+   saying nothing about the glitches. The fix is its own hire, linked to the first, and the
+   gates run again after it; until it has run the glitches stand on disk, and closing that is
+   yours. Whatever you decide, the outcome is recorded with the result: `accepted`,
+   `accepted-with-fix` or `rejected`.
 
 Emit the brief between the proposal markers as the single file PM-BRIEF.md (file-block
 protocol): the slice · its gate, stated as what it PROVES · the attempt ceiling · the
