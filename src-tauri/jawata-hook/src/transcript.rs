@@ -183,6 +183,16 @@ fn append_window(
     })
 }
 
+/// What the engine's `transcript_append` says when it holds the turn: it stored it, it already held
+/// it, or it completed a part it held. These are the engine's `Appended` values `STORED`,
+/// `DUPLICATE` and `COMPLETED`, lower-cased. `FAILED` (it could not write) and anything else, an
+/// answer with no such field included, is NOT a turn taken: the hook counts a window or a list as
+/// saved only on the engine's own word that it holds it. (`DISABLED` is the lane being off, which
+/// the callers handle before they ask this.)
+fn engine_holds_it(appended: &str) -> bool {
+    matches!(appended, "stored" | "duplicate" | "completed")
+}
+
 /// How a capture is taken: what it is called, how far back to go with no stamp, how long it may take.
 struct Capture {
     kind: &'static str,
@@ -332,6 +342,12 @@ fn store_unsaved(
                 if outcome == "disabled" {
                     record(signals, "transcript-capture-off", "the lane is switched off on this deployment");
                     lane_off = true;
+                    break;
+                }
+                if !engine_holds_it(&outcome) {
+                    // The engine answered, but not that it holds the window: not advanced past it.
+                    record(signals, "transcript-capture-failed", &format!("{}|answered {outcome}", how.kind));
+                    failure = Some(format!("the engine did not take a window (it answered {outcome})"));
                     break;
                 }
                 resume_at = window.key.clone();
@@ -587,11 +603,19 @@ fn story_list_missing(
             record(signals, "transcript-capture-off", "the lane is switched off on this deployment");
             None
         }
-        Ok(_) => {
-            let _ = std::fs::remove_file(&file);
-            record(signals, "transcript-precompact-stories", &format!("bytes={}", list.len()));
-            None
-        }
+        Ok(answer) => match answer.get("appended").and_then(Value::as_str) {
+            Some(word) if engine_holds_it(word) => {
+                let _ = std::fs::remove_file(&file);
+                record(signals, "transcript-precompact-stories", &format!("bytes={}", list.len()));
+                None
+            }
+            // `failed`, a value this hook does not know, or no `appended` at all: the engine did not
+            // say it holds the list, so it is kept and the compaction is held.
+            other => Some(format!(
+                "the engine did not take the story list (it answered {})",
+                other.map_or_else(|| answer.to_string(), str::to_string)
+            )),
+        },
         Err(e) => Some(format!("the engine did not take the story list ({e:?})")),
     }
 }
@@ -1596,6 +1620,124 @@ mod tests {
         let missing = story_list_missing(&state, None, Client::ClaudeCode, "s-1", &Off, soon());
         assert!(missing.is_none(), "{missing:?}");
         assert!(stories_file(&state, "s-1").exists(), "nothing was recorded, so the file is not consumed");
+    }
+
+    /// An engine that answers every ask with one fixed answer, for the answers the real engine can send.
+    struct Says(fn() -> Result<Value, QueryError>);
+    impl Store for Says {
+        fn ask(&self, _: Value) -> Result<Answer, QueryError> {
+            Ok(Answer::Nothing)
+        }
+        fn ask_value(&self, _: Value) -> Result<Value, QueryError> {
+            (self.0)()
+        }
+    }
+
+    /// The list is offered to `engine`; the answer is whether the list was taken (None) or why not.
+    fn list_offered_to(engine: &Says, tag: &str) -> (Option<String>, bool) {
+        let state = scratch(tag);
+        write_stories(&state, "a lesson");
+        let missing = story_list_missing(&state, None, Client::ClaudeCode, "s-1", engine, soon());
+        (missing, stories_file(&state, "s-1").exists())
+    }
+
+    #[test]
+    fn a_list_the_engine_answers_failed_to_is_not_taken_and_the_file_is_kept() {
+        let (missing, kept) = list_offered_to(&Says(|| Ok(json!({"appended": "failed", "enabled": true}))), "list-failed");
+        assert!(missing.is_some_and(|m| m.contains("failed")), "a failed save holds, and says what the engine said");
+        assert!(kept, "the list waits for the next try");
+    }
+
+    #[test]
+    fn a_list_the_engine_answers_nothing_known_to_is_not_taken_and_the_file_is_kept() {
+        for (tag, answer) in [("list-missing", json!({"enabled": true})), ("list-unknown", json!({"appended": "queued"})), ("list-notext", json!({"appended": 7}))] {
+            let state = scratch(tag);
+            write_stories(&state, "a lesson");
+            struct Fixed(Value);
+            impl Store for Fixed {
+                fn ask(&self, _: Value) -> Result<Answer, QueryError> {
+                    Ok(Answer::Nothing)
+                }
+                fn ask_value(&self, _: Value) -> Result<Value, QueryError> {
+                    Ok(self.0.clone())
+                }
+            }
+            let missing = story_list_missing(&state, None, Client::ClaudeCode, "s-1", &Fixed(answer.clone()), soon());
+            assert!(missing.is_some(), "{answer} is not the engine's word that it stored the list");
+            assert!(stories_file(&state, "s-1").exists(), "{answer}: the list is kept");
+        }
+    }
+
+    #[test]
+    fn an_answer_carrying_an_error_does_not_take_the_list() {
+        let (missing, kept) = list_offered_to(&Says(|| Ok(json!({"error": "the store is closed"}))), "list-error");
+        assert!(missing.is_some() && kept);
+        let (missing, kept) = list_offered_to(
+            &Says(|| Err(QueryError::ToolRefused { code: "INVALID_PARAMETER".into(), message: "no session".into() })),
+            "list-refused",
+        );
+        assert!(missing.is_some() && kept, "a refusing engine already held, and still does");
+    }
+
+    #[test]
+    fn every_answer_the_engine_gives_for_a_stored_turn_takes_the_list() {
+        for word in ["stored", "duplicate", "completed"] {
+            let state = scratch(&format!("list-{word}"));
+            write_stories(&state, "a lesson");
+            struct Word(&'static str);
+            impl Store for Word {
+                fn ask(&self, _: Value) -> Result<Answer, QueryError> {
+                    Ok(Answer::Nothing)
+                }
+                fn ask_value(&self, _: Value) -> Result<Value, QueryError> {
+                    Ok(json!({"appended": self.0, "enabled": true}))
+                }
+            }
+            let missing = story_list_missing(&state, None, Client::ClaudeCode, "s-1", &Word(word), soon());
+            assert!(missing.is_none(), "{word}: {missing:?}");
+            assert!(!stories_file(&state, "s-1").exists(), "{word}: the list is consumed");
+        }
+    }
+
+    #[test]
+    fn a_compaction_is_held_while_the_engine_answers_failed_to_the_list_and_goes_ahead_after_two_holds() {
+        struct ListFails;
+        impl Store for ListFails {
+            fn ask(&self, _: Value) -> Result<Answer, QueryError> {
+                Ok(Answer::Nothing)
+            }
+            fn ask_value(&self, a: Value) -> Result<Value, QueryError> {
+                let list = a["key"].as_str().is_some_and(|k| k.starts_with("stories-"));
+                Ok(json!({"appended": if list { "failed" } else { "stored" }}))
+            }
+        }
+        let dir = scratch("pre-listfails");
+        let path = transcript_file(&dir, "Understood.");
+        let state = scratch("pre-listfails-state");
+        write_stories(&state, "a lesson");
+        let ask = || before_compaction_in(&state, None, Client::ClaudeCode, &pre_compact(&path), &ListFails, TEST_BUDGET);
+        let first = ask();
+        assert!(first.is_some_and(|m| m.contains("story list")), "held, and the reason is the list");
+        assert!(ask().is_some(), "held again");
+        assert!(ask().is_none(), "the valve: the third attempt goes ahead");
+        assert!(!stories_file(&state, "s-1").exists(), "and a list the engine never took does not wait for the next compaction");
+    }
+
+    #[test]
+    fn a_window_the_engine_answers_failed_to_holds_the_compaction_and_is_not_stamped_as_saved() {
+        let dir = scratch("pre-winfails");
+        let path = transcript_file(&dir, "Understood.");
+        let state = scratch("pre-winfails-state");
+        let held = before_compaction_in(
+            &state,
+            None,
+            Client::ClaudeCode,
+            &pre_compact(&path),
+            &Says(|| Ok(json!({"appended": "failed"}))),
+            TEST_BUDGET,
+        );
+        assert!(held.is_some_and(|m| m.contains("not fully saved")), "a window the engine could not write holds");
+        assert!(!stamp_file(&state, "s-1").exists(), "and the stamp does not move past it");
     }
 
     #[test]
