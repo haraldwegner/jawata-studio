@@ -694,6 +694,31 @@ mod tests {
         assert!(!file.contains("enabled:"), "on again: the line is gone, not flipped: {file}");
     }
 
+    /// Sprint 28h S12: a seat file carrying the engine's optional `schedule_gate:` is a seat the
+    /// view shows with no error, and the app's own rewrite of the file (the off switch) keeps the line.
+    #[test]
+    fn a_seat_carrying_a_schedule_gate_shows_in_the_view_with_no_error_and_keeps_the_line() {
+        let dir = seeded("gate-in-view");
+        let path = dir.join("pm.md");
+        let shipped = fs::read_to_string(&path).unwrap();
+        let with_gate = shipped.replacen(
+            "\nname: pm\n",
+            "\nname: pm\nschedule_gate: get_diagnostics {\"severity\": \"error\"}\n",
+            1,
+        );
+        assert_ne!(with_gate, shipped, "the fixture line went in");
+        fs::write(&path, &with_gate).unwrap();
+
+        let view = seats_view(&dir, both_clients());
+        assert!(view.errors.is_empty(), "the key is not an unknown key to the view: {:?}", view.errors);
+        assert!(view.seats.iter().any(|s| s.name == "pm"), "and the seat is listed");
+
+        change_seat(&dir, &valid(), "pm", SeatChange::Enabled { value: false }).unwrap();
+        let file = fs::read_to_string(&path).unwrap();
+        assert!(file.contains("\nschedule_gate: get_diagnostics {\"severity\": \"error\"}\n"), "{file}");
+        assert!(seats_view(&dir, both_clients()).errors.is_empty());
+    }
+
     /// The brain choice reaches the one place a hire reads — the seat FILE — and does so as this
     /// app's own writing, so the seat keeps receiving shipped updates; Reset takes it back out.
     #[test]

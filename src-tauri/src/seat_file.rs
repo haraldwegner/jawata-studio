@@ -117,6 +117,80 @@ impl SeatKind {
     }
 }
 
+/// A seat's own gate for its scheduled runs, read from `schedule_gate: <tool> [<json object>]`.
+///
+/// THE PAIRING with the engine's `ScheduledHires.Gate`: the same value is read by the same grammar
+/// and refused for the same reasons, so the studio and the engine never disagree about a seat file.
+/// A key that is present and cannot be read is refused with its reason, never read as absent: that
+/// would hand a seat that asked for a stronger check the weakest one in silence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScheduleGate {
+    /// A published tool name: lower case letters, digits and underscores, starting with a letter.
+    pub tool: String,
+    /// The arguments it is called with; empty when the seat names none.
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The engine's own `Character.isWhitespace`, which is not Rust's: the no-break spaces are not
+/// whitespace there, the information separators are, and U+0085 is not.
+fn is_java_whitespace(c: char) -> bool {
+    match c {
+        '\u{00A0}' | '\u{2007}' | '\u{202F}' | '\u{0085}' => false,
+        '\u{001C}'..='\u{001F}' => true,
+        _ => c.is_whitespace(),
+    }
+}
+
+/// The engine's frontmatter `unquote`: ONE matching quote pair around the whole value.
+fn unquote(value: &str) -> &str {
+    let b = value.as_bytes();
+    if b.len() >= 2 && ((b[0] == b'"' && b[b.len() - 1] == b'"') || (b[0] == b'\'' && b[b.len() - 1] == b'\'')) {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    }
+}
+
+impl ScheduleGate {
+    /// Read the text after `schedule_gate:`. The error starts with the key and says why.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        const KEY: &str = "schedule_gate";
+        let declared = unquote(raw.trim_matches(is_java_whitespace)).trim_matches(is_java_whitespace);
+        if declared.is_empty() {
+            return Err(format!(
+                "{KEY} is present but names no tool: write the tool name, then optionally a JSON \
+                 object of its arguments, or remove the key to be gated by compile_workspace"
+            ));
+        }
+        let (tool, rest) = match declared.find(is_java_whitespace) {
+            Some(space) => (&declared[..space], declared[space..].trim_matches(is_java_whitespace)),
+            None => (declared, ""),
+        };
+        let mut chars = tool.chars();
+        let name_ok = chars.next().is_some_and(|c| c.is_ascii_lowercase())
+            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        if !name_ok {
+            return Err(format!(
+                "{KEY} '{declared}': '{tool}' is not a tool name (lower case letters, digits and \
+                 underscores, starting with a letter)"
+            ));
+        }
+        if rest.is_empty() {
+            return Ok(Self { tool: tool.to_string(), arguments: serde_json::Map::new() });
+        }
+        // serde_json refuses trailing characters, as the engine's reader refuses trailing tokens.
+        match serde_json::from_str::<serde_json::Value>(rest) {
+            Ok(serde_json::Value::Object(arguments)) => Ok(Self { tool: tool.to_string(), arguments }),
+            Ok(_) => Err(format!(
+                "{KEY} '{declared}': the arguments after '{tool}' must be a JSON object"
+            )),
+            Err(e) => Err(format!(
+                "{KEY} '{declared}': the arguments after '{tool}' are not valid JSON: {e}"
+            )),
+        }
+    }
+}
+
 /// (optional schedule), WITH WHAT (tools allowlist), judged HOW (gate
 /// classes + ceilings), and the stance prompt (the markdown body).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -154,6 +228,11 @@ pub struct SeatDefinition {
     /// manager — production scheduling ships with Lane B in Sprint 28.
     /// `None` = ad-hoc only.
     pub schedule: Option<String>,
+    /// The gate a SCHEDULED hire of this seat is checked by (`schedule_gate: <tool> [<json object>]`).
+    /// The engine's scheduler reads the same key under the same grammar and the same refusals
+    /// (`ScheduledHires.Gate`); `None` keeps its default, the compile gate. Sprint 28h S12.
+    #[serde(default)]
+    pub schedule_gate: Option<ScheduleGate>,
     /// Tool allowlist injected into the seat prompt (advisory for the CLI
     /// v1 contract; hard enforcement is a later graduation).
     pub tools: Vec<String>,
@@ -243,6 +322,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     let mut effort = None;
     let mut kind = None;
     let mut schedule = None;
+    let mut schedule_gate: Option<ScheduleGate> = None;
     let mut tools: Vec<String> = Vec::new();
     let mut gate_classes: Vec<GateClass> = Vec::new();
     let mut gate_exempt = false;
@@ -286,6 +366,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
             "effort" => effort = Some(value.to_string()),
             "kind" => kind = Some(SeatKind::parse(value)?),
             "schedule" => schedule = Some(value.trim_matches('"').to_string()),
+            "schedule_gate" => schedule_gate = Some(ScheduleGate::parse(value)?),
             "purpose" => purpose = value.to_string(),
             "fires" => fires = value.to_string(),
             "tools" => tools = parse_inline_list(value)?,
@@ -436,6 +517,7 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
         kind,
         effort,
         schedule,
+        schedule_gate,
         tools,
         gate_classes,
         gate_exempt,
@@ -840,6 +922,118 @@ mod tests {
 
         assert!(Schedule::parse("* * *").is_err());
         assert!(Schedule::parse("a * * * *").is_err());
+    }
+
+    /// A seat file with one extra frontmatter line, the shape of every `schedule_gate:` test below.
+    fn seat_with_gate_line(line: &str) -> String {
+        format!("---\nname: g\nkind: text\n{line}\n---\nbody\n")
+    }
+
+    /// Sprint 28h S12 (the pairing): the engine reads an optional `schedule_gate: <tool> [<json object>]`
+    /// and the studio must read the same key, or a seat the engine can hire is one the studio refuses
+    /// to load (it refuses an unknown key). A bare tool name means empty arguments.
+    #[test]
+    fn a_schedule_gate_with_arguments_and_a_bare_one_both_load() {
+        let with = parse_seat_definition(&seat_with_gate_line(
+            r#"schedule_gate: get_diagnostics {"severity": "error", "maxResults": 5}"#,
+        ))
+        .expect("a gate with arguments loads");
+        let gate = with.schedule_gate.expect("and is carried");
+        assert_eq!(gate.tool, "get_diagnostics");
+        assert_eq!(gate.arguments["severity"], "error");
+        assert_eq!(gate.arguments["maxResults"], 5);
+
+        let bare = parse_seat_definition(&seat_with_gate_line("schedule_gate: health_check")).unwrap();
+        let gate = bare.schedule_gate.expect("a bare tool is a gate");
+        assert_eq!(gate.tool, "health_check");
+        assert!(gate.arguments.is_empty(), "a bare tool name means empty arguments");
+
+        let empty_object = parse_seat_definition(&seat_with_gate_line("schedule_gate: health_check {}")).unwrap();
+        assert!(empty_object.schedule_gate.unwrap().arguments.is_empty());
+    }
+
+    /// The engine strips the value and removes ONE matching quote pair before reading it, so a
+    /// quoted value reads as the unquoted one.
+    #[test]
+    fn a_quoted_or_padded_schedule_gate_reads_as_the_engine_reads_it() {
+        let quoted = parse_seat_definition(&seat_with_gate_line(r#"schedule_gate:   "health_check"  "#)).unwrap();
+        assert_eq!(quoted.schedule_gate.unwrap().tool, "health_check");
+        let single = parse_seat_definition(&seat_with_gate_line("schedule_gate: 'compile_workspace {\"summary\": true}'"))
+            .unwrap();
+        let gate = single.schedule_gate.unwrap();
+        assert_eq!((gate.tool.as_str(), gate.arguments["summary"].as_bool()), ("compile_workspace", Some(true)));
+    }
+
+    /// Absent keeps the engine's default (the compile gate), and the studio carries no gate of its own.
+    #[test]
+    fn a_seat_without_a_schedule_gate_has_none() {
+        assert!(parse_seat_definition(SEAT_FIXTURE).unwrap().schedule_gate.is_none());
+    }
+
+    /// A key that is present and cannot be read is REFUSED with its reason and is never read as
+    /// absent: that would hand a seat that asked for a stronger check the weakest one in silence.
+    #[test]
+    fn a_schedule_gate_that_cannot_be_read_is_refused_with_its_reason() {
+        let refused = |line: &str| parse_seat_definition(&seat_with_gate_line(line)).unwrap_err();
+
+        let empty = refused("schedule_gate:");
+        assert!(empty.starts_with("schedule_gate") && empty.contains("names no tool"), "{empty}");
+        let blank_quotes = refused("schedule_gate: \"\"");
+        assert!(blank_quotes.contains("names no tool"), "{blank_quotes}");
+
+        for bad in ["Compile_Workspace", "9lives", "compile-workspace", "get.diagnostics"] {
+            let err = refused(&format!("schedule_gate: {bad}"));
+            assert!(
+                err.starts_with("schedule_gate") && err.contains("is not a tool name") && err.contains(bad),
+                "{bad}: {err}"
+            );
+        }
+
+        let not_json = refused("schedule_gate: get_diagnostics {severity: error}");
+        assert!(not_json.starts_with("schedule_gate") && not_json.contains("not valid JSON"), "{not_json}");
+
+        let trailing = refused(r#"schedule_gate: get_diagnostics {"a": 1} and then some"#);
+        assert!(trailing.contains("not valid JSON"), "text after the JSON is refused: {trailing}");
+        let two_objects = refused(r#"schedule_gate: get_diagnostics {"a": 1} {"b": 2}"#);
+        assert!(two_objects.contains("not valid JSON"), "{two_objects}");
+
+        for not_object in ["[1, 2]", "5", "\"text\"", "null", "true"] {
+            let err = refused(&format!("schedule_gate: get_diagnostics {not_object}"));
+            assert!(
+                err.starts_with("schedule_gate") && err.contains("must be a JSON object"),
+                "{not_object}: {err}"
+            );
+        }
+    }
+
+    /// A seat that carries the key still passes every other check of the parser, and the file the
+    /// seats view reads loads with no error and shows the seat.
+    #[test]
+    fn a_seat_with_a_schedule_gate_still_passes_the_other_frontmatter_checks() {
+        let text = "---\nname: watcher\nkind: code\ntools: [health_check]\ngates: [docs]\n\
+                    schedule: \"*/30 * * * *\"\nschedule_gate: health_check\nenabled: true\n---\nbody\n";
+        let seat = parse_seat_definition(text).expect("loads");
+        assert_eq!(seat.schedule.as_deref(), Some("*/30 * * * *"));
+        assert_eq!(seat.gate_classes, vec![GateClass::Docs]);
+        assert_eq!(seat.schedule_gate.unwrap().tool, "health_check");
+
+        // The other checks still refuse beside it: the key does not loosen the parser.
+        let still_unknown = seat_with_gate_line("schedule_gate: health_check\nttl_seconds: 5");
+        assert!(parse_seat_definition(&still_unknown).unwrap_err().contains("unknown frontmatter key"));
+        let dir = unique_tempdir("gate-load");
+        fs::write(dir.join("w.md"), text).unwrap();
+        let (seats, errors) = load_seat_definitions(&dir);
+        assert!(errors.is_empty() && seats.len() == 1, "{errors:?}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// No shipped seat declares a gate yet (a decision for the person, recorded in the plan).
+    #[test]
+    fn no_shipped_seat_declares_a_schedule_gate() {
+        for (file, body) in crate::conductor::EMBEDDED_SEATS.iter() {
+            let seat = parse_seat_definition(body).unwrap_or_else(|e| panic!("{file}: {e}"));
+            assert!(seat.schedule_gate.is_none(), "{file} declares a schedule_gate");
+        }
     }
 
     #[test]
