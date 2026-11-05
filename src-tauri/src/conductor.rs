@@ -1630,6 +1630,24 @@ mod tests {
         assert!(ten.iter().any(|(id, _)| *id == "S3"), "a cap changed to TEN ROUNDS must be caught as S3: {ten:?}");
     }
 
+    /// R5 (the 28h spec's D15 row; the plan's item g, "Proposed default, 2026-11-05"): the test-manager may
+    /// WIDEN beyond the engine's selection and may NOT narrow past an answer the engine calls unsafe. The
+    /// spec's own recommendation is "widen yes, narrow-past no"; R6 (who decides what is compiled) is not
+    /// adopted and is not held here. The sentences are written in the seat's own file, where the seat that
+    /// has to refuse the shape reads them, and this holds them there.
+    const R5_SENTENCES: [&str; 3] = [
+        "THE SECOND FAILURE SHAPE TO REFUSE: NARROWING PAST AN ANSWER THE ENGINE CALLS UNSAFE (R5).",
+        "You MAY widen: you may name more than the engine's selection names, up to the whole scope, because a longer run only strengthens the checks.",
+        "You may NOT narrow past it: where `selectionVerdict.mayNarrow` is false, or the engine ran the whole scope and said why, you report that the whole scope runs and you never name a shorter set, whatever the time costs.",
+    ];
+
+    #[test]
+    fn the_test_manager_widens_but_never_narrows_past_an_unsafe_answer_r5() {
+        let seat = collapsed_seat("test-manager");
+        let missing: Vec<&str> = R5_SENTENCES.iter().copied().filter(|sentence| !seat.contains(sentence)).collect();
+        assert!(missing.is_empty(), "test-manager.md no longer carries these R5 sentences: {missing:?}");
+    }
+
     /// D12: the run limits must bound TOOL STEPS, not only model turns.
     ///
     /// ARCHITECT FINDING F3 DECLINED, 2026-10-05, and the ground is in the field's own

@@ -10,11 +10,15 @@
 //! the environment so the key stays out of any process listing).
 //!
 //! The merge functions are pure text-in, text-out, so every behaviour is tested without a client.
-//! A settings file that is not strict JSON (a comment, a trailing comma) is REFUSED, never rewritten:
-//! rewriting it would drop the user's comments, so the row says why and prints the snippet to paste.
+//! Zed's and VS Code's settings files may hold comments and trailing commas, so those two rows are
+//! edited as TEXT (`jsonc_edit`): only the studio's own entry is replaced or inserted and every other
+//! byte stays. A file that does not read as JSON with comments is REFUSED, never rewritten: the row
+//! says why (the line and column) and prints the snippet to paste. IntelliJ's `acp.json` is strict
+//! JSON and keeps the strict rule: a comment there is refused.
 //! An entry that is not ours is never overwritten or removed: ours is an entry whose `env` names
 //! `JAWATA_URL` and whose `args` carry `--acp`.
 
+use crate::jsonc_edit::{self, Node};
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
@@ -148,17 +152,114 @@ fn servers_without(existing: &str) -> Result<String, String> {
     Ok(render(root))
 }
 
-/// Zed: `agent_servers.<name> = {"type":"custom", command, args, env}`.
+fn is_blank(existing: Option<&str>) -> bool {
+    existing.map_or(true, |text| text.trim().is_empty())
+}
+
+fn unreadable(reason: String) -> String {
+    format!("the file does not read as JSON with comments ({reason}); it is left as it is")
+}
+
+fn read_root(text: &str) -> Result<jsonc_edit::ObjectNode, String> {
+    jsonc_edit::parse_root_object(text).map_err(|reason| {
+        if reason == "the file is not a JSON object" { reason } else { unreadable(reason) }
+    })
+}
+
+/// The members of `agent_servers` that are ours and are not the last member of one of `keep`.
+fn stale_ours(servers: &jsonc_edit::ObjectNode, keep: &[&str]) -> Vec<usize> {
+    (0..servers.members.len())
+        .filter(|&index| {
+            let member = &servers.members[index];
+            let kept = keep.contains(&member.key.as_str()) && servers.member_index(&member.key) == Some(index);
+            !kept && is_ours(&member.value.to_value())
+        })
+        .collect()
+}
+
+/// `agent_servers` in a file that may hold comments: the same result as `servers_merged`, reached
+/// by editing the text. Entries of ours that are no longer wanted are removed, ours that are wanted
+/// are synced in place (a comment inside the entry stays), the rest are inserted.
+fn servers_merged_in_text(text: &str, entries: &[(String, Launch)], typed: bool) -> Result<String, String> {
+    let root = read_root(text)?;
+    let style = jsonc_edit::style_of(text, &root);
+    let wanted: Vec<(&str, Value)> =
+        entries.iter().map(|(name, launch)| (name.as_str(), launch.value(typed))).collect();
+    let edits = match root.member(SERVERS_KEY) {
+        None => {
+            let body: Map<String, Value> =
+                wanted.iter().map(|(name, value)| (name.to_string(), value.clone())).collect();
+            jsonc_edit::set_member(text, &root, SERVERS_KEY, &Value::Object(body), &style)
+        }
+        Some(member) => {
+            let Node::Object(servers) = &member.value else {
+                return Err(format!("`{SERVERS_KEY}` is not a JSON object"));
+            };
+            for (name, _) in &wanted {
+                if let Some(theirs) = servers.member(name) {
+                    if !is_ours(&theirs.value.to_value()) {
+                        return Err(format!(
+                            "`{SERVERS_KEY}` already has an entry named {name:?} that is not jawata's own; rename it or pick another name"
+                        ));
+                    }
+                }
+            }
+            let names: Vec<&str> = wanted.iter().map(|(name, _)| *name).collect();
+            let mut stale = stale_ours(servers, &names);
+            let mut edits = Vec::new();
+            let mut missing: Vec<(&str, Value)> = Vec::new();
+            for (name, value) in &wanted {
+                match servers.member(name) {
+                    Some(have) => edits.extend(jsonc_edit::sync_value(
+                        text,
+                        &have.value,
+                        value,
+                        &style,
+                        jsonc_edit::line_indent(text, have.key_span.start),
+                    )),
+                    // A stale entry of ours is given the new name rather than removed and inserted again.
+                    None if !stale.is_empty() => {
+                        let recycled = &servers.members[stale.remove(0)];
+                        edits.extend(jsonc_edit::recycle_member(text, recycled, name, value, &style));
+                    }
+                    None => missing.push((name, value.clone())),
+                }
+            }
+            edits.extend(jsonc_edit::remove_members(text, servers, &stale));
+            edits.extend(jsonc_edit::insert_members(text, servers, &missing, &style));
+            edits
+        }
+    };
+    jsonc_edit::apply(text, edits)
+}
+
+fn servers_without_in_text(text: &str) -> Result<String, String> {
+    let root = read_root(text)?;
+    let edits = match root.member(SERVERS_KEY).map(|member| &member.value) {
+        Some(Node::Object(servers)) => jsonc_edit::remove_members(text, servers, &stale_ours(servers, &[])),
+        _ => Vec::new(),
+    };
+    jsonc_edit::apply(text, edits)
+}
+
+/// Zed: `agent_servers.<name> = {"type":"custom", command, args, env}`. Comments and trailing
+/// commas in the file are kept.
 pub fn zed_merged(existing: Option<&str>, entries: &[(String, Launch)]) -> Result<String, String> {
-    servers_merged(existing, entries, true)
+    match existing {
+        Some(text) if !is_blank(existing) => servers_merged_in_text(text, entries, true),
+        _ => servers_merged(existing, entries, true),
+    }
 }
 
 pub fn zed_without(existing: &str) -> Result<String, String> {
-    servers_without(existing)
+    if is_blank(Some(existing)) {
+        return servers_without(existing);
+    }
+    servers_without_in_text(existing)
 }
 
 /// IntelliJ's `acp.json`: `agent_servers.<name> = {command, args, env}`; other keys (such as
-/// `default_mcp_settings`) are kept as they were.
+/// `default_mcp_settings`) are kept as they were. Strict JSON: a comment is refused.
 pub fn intellij_merged(existing: Option<&str>, entries: &[(String, Launch)]) -> Result<String, String> {
     servers_merged(existing, entries, false)
 }
@@ -167,26 +268,38 @@ pub fn intellij_without(existing: &str) -> Result<String, String> {
     servers_without(existing)
 }
 
-/// The chat takes ONE agent: `jawataChat.agent = {command, args, env}`.
+/// The chat takes ONE agent: `jawataChat.agent = {command, args, env}`. Comments and trailing
+/// commas in the VS Code settings file are kept.
 pub fn chat_merged(existing: Option<&str>, launch: &Launch) -> Result<String, String> {
-    let mut root = parse_object(existing)?;
-    if let Some(current) = root.get(CHAT_KEY) {
-        if !is_ours(current) {
+    let Some(text) = existing.filter(|_| !is_blank(existing)) else {
+        let mut root = parse_object(existing)?;
+        root.insert(CHAT_KEY.into(), launch.value(false));
+        return Ok(render(root));
+    };
+    let root = read_root(text)?;
+    if let Some(current) = root.member(CHAT_KEY) {
+        if !is_ours(&current.value.to_value()) {
             return Err(format!(
                 "`{CHAT_KEY}` is already set to an agent that is not jawata's own; it is left as it is"
             ));
         }
     }
-    root.insert(CHAT_KEY.into(), launch.value(false));
-    Ok(render(root))
+    let style = jsonc_edit::style_of(text, &root);
+    jsonc_edit::apply(text, jsonc_edit::set_member(text, &root, CHAT_KEY, &launch.value(false), &style))
 }
 
 pub fn chat_without(existing: &str) -> Result<String, String> {
-    let mut root = parse_object(Some(existing))?;
-    if root.get(CHAT_KEY).is_some_and(is_ours) {
-        root.remove(CHAT_KEY);
+    if is_blank(Some(existing)) {
+        return Ok(render(parse_object(Some(existing))?));
     }
-    Ok(render(root))
+    let root = read_root(existing)?;
+    let edits = match root.member_index(CHAT_KEY) {
+        Some(index) if is_ours(&root.members[index].value.to_value()) => {
+            jsonc_edit::remove_members(existing, &root, &[index])
+        }
+        _ => Vec::new(),
+    };
+    jsonc_edit::apply(existing, edits)
 }
 
 /// One row's place on this machine: the file it writes and the folder whose presence says the
@@ -357,9 +470,7 @@ fn finish(
         }
     };
     // Same JSON means nothing to write; the file stays byte for byte as it is.
-    let same = existing.as_deref().is_some_and(|text| {
-        serde_json::from_str::<Value>(text).ok() == serde_json::from_str::<Value>(&next).ok()
-    });
+    let same = existing.as_deref().is_some_and(|text| text == next || jsonc_edit::same_json(text, &next));
     if same {
         return RowOutcome::new(target, RowState::Success, "Already up to date; nothing written.");
     }
@@ -485,16 +596,11 @@ mod tests {
     }
 
     #[test]
-    fn a_file_with_a_comment_is_refused_not_rewritten() {
+    fn intellijs_strict_json_file_with_a_comment_is_still_refused_not_rewritten() {
         let jsonc = "{\n  // my theme\n  \"theme\": \"One Dark\"\n}";
-        for refused in [
-            zed_merged(Some(jsonc), &one("jawata", "u")),
-            intellij_merged(Some(jsonc), &one("jawata", "u")),
-            chat_merged(Some(jsonc), &launch("u")),
-        ] {
-            let error = refused.expect_err("a commented file must be refused");
-            assert!(error.contains("not strict JSON"), "{error}");
-        }
+        let error = intellij_merged(Some(jsonc), &one("jawata", "u")).expect_err("a commented file must be refused");
+        assert!(error.contains("not strict JSON"), "{error}");
+        assert!(intellij_without(jsonc).is_err());
     }
 
     #[test]
@@ -592,15 +698,17 @@ mod tests {
     }
 
     #[test]
-    fn a_commented_file_fails_the_row_with_the_snippet_and_stays_untouched() {
-        let scratch = Scratch::new("jsonc");
+    fn a_file_that_does_not_read_fails_the_row_with_the_reason_and_the_snippet_and_stays_untouched() {
+        let scratch = Scratch::new("broken");
         let targets = rows(&scratch.0, &scratch.0.join("cfg"), false);
         let zed = &targets[1];
         std::fs::create_dir_all(&zed.client_folder).unwrap();
-        let original = "{\n // keep me\n \"theme\": \"x\"\n}";
+        let original = "{\n // keep me\n \"theme\": \n}";
         std::fs::write(&zed.path, original).unwrap();
         let outcome = apply_row(zed, &Ok(one("jawata", "u")), RowAction::Write, false, &no_backup);
         assert_eq!(outcome.state, RowState::Failed);
+        assert!(outcome.message.contains("does not read as JSON with comments"), "{}", outcome.message);
+        assert!(outcome.message.contains("line 4 column 1"), "the place is named: {}", outcome.message);
         assert!(outcome.message.contains("Paste this by hand"), "{}", outcome.message);
         assert!(outcome.message.contains("\"agent_servers\""));
         assert_eq!(std::fs::read_to_string(&zed.path).unwrap(), original);
@@ -656,5 +764,233 @@ mod tests {
         let root: Value =
             serde_json::from_str(&std::fs::read_to_string(&targets[0].path).unwrap()).unwrap();
         assert_eq!(root["jawataChat.agent"]["env"]["JAWATA_URL"], "http://a");
+    }
+
+    const ZED_COMMENTED: &str = r#"// my zed settings
+{
+  /* theme block */
+  "theme": "One Dark", // keep
+  "agent_servers": {
+    // the other agent
+    "other": { "type": "custom", "command": "x" },
+    // jawata, registered by the studio
+    "jawata": {
+      "type": "custom", // typed
+      "command": "java",
+      "args": ["-jar", "/old/jawata.jar", "--acp"],
+      /* the address */
+      "env": {
+        "JAWATA_URL": "http://old", // old address
+        "JAWATA_KEY": "k-1"
+      }
+    }
+  },
+  "tail": 1 // after
+}
+// the end
+"#;
+
+    fn value_of(text: &str) -> Value {
+        crate::jsonc_edit::parse(text).unwrap_or_else(|e| panic!("{e}\n{text}")).to_value()
+    }
+
+    const OURS_A: &str = r#"{"type":"custom","command":"java","args":["-jar","/e/jawata.jar","--acp"],"env":{"JAWATA_URL":"http://a","JAWATA_KEY":"k-1"}}"#;
+    const OURS_B: &str = r#"{"type":"custom","command":"java","args":["-jar","/e/jawata.jar","--acp"],"env":{"JAWATA_URL":"http://b","JAWATA_KEY":"k-1"}}"#;
+
+    #[test]
+    fn comments_before_inside_and_after_the_entry_survive_byte_for_byte() {
+        let merged = zed_merged(Some(ZED_COMMENTED), &one("jawata", "http://new")).unwrap();
+        let expected = ZED_COMMENTED
+            .replace("/old/jawata.jar", "/e/jawata.jar")
+            .replace("\"http://old\"", "\"http://new\"");
+        assert_eq!(merged, expected, "only the two values that differ are touched");
+    }
+
+    #[test]
+    fn a_string_with_slashes_is_not_a_comment_and_a_comment_is_not_structure() {
+        let text = "{\n  // \"agent_servers\": { \"jawata\": { \"command\": \"fake\" } }\n  \"url\": \"http://x//y /* not a comment */\", /* } , \" { */\n  \"//key\": \"v\"\n}\n";
+        let merged = zed_merged(Some(text), &one("jawata", "http://u")).unwrap();
+        let head = text.strip_suffix("\n}\n").unwrap();
+        assert!(
+            merged.starts_with(&format!("{head},\n  \"agent_servers\": {{\n")),
+            "the commented-out entry is not the entry, so the real one is inserted after the last member: {merged}"
+        );
+        let root = value_of(&merged);
+        assert_eq!(root["url"], "http://x//y /* not a comment */");
+        assert_eq!(root["//key"], "v");
+        assert_eq!(root["agent_servers"]["jawata"]["command"], "java");
+    }
+
+    #[test]
+    fn a_trailing_comma_is_kept_as_the_style_of_the_file() {
+        let text = "{\n  \"a\": 1,\n  \"agent_servers\": {\n    \"other\": { \"command\": \"x\", }, // theirs\n  },\n}\n";
+        let merged = zed_merged(Some(text), &one("jawata", "http://u")).unwrap();
+        assert!(
+            merged.starts_with("{\n  \"a\": 1,\n  \"agent_servers\": {\n    \"other\": { \"command\": \"x\", }, // theirs\n    \"jawata\": {\n"),
+            "{merged}"
+        );
+        assert!(merged.ends_with("\n    },\n  },\n}\n"), "{merged}");
+        let root = value_of(&merged);
+        assert_eq!(root["agent_servers"]["other"]["command"], "x");
+        assert_eq!(root["agent_servers"]["jawata"]["type"], "custom");
+    }
+
+    #[test]
+    fn an_absent_entry_is_inserted_after_the_last_member_and_its_comment() {
+        let text = "{\n  \"a\": 1 // note\n}\n";
+        let merged = zed_merged(Some(text), &one("jawata", "http://u")).unwrap();
+        assert!(merged.starts_with("{\n  \"a\": 1, // note\n  \"agent_servers\": {\n    \"jawata\": {\n"), "{merged}");
+        assert_eq!(value_of(&merged)["a"], 1);
+        assert_eq!(value_of(&merged)["agent_servers"]["jawata"]["env"]["JAWATA_URL"], "http://u");
+
+        let empty = zed_merged(Some("{}"), &one("jawata", "http://u")).unwrap();
+        assert!(empty.starts_with("{\n  \"agent_servers\": {"), "{empty}");
+        assert_eq!(value_of(&empty)["agent_servers"]["jawata"]["command"], "java");
+
+        let one_line = zed_merged(Some("{\"a\":1}"), &one("jawata", "http://u")).unwrap();
+        assert!(one_line.starts_with("{\"a\":1, \"agent_servers\": {\"jawata\":{"), "a one-line file stays one line: {one_line}");
+        assert_eq!(value_of(&one_line)["a"], 1);
+
+        let only_a_comment = "{\n  // nothing yet\n}\n";
+        let merged = zed_merged(Some(only_a_comment), &one("jawata", "http://u")).unwrap();
+        assert!(merged.contains("// nothing yet"), "{merged}");
+        assert_eq!(value_of(&merged)["agent_servers"]["jawata"]["command"], "java");
+
+        let chat = chat_merged(Some("{\n  \"a\": 1,\n}\n"), &launch("http://u")).unwrap();
+        assert!(chat.starts_with("{\n  \"a\": 1,\n  \"jawataChat.agent\": {\n"), "{chat}");
+    }
+
+    #[test]
+    fn a_file_that_does_not_read_keeps_the_refusal_with_its_reason() {
+        for broken in [
+            "{ \"a\": }",
+            "{ \"a\": \"x",
+            "{ /* never closed",
+            "{} extra",
+            "{ \"a\" 1 }",
+            "{\"a\":1,,}",
+            "{ \"a\": 1 \"b\": 2 }",
+        ] {
+            for refused in [
+                zed_merged(Some(broken), &one("jawata", "u")),
+                chat_merged(Some(broken), &launch("u")),
+                zed_without(broken),
+                chat_without(broken),
+            ] {
+                let error = refused.expect_err(broken);
+                assert!(error.contains("does not read as JSON with comments"), "{broken}: {error}");
+                assert!(error.contains("line 1 column"), "{broken}: {error}");
+            }
+        }
+        let error = zed_merged(Some("[1]"), &one("jawata", "u")).expect_err("a list is not a settings object");
+        assert!(error.contains("not a JSON object"), "{error}");
+    }
+
+    #[test]
+    fn running_it_twice_changes_nothing_and_the_row_says_so() {
+        let first = zed_merged(Some(ZED_COMMENTED), &one("jawata", "http://new")).unwrap();
+        assert_eq!(zed_merged(Some(&first), &one("jawata", "http://new")).unwrap(), first);
+        let absent = zed_merged(Some("// c\n{\n  \"a\": 1\n}\n"), &one("jawata", "http://u")).unwrap();
+        assert_eq!(zed_merged(Some(&absent), &one("jawata", "http://u")).unwrap(), absent);
+        let chat = chat_merged(Some("// c\n{\n  \"a\": 1,\n}\n"), &launch("http://u")).unwrap();
+        assert_eq!(chat_merged(Some(&chat), &launch("http://u")).unwrap(), chat);
+
+        let scratch = Scratch::new("twice");
+        let targets = rows(&scratch.0, &scratch.0.join("cfg"), false);
+        let zed = &targets[1];
+        std::fs::create_dir_all(&zed.client_folder).unwrap();
+        std::fs::write(&zed.path, ZED_COMMENTED).unwrap();
+        let backups = std::cell::RefCell::new(0usize);
+        let backup = |p: &Path| -> Result<Option<PathBuf>, String> {
+            *backups.borrow_mut() += 1;
+            Ok(Some(p.with_extension("bak-test")))
+        };
+        let entries = Ok(one("jawata", "http://new"));
+        let written = apply_row(zed, &entries, RowAction::Write, false, &backup);
+        assert_eq!(written.state, RowState::Success, "{}", written.message);
+        assert_eq!(*backups.borrow(), 1, "the commented file is backed up before it is edited");
+        let on_disk = std::fs::read_to_string(&zed.path).unwrap();
+        assert!(on_disk.contains("// jawata, registered by the studio"), "{on_disk}");
+        let again = apply_row(zed, &entries, RowAction::Write, false, &backup);
+        assert!(again.message.contains("Already up to date"), "{}", again.message);
+        assert_eq!(*backups.borrow(), 1, "an unchanged file is neither backed up nor rewritten");
+        assert_eq!(std::fs::read_to_string(&zed.path).unwrap(), on_disk);
+    }
+
+    #[test]
+    fn an_entry_that_is_not_ours_is_refused_in_a_commented_file_too() {
+        let theirs = "{\n  // mine\n  \"agent_servers\": { \"jawata\": { \"command\": \"mine\" } } // keep\n}\n";
+        let error = zed_merged(Some(theirs), &one("jawata", "u")).expect_err("their entry stays theirs");
+        assert!(error.contains("not jawata's own"), "{error}");
+        let chat = "{\n  // mine\n  \"jawataChat.agent\": { \"command\": \"mine\" },\n}\n";
+        assert!(chat_merged(Some(chat), &launch("u")).is_err());
+        assert!(chat_without(chat).unwrap() == chat, "an agent that is not ours stays, byte for byte");
+    }
+
+    #[test]
+    fn an_entry_of_a_removed_workspace_goes_and_the_comma_goes_with_it() {
+        let text = format!(
+            "{{\n  \"agent_servers\": {{\n    // first\n    \"jawata (a)\": {OURS_A},\n    // second\n    \"jawata (b)\": {OURS_B} // b's note\n  }}\n}}\n"
+        );
+        let last_gone = zed_merged(Some(&text), &one("jawata (a)", "http://a")).unwrap();
+        assert_eq!(
+            last_gone,
+            format!("{{\n  \"agent_servers\": {{\n    // first\n    \"jawata (a)\": {OURS_A}\n    // second\n // b's note\n  }}\n}}\n"),
+            "the last member's comma is the one before it, and the comments stay"
+        );
+        let first_gone = zed_merged(Some(&text), &one("jawata (b)", "http://b")).unwrap();
+        assert_eq!(
+            first_gone,
+            format!("{{\n  \"agent_servers\": {{\n    // first\n    // second\n    \"jawata (b)\": {OURS_B} // b's note\n  }}\n}}\n")
+        );
+        let renamed = zed_merged(Some(&text), &vec![
+            ("jawata (a)".to_string(), launch("http://a")),
+            ("jawata (c)".to_string(), launch("http://c")),
+        ])
+        .unwrap();
+        let root = value_of(&renamed);
+        let servers = root["agent_servers"].as_object().unwrap();
+        assert_eq!(servers.keys().collect::<Vec<_>>(), vec!["jawata (a)", "jawata (c)"]);
+        assert!(renamed.contains("// second\n    \"jawata (c)\": {"), "the new name takes the old place: {renamed}");
+        assert!(renamed.contains("// b's note"), "{renamed}");
+    }
+
+    #[test]
+    fn delete_takes_only_our_entries_out_of_a_commented_file() {
+        let removed = zed_without(ZED_COMMENTED).unwrap();
+        let root = value_of(&removed);
+        assert_eq!(root["agent_servers"].as_object().unwrap().keys().collect::<Vec<_>>(), vec!["other"]);
+        assert!(removed.contains("// jawata, registered by the studio"), "a comment beside the entry stays");
+        assert!(removed.contains("// my zed settings") && removed.contains("// the end") && removed.contains("// after"));
+
+        let chat = chat_merged(Some("// c\n{\n  \"a\": 1,\n  \"b\": 2, // last\n}\n"), &launch("http://u")).unwrap();
+        assert_eq!(
+            chat_without(&chat).unwrap(),
+            "// c\n{\n  \"a\": 1,\n  \"b\": 2, // last\n}\n",
+            "put in and taken out, the file is as it was"
+        );
+    }
+
+    #[test]
+    fn the_chat_entry_is_edited_in_a_commented_settings_file() {
+        let text = "// user settings\n{\n  \"editor.fontFamily\": \"Fira // Code\",\n  \"files.exclude\": { \"**/.git\": true, }, /* kept */\n  \"z\": 1, // last\n}\n";
+        let merged = chat_merged(Some(text), &launch("http://u")).unwrap();
+        let head = text.strip_suffix("\n}\n").unwrap();
+        assert!(merged.starts_with(&format!("{head}\n  \"jawataChat.agent\": {{\n")), "{merged}");
+        assert!(merged.ends_with("\n  },\n}\n"), "{merged}");
+        let second = chat_merged(Some(&merged), &launch("http://u2")).unwrap();
+        assert_eq!(second, merged.replace("\"http://u\"", "\"http://u2\""), "the entry is edited in place");
+        assert_eq!(value_of(&second)["jawataChat.agent"]["env"]["JAWATA_URL"], "http://u2");
+        assert_eq!(value_of(&second)["editor.fontFamily"], "Fira // Code");
+    }
+
+    #[test]
+    fn an_inserted_entry_follows_the_files_own_line_endings_and_indentation() {
+        let crlf = "{\r\n  \"a\": 1\r\n}\r\n";
+        let merged = zed_merged(Some(crlf), &one("jawata", "http://u")).unwrap();
+        assert!(!merged.replace("\r\n", "").contains('\n'), "every line break is a CRLF: {merged:?}");
+        let tabs = "{\n\t\"a\": 1\n}\n";
+        let merged = zed_merged(Some(tabs), &one("jawata", "http://u")).unwrap();
+        assert!(merged.contains("\n\t\"agent_servers\": {\n\t\t\"jawata\": {\n\t\t\t\"args\""), "{merged:?}");
     }
 }

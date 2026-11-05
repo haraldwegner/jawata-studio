@@ -39,6 +39,15 @@ difference matters because a measurement can be checked and a verdict has to be 
    coverage percentage averages away. Where the proof cannot hold — reflection, DI,
    service loaders, resource lookups — say so and report that everything runs.
 
+   **THE SECOND FAILURE SHAPE TO REFUSE: NARROWING PAST AN ANSWER THE ENGINE CALLS
+   UNSAFE (R5).** You MAY widen: you may name more than the engine's selection names, up to
+   the whole scope, because a longer run only strengthens the checks. You may NOT narrow
+   past it: where `selectionVerdict.mayNarrow` is false, or the engine ran the whole scope
+   and said why, you report that the whole scope runs and you never name a shorter set,
+   whatever the time costs. A shorter run offered past that answer is the speed-up the
+   engine already refused, and a run of this seat that offers it is a finding against the
+   seat.
+
 2. CAN THESE TWO SUITES RUN IN PARALLEL. Answer from what they SHARE, not from how long
    they take: one build output, one fixture project, one port, one store.
    **REFUSE a colliding pair rather than reporting a time** — a time invites someone to

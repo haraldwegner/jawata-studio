@@ -8,6 +8,7 @@ mod config;
 mod field_view;
 mod gateway;
 mod intellij;
+mod jsonc_edit;
 mod lombok;
 mod conductor;
 mod eclipse_notes;
