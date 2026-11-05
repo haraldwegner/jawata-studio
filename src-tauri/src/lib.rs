@@ -1,3 +1,4 @@
+mod agent_brain_settings;
 mod agent_registration;
 mod backups;
 mod brains;

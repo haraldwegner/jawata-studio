@@ -426,6 +426,11 @@ pub struct RuntimeReference {
     /// old runner had would never run on the new start path. `None` only for a reference built by hand
     /// (a test), never by `resolve_runtime_reference_with`.
     pub seats_dir: Option<String>,
+    /// 28h S15: the brains the engine's own agent starts (`jawata.agent.brain`, `jawata.agent.hireBrains`,
+    /// `jawata.agent.reviewer`), written from what is installed on this machine and put in the engine's
+    /// environment beside [`SEATS_DIR_ENV`]. Empty when nothing is installed, and then the engine answers
+    /// its no-brain sentence.
+    pub agent_brain: crate::agent_brain_settings::AgentBrainSettings,
 }
 
 /// The engine's environment name for the seat-files folder (jawata-mcp `DefaultEngineSettings`:
@@ -1341,11 +1346,13 @@ impl RuntimeManager {
 
         // 28h S15: the seat-files folder reaches the engine through its environment, so the seat
         // schedules the engine now runs (`ScheduledHires`) are on in the product.
-        let env: Vec<(String, String)> = reference
+        let seats: Vec<(String, String)> = reference
             .seats_dir
             .iter()
             .map(|dir| (SEATS_DIR_ENV.to_string(), dir.clone()))
             .collect();
+        // 28h S15: and the brains the engine's own agent starts, from what this machine has installed.
+        let env = crate::agent_brain_settings::applied_to(seats, &reference.agent_brain);
 
         CommandSpec {
             command: "java".into(),
@@ -2015,6 +2022,7 @@ mod tests {
                 // argv-token path, which stays supported (studio#14).
                 engine_version: Some("1.4.0".into()),
                 seats_dir: None,
+                agent_brain: Default::default(),
             },
         }
     }
@@ -2148,6 +2156,51 @@ mod tests {
         // Control: a reference that names no folder adds nothing to the environment.
         let spec = manager.command_spec_for(&fake_launch_request());
         assert!(spec.env.is_empty(), "no folder named, nothing written: {:?}", spec.env);
+    }
+
+    /// 28h S15: the brains the studio found installed reach the engine's environment under the names the
+    /// engine maps, beside the seats folder; a changed program is a rewritten value, never a second one.
+    #[test]
+    fn an_engine_is_started_with_the_brains_this_machine_has_each_once() {
+        let manager = RuntimeManager::new(fake_paths());
+        let mut request = fake_launch_request();
+        request.reference.seats_dir = Some("/cfg/jawata/seats".into());
+        let (old_path, old_program) = fake_agent_path("old");
+        request.reference.agent_brain = crate::agent_brain_settings::detect(Some(&old_path));
+
+        let spec = manager.command_spec_for(&request);
+        let names: Vec<&str> = spec.env.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["JAWATA_AGENT_SEATS_DIR", "JAWATA_AGENT_BRAIN", "JAWATA_AGENT_HIRE_BRAINS", "JAWATA_AGENT_REVIEWER"]
+        );
+        let old_text = old_program.to_string_lossy().replace('\\', "\\\\");
+        assert!(spec.env[1].1.contains(&old_text), "{} in {}", old_text, spec.env[1].1);
+
+        // The program moved: the next start carries the new path, each name still once.
+        let (new_path, new_program) = fake_agent_path("new");
+        request.reference.agent_brain = crate::agent_brain_settings::detect(Some(&new_path));
+        let spec = manager.command_spec_for(&request);
+        assert_eq!(spec.env.len(), 4, "{:?}", spec.env);
+        let new_text = new_program.to_string_lossy().replace('\\', "\\\\");
+        assert!(spec.env[1].1.contains(&new_text) && !spec.env[1].1.contains(&old_text), "{}", spec.env[1].1);
+        for program in [old_program, new_program] {
+            let _ = std::fs::remove_dir_all(program.parent().unwrap());
+        }
+    }
+
+    /// A `PATH` value whose one folder holds an executable `agent`, built in a real temp folder so the
+    /// detector the studio uses finds it.
+    fn fake_agent_path(label: &str) -> (std::ffi::OsString, PathBuf) {
+        let dir = unique_tempdir(&format!("agentpath-{label}"));
+        let program = dir.join(if cfg!(windows) { "agent.exe" } else { "agent" });
+        std::fs::write(&program, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        (std::env::join_paths([&dir]).unwrap(), program)
     }
 
     #[test]
@@ -2637,6 +2690,7 @@ mod tests {
             // channel is irrelevant to them; None keeps them off the file path.
             engine_version: None,
             seats_dir: None,
+            agent_brain: Default::default(),
         }
     }
 

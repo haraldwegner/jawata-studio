@@ -2663,6 +2663,10 @@ impl ManagerService {
         // the log. Surfacing it as an error here stops the doomed spawn at the
         // source, before any process is started.
         ensure_runtime_jar_exists(&reference.resolved_jar_path)?;
+        // 28h S15: an engine started with no agent brain answers its no-brain sentence; the log says why.
+        if let Some(note) = &reference.agent_brain.note {
+            crate::studio_log::say(&format!("engine for workspace '{}': {note}", reference.workspace_name));
+        }
         Ok(RuntimeLaunchRequest {
             project_path: project.project_path.clone(),
             reference,
@@ -2683,6 +2687,23 @@ impl ManagerService {
         project: &ProjectRecord,
         settings: &ManagerSettings,
         installed_runtime: Option<&ManagedRuntimeRecord>,
+    ) -> Result<RuntimeReference, String> {
+        self.resolve_runtime_reference_on_path(
+            project,
+            settings,
+            installed_runtime,
+            std::env::var_os("PATH").as_deref(),
+        )
+    }
+
+    /// [`Self::resolve_runtime_reference_with`] with the `PATH` the agent programs are looked for on
+    /// given, so a test can name a folder of its own (28h S15: the brains the engine's agent starts).
+    fn resolve_runtime_reference_on_path(
+        &self,
+        project: &ProjectRecord,
+        settings: &ManagerSettings,
+        installed_runtime: Option<&ManagedRuntimeRecord>,
+        path_var: Option<&std::ffi::OsStr>,
     ) -> Result<RuntimeReference, String> {
         // Sprint 10 v0.10.4: workspace_dir is keyed by workspace_name, not
         // project id — so all projects sharing a workspace share one
@@ -2726,6 +2747,7 @@ impl ManagerService {
                     // spawn can choose the token file over argv.
                     engine_version: Some(runtime.version.clone()),
                     seats_dir: Some(crate::config::display_path(&self.seats_dir())),
+                    agent_brain: crate::agent_brain_settings::detect(path_var),
                 })
             }
             RuntimeSource::LocalJar { jar_path } => Ok(RuntimeReference {
@@ -2744,6 +2766,7 @@ impl ManagerService {
                 // generates its own (401 for every deployed client).
                 engine_version: None,
                 seats_dir: Some(crate::config::display_path(&self.seats_dir())),
+                agent_brain: crate::agent_brain_settings::detect(path_var),
             }),
         }
     }
@@ -13177,6 +13200,64 @@ judge was never told to give"
 
         // And the folder is the one the deploy writes seats into.
         assert!(expected.as_deref().unwrap().ends_with("seats"), "{expected:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 28h S15: every reference the studio resolves for an engine it starts carries the brain settings
+    /// written from what is installed on the machine, for a managed runtime and for a hand-built jar alike,
+    /// and nothing when the program is not there.
+    #[test]
+    fn every_engine_the_studio_starts_is_given_the_brains_this_machine_has() {
+        let dir = unique_tempdir("agent-brain-reference");
+        let service = service_over(&dir);
+        let settings = service.config_store.get_settings();
+        let project = crate::config::ProjectRecord {
+            id: "p1".into(),
+            name: "p1".into(),
+            project_path: dir.join("p1").to_string_lossy().into_owned(),
+            workspace_name: "ws-brains".into(),
+            assigned_port: 0,
+            source_roots: Default::default(),
+        };
+        let runtime = ManagedRuntimeRecord {
+            version: "4.4.22".into(),
+            install_dir: "/tools/jawata".into(),
+            jar_path: "/tools/jawata/jawata.jar".into(),
+            asset_name: "jawata.jar".into(),
+            installed_at: "2026-11-01T00:00:00Z".into(),
+        };
+        let bin = dir.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let program = bin.join(if cfg!(windows) { "agent.exe" } else { "agent" });
+        fs::write(&program, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let with_agent = std::env::join_paths([&bin]).unwrap();
+        let without = std::env::join_paths([dir.join("empty")]).unwrap();
+
+        let managed = service
+            .resolve_runtime_reference_on_path(&project, &settings, Some(&runtime), Some(&with_agent))
+            .expect("a managed runtime resolves");
+        let names: Vec<&str> = managed.agent_brain.env.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(names, vec!["JAWATA_AGENT_BRAIN", "JAWATA_AGENT_HIRE_BRAINS", "JAWATA_AGENT_REVIEWER"], "a managed runtime");
+        assert!(managed.agent_brain.env[0].1.contains(&program.to_string_lossy().replace('\\', "\\\\")), "{:?}", managed.agent_brain.env[0]);
+
+        let mut local = settings.clone();
+        local.global_runtime_source = RuntimeSource::LocalJar { jar_path: "/tools/local/jawata.jar".into() };
+        let reference = service
+            .resolve_runtime_reference_on_path(&project, &local, None, Some(&with_agent))
+            .expect("a hand-built jar resolves");
+        assert_eq!(reference.agent_brain, managed.agent_brain, "a hand-built jar");
+
+        // Control: with no agent program on the path nothing is written, and the reason is kept.
+        let bare = service
+            .resolve_runtime_reference_on_path(&project, &settings, Some(&runtime), Some(&without))
+            .expect("resolves");
+        assert!(bare.agent_brain.env.is_empty(), "{:?}", bare.agent_brain.env);
+        assert!(bare.agent_brain.note.is_some(), "the reason is reportable");
         let _ = fs::remove_dir_all(&dir);
     }
 
