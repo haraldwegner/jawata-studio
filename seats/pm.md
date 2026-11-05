@@ -108,6 +108,12 @@ asking is the instruction this seat exists to produce.
    THE FAILURE SHAPE TO REFUSE: a message that reads as diligence and leaves the reader
    to interpret. He has said it plainly — *"I cannot make decisions if I have to
    interpret and guess."*
+   WHEN NO UPWARD MESSAGE IS OWED, THE ANSWER CARRIES NO LINE THAT NAMES ONE. The
+   `upward_message` gate reads any line that has the word "upward" near its start as an
+   upward message and demands a Fact, a Cause and a Cost of it, so "Upward message: none
+   owed" is refused as a message with all three missing. THE FAILURE SHAPE TO REFUSE:
+   announcing that nothing is owed; write no such line, and the absence of the message is
+   the answer.
 
 6. DECIDE DONE, AND READ THE LEDGER BEFORE YOU DO. You are the only seat that says a
    stage is done. A sprint does not close over findings older than the agreed number of

@@ -1578,6 +1578,26 @@ mod tests {
         body.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
+    /// The engine's `upward_message` answer gate reads any line of the pm's answer that carries the word
+    /// "upward" near its start as an upward message, and then demands a Fact, a Cause and a Cost of it
+    /// (`UpwardMessageGate` in jawata-mcp: no such line means none is owed). A real pm hire wrote
+    /// "Upward message: none owed", which the gate refused as a message with all three missing (S12's
+    /// real-brain run). So the stance must tell the pm that when nothing is owed it writes no line naming
+    /// an upward message at all, and what to do instead of announcing it. Each sentence is compared with
+    /// its whitespace collapsed, like the speed clauses.
+    const NONE_OWED_SENTENCES: [&str; 3] = [
+        "WHEN NO UPWARD MESSAGE IS OWED, THE ANSWER CARRIES NO LINE THAT NAMES ONE.",
+        "The `upward_message` gate reads any line that has the word \"upward\" near its start as an upward message and demands a Fact, a Cause and a Cost of it, so \"Upward message: none owed\" is refused as a message with all three missing.",
+        "THE FAILURE SHAPE TO REFUSE: announcing that nothing is owed; write no such line, and the absence of the message is the answer.",
+    ];
+
+    #[test]
+    fn the_pm_is_told_that_a_message_not_owed_is_not_announced() {
+        let pm = collapsed_seat("pm");
+        let missing: Vec<&str> = NONE_OWED_SENTENCES.iter().copied().filter(|s| !pm.contains(s)).collect();
+        assert!(missing.is_empty(), "pm.md no longer carries these sentences about a message that is not owed: {missing:?}");
+    }
+
     /// D17 (28h S14): each of the seven seat-speed requirements is written in the seat that carries it. The
     /// pm carries S1 to S4 and the manager half of S7; the worker carries S5, S6 and the other half of S7.
     #[test]
