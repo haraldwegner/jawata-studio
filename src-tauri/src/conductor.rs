@@ -1649,6 +1649,36 @@ mod tests {
         assert!(missing.is_empty(), "test-manager.md no longer carries these R5 sentences: {missing:?}");
     }
 
+    /// 28f S19, "boundaries reachable at instruction time", read (his word 2026-11-06: the agent decides)
+    /// as the package edges a slice must not cross, resolved live with `find_quality_issue
+    /// kind=forbidden_edge` and listed in the lead's lead-in. The reading is recorded in the plan's S14
+    /// row; the sentences sit in the chief engineer's own file, where the seat that writes the
+    /// instruction reads them, and this holds them there.
+    const BOUNDARIES_SENTENCES: [&str; 3] = [
+        "WHEN YOU WRITE THE INSTRUCTIONS FOR A SLICE, YOU LIST THE EDGES THE SLICE MUST NOT CREATE, AND YOU READ THEM LIVE.",
+        "put what it answers in the lead-in as a line `BOUNDARIES: <from> must not depend on <forbidden>`, one line per edge.",
+        "THE FAILURE SHAPE TO REFUSE: an instruction for a move or an extraction that names its target and says nothing of the edges it must not cross",
+    ];
+
+    #[test]
+    fn the_chief_engineer_lists_the_edges_a_slice_must_not_cross() {
+        let seat = collapsed_seat("chief-engineer");
+        let missing: Vec<&str> = BOUNDARIES_SENTENCES.iter().copied().filter(|s| !seat.contains(s)).collect();
+        assert!(missing.is_empty(), "chief-engineer.md no longer carries these boundaries sentences: {missing:?}");
+    }
+
+    /// The proof that the check above can fail, for every sentence: the same text with that one sentence
+    /// taken out of an in-memory copy is missing exactly that sentence.
+    #[test]
+    fn taking_a_boundaries_sentence_out_of_the_chief_engineer_is_caught_by_name() {
+        let whole = collapsed_seat("chief-engineer");
+        for sentence in BOUNDARIES_SENTENCES {
+            let without = whole.replacen(sentence, "", 1);
+            let missing: Vec<&str> = BOUNDARIES_SENTENCES.iter().copied().filter(|s| !without.contains(s)).collect();
+            assert_eq!(vec![sentence], missing, "removing {sentence:?} was not caught as exactly that sentence");
+        }
+    }
+
     /// D12: the run limits must bound TOOL STEPS, not only model turns.
     ///
     /// ARCHITECT FINDING F3 DECLINED, 2026-10-05, and the ground is in the field's own

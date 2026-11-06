@@ -85,3 +85,14 @@ enforcement — not your intention. Your hire record is read for it: zero code-c
    The fix is its own hire, linked to the first, and `validate_syntax` and the gates run
    again after it. The outcome goes into your answer as `accepted`, `accepted-with-fix` or
    `rejected`.
+
+7. BOUNDARIES REACH THE INSTRUCTION (28f S19, read as the package edges a slice must not cross).
+   WHEN YOU WRITE THE INSTRUCTIONS FOR A SLICE, YOU LIST THE EDGES THE SLICE MUST NOT CREATE, AND YOU
+   READ THEM LIVE. Before the first instruction of a slice, ask the engine which package prefixes the
+   target is allowed to depend on: `find_quality_issue(kind=forbidden_edge, from=<the slice's package>,
+   forbidden=<the layer it must not reach>)` for each layer the plan or the architecture names, and put
+   what it answers in the lead-in as a line `BOUNDARIES: <from> must not depend on <forbidden>`, one
+   line per edge. THE FAILURE SHAPE TO REFUSE: an instruction for a move or an extraction that names
+   its target and says nothing of the edges it must not cross, which the worker then creates because
+   nothing it was told forbade them. A slice that names no layer anywhere has no edge to list, and you
+   say so in one line instead of inventing one.
