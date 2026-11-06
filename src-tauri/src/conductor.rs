@@ -1655,9 +1655,15 @@ mod tests {
     /// row; the sentences sit in the chief engineer's own file, where the seat that writes the
     /// instruction reads them, and this holds them there.
     const BOUNDARIES_SENTENCES: [&str; 3] = [
-        "WHEN YOU WRITE THE INSTRUCTIONS FOR A SLICE, YOU LIST THE EDGES THE SLICE MUST NOT CREATE, AND YOU READ THEM LIVE.",
-        "put what it answers in the lead-in as a line `BOUNDARIES: <from> must not depend on <forbidden>`, one line per edge.",
+        "WHEN YOU WRITE THE INSTRUCTIONS FOR A SLICE, YOU LIST THE EDGES THE SLICE MUST NOT CREATE, TAKEN FROM THE PLAN OR THE ARCHITECTURE YOU WERE GIVEN, never from your own guess.",
+        "answers whether that edge exists today, and you write its answer beside the pair as one line `BOUNDARIES: <from> must not depend on <forbidden> (today: <n> violations)`",
         "THE FAILURE SHAPE TO REFUSE: an instruction for a move or an extraction that names its target and says nothing of the edges it must not cross",
+    ];
+
+    /// The pm's half: the lines reach the worker through its brief and are checked by a gate step, which is what makes them more than a request.
+    const PM_BOUNDARIES_SENTENCES: [&str; 2] = [
+        "THE CHIEF ENGINEER'S BOUNDARIES LINES GO INTO THE BRIEF OF THE WORKER'S HIRE, AND EACH IS A GATE STEP (28f S19).",
+        "and add one gate step `find_quality_issue(kind=forbidden_edge, from=…, forbidden=…)` per line, so the edge is checked after the worker has acted and not only asked for beforehand.",
     ];
 
     #[test]
@@ -1665,6 +1671,13 @@ mod tests {
         let seat = collapsed_seat("chief-engineer");
         let missing: Vec<&str> = BOUNDARIES_SENTENCES.iter().copied().filter(|s| !seat.contains(s)).collect();
         assert!(missing.is_empty(), "chief-engineer.md no longer carries these boundaries sentences: {missing:?}");
+    }
+
+    #[test]
+    fn the_pm_carries_the_boundaries_to_the_worker_and_gates_each_one() {
+        let seat = collapsed_seat("pm");
+        let missing: Vec<&str> = PM_BOUNDARIES_SENTENCES.iter().copied().filter(|s| !seat.contains(s)).collect();
+        assert!(missing.is_empty(), "pm.md no longer carries these boundaries sentences: {missing:?}");
     }
 
     /// The proof that the check above can fail, for every sentence: the same text with that one sentence

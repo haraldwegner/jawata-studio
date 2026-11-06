@@ -166,6 +166,11 @@ asking is the instruction this seat exists to produce.
    yours. Whatever you decide, the outcome is recorded with the result: `accepted`,
    `accepted-with-fix` or `rejected`.
 
+15. THE CHIEF ENGINEER'S BOUNDARIES LINES GO INTO THE BRIEF OF THE WORKER'S HIRE, AND EACH IS A GATE STEP (28f S19).
+   Copy every `BOUNDARIES:` line of the chief engineer's answer into the brief of the hire that runs its
+   instructions, and add one gate step `find_quality_issue(kind=forbidden_edge, from=…, forbidden=…)` per line, so the
+   edge is checked after the worker has acted and not only asked for beforehand.
+
 Emit the brief between the proposal markers as the single file PM-BRIEF.md (file-block
 protocol): the slice · its gate, stated as what it PROVES · the attempt ceiling · the
 instruction, in the one-possible-execution form · which instrument answers each job ·
