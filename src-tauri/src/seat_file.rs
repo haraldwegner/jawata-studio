@@ -233,6 +233,16 @@ pub struct SeatDefinition {
     /// (`ScheduledHires.Gate`); `None` keeps its default, the compile gate. Sprint 28h S12.
     #[serde(default)]
     pub schedule_gate: Option<ScheduleGate>,
+    /// Where the seat sits in the workflow (28h, D51): the seat that hires it, what it is (`lead`,
+    /// `worker`, `reviewer`) and where a task it could not do goes next. The engine reads the same
+    /// three keys when it loads the tree of seats (`SeatTree`); a blank `escalates_to:` says it goes
+    /// nowhere. `None` keeps the signed tree's own value.
+    #[serde(default)]
+    pub parent: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub escalates_to: Option<String>,
     /// Tool allowlist injected into the seat prompt (advisory for the CLI
     /// v1 contract; hard enforcement is a later graduation).
     pub tools: Vec<String>,
@@ -323,6 +333,9 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
     let mut kind = None;
     let mut schedule = None;
     let mut schedule_gate: Option<ScheduleGate> = None;
+    let mut parent: Option<String> = None;
+    let mut role: Option<String> = None;
+    let mut escalates_to: Option<String> = None;
     let mut tools: Vec<String> = Vec::new();
     let mut gate_classes: Vec<GateClass> = Vec::new();
     let mut gate_exempt = false;
@@ -367,6 +380,13 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
             "kind" => kind = Some(SeatKind::parse(value)?),
             "schedule" => schedule = Some(value.trim_matches('"').to_string()),
             "schedule_gate" => schedule_gate = Some(ScheduleGate::parse(value)?),
+            // The engine reads these three keys with its own rules and refuses the whole tree on a
+            // broken one, naming the seat (`SeatTree`). The reader here keeps what the file says, a
+            // blank parent included and a role in any case, so `workflow::refusals` can say the same
+            // thing the engine will, instead of this parser dropping the seat from the view.
+            "parent" => parent = Some(value.trim_matches('"').trim().to_string()),
+            "role" => role = Some(value.trim_matches('"').trim().to_lowercase()),
+            "escalates_to" => escalates_to = Some(value.trim_matches('"').to_string()),
             "purpose" => purpose = value.to_string(),
             "fires" => fires = value.to_string(),
             "tools" => tools = parse_inline_list(value)?,
@@ -518,6 +538,9 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
         effort,
         schedule,
         schedule_gate,
+        parent,
+        role,
+        escalates_to,
         tools,
         gate_classes,
         gate_exempt,

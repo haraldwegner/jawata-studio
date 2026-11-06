@@ -47,6 +47,7 @@ mod runner;
 mod seat_file;
 mod runtime_manager;
 mod seat_settings;
+mod workflow;
 mod store_seed;
 mod studio_log;
 
@@ -986,6 +987,7 @@ pub fn run() {
             commands::eclipse_workspaces,
             commands::field_set_silence,
             commands::seats_view,
+            commands::workflow_view,
             commands::seat_change,
             commands::brains_status,
             commands::brain_probe,

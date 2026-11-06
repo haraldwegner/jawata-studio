@@ -9,6 +9,7 @@
   import MemoryView from "./lib/components/MemoryView.svelte";
   import FieldView from "./lib/components/FieldView.svelte";
   import SeatsView from "./lib/components/SeatsView.svelte";
+  import WorkflowView from "./lib/components/WorkflowView.svelte";
   import HelpView from "./lib/components/HelpView.svelte";
   import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
   import { createAppStore } from "./lib/stores/app";
@@ -26,7 +27,7 @@
   const MIN_RIGHT_PANEL_WIDTH = 420;
   const SPLITTER_WIDTH = 12;
 
-  let currentView: "dashboard" | "memory" | "field" | "seats" | "settings" | "help" = "dashboard";
+  let currentView: "dashboard" | "memory" | "field" | "seats" | "workflow" | "settings" | "help" = "dashboard";
   /** Sprint 10 v0.10.4: which workspace the Register Project / Import
    * forms add to. Owned at App.svelte so the Workspaces card and the
    * forms stay in sync. Defaults to the first existing workspace if
@@ -464,6 +465,13 @@
           Seats
         </button>
         <button
+          class="tab {currentView === 'workflow' ? 'active' : ''}"
+          on:click={() => (currentView = 'workflow')}
+          type="button"
+        >
+          Workflow
+        </button>
+        <button
           class="tab {currentView === 'settings' ? 'active' : ''}"
           on:click={() => (currentView = 'settings')}
           type="button"
@@ -664,6 +672,15 @@
          rewrote every client's MCP configuration and started a store load per toggle (C11-4). -->
     <section class="dashboard-main">
       <SeatsView
+        disabled={$appStore.isBusy || $appStore.deployBusy}
+        on:changed={() => appStore.deploySeats()}
+      />
+    </section>
+  {:else if currentView === 'workflow'}
+    <!-- Sprint 28h, S18a (D51): who hires whom. Written like a seat setting, then the seat part of
+         a deploy runs so the three lines reach the seat files the engine reads. -->
+    <section class="dashboard-main">
+      <WorkflowView
         disabled={$appStore.isBusy || $appStore.deployBusy}
         on:changed={() => appStore.deploySeats()}
       />

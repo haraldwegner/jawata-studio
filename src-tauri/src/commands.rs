@@ -517,6 +517,13 @@ pub fn seats_view(
     Ok(state.manager_service.seats_view())
 }
 
+/// The Workflow view's data: who hires whom, what each seat is, and what the engine would refuse.
+/// Sync on purpose, like the seats view: file reads only.
+#[tauri::command]
+pub fn workflow_view(state: State<'_, AppState>) -> Result<crate::workflow::WorkflowView, String> {
+    Ok(state.manager_service.workflow_view())
+}
+
 /// Which of the named brains this machine has — installed, logged in, and the models the program
 /// lists where it can — asked of each agent program itself. Off the main thread: a status check
 /// can take seconds, and a sync command would freeze the whole window while it runs.

@@ -1217,6 +1217,18 @@ impl ManagerService {
         view
     }
 
+    /// The Workflow view (28h, D51): where every seat sits in the tree of who hires whom, and what the
+    /// engine would refuse of it. Reads files only, after the same idempotent pass the seats view runs.
+    pub fn workflow_view(&self) -> crate::workflow::WorkflowView {
+        let dir = self.seats_dir();
+        let materialized = crate::conductor::materialize_seats(&dir);
+        let mut view = crate::workflow::workflow_view(&dir);
+        if let Err(error) = materialized {
+            view.errors.push(error);
+        }
+        view
+    }
+
     /// Change one setting of one seat and return the refreshed view. The change reaches the
     /// agents' directories at the next deploy — which the view asks for, so a toggle is not a
     /// control that does nothing until someone remembers to press something else.

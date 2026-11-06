@@ -170,7 +170,8 @@ pub fn materialize_seats(seats_dir: &Path) -> Result<SeatMaterialization, String
         let path = seats_dir.join(file);
         let choice = settings.brain(file.trim_end_matches(".md"));
         let enabled = settings.is_enabled(file.trim_end_matches(".md"));
-        let derived = crate::seat_settings::seat_file_content(shipped, choice, enabled);
+        let placement = settings.workflow(file.trim_end_matches(".md"));
+        let derived = crate::seat_settings::seat_file_content(shipped, choice, enabled, placement);
         let body: &str = &derived;
         let write_current = |report_bucket: &mut Vec<String>,
                              manifest: &mut std::collections::BTreeMap<String, String>|
@@ -198,7 +199,7 @@ pub fn materialize_seats(seats_dir: &Path) -> Result<SeatMaterialization, String
                 // as made while every hire read their old lines. Their edits are kept; only the
                 // brain/model lines (when chosen) and the enabled line change.
                 let with_choice =
-                    crate::seat_settings::seat_file_content(&existing, choice, enabled);
+                    crate::seat_settings::seat_file_content(&existing, choice, enabled, placement);
                 if with_choice != existing {
                     fs::write(&path, &with_choice)
                         .map_err(|e| format!("cannot write {}: {e}", path.display()))?;

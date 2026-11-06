@@ -898,7 +898,11 @@ export type SeatChange =
   | { setting: "clients"; value: string[] }
   /** Send only after `brainProbe` answered for this brain and model. */
   | { setting: "brain"; brain: string; model: string | null }
-  | { setting: "reset" };
+  | { setting: "reset" }
+  /** 28h D51: where the seat sits in the workflow. Refused with the engine's reasons when the tree would break a rule. */
+  | { setting: "workflow"; parent: string; role: string; escalatesTo: string | null }
+  /** Takes the seat back to the signed place. */
+  | { setting: "workflowDefault" };
 
 /** What one test run through a brain showed. */
 export interface ProbeResult {
@@ -959,4 +963,31 @@ export function brainsStatus(ids: string[]): Promise<BrainStatus[]> {
  * with a message, and nothing was written. */
 export function seatChange(seat: string, change: SeatChange): Promise<SeatsView> {
   return invoke("seat_change", { seat, change });
+}
+
+/** Where one seat sits in the tree of who hires whom (28h, D51). */
+export interface WorkflowRow {
+  name: string;
+  /** What the person types for the seat, with its slash. */
+  command: string | null;
+  parent: string;
+  role: string;
+  escalatesTo: string | null;
+  /** The signed tree's own place; absent for a seat the signed tree does not know. */
+  signed: { parent: string; role: string; escalatesTo: string | null } | null;
+  /** Whether the person placed the seat. */
+  placed: boolean;
+}
+
+export interface WorkflowView {
+  rows: WorkflowRow[];
+  /** Every name a seat may report to or escalate to. */
+  places: string[];
+  /** What the engine would refuse of the tree as it stands. */
+  refusals: string[];
+  errors: string[];
+}
+
+export function workflowView(): Promise<WorkflowView> {
+  return invoke("workflow_view");
 }

@@ -67,13 +67,27 @@ pub struct SeatOverride {
     /// brain answered a test run with — never one somebody typed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Setting 5 — where the seat sits in the workflow (28h, D51). `None` means the signed tree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<Workflow>,
+}
+
+/// Where a seat sits in the workflow: the seat that hires it, what it is, and where a task it could
+/// not do goes next. Written into the seat file as `parent:`, `role:` and `escalates_to:`, which the
+/// engine reads when it loads the tree (`SeatTree`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Workflow {
+    pub parent: String,
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalates_to: Option<String>,
 }
 
 impl SeatOverride {
     /// Whether this override says anything at all. An override that says nothing is removed
     /// rather than stored, so the file never accumulates empty entries that read as settings.
     fn is_empty(&self) -> bool {
-        self.enabled.is_none() && self.clients.is_none() && self.brain.is_none()
+        self.enabled.is_none() && self.clients.is_none() && self.brain.is_none() && self.workflow.is_none()
     }
 }
 
@@ -174,6 +188,23 @@ impl SeatSettings {
         entry.model = model;
     }
 
+    /// Setting 5, read: where the user placed this seat in the workflow, or none for the signed place.
+    pub fn workflow(&self, seat_name: &str) -> Option<&Workflow> {
+        self.seats.get(seat_name)?.workflow.as_ref()
+    }
+
+    /// Set setting 5.
+    pub fn set_workflow(&mut self, seat_name: &str, workflow: Workflow) {
+        self.entry(seat_name).workflow = Some(workflow);
+    }
+
+    /// Take setting 5 back to the signed place, leaving the seat's other settings alone.
+    pub fn clear_workflow(&mut self, seat_name: &str) {
+        if let Some(entry) = self.seats.get_mut(seat_name) {
+            entry.workflow = None;
+        }
+    }
+
     /// SETTING 4 — reset to shipped, the settings half. Drops every override for this seat, so
     /// the seat file's own values govern again.
     ///
@@ -209,6 +240,7 @@ pub fn seat_file_content(
     content: &str,
     brain: Option<(&str, Option<&str>)>,
     enabled: bool,
+    workflow: Option<&Workflow>,
 ) -> String {
     let mut out = String::with_capacity(content.len() + 64);
     let mut fences = 0;
@@ -219,6 +251,16 @@ pub fn seat_file_content(
         }
         let in_frontmatter = fences == 1 && trimmed != "---";
         if in_frontmatter && trimmed.starts_with("enabled:") {
+            continue;
+        }
+        // Setting 5 is this app's too: when the user placed the seat, the three lines are replaced,
+        // and when they did not, whatever the file says stays.
+        if in_frontmatter
+            && workflow.is_some()
+            && (trimmed.starts_with("parent:")
+                || trimmed.starts_with("role:")
+                || trimmed.starts_with("escalates_to:"))
+        {
             continue;
         }
         if in_frontmatter
@@ -245,7 +287,37 @@ pub fn seat_file_content(
             if !enabled {
                 out.push_str("enabled: false\n");
             }
+            if let Some(workflow) = workflow {
+                out.push_str(&format!("parent: {}\nrole: {}\n", workflow.parent, workflow.role));
+                // A blank value is how a seat file says "escalates nowhere" over the signed default.
+                out.push_str(&format!(
+                    "escalates_to: {}\n",
+                    workflow.escalates_to.as_deref().unwrap_or("")
+                ));
+            }
         }
+    }
+    out
+}
+
+/// The seat file without its `parent:`, `role:` and `escalates_to:` frontmatter lines.
+fn without_workflow_lines(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut fences = 0;
+    for line in content.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            fences += 1;
+        }
+        let in_frontmatter = fences == 1 && trimmed != "---";
+        if in_frontmatter
+            && (trimmed.starts_with("parent:")
+                || trimmed.starts_with("role:")
+                || trimmed.starts_with("escalates_to:"))
+        {
+            continue;
+        }
+        out.push_str(line);
     }
     out
 }
@@ -430,6 +502,17 @@ pub enum SeatChange {
     Brain { brain: String, model: Option<String> },
     /// Setting 4 — drop the overrides and take this build's seat.
     Reset,
+    /// Setting 5 — where the seat sits in the workflow (28h, D51). Checked as a whole tree before it
+    /// is stored: a placement that would make the engine refuse the tree is refused here, with the
+    /// engine's own reasons.
+    Workflow {
+        parent: String,
+        role: String,
+        #[serde(rename = "escalatesTo", default)]
+        escalates_to: Option<String>,
+    },
+    /// Setting 5 taken back to the signed place.
+    WorkflowDefault,
 }
 
 /// The one door settings change through. Validates before it writes: a seat name that matches
@@ -488,6 +571,36 @@ pub fn change_seat(
             settings.save(seats_dir)?;
             // Write it into the seat file NOW: the file is what a hire reads, and a choice that
             // waited for the next deploy would be shown as made while no hire could see it.
+            crate::conductor::materialize_seats(seats_dir).map(|_| ())
+        }
+        SeatChange::Workflow { parent, role, escalates_to } => {
+            let mut settings = SeatSettings::load(seats_dir)?;
+            settings.set_workflow(
+                seat_name,
+                Workflow { parent, role, escalates_to: escalates_to.filter(|e| !e.trim().is_empty()) },
+            );
+            let refusals = crate::workflow::refusals(seats_dir, &settings);
+            if !refusals.is_empty() {
+                return Err(format!("the engine would refuse this tree: {}", refusals.join("; ")));
+            }
+            settings.save(seats_dir)?;
+            crate::conductor::materialize_seats(seats_dir).map(|_| ())
+        }
+        SeatChange::WorkflowDefault => {
+            let mut settings = SeatSettings::load(seats_dir)?;
+            settings.clear_workflow(seat_name);
+            settings.save(seats_dir)?;
+            // The three lines leave the file too, whoever wrote it: a seat file the person edited is
+            // kept by the deploy as it is, and would otherwise go on moving the seat after the
+            // setting says it is back in its signed place.
+            let file = seats_dir.join(format!("{seat_name}.md"));
+            if let Ok(text) = fs::read_to_string(&file) {
+                let stripped = without_workflow_lines(&text);
+                if stripped != text {
+                    fs::write(&file, stripped)
+                        .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+                }
+            }
             crate::conductor::materialize_seats(seats_dir).map(|_| ())
         }
     }
@@ -792,13 +905,13 @@ mod tests {
     fn choosing_a_brain_replaces_an_existing_opt_in_instead_of_keeping_or_doubling_it() {
         let existing = "---\nname: pm\nbrain: cursor\naccepts_uncontained_writes: true\ntools: []\n---\nbody\n";
 
-        let to_codex = seat_file_content(existing, Some(("codex", None)), true);
+        let to_codex = seat_file_content(existing, Some(("codex", None)), true, None);
         assert!(!to_codex.contains("accepts_uncontained_writes"), "stale opt-in kept: {to_codex}");
         assert!(to_codex.contains("\nbrain: codex\n"), "{to_codex}");
 
-        let to_cursor = seat_file_content(existing, Some(("cursor", None)), true);
+        let to_cursor = seat_file_content(existing, Some(("cursor", None)), true, None);
         assert_eq!(to_cursor.matches("accepts_uncontained_writes:").count(), 1, "doubled: {to_cursor}");
-        assert_eq!(seat_file_content(&to_cursor, Some(("cursor", None)), true), to_cursor,
+        assert_eq!(seat_file_content(&to_cursor, Some(("cursor", None)), true, None), to_cursor,
             "applying it twice changes nothing");
     }
 
