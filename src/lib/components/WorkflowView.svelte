@@ -80,6 +80,27 @@
     });
   }
 
+  /** A seat outside the tree: the choices are held here until both a parent and a role are picked, because the
+   *  engine refuses a parent without a role and a role without a parent, and one select cannot carry both. */
+  let drafts: Record<string, { parent: string; role: string }> = {};
+
+  function draftOf(row: WorkflowRow) {
+    return drafts[row.name] ?? { parent: "", role: "" };
+  }
+
+  function setDraft(row: WorkflowRow, patch: Partial<{ parent: string; role: string }>) {
+    drafts = { ...drafts, [row.name]: { ...draftOf(row), ...patch } };
+  }
+
+  async function placeDraft(row: WorkflowRow) {
+    const draft = draftOf(row);
+    await apply(row, { setting: "workflow", parent: draft.parent, role: draft.role, escalatesTo: null });
+    if (!actionError) {
+      const { [row.name]: _placed, ...rest } = drafts;
+      drafts = rest;
+    }
+  }
+
   function others(row: WorkflowRow): string[] {
     return (view?.places ?? []).filter((name) => name !== row.name);
   }
@@ -122,6 +143,47 @@
           <h3 title="The seat, with what you type to call it.">
             {row.name}{#if row.command} <span class="seat-command">({row.command})</span>{/if}
           </h3>
+          {#if row.noPlaceReason}
+            <!-- The signed tree has no place for this seat. It says why, instead of two empty fields. -->
+            <p class="hint workflow-no-place" title="The engine's signed tree does not place this seat. Choose a parent and a role below to put it in the tree.">
+              No place in the tree. {row.noPlaceReason}
+            </p>
+            <label class="workflow-field" title={REPORTS_TO_HINT}>
+              <span>Reports to</span>
+              <select
+                value={draftOf(row).parent}
+                disabled={disabled || busy}
+                on:change={(e) => setDraft(row, { parent: e.currentTarget.value })}
+              >
+                <option value="">(none)</option>
+                {#each others(row) as name (name)}
+                  <option value={name}>{name}</option>
+                {/each}
+              </select>
+            </label>
+            <label class="workflow-field" title={ROLE_HINT}>
+              <span>Is a</span>
+              <select
+                value={draftOf(row).role}
+                disabled={disabled || busy}
+                on:change={(e) => setDraft(row, { role: e.currentTarget.value })}
+              >
+                <option value="">(none)</option>
+                {#each ROLES as role (role.value)}
+                  <option value={role.value} title={role.hint}>{role.label}</option>
+                {/each}
+              </select>
+            </label>
+            <button
+              class="secondary"
+              type="button"
+              disabled={disabled || busy || !draftOf(row).parent || !draftOf(row).role}
+              title="Put this seat in the tree under the chosen seat, as the chosen kind. The engine checks the result before it is stored."
+              on:click={() => placeDraft(row)}
+            >
+              Put in the tree
+            </button>
+          {:else}
           <label class="workflow-field" title={REPORTS_TO_HINT}>
             <span>Reports to</span>
             <select
@@ -159,6 +221,7 @@
               {/each}
             </select>
           </label>
+          {/if}
           {#if row.placed}
             <button
               class="secondary"

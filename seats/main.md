@@ -9,7 +9,7 @@ fires: whenever the work has more than one step
 # session's work rather than one finding; no schedule, because a human's message is the
 # trigger and that is the whole point of this seat existing)
 effort: high
-tools: [compile_workspace, get_diagnostics, run_tests, find_quality_issue, experience]
+tools: [compile_workspace, get_diagnostics, run_tests, find_quality_issue, experience, plan_steps, plan_board]
 gates: []
 ttl_secs: 900
 max_iterations: 1
@@ -52,7 +52,10 @@ Rules (each one is binding):
 2. ONE STEP OPEN AT A TIME. The next step does not begin until the open one's gate has
    been RUN and READ. This is the whole mechanism: the strongest act available to a
    workflow owner living inside somebody else's loop is to WITHHOLD THE NEXT STEP, and
-   you use it on yourself before anyone else has to.
+   you use it on yourself before anyone else has to. What is still open is read from the engine,
+   not from memory: `plan_steps` lists the steps waiting for their gate, and after a gate has
+   advanced a plan, `plan_board` redraws the sprint's plan file so the file a person reads says
+   what the gates say.
 3. A GATE YOU COULD NOT RUN HAS NOT PASSED. Say which it was and stop. An absent result
    is not a green one, a timeout is not a pass, and a tool that refused is evidence about
    nothing but itself.

@@ -39,7 +39,7 @@ fn remove_partial_archives(tools_dir: &Path) {
 /// 200 has ignored the range and is sending everything, so the file is begun again; one that answers 416 says the
 /// range does not fit what it has (the file is as long as the resource, or from another version), so the file is
 /// removed and fetched whole. A body that breaks off leaves the file as far as it got.
-fn fetch_resumable(client: &Client, url: &str, path: &Path) -> Result<u64, String> {
+pub(crate) fn fetch_resumable(client: &Client, url: &str, path: &Path) -> Result<u64, String> {
     let mut have = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     for _ in 0..2 {
         let mut request = client.get(url);
@@ -79,7 +79,7 @@ fn fetch_resumable(client: &Client, url: &str, path: &Path) -> Result<u64, Strin
 /// a response body aborted by a timeout reads as the bare, undiagnosable
 /// "error decoding response body" while the cause that actually names the
 /// problem sits one level down. The macOS dogfood lost a day to that message.
-fn describe_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+pub(crate) fn describe_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     let mut parts = vec![error.to_string()];
     let mut source = error.source();
     while let Some(inner) = source {

@@ -37,6 +37,7 @@ import {
   projectPathKey,
   resolutionStatus,
   workspaceReadability} from "../api/tauri";
+import { BUDGET_MS, runBusy } from "../busy";
 
 interface AppState extends Partial<ManagerDashboard> {
   selectedProjectId?: string;
@@ -111,11 +112,31 @@ export function createAppStore() {
     }));
   }
 
-  async function load() {
-    update((state) => ({ ...state, isBusy: true, error: undefined }));
+  /** Sprint 28h Stage 21 (h)3: every action that holds `isBusy` goes through this. The call runs under a
+   *  budget and the flag is released in `finally`, so it comes back after an answer, an error, and no answer
+   *  at all (see busy.ts). `fail` defaults to showing the error in the banner. */
+  function busyAction<T>(
+    what: string,
+    budgetMs: number,
+    call: () => Promise<T>,
+    succeed?: (value: T) => void,
+    fail: (error: unknown) => void = (error) =>
+      update((state) => ({ ...state, error: normalizeError(error) }))
+  ) {
+    return runBusy<T>({
+      what,
+      budgetMs,
+      begin: () => update((state) => ({ ...state, isBusy: true, error: undefined })),
+      call,
+      succeed,
+      fail,
+      release: () => update((state) => ({ ...state, isBusy: false }))
+    });
+  }
 
-    try {
-      syncDashboard(await getDashboard());
+  async function load() {
+    await busyAction("Loading the dashboard", BUDGET_MS.quick, getDashboard, (dashboard) => {
+      syncDashboard(dashboard);
       ensureStatusPolling();
       // v0.14.1 (bugs.md #4): listen for backend-driven settings writes
       // (e.g. tray "Autostart on boot" toggle) and reload the dashboard
@@ -135,109 +156,94 @@ export function createAppStore() {
           settingsChangedListenerAttached = false;
         });
       }
-    } catch (error) {
-      update((state) => ({
-        ...state,
-        isBusy: false,
-        error: normalizeError(error)
-      }));
-    }
+    });
   }
 
   async function setProjectWorkspaceEntry(projectId: string, workspaceName: string) {
-    update((state) => ({ ...state, isBusy: true, error: undefined }));
-    try {
-      syncDashboard(await setProjectWorkspaceApi({ projectId, workspaceName }));
-      clearProjectError(projectId);
-    } catch (error) {
-      setProjectError(projectId, error);
-    }
+    await busyAction(
+      "Moving the project",
+      BUDGET_MS.quick,
+      () => setProjectWorkspaceApi({ projectId, workspaceName }),
+      (dashboard) => {
+        syncDashboard(dashboard);
+        clearProjectError(projectId);
+      },
+      (error) => setProjectError(projectId, error)
+    );
   }
 
   async function renameWorkspaceEntry(oldName: string, newName: string) {
-    update((state) => ({ ...state, isBusy: true, error: undefined }));
-    try {
-      syncDashboard(await renameWorkspaceApi({ oldName, newName }));
-    } catch (error) {
-      update((state) => ({ ...state, error: String(error) }));
-    } finally {
-      update((state) => ({ ...state, isBusy: false }));
-    }
+    await busyAction("Renaming the workspace", BUDGET_MS.quick, () => renameWorkspaceApi({ oldName, newName }), syncDashboard);
   }
 
   async function deleteWorkspaceEntry(workspaceName: string) {
-    update((state) => ({ ...state, isBusy: true, error: undefined }));
-    try {
-      syncDashboard(await deleteWorkspaceApi(workspaceName));
-    } catch (error) {
-      update((state) => ({ ...state, error: String(error) }));
-    } finally {
-      update((state) => ({ ...state, isBusy: false }));
-    }
+    await busyAction("Deleting the workspace", BUDGET_MS.fleet, () => deleteWorkspaceApi(workspaceName), syncDashboard);
   }
 
   /** studio#28: set a workspace's resident heap ceiling, or clear it with null.
    * Syncs the whole dashboard so the launcher's view and the UI's cannot drift. */
   async function setWorkspaceHeapBound(workspaceName: string, maxHeapMb: number | null) {
-    update((state) => ({ ...state, isBusy: true, error: undefined }));
-    try {
-      syncDashboard(await setWorkspaceMaxHeapApi(workspaceName, maxHeapMb));
-    } catch (error) {
-      update((state) => ({ ...state, error: String(error) }));
-    } finally {
-      update((state) => ({ ...state, isBusy: false }));
-    }
+    await busyAction(
+      "Saving the heap bound",
+      BUDGET_MS.quick,
+      () => setWorkspaceMaxHeapApi(workspaceName, maxHeapMb),
+      syncDashboard
+    );
   }
 
   /** studio#29: turn the debug agent on or off for one workspace's resident. */
   async function setWorkspaceDebuggable(workspaceName: string, debuggable: boolean) {
-    update((state) => ({ ...state, isBusy: true, error: undefined }));
-    try {
-      syncDashboard(await setWorkspaceDebuggableApi(workspaceName, debuggable));
-    } catch (error) {
-      update((state) => ({ ...state, error: String(error) }));
-    } finally {
-      update((state) => ({ ...state, isBusy: false }));
-    }
+    await busyAction(
+      "Saving the debug setting",
+      BUDGET_MS.quick,
+      () => setWorkspaceDebuggableApi(workspaceName, debuggable),
+      syncDashboard
+    );
   }
 
   async function renameProjectEntry(projectId: string, name: string) {
-    update((state) => ({ ...state, isBusy: true, error: undefined }));
-    try {
-      syncDashboard(await renameProjectApi({ projectId, name }));
-      clearProjectError(projectId);
-    } catch (error) {
-      setProjectError(projectId, error);
-    } finally {
-      update((state) => ({ ...state, isBusy: false }));
-    }
+    await busyAction(
+      "Renaming the project",
+      BUDGET_MS.quick,
+      () => renameProjectApi({ projectId, name }),
+      (dashboard) => {
+        syncDashboard(dashboard);
+        clearProjectError(projectId);
+      },
+      (error) => setProjectError(projectId, error)
+    );
   }
 
   async function updateManagerSettings(input: UpdateSettingsInput) {
-    update((state) => ({
-      ...state,
-      isBusy: true,
-      error: undefined,
-      settingsSaveStatus: "saving",
-      settingsSaveMessage: "Saving settings..."
-    }));
-
-    try {
-      syncDashboard(await updateSettings(input));
-      update((state) => ({
-        ...state,
-        settingsSaveStatus: "success",
-        settingsSaveMessage: "New settings stored successfully."
-      }));
-    } catch (error) {
-      update((state) => ({
-        ...state,
-        isBusy: false,
-        error: normalizeError(error),
-        settingsSaveStatus: "error",
-        settingsSaveMessage: `Failed to store settings: ${normalizeError(error)}`
-      }));
-    }
+    await runBusy({
+      what: "Saving the settings",
+      budgetMs: BUDGET_MS.quick,
+      begin: () =>
+        update((state) => ({
+          ...state,
+          isBusy: true,
+          error: undefined,
+          settingsSaveStatus: "saving",
+          settingsSaveMessage: "Saving settings..."
+        })),
+      call: () => updateSettings(input),
+      succeed: (dashboard) => {
+        syncDashboard(dashboard);
+        update((state) => ({
+          ...state,
+          settingsSaveStatus: "success",
+          settingsSaveMessage: "New settings stored successfully."
+        }));
+      },
+      fail: (error) =>
+        update((state) => ({
+          ...state,
+          error: normalizeError(error),
+          settingsSaveStatus: "error",
+          settingsSaveMessage: `Failed to store settings: ${normalizeError(error)}`
+        })),
+      release: () => update((state) => ({ ...state, isBusy: false }))
+    });
   }
 
   function markSettingsEdited() {
@@ -250,39 +256,24 @@ export function createAppStore() {
   }
 
   async function redetectMcpClientPaths() {
-    update((state) => ({ ...state, isBusy: true, error: undefined }));
-    try {
-      syncDashboard(await redetectMcpClientPathsApi());
-    } catch (error) {
-      update((state) => ({
-        ...state,
-        isBusy: false,
-        error: normalizeError(error)
-      }));
-    }
+    await busyAction("Detecting the agents' config paths", BUDGET_MS.quick, redetectMcpClientPathsApi, syncDashboard);
   }
 
   async function runCleanup(
     cleanupCall: () => Promise<CleanupSummary>
   ) {
-    update((state) => ({ ...state, isBusy: true, error: undefined }));
-    try {
-      const summary = await cleanupCall();
-      const dashboard = await getDashboard();
-      update((state) => ({
-        ...state,
-        ...dashboard,
-        isBusy: false,
-        error: undefined,
-        lastCleanupSummary: summary
-      }));
-    } catch (error) {
-      update((state) => ({
-        ...state,
-        isBusy: false,
-        error: normalizeError(error)
-      }));
-    }
+    await busyAction(
+      "The cleanup",
+      BUDGET_MS.fleet,
+      async () => ({ summary: await cleanupCall(), dashboard: await getDashboard() }),
+      ({ summary, dashboard }) =>
+        update((state) => ({
+          ...state,
+          ...dashboard,
+          error: undefined,
+          lastCleanupSummary: summary
+        }))
+    );
   }
 
   async function cleanAllLogs() {
@@ -298,197 +289,108 @@ export function createAppStore() {
   }
 
   async function probeServices() {
-    update((state) => ({
-      ...state,
-      serviceProbeBusy: true,
-      serviceProbeError: undefined
-    }));
-
-    try {
-      const result = await probeServicesApi();
-      update((state) => ({
-        ...state,
-        serviceProbeBusy: false,
-        lastServiceProbe: result,
-        // Failed probes already carry user-visible detail in lastServiceProbe.
-        serviceProbeError: undefined
-      }));
-    } catch (error) {
-      update((state) => ({
-        ...state,
-        serviceProbeBusy: false,
-        serviceProbeError: normalizeError(error)
-      }));
-    }
+    await runBusy({
+      what: "The service probe",
+      budgetMs: BUDGET_MS.fleet,
+      begin: () =>
+        update((state) => ({
+          ...state,
+          serviceProbeBusy: true,
+          serviceProbeError: undefined
+        })),
+      call: probeServicesApi,
+      // Failed probes already carry user-visible detail in lastServiceProbe.
+      succeed: (result) =>
+        update((state) => ({ ...state, lastServiceProbe: result, serviceProbeError: undefined })),
+      fail: (error) => update((state) => ({ ...state, serviceProbeError: normalizeError(error) })),
+      release: () => update((state) => ({ ...state, serviceProbeBusy: false }))
+    });
   }
 
-  async function deployToAgents(mode: DeployMode, targetClients?: string[]) {
+  /** The deploy flag has the same rule as `isBusy`: released in `finally` under a budget. */
+  function deployAction(what: string, call: () => Promise<DeployToAgentsResult>) {
     // Sprint 28a Stage 2b: the PREVIOUS run's summary is retired the moment a
     // new one starts. It used to survive, so a spinner ran above a summary
     // describing a different deploy.
-    update((state) => ({
-      ...state,
-      deployBusy: true,
-      deployError: undefined,
-      lastDeployResult: undefined
-    }));
-    try {
-      const result = await deployToAgentsApi({
-        mode,
-        targetClients
-      });
-      update((state) => ({
-        ...state,
-        deployBusy: false,
-        deployError: undefined,
-        lastDeployResult: result
-      }));
-    } catch (error) {
+    return runBusy<DeployToAgentsResult>({
+      what,
+      budgetMs: BUDGET_MS.deploy,
+      begin: () =>
+        update((state) => ({
+          ...state,
+          deployBusy: true,
+          deployError: undefined,
+          lastDeployResult: undefined
+        })),
+      call,
+      succeed: (result) =>
+        update((state) => ({ ...state, deployError: undefined, lastDeployResult: result })),
       // No `lastDeployResult` here on purpose — it was already cleared when
       // this run started. Before that, a failure left the previous run's
       // SUCCESS in place, and dismissing the error revealed it again as though
       // it described what had just happened.
-      update((state) => ({
-        ...state,
-        deployBusy: false,
-        deployError: normalizeError(error)
-      }));
-    }
+      fail: (error) => update((state) => ({ ...state, deployError: normalizeError(error) })),
+      release: () => update((state) => ({ ...state, deployBusy: false }))
+    });
+  }
+
+  async function deployToAgents(mode: DeployMode, targetClients?: string[]) {
+    await deployAction("The deploy", () => deployToAgentsApi({ mode, targetClients }));
   }
 
   /** The seat part of a deploy only (C11-4): a Seats view change refreshes the command files and
    * nothing else, reported through the same summary a full deploy uses. */
   async function deploySeats() {
-    update((state) => ({
-      ...state,
-      deployBusy: true,
-      deployError: undefined,
-      lastDeployResult: undefined
-    }));
-    try {
-      const result = await deploySeatsApi();
-      update((state) => ({
-        ...state,
-        deployBusy: false,
-        deployError: undefined,
-        lastDeployResult: result
-      }));
-    } catch (error) {
-      update((state) => ({
-        ...state,
-        deployBusy: false,
-        deployError: normalizeError(error)
-      }));
-    }
+    await deployAction("The seat deploy", deploySeatsApi);
   }
 
   async function deleteProjectEntry(projectId: string) {
-    update((state) => ({ ...state, isBusy: true, error: undefined }));
-    try {
-      syncDashboard(await deleteProject(projectId));
-    } catch (error) {
-      update((state) => ({
-        ...state,
-        isBusy: false,
-        error: normalizeError(error)
-      }));
-    }
+    await busyAction("Deleting the project", BUDGET_MS.fleet, () => deleteProject(projectId), syncDashboard);
   }
 
   async function deleteAllProjectEntries() {
-    update((state) => ({ ...state, isBusy: true, error: undefined }));
-    try {
-      syncDashboard(await deleteAllProjects());
-    } catch (error) {
-      update((state) => ({
-        ...state,
-        isBusy: false,
-        error: normalizeError(error)
-      }));
-    }
+    await busyAction("Deleting all projects", BUDGET_MS.fleet, deleteAllProjects, syncDashboard);
   }
 
   async function downloadLatestRuntime() {
-    update((state) => ({ ...state, isBusy: true, error: undefined }));
-
-    try {
-      syncDashboard(await downloadOrUpdateJawata());
-    } catch (error) {
-      update((state) => ({
-        ...state,
-        isBusy: false,
-        error: normalizeError(error)
-      }));
-    }
+    await busyAction("The engine download", BUDGET_MS.fleet, downloadOrUpdateJawata, syncDashboard);
   }
 
   async function startProject(projectId: string) {
-    update((state) => ({ ...state, isBusy: true, error: undefined }));
-
-    try {
-      const status = await startRuntime(projectId);
-      mergeRuntimeStatus(projectId, status);
-    } catch (error) {
-      setProjectError(projectId, error);
-    }
+    await busyAction(
+      "Starting the service",
+      BUDGET_MS.fleet,
+      () => startRuntime(projectId),
+      (status) => mergeRuntimeStatus(projectId, status),
+      (error) => setProjectError(projectId, error)
+    );
   }
 
   async function startAllProjects() {
-    update((state) => ({ ...state, isBusy: true, error: undefined }));
-    try {
-      syncDashboard(await startAllRuntimes());
-    } catch (error) {
-      update((state) => ({
-        ...state,
-        isBusy: false,
-        error: normalizeError(error)
-      }));
-    }
+    await busyAction("Starting all services", BUDGET_MS.fleet, startAllRuntimes, syncDashboard);
   }
 
   async function stopAllProjects() {
-    update((state) => ({ ...state, isBusy: true, error: undefined }));
-    try {
-      syncDashboard(await stopAllRuntimes());
-    } catch (error) {
-      update((state) => ({
-        ...state,
-        isBusy: false,
-        error: normalizeError(error)
-      }));
-    }
+    await busyAction("Stopping all services", BUDGET_MS.fleet, stopAllRuntimes, syncDashboard);
   }
 
   /** Sprint 14 (v0.14.0): stop every workspace, wait for each to settle,
    * then start them all again. Sequenced server-side; the UI sees one
    * round-trip that can take up to ~30 s. */
   async function reloadAllProjects() {
-    update((state) => ({ ...state, isBusy: true, error: undefined }));
-    try {
-      syncDashboard(await reloadAllRuntimes());
-    } catch (error) {
-      update((state) => ({
-        ...state,
-        isBusy: false,
-        error: normalizeError(error)
-      }));
-    }
+    await busyAction("Reloading all services", BUDGET_MS.fleet, reloadAllRuntimes, syncDashboard);
   }
 
   async function stopProject(projectId: string) {
-    update((state) => ({ ...state, isBusy: true, error: undefined }));
-
-    try {
-      const status = await stopRuntime(projectId);
-      mergeRuntimeStatus(projectId, status);
-      clearProjectError(projectId);
-    } catch (error) {
-      update((state) => ({
-        ...state,
-        isBusy: false,
-        error: normalizeError(error)
-      }));
-    }
+    await busyAction(
+      "Stopping the service",
+      BUDGET_MS.fleet,
+      () => stopRuntime(projectId),
+      (status) => {
+        mergeRuntimeStatus(projectId, status);
+        clearProjectError(projectId);
+      }
+    );
   }
 
   async function refreshEclipseWorkspaces() {

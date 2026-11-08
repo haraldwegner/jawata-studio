@@ -56,6 +56,10 @@ A seat is a narrow role an agent takes when you type its command, such as `/refa
 
 ![Seats: one row opened](/help/08-seats-row.png)
 
+## Workflow
+
+Where each seat sits when work is handed on: which seat it **Reports to**, its role (**Is a**), and which seat it escalates to. A seat the engine's tree does not place says why instead of showing empty fields. Choose a parent and a role to put such a seat in the tree; the choice is written into the deployed seat file, and the studio refuses it, with the engine's reason, when the engine would refuse it. Removing the placement takes the three lines out again, even from a file you edited.
+
 ## Settings
 
 **Engine**: whether the engine updates itself (**Update policy**), a link to the studio's releases, and **Test services**, which checks that the engine answers; **Advanced** holds where the engine is downloaded from or a local jar to use instead. A newer engine is looked for when the studio starts and after you stop or reload (at most every ten minutes); it is started once on its own and compared with the tool list this studio expects before it replaces the engine you use. If it differs, the old engine stays and Settings says how it differs; a new engine takes effect at the next start. **Agents**: which agents Deploy writes to, with each one's config file shown in the table (under **Advanced**: merge mode and a backup before each write). Grok receives jawata's tools but not its guard. Antigravity cannot connect jawata and is not supported. **This machine**: the data folder, tray, autostart, per-workspace memory limits, and cleanup.

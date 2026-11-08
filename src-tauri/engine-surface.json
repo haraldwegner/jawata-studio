@@ -1,5 +1,5 @@
 {
-  "engineVersion": "4.4.9",
+  "engineVersion": "4.5.2",
   "live": [
     {"name": "analyze", "changesCode": false},
     {"name": "apply_cleanup", "changesCode": true},
@@ -35,6 +35,8 @@
     {"name": "load_project", "changesCode": false},
     {"name": "move", "changesCode": true},
     {"name": "organize_imports", "changesCode": true},
+    {"name": "plan_board", "changesCode": false},
+    {"name": "plan_steps", "changesCode": false},
     {"name": "profile", "changesCode": false},
     {"name": "project", "changesCode": false},
     {"name": "quick_fix", "changesCode": true},

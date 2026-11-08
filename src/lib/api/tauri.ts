@@ -977,6 +977,8 @@ export interface WorkflowRow {
   signed: { parent: string; role: string; escalatesTo: string | null } | null;
   /** Whether the person placed the seat. */
   placed: boolean;
+  /** Why the seat has no place in the tree (the signed tree does not know it and it is not placed); null when it has one. */
+  noPlaceReason: string | null;
 }
 
 export interface WorkflowView {
@@ -990,4 +992,30 @@ export interface WorkflowView {
 
 export function workflowView(): Promise<WorkflowView> {
   return invoke("workflow_view");
+}
+
+/**
+ * A jawata workspace that holds only some of an editor workspace's projects (28h Stage 21 (j)). The studio opens its
+ * window with this question and changes nothing until it is answered.
+ */
+export interface EditorUpdatePrompt {
+  /** The id of the editor workspace (the name of the file the editor reads). */
+  id: string;
+  workspace: string;
+  /** Projects of the editor's folders the workspace already has. */
+  existing: string[];
+  /** Projects of the editor's folders the workspace lacks and "Update workspace" adds. */
+  missing: string[];
+  /** Projects of the editor's folders that belong to another workspace and stay there. */
+  elsewhere: string[];
+  folders: string[];
+}
+
+export function editorUpdatePrompts(): Promise<EditorUpdatePrompt[]> {
+  return invoke("editor_update_prompts");
+}
+
+/** `update` true is "Update workspace", false is "Not now". Returns at once; the studio does the work in the background. */
+export function answerEditorUpdate(id: string, update: boolean): Promise<void> {
+  return invoke("answer_editor_update", { id, update });
 }

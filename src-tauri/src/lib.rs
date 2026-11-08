@@ -12,6 +12,7 @@ mod jsonc_edit;
 mod lombok;
 mod conductor;
 mod eclipse_notes;
+mod editor_launch;
 mod engine_activity;
 mod engine_floor;
 #[cfg(test)]
@@ -47,6 +48,7 @@ mod runner;
 mod seat_file;
 mod runtime_manager;
 mod seat_settings;
+mod vscode_deploy;
 mod workflow;
 mod store_seed;
 mod studio_log;
@@ -248,6 +250,30 @@ fn build_tray_icon_for(
     Image::new_owned(rgba, TRAY_ICON_SIZE, TRAY_ICON_SIZE)
 }
 
+/// The argument an extension passes when it starts the studio because the engine's service does not answer
+/// (Sprint 28h Stage 21 (d)). The studio then runs with its tray icon and no window.
+pub const BACKGROUND_ARG: &str = "--background";
+
+/// Whether a launch asked for no window. Pure, so both launches are tested: the first one reads its own
+/// arguments, a second one reaches the running studio through the single-instance callback, which is handed the
+/// second process's arguments. The program name (the first argument) can never be the flag.
+pub fn is_background_launch<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter().skip(1).any(|arg| arg.as_ref() == BACKGROUND_ARG)
+}
+
+/// Whether the workspaces that were running when the studio last closed are started again at launch. The saved
+/// setting says so for a person who wants their services after a reboot; a launch with `--background` says so on
+/// its own account, because the only reason an extension starts the studio that way is to have the engine
+/// service answer, and without it the extension would wait its whole time for a service nobody starts
+/// (Sprint 28h Stage 21, audit finding 2).
+pub fn restore_services_at_launch(autostart_on_boot: bool, background_launch: bool) -> bool {
+    autostart_on_boot || background_launch
+}
+
 /// Raise the main window, and on macOS make Studio a foreground app first.
 ///
 /// Sprint 28 (v3.6.1): the ONE way the window is shown, so the activation
@@ -256,7 +282,7 @@ fn build_tray_icon_for(
 /// in both, `Accessory` in neither while still allowing a status item and
 /// windows. Studio is a service manager, so it is a foreground app only while
 /// its window is open — see `hide_main_window` for the other half.
-fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
+pub(crate) fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(window) = app.get_webview_window("main") {
@@ -568,7 +594,16 @@ pub fn run() {
         // callback fires on the *original* running process when the second
         // launch is rejected — raise its main window so the user sees the
         // dashboard they expected from re-clicking the app menu / dock entry.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // Stage 21 (j): a second launch that carries the editor's folders is decided here, on a thread of its own,
+            // before the window is considered: the folders pick the jawata workspace, and only a partly matching one
+            // raises the window, by its own question.
+            editor_launch::handle_editor_launch(app, &argv);
+            // Stage 21 (d): an extension may start the studio when it already runs. That second launch carries
+            // `--background` and must not raise a window the person did not ask for.
+            if is_background_launch(&argv) {
+                return;
+            }
             // Sprint 28 (v3.6.1): through the one show path, so a second launch
             // restores the foreground activation policy as well as the window.
             // On macOS this is the route a Dock-icon click takes when Launch
@@ -588,6 +623,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState { manager_service })
         .setup(|app| {
+            // Stage 21 (d): the main window is configured hidden (tauri.conf.json `visible: false`), so a launch
+            // with `--background` shows nothing but the tray icon, and every other launch shows it here, before
+            // the macOS activation policy below reads its visibility.
+            if !is_background_launch(std::env::args()) {
+                show_main_window(app.handle());
+            }
             // 28h S2a: a download that begins, or an engine that is installed, reaches the open window at once
             // (the window reloads the dashboard on this event) instead of at the next time something else changes.
             {
@@ -862,27 +903,25 @@ pub fn run() {
             // restoration. If they Quit (or close-to-tray + Quit, or
             // crash), the snapshot keeps the Running phases →
             // restoration fires.
-            if app
-                .state::<AppState>()
-                .manager_service
-                .get_settings()
-                .autostart_on_boot
-            {
+            // Stage 21 (j): a launch that carries the editor's folders starts the workspace those folders pick (below),
+            // not everything that ran at last close; the saved autostart setting still restores all.
+            if restore_services_at_launch(
+                app.state::<AppState>().manager_service.get_settings().autostart_on_boot,
+                is_background_launch(std::env::args()) && editor_launch::editor_folders(std::env::args()).is_empty(),
+            ) {
                 let app_handle = app.handle().clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_secs(2));
                     let state = app_handle.state::<AppState>();
-                    let workspaces = state.manager_service.workspaces_to_auto_restore();
-                    if workspaces.is_empty() {
-                        return;
-                    }
-                    if let Err(error) =
-                        state.manager_service.start_specific_workspaces(&workspaces)
-                    {
+                    if let Err(error) = state.manager_service.restore_last_running_workspaces() {
                         eprintln!("auto-restore workspaces failed: {error}");
                     }
                 });
             }
+
+            // Stage 21 (j): the first launch carries the editor's folders in the process's own arguments; a second launch
+            // reaches the same function through the single-instance callback. The work runs on a thread of its own.
+            editor_launch::handle_editor_launch(app.handle(), &std::env::args().collect::<Vec<_>>());
 
             // Sprint 28 (v3.6.2): check for a runtime update OFF the main thread.
             //
@@ -915,9 +954,10 @@ pub fn run() {
             }
 
             // Sprint 28 (v3.6.1): seat the macOS activation policy on the
-            // window's ACTUAL initial visibility rather than assuming it. Today
-            // the main window is configured visible, so this resolves to
-            // `Regular` — Tauri's default — and changes nothing. It is here so
+            // window's ACTUAL initial visibility rather than assuming it. A normal
+            // launch has shown the window just above, so this resolves to
+            // `Regular`; a `--background` launch resolves to `Accessory`, no Dock
+            // entry and no Cmd+Tab slot, only the tray. It is here so
             // that a later "start hidden to the tray" or autostart-launch change
             // cannot leave Studio in the Cmd+Tab list with no window, which is
             // exactly the dead-entry state this release fixes.
@@ -950,6 +990,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_dashboard,
+            commands::editor_update_prompts,
+            commands::answer_editor_update,
             commands::add_project,
             commands::set_project_workspace,
             commands::rename_workspace,
@@ -2414,6 +2456,27 @@ mod ui_thread_tests {
         }
     }
 
+    /// 28h Stage 21 (h)3. "Deploy to agents" was greyed for good in the installed 4.4.17: the page's busy flag is
+    /// cleared when `invoke` settles, and a deploy that panicked, or sat behind another command on the one main
+    /// thread, never settled it. The two deploy commands therefore run on a blocking worker, whose panic is a
+    /// `JoinError` turned into the `Err` the page shows.
+    #[test]
+    fn the_deploy_commands_run_off_the_main_thread_and_report_a_panic() {
+        let commands = commands();
+        for wanted in ["deploy_to_agents", "deploy_seats"] {
+            let (is_async, _, body) = commands
+                .iter()
+                .find(|(_, name, _)| name == wanted)
+                .unwrap_or_else(|| panic!("the command scan found {wanted}"));
+            assert!(*is_async, "{wanted} must be async: a synchronous command runs on the main thread");
+            assert!(body.contains("spawn_blocking"), "{wanted} must run its work on a blocking worker");
+            assert!(
+                body.contains("stopped unexpectedly"),
+                "{wanted} must turn a panic in the worker into an error the page can show"
+            );
+        }
+    }
+
     /// The control that the scan can see a violation: the region it reads is the real handler
     /// and the commands it reads include the two fleet commands, so a green run is not an
     /// empty search.
@@ -2425,6 +2488,102 @@ mod ui_thread_tests {
         let names: Vec<String> = commands().into_iter().map(|(_, name, _)| name).collect();
         assert!(names.iter().any(|n| n == "start_all_runtimes"), "{names:?}");
         assert!(names.iter().any(|n| n == "reload_all_runtimes"), "{names:?}");
+    }
+}
+
+/// Stage 21 (d): the studio started by an extension shows no window.
+#[cfg(test)]
+mod background_launch_tests {
+    use super::*;
+
+    #[test]
+    fn a_first_launch_with_the_argument_is_a_background_launch_and_one_without_is_not() {
+        assert!(is_background_launch(["jawata-studio", "--background"]));
+        assert!(is_background_launch(["/home/h/.local/bin/jawata-studio", "--other", "--background"]));
+        assert!(!is_background_launch(["jawata-studio"]));
+        assert!(!is_background_launch(Vec::<String>::new()));
+    }
+
+    #[test]
+    fn a_second_launch_is_judged_by_its_own_arguments() {
+        // what the single-instance callback receives for the second process
+        let plain_second_launch = vec!["jawata-studio".to_string()];
+        let extension_second_launch = vec!["jawata-studio".to_string(), "--background".to_string()];
+        assert!(!is_background_launch(&plain_second_launch), "a plain second launch raises the window");
+        assert!(is_background_launch(&extension_second_launch), "an extension's second launch does not");
+    }
+
+    #[test]
+    fn a_background_launch_restores_the_services_even_when_the_person_never_asked_for_autostart() {
+        // audit finding 2: the extensions start the studio with `--background` so that the engine service answers; with the
+        // default settings (autostart off) nothing started the services and the extension waited its whole time for nothing
+        assert!(restore_services_at_launch(false, true), "an extension's start must bring the services up");
+        assert!(restore_services_at_launch(true, false), "the person's own setting still does");
+        assert!(!restore_services_at_launch(false, false), "a plain launch with autostart off starts nothing");
+        // the real setup block only: from its first occurrence to this test module, so the test's own text cannot satisfy the check
+        let source = include_str!("lib.rs");
+        let from = source.find(".setup(|app| {").unwrap();
+        let to = source.find("mod background_launch_tests").unwrap();
+        let setup = &source[from..to];
+        assert!(
+            setup.contains("restore_services_at_launch(")
+                && setup.contains("is_background_launch(std::env::args()) && editor_launch::editor_folders(std::env::args()).is_empty(),"),
+            "the setup reads the launch's own arguments when it decides to restore the services, and a launch that carries the editor's folders restores only what they pick"
+        );
+    }
+
+    /// Stage 21 (j): both launches reach `handle_editor_launch`, and neither raises the window by itself. The regions are the
+    /// real code (from the builder to this test module), so this test cannot read its own text.
+    #[test]
+    fn both_launches_reach_the_one_editor_function_and_neither_raises_the_window_for_it() {
+        let source = include_str!("lib.rs");
+        let real = &source[source.find("tauri::Builder::default()").unwrap()..source.find("mod background_launch_tests").unwrap()];
+        assert_eq!(real.matches("editor_launch::handle_editor_launch(").count(), 2, "one call for each launch kind");
+        let callback = real.split("tauri_plugin_single_instance::init(").nth(1).unwrap().split(".plugin(tauri_plugin_autostart").next().unwrap();
+        assert!(callback.contains("editor_launch::handle_editor_launch(app, &argv)"), "the second launch hands its own argv over");
+        assert!(
+            callback.find("handle_editor_launch(").unwrap() < callback.find("is_background_launch(&argv)").unwrap(),
+            "and does so before the background return, which is what a background launch takes"
+        );
+        let setup = real.split(".setup(|app| {").nth(1).unwrap();
+        assert!(
+            setup.contains("editor_launch::handle_editor_launch(app.handle(), &std::env::args().collect::<Vec<_>>())"),
+            "the first launch hands over the process's own arguments"
+        );
+        // the function raises a window only through the question (held in editor_launch's own tests); here, that the two
+        // launch paths add no show_main_window of their own beside the ones that were there
+        assert_eq!(callback.matches("show_main_window(").count(), 1, "the callback's only raise is the plain second launch");
+    }
+
+    #[test]
+    fn only_the_exact_argument_counts_and_the_program_name_never_does() {
+        assert!(!is_background_launch(["jawata-studio", "--background=1"]));
+        assert!(!is_background_launch(["jawata-studio", "--backgrounds"]));
+        assert!(!is_background_launch(["jawata-studio", "background"]));
+        assert!(!is_background_launch(["--background"]), "argument zero is the program, not a flag");
+    }
+
+    /// The window parts cannot be run without a display. What can be held is the wiring: the window starts hidden,
+    /// the first launch shows it unless it is a background launch, and the single-instance callback returns before
+    /// it raises the window for a background launch.
+    #[test]
+    fn the_window_is_configured_hidden_and_shown_only_by_a_launch_that_is_not_a_background_one() {
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let window = &config["app"]["windows"][0];
+        assert_eq!(window["label"], "main");
+        assert_eq!(window["visible"], false, "created hidden, so a background launch never flashes a window");
+        let source = include_str!("lib.rs");
+        let setup = source.split(".setup(|app| {").nth(1).unwrap();
+        assert!(
+            setup.find("!is_background_launch(std::env::args())").unwrap() < setup.find("show_main_window(app.handle())").unwrap(),
+            "setup shows the window only for a launch that is not a background one"
+        );
+        let callback = source.split("tauri_plugin_single_instance::init(").nth(1).unwrap();
+        let callback = callback.split(".plugin(tauri_plugin_autostart").next().unwrap();
+        assert!(
+            callback.find("is_background_launch(&argv)").unwrap() < callback.find("show_main_window(app)").unwrap(),
+            "a second launch with the argument returns before it raises the window"
+        );
     }
 }
 

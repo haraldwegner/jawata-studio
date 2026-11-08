@@ -12,6 +12,7 @@
   import WorkflowView from "./lib/components/WorkflowView.svelte";
   import HelpView from "./lib/components/HelpView.svelte";
   import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
+  import EditorUpdatePrompt from "./lib/components/EditorUpdatePrompt.svelte";
   import { createAppStore } from "./lib/stores/app";
   import {
     performQuitAction,
@@ -697,6 +698,7 @@
 </main>
 
 <ConfirmDialog />
+<EditorUpdatePrompt />
 
 {#if globalContextMenu}
   <ContextMenu

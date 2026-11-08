@@ -28,6 +28,21 @@ pub enum QuitAction {
     Quit,
 }
 
+// ===== Sprint 28h Stage 21 (j): the editor's partly matching workspace =====
+
+/// The questions that wait for an answer: a jawata workspace holds only some of an editor workspace's projects.
+#[tauri::command]
+pub fn editor_update_prompts() -> Vec<crate::editor_launch::UpdatePrompt> {
+    crate::editor_launch::book().list()
+}
+
+/// "Update workspace" (`update` true) or "Not now". Returns at once: the answer runs on a thread of its own, because
+/// adding projects and waiting for the resident takes as long as the resident does.
+#[tauri::command]
+pub fn answer_editor_update(app: AppHandle, id: String, update: bool) -> Result<(), String> {
+    crate::editor_launch::answer_in_background(&app, &id, update)
+}
+
 #[tauri::command]
 pub fn get_dashboard(state: State<'_, AppState>) -> Result<ManagerDashboard, String> {
     state.manager_service.load_dashboard()
@@ -385,19 +400,36 @@ pub fn probe_services(state: State<'_, AppState>) -> Result<ServiceProbeResult, 
     state.manager_service.probe_services()
 }
 
+/// 28h Stage 21 (h)3: off the main thread, and a panic inside it comes back as an error.
+///
+/// A synchronous command runs ON THE MAIN THREAD, so a long deploy (VS Code now downloads two extensions and
+/// runs `code`) queued every other command behind it, `get_dashboard` included. And when the deploy panicked
+/// the page's `invoke` promise never settled, which left "Deploy to agents" greyed for good in the installed
+/// 4.4.17. Here the work runs on a blocking worker; a panic there is a `JoinError`, returned as the `Err` the
+/// page already knows how to show.
 #[tauri::command]
-pub fn deploy_to_agents(
-    state: State<'_, AppState>,
+pub async fn deploy_to_agents(
+    app: tauri::AppHandle,
     input: DeployToAgentsInput,
 ) -> Result<DeployToAgentsResult, String> {
-    state.manager_service.deploy_to_agents(input)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state.manager_service.deploy_to_agents(input)
+    })
+    .await
+    .map_err(|e| format!("the deploy stopped unexpectedly: {e}"))?
 }
 
 /// The seat part of a deploy only (C11-4) — what the Seats view runs after a change, so a toggle
 /// does not rewrite every client's MCP configuration or start a store load.
 #[tauri::command]
-pub fn deploy_seats(state: State<'_, AppState>) -> Result<DeployToAgentsResult, String> {
-    state.manager_service.deploy_seats()
+pub async fn deploy_seats(app: tauri::AppHandle) -> Result<DeployToAgentsResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        state.manager_service.deploy_seats()
+    })
+    .await
+    .map_err(|e| format!("the seat deploy stopped unexpectedly: {e}"))?
 }
 
 #[tauri::command]

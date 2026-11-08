@@ -62,7 +62,17 @@ impl Launch {
         }
     }
 
-    fn value(&self, typed: bool) -> Value {
+    /// The same resident reached by the language server's pipe instead of the agent's: `--lsp` for `--acp`,
+    /// address and key unchanged (`jawataJava.server`, Sprint 28h Stage 21 (c)).
+    pub fn as_lsp(&self) -> Launch {
+        Launch {
+            command: self.command.clone(),
+            args: self.args.iter().map(|a| if a == "--acp" { "--lsp".to_string() } else { a.clone() }).collect(),
+            env: self.env.clone(),
+        }
+    }
+
+    pub(crate) fn value(&self, typed: bool) -> Value {
         let mut entry = Map::new();
         if typed {
             entry.insert("type".into(), json!("custom"));
@@ -86,19 +96,25 @@ pub fn agent_names(workspaces: &[String]) -> Vec<String> {
 }
 
 fn is_ours(entry: &Value) -> bool {
+    is_ours_launched_with(entry, "--acp")
+}
+
+/// An entry of ours: its `env` names `JAWATA_URL` and its `args` carry `flag` (`--acp` for an agent,
+/// `--lsp` for the language server).
+pub(crate) fn is_ours_launched_with(entry: &Value, flag: &str) -> bool {
     let Some(object) = entry.as_object() else { return false };
     let names_url = object
         .get("env")
         .and_then(Value::as_object)
         .is_some_and(|env| env.contains_key("JAWATA_URL"));
-    let acp = object
+    let launched = object
         .get("args")
         .and_then(Value::as_array)
-        .is_some_and(|args| args.iter().any(|a| a.as_str() == Some("--acp")));
-    names_url && acp
+        .is_some_and(|args| args.iter().any(|a| a.as_str() == Some(flag)));
+    names_url && launched
 }
 
-fn parse_object(existing: Option<&str>) -> Result<Map<String, Value>, String> {
+pub(crate) fn parse_object(existing: Option<&str>) -> Result<Map<String, Value>, String> {
     let text = existing.unwrap_or("");
     if text.trim().is_empty() {
         return Ok(Map::new());
@@ -112,7 +128,7 @@ fn parse_object(existing: Option<&str>) -> Result<Map<String, Value>, String> {
     }
 }
 
-fn render(root: Map<String, Value>) -> String {
+pub(crate) fn render(root: Map<String, Value>) -> String {
     let mut text = serde_json::to_string_pretty(&Value::Object(root)).unwrap_or_else(|_| "{}".into());
     text.push('\n');
     text
@@ -152,7 +168,7 @@ fn servers_without(existing: &str) -> Result<String, String> {
     Ok(render(root))
 }
 
-fn is_blank(existing: Option<&str>) -> bool {
+pub(crate) fn is_blank(existing: Option<&str>) -> bool {
     existing.map_or(true, |text| text.trim().is_empty())
 }
 
@@ -160,7 +176,7 @@ fn unreadable(reason: String) -> String {
     format!("the file does not read as JSON with comments ({reason}); it is left as it is")
 }
 
-fn read_root(text: &str) -> Result<jsonc_edit::ObjectNode, String> {
+pub(crate) fn read_root(text: &str) -> Result<jsonc_edit::ObjectNode, String> {
     jsonc_edit::parse_root_object(text).map_err(|reason| {
         if reason == "the file is not a JSON object" { reason } else { unreadable(reason) }
     })
@@ -453,7 +469,7 @@ pub fn apply_row(
     outcome
 }
 
-fn finish(
+pub(crate) fn finish(
     target: &RowTarget,
     action: RowAction,
     existing: Option<String>,
@@ -499,7 +515,11 @@ fn finish(
     let mut outcome = RowOutcome::new(target, RowState::Success, format!("Wrote the file: {done}."));
     outcome.backup_path = backup_path;
     outcome.changed_sections.push(
-        if target.id == CHAT_ROW { CHAT_KEY } else { SERVERS_KEY }.to_string(),
+        match target.id {
+            CHAT_ROW => CHAT_KEY.to_string(),
+            crate::vscode_deploy::SETTINGS_ROW => crate::vscode_deploy::EDITOR_KEYS.join(", "),
+            _ => SERVERS_KEY.to_string(),
+        },
     );
     outcome
 }

@@ -1,6 +1,6 @@
 [package]
 name = "jawata-studio"
-version = "4.4.22"
+version = "4.5.0"
 description = "Desktop manager for running JAWATA MCP across multiple Java projects."
 license = "AGPL-3.0-only"
 edition = "2021"
@@ -25,6 +25,8 @@ flate2 = "1.1.5"
 getrandom = "0.2"
 reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 semver = "1.0.27"
+# 28h Stage 21 (j): the id of an editor workspace's handoff file is the sha256 of its folders; the engine-note fixture test also sums files.
+sha2 = "0.10"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 tar = "0.4.44"
@@ -48,7 +50,6 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_
 
 # 28k Stage 20: the test that the copy of the engine's note fixtures is byte-identical checks sha256 sums.
 [dev-dependencies]
-sha2 = "0.10"
 # 28h S15 slice 2: the canary round is run for real against a mock app, so the link from the round to the seat
 # deploy is a behaviour and not a line of text.
 tauri = { version = "2.10.3", features = ["test"] }

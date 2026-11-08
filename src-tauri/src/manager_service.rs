@@ -426,6 +426,10 @@ pub struct ManagerService {
     /// The user's home and the OS config directory, where the D5 registration rows look for the
     /// ACP clients. A field, like the notes directory, so a test never reaches the real machine.
     client_roots: Option<(PathBuf, PathBuf)>,
+    /// Stage 21 (c): what the VS Code part of a deploy sees of the machine (PATH, the local `.vsix` folder, the
+    /// release address, this studio's path). `None` in production: it is read from the process at each deploy. A
+    /// test supplies a sandbox, so a deploy never reaches the real editor, the network or the real settings.
+    editor_env: Option<crate::vscode_deploy::EditorEnv>,
     /// 28k Stage 20: whether the process behind a note still runs. The real check in production; a test supplies its own.
     eclipse_liveness: Arc<dyn Fn(u32, Option<i64>) -> bool + Send + Sync>,
     /// D27: the answer of the engine floor's question "what does the running engine offer?", which a
@@ -503,6 +507,7 @@ impl ManagerService {
                 let config = dirs::config_dir().unwrap_or_else(|| home.join(".config"));
                 (home, config)
             }),
+            editor_env: None,
             eclipse_liveness: Arc::new(eclipse_notes::os_liveness),
             engine_verbs_stub: None,
             engine_verbs_delay: None,
@@ -1248,6 +1253,17 @@ impl ManagerService {
         &self,
         input: DeployToAgentsInput,
     ) -> Result<DeployToAgentsResult, String> {
+        self.deploy_to_agents_with(input, true)
+    }
+
+    /// `person_asked` is true for a deploy the person pressed. Naming VS Code in such a deploy also installs the two
+    /// extensions and writes the editor settings (Stage 21 (c)); the automatic refresh that follows a workspace
+    /// change names VS Code too, and must not download or install anything nobody asked for.
+    fn deploy_to_agents_with(
+        &self,
+        input: DeployToAgentsInput,
+        person_asked: bool,
+    ) -> Result<DeployToAgentsResult, String> {
         let started_at = Instant::now();
         let settings = self.config_store.get_settings();
         // Sprint 21a (item E): make sure the centralized backup area follows the
@@ -1367,6 +1383,9 @@ impl ManagerService {
             Some((home, config_dir)) => (Some(home.as_path()), config_dir.clone()),
             None => (None, PathBuf::new()),
         };
+        // Stage 21 (c): one VS Code entry in the picker stands for the MCP entry, the chat's agent setting, the editor
+        // settings and the two extensions. Only a deploy the person pressed, and only when it names VS Code.
+        let vscode_bundle = person_asked && requested_targets.as_ref().is_some_and(|set| set.contains("vscode"));
         results.extend(registration_results_at(
             home,
             &config_dir,
@@ -1375,7 +1394,23 @@ impl ManagerService {
             &input.mode,
             requested_targets.as_ref(),
             settings.mcp_backup_before_write,
+            vscode_bundle,
         ));
+        if vscode_bundle {
+            let env = self.editor_env.clone().unwrap_or_else(crate::vscode_deploy::EditorEnv::from_process);
+            let cache = PathBuf::from(&settings.data_root).join("tools").join("editor-extensions");
+            results.extend(vscode_editor_results_at(
+                home,
+                &config_dir,
+                cfg!(windows),
+                &registration_entries,
+                &input.mode,
+                settings.mcp_backup_before_write,
+                &env,
+                &cache,
+                &crate::editor_launch::handoff_dir(&self.studio_config_dir()),
+            ));
+        }
 
         let ok = results
             .iter()
@@ -2252,6 +2287,17 @@ impl ManagerService {
         Ok(())
     }
 
+    /// The restore of the last run: start the workspaces whose persisted status was running, starting or failed when the
+    /// studio last closed. The setup of a plain `--background` launch runs it, and so does an editor launch that ended with
+    /// no resident for the editor (Stage 21 (j) audit, B2). Starts nothing when nothing was running.
+    pub fn restore_last_running_workspaces(&self) -> Result<(), String> {
+        let workspaces = self.workspaces_to_auto_restore();
+        if workspaces.is_empty() {
+            return Ok(());
+        }
+        self.start_specific_workspaces(&workspaces)
+    }
+
     /// Downloads or updates the JAWATA runtime.
     pub fn download_or_update_jawata(&self) -> Result<ManagerDashboard, String> {
         let mut settings = self.config_store.get_settings();
@@ -2503,6 +2549,101 @@ impl ManagerService {
         }
 
         Ok(WorkspaceImportResult { added, skipped })
+    }
+
+    // ===== Sprint 28h Stage 21 (j): what the editor launch asks of the service =====
+    // The rule itself (which workspace an editor's folders belong to, what is created, what is asked) lives in
+    // `editor_launch`; these are the five facts it needs from here, kept next to the code that owns them.
+
+    /// The studio's own configuration folder: where the editor handoff files go, beside the settings.
+    pub(crate) fn studio_config_dir(&self) -> PathBuf {
+        self.config_store.paths().config_dir
+    }
+
+    /// Every jawata workspace with the paths of its projects, in the order the projects were registered.
+    pub(crate) fn editor_workspace_projects(&self) -> Vec<(String, Vec<String>)> {
+        let mut grouped: Vec<(String, Vec<String>)> = Vec::new();
+        for project in self.config_store.list_projects() {
+            match grouped.iter_mut().find(|(name, _)| *name == project.workspace_name) {
+                Some((_, paths)) => paths.push(project.project_path),
+                None => grouped.push((project.workspace_name, vec![project.project_path])),
+            }
+        }
+        grouped
+    }
+
+    /// Registers `projects` in `workspace` (made on the first project). A project that could not be registered is
+    /// named in the answer with its reason; the others still go in.
+    pub(crate) fn editor_add_projects(
+        &self,
+        workspace: &str,
+        projects: &[WorkspaceProjectCandidate],
+    ) -> Result<Vec<String>, String> {
+        let mut skipped = Vec::new();
+        let mut added = 0usize;
+        for candidate in projects {
+            match self.add_project_with_source_roots(
+                AddProjectInput {
+                    name: candidate.name.clone(),
+                    project_path: candidate.project_path.clone(),
+                    workspace_name: workspace.to_string(),
+                },
+                candidate.source_roots.clone(),
+            ) {
+                Ok(_) => added += 1,
+                Err(error) => skipped.push(format!("{} ({error})", candidate.project_path)),
+            }
+        }
+        if added == 0 && !projects.is_empty() {
+            return Err(format!("no project could be registered in {workspace}: {}", skipped.join("; ")));
+        }
+        Ok(skipped)
+    }
+
+    /// Starts one workspace by the start path the restore at launch uses; a workspace that already runs is joined.
+    pub(crate) fn editor_start_workspace(&self, workspace: &str) -> Result<(), String> {
+        self.start_specific_workspaces(&HashSet::from([workspace.to_string()]))
+    }
+
+    /// Whether the workspace's resident answers: the same ready signal the tray reads (`READY` printed by the
+    /// resident, or a resident adopted), not the two-second phase guess.
+    pub(crate) fn editor_workspace_readiness(&self, workspace: &str) -> crate::editor_launch::Readiness {
+        use crate::editor_launch::Readiness;
+        let Some(project) = self.config_store.list_projects().into_iter().find(|p| p.workspace_name == workspace) else {
+            return Readiness::Failed(format!("workspace {workspace} has no project"));
+        };
+        let reference = match self.resolve_runtime_reference(&project) {
+            Ok(reference) => reference,
+            Err(error) => return Readiness::Failed(error),
+        };
+        match self.runtime_manager.get_runtime_status(&reference) {
+            Err(error) => Readiness::Failed(error),
+            Ok(status) => match status.phase {
+                RuntimePhase::Failed => Readiness::Failed(status.detail),
+                RuntimePhase::Running if !self.runtime_manager.workspaces_not_yet_ready().iter().any(|w| w == workspace) => {
+                    Readiness::Ready
+                }
+                _ => Readiness::Waiting,
+            },
+        }
+    }
+
+    /// Whether a start is being refused for want of an engine: the studio runs a managed engine and none is installed yet.
+    /// The same two facts `resolve_runtime_reference_on_path` reads before it refuses, so the answer cannot drift from the
+    /// refusal (which is only a sentence, with no type to ask).
+    pub(crate) fn editor_engine_missing(&self) -> bool {
+        let settings = self.config_store.get_settings();
+        matches!(settings.global_runtime_source, RuntimeSource::Managed)
+            && self.release_manager.get_installed_runtime(&settings).ok().flatten().is_none()
+    }
+
+    /// The resident's base address and bearer key, the two values `JAWATA_URL` and `JAWATA_KEY` carry.
+    pub(crate) fn editor_workspace_endpoint(&self, workspace: &str) -> Result<(String, String), String> {
+        let state = self.config_store.get_or_allocate_workspace_state(workspace)?;
+        Ok((
+            crate::agent_registration::resident_base_url(&format!("http://127.0.0.1:{}/mcp", state.resident_port)),
+            state.resident_token,
+        ))
     }
 
     /// Starts the runtime for a specific project. Writes workspace.json
@@ -2963,10 +3104,10 @@ impl ManagerService {
         if deployed.is_empty() {
             return true;
         }
-        match self.deploy_to_agents(DeployToAgentsInput {
-            mode: DeployMode::Deploy,
-            target_clients: Some(deployed),
-        }) {
+        match self.deploy_to_agents_with(
+            DeployToAgentsInput { mode: DeployMode::Deploy, target_clients: Some(deployed) },
+            false,
+        ) {
             Ok(result) if result.ok => true,
             Ok(result) => {
                 eprintln!(
@@ -4847,6 +4988,7 @@ fn registration_results_at(
     mode: &DeployMode,
     requested: Option<&HashSet<String>>,
     backup_before_write: bool,
+    vscode_bundle: bool,
 ) -> Vec<DeployClientResult> {
     use crate::agent_registration::{apply_row, rows, RowAction, RowState};
     let Some(home) = home else {
@@ -4870,7 +5012,9 @@ fn registration_results_at(
     rows(home, config_dir, windows)
         .iter()
         .map(|target| {
-            let named = requested.is_some_and(|set| set.contains(target.id));
+            // Stage 21 (c): deploying to VS Code covers the chat's agent setting, which has no entry of its own in the picker.
+            let named = requested.is_some_and(|set| set.contains(target.id))
+                || (vscode_bundle && target.id == crate::agent_registration::CHAT_ROW);
             if requested.is_some() && !named {
                 return skipped_client_result(
                     target.id,
@@ -4895,6 +5039,92 @@ fn registration_results_at(
             }
         })
         .collect()
+}
+
+/// The VS Code rows beyond the MCP entry and the chat's agent setting (Stage 21 (c)): the editor settings
+/// (`jawataJava.server`, `jawataChat.studio`, `jawataJava.studio`) and the two extensions. A preview runs nothing.
+fn vscode_editor_results_at(
+    home: Option<&Path>,
+    config_dir: &Path,
+    windows: bool,
+    entries: &Result<Vec<(String, crate::agent_registration::Launch)>, String>,
+    mode: &DeployMode,
+    backup_before_write: bool,
+    env: &crate::vscode_deploy::EditorEnv,
+    cache: &Path,
+    handoff_dir: &Path,
+) -> Vec<DeployClientResult> {
+    use crate::agent_registration::{RowAction, RowState};
+    use crate::vscode_deploy as vs;
+    let mut results = Vec::new();
+    match home {
+        None => results.push(skipped_client_result(
+            vs::SETTINGS_ROW,
+            None,
+            "Skipped: this machine has no user home directory.",
+        )),
+        Some(home) => {
+            let action = match mode {
+                DeployMode::Deploy | DeployMode::Regenerate => RowAction::Write,
+                DeployMode::DryRun | DeployMode::Preview => RowAction::Preview,
+                DeployMode::Delete => RowAction::Delete,
+            };
+            let backup = |path: &Path| -> Result<Option<PathBuf>, String> {
+                if backup_before_write {
+                    crate::backups::backup_before_write(path)
+                } else {
+                    Ok(None)
+                }
+            };
+            let target = vs::settings_target(home, config_dir, windows);
+            let outcome = vs::apply_settings_row(&target, entries, env.studio.as_deref(), handoff_dir, action, &backup);
+            results.push(DeployClientResult {
+                client: outcome.client,
+                target_path: outcome.target_path,
+                status: match outcome.state {
+                    RowState::Success => DeployClientStatus::Success,
+                    RowState::Skipped => DeployClientStatus::Skipped,
+                    RowState::Failed => DeployClientStatus::Failed,
+                },
+                message: outcome.message,
+                backup_path: outcome.backup_path,
+                changed_sections: outcome.changed_sections,
+                validation_errors: outcome.validation_errors,
+                preview_content: outcome.preview_content,
+            });
+        }
+    }
+    let report = match mode {
+        DeployMode::Deploy | DeployMode::Regenerate => Some(vs::deploy_extensions(env, cache)),
+        DeployMode::Delete => Some(vs::remove_extensions(env)),
+        DeployMode::DryRun | DeployMode::Preview => None,
+    };
+    results.push(match report {
+        None => skipped_client_result(
+            vs::EXTENSIONS_ROW,
+            None,
+            "Preview: would install jawata chat and jawata Java, and uninstall redhat.java if it is installed; nothing was run.",
+        ),
+        Some(report) => DeployClientResult {
+            client: vs::EXTENSIONS_ROW.to_string(),
+            target_path: report
+                .code
+                .as_deref()
+                .map(display_path)
+                .unwrap_or_else(|| "not configured".into()),
+            status: match report.outcome {
+                vs::Outcome::Success => DeployClientStatus::Success,
+                vs::Outcome::Skipped => DeployClientStatus::Skipped,
+                vs::Outcome::Failed => DeployClientStatus::Failed,
+            },
+            message: report.message,
+            backup_path: None,
+            changed_sections: report.changed,
+            validation_errors: report.errors,
+            preview_content: None,
+        },
+    });
+    results
 }
 
 fn skipped_client_result(
@@ -6754,10 +6984,19 @@ const JAWATA_POSTHOOK_SENTINEL: &str = "jawata-studio/posttooluse-observer.sh";
 /// The client whose settings file receives the enforcement hook. Claude Code only:
 /// its `~/.claude/settings.json` hook schema is the one we target; Cursor/
 /// Antigravity have no equivalent, so they keep the rule block (level 2) alone.
+/// The stand-in home of every test build of the studio (see `claude_scripts_dir`).
+#[cfg(test)]
+fn test_home() -> PathBuf {
+    std::env::temp_dir().join("jawata-studio-test-home")
+}
+
 fn derive_hook_settings_path(client: &str) -> Option<String> {
     if client != "claude" {
         return None;
     }
+    #[cfg(test)]
+    let home = test_home();
+    #[cfg(not(test))]
     let home = dirs::home_dir()?;
     Some(display_path(&home.join(".claude").join("settings.json")))
 }
@@ -6781,6 +7020,19 @@ fn claude_scripts_dir_under(home: &Path) -> PathBuf {
 }
 
 fn claude_scripts_dir() -> Option<PathBuf> {
+    // A test run must never reach the person's real `~/.claude`: a deploy there writes
+    // `hook_config.json` (endpoint, token, field folder) and the `settings.json` hook entries
+    // over the REAL ones. Found 2026-11-07: the real `hook_config.json` held a
+    // `/tmp/jawata-studio-mstest-...` folder and a test token. In a test build the "home" is
+    // ONE fixed scratch folder (no per-run name, so runs cannot pile up), created on first use.
+    #[cfg(test)]
+    {
+        let dir = claude_scripts_dir_under(&test_home());
+        let _ = fs::create_dir_all(&dir);
+        return Some(dir);
+    }
+    #[cfg(not(test))]
+    {
     let home = dirs::home_dir()?;
     let new = claude_scripts_dir_under(&home);
     let old = home.join(".claude").join("goja-studio"); // migration literal (exception class 3)
@@ -6799,6 +7051,7 @@ fn claude_scripts_dir() -> Option<PathBuf> {
         }
     }
     Some(new)
+    }
 }
 
 /// Absolute path of the managed guard script jawata-studio writes + owns. Lives under
@@ -13169,6 +13422,8 @@ judge was never told to give"
         );
         // D5: the registration rows look for the ACP clients under the sandbox, never the real home.
         service.client_roots = Some((dir.join("home"), dir.join("home").join("cfg")));
+        // Stage 21 (c): the VS Code part finds no `code`, no folder and no network unless a test says otherwise.
+        service.editor_env = Some(crate::vscode_deploy::EditorEnv::sandbox());
         service
     }
 
@@ -19564,7 +19819,7 @@ mod registration_rows_tests {
         mode: &DeployMode,
         requested: Option<&HashSet<String>>,
     ) -> Vec<DeployClientResult> {
-        registration_results_at(Some(home), &home.join("cfg"), false, &entries(), mode, requested, false)
+        registration_results_at(Some(home), &home.join("cfg"), false, &entries(), mode, requested, false, false)
     }
 
     #[test]
@@ -19708,6 +19963,214 @@ mod registration_rows_tests {
                 < deploy.find("registration_results_at(").unwrap(),
             "the rows follow the resolve errors, so those ride only on roster rows"
         );
+    }
+}
+
+/// Stage 21 (c): the dashboard's deploy to VS Code, run end to end against a sandbox: a temp home, a fake `code` script
+/// that records its arguments, a folder of local `.vsix` files and this studio's path. Nothing reaches the real editor,
+/// the network or the real settings.
+#[cfg(test)]
+mod vscode_bundle_tests {
+    use super::engine_switch_fixture::EngineSwitch;
+    use super::*;
+    use crate::vscode_deploy::test_support::{calls, env_over, fake_code, vsix_folder, Scratch};
+    use crate::vscode_deploy::{EXTENSIONS_ROW, SETTINGS_ROW};
+
+    const EXISTING_SETTINGS: &str = "{\n  // my editor\n  \"editor.fontSize\": 14, // big\n  \"files.autoSave\": \"off\"\n}\n";
+
+    struct Machine {
+        fixture: EngineSwitch,
+        tools: Scratch,
+        settings: PathBuf,
+        mcp: PathBuf,
+    }
+
+    fn machine(label: &str, installed: &[&str]) -> Machine {
+        let mut fixture = EngineSwitch::new(label);
+        let tools = Scratch::new(label);
+        fake_code(&tools.0, installed);
+        let mut env = env_over(&tools.0, Some(vsix_folder(&tools.0)));
+        env.studio = Some(PathBuf::from("/home/h/.local/bin/jawata-studio"));
+        fixture.service_mut().editor_env = Some(env);
+        {
+            // A successful deploy reloads the store of each resident in the background; these residents are not
+            // running, and a port number must never reach a real one on this machine.
+            let service = fixture.service_mut();
+            let mut settings = service.config_store.get_settings();
+            settings.auto_seed_on_deploy = false;
+            service.config_store.write_settings(settings).unwrap();
+        }
+        let (home, config) = fixture.service().client_roots.clone().expect("sandboxed roots");
+        let settings = config.join("Code").join("User").join("settings.json");
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        fs::write(&settings, EXISTING_SETTINGS).unwrap();
+        let service = fixture.service();
+        let vscode_mcp = service
+            .deploy_targets_for_settings(&service.config_store.get_settings())
+            .iter()
+            .find(|t| t.id == "vscode")
+            .and_then(|t| t.target_path.clone())
+            .expect("a vscode mcp path");
+        // The safety control of this whole module: every file the deploy can write is inside the sandbox.
+        let sandbox = fixture.dir().to_path_buf();
+        for path in [Path::new(&vscode_mcp), settings.as_path(), home.as_path()] {
+            assert!(path.starts_with(&sandbox), "{} is outside the sandbox {}", path.display(), sandbox.display());
+        }
+        Machine { fixture, tools, settings, mcp: PathBuf::from(vscode_mcp) }
+    }
+
+    fn deploy(m: &Machine, mode: DeployMode, targets: &[&str]) -> DeployToAgentsResult {
+        m.fixture
+            .service()
+            .deploy_to_agents(DeployToAgentsInput {
+                mode,
+                target_clients: Some(targets.iter().map(|t| t.to_string()).collect()),
+            })
+            .expect("a deploy run answers")
+    }
+
+    fn row<'a>(result: &'a DeployToAgentsResult, id: &str) -> &'a DeployClientResult {
+        result.clients.iter().find(|c| c.client == id).unwrap_or_else(|| panic!("no row {id}"))
+    }
+
+    fn settings_value(m: &Machine) -> serde_json::Value {
+        crate::jsonc_edit::parse(&fs::read_to_string(&m.settings).unwrap()).unwrap().to_value()
+    }
+
+    #[test]
+    fn the_one_vscode_entry_writes_the_mcp_entry_the_settings_and_installs_the_extensions() {
+        let m = machine("vsb-deploy", &["redhat.java", "ms-python.python"]);
+
+        let result = deploy(&m, DeployMode::Deploy, &["vscode"]);
+
+        // the existing VS Code MCP entry
+        assert!(
+            matches!(row(&result, "vscode").status, DeployClientStatus::Success),
+            "{} {:?}",
+            row(&result, "vscode").message,
+            row(&result, "vscode").validation_errors
+        );
+        assert!(fs::read_to_string(&m.mcp).unwrap().contains("jawata"), "the MCP entry is written");
+        // the chat's agent setting, which has no entry of its own in the picker
+        assert!(matches!(row(&result, "jawata-chat").status, DeployClientStatus::Success), "{}", row(&result, "jawata-chat").message);
+        // the editor settings
+        assert!(matches!(row(&result, SETTINGS_ROW).status, DeployClientStatus::Success), "{}", row(&result, SETTINGS_ROW).message);
+        let text = fs::read_to_string(&m.settings).unwrap();
+        assert!(text.contains("// my editor") && text.contains("\"editor.fontSize\": 14, // big"), "comments and other keys survive:\n{text}");
+        let value = settings_value(&m);
+        assert_eq!(value["files.autoSave"], "off");
+        assert_eq!(value["jawataChat.agent"]["args"][2], "--acp");
+        assert_eq!(value["jawataJava.server"]["args"][2], "--lsp");
+        assert_eq!(value["jawataJava.server"]["env"]["JAWATA_URL"], value["jawataChat.agent"]["env"]["JAWATA_URL"], "the same resident");
+        assert_eq!(value["jawataJava.server"]["env"]["JAWATA_KEY"], value["jawataChat.agent"]["env"]["JAWATA_KEY"]);
+        assert!(!value["jawataJava.server"]["args"].to_string().contains(value["jawataJava.server"]["env"]["JAWATA_KEY"].as_str().unwrap()));
+        let handoff = crate::editor_launch::handoff_dir(&m.fixture.service().studio_config_dir());
+        assert!(handoff.is_absolute() && handoff.ends_with("editor-workspaces"), "{}", handoff.display());
+        for key in ["jawataChat.studio", "jawataJava.studio"] {
+            assert_eq!(
+                value[key],
+                serde_json::json!({
+                    "command": "/home/h/.local/bin/jawata-studio",
+                    "args": ["--background"],
+                    "handoffDir": handoff.to_string_lossy()
+                }),
+                "{key}: the extension is told the folder the studio leaves its answer in"
+            );
+        }
+        // the extensions and the rival
+        assert!(matches!(row(&result, EXTENSIONS_ROW).status, DeployClientStatus::Success), "{}", row(&result, EXTENSIONS_ROW).message);
+        let vsix = m.tools.path("vsix");
+        assert_eq!(
+            calls(&m.tools.0),
+            vec![
+                "--list-extensions".to_string(),
+                format!("--install-extension {} --force", vsix.join("jawata-chat-0.2.0.vsix").display()),
+                format!("--install-extension {} --force", vsix.join("jawata-java-0.1.0.vsix").display()),
+                "--uninstall-extension redhat.java".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_takes_out_exactly_what_the_deploy_wrote() {
+        let m = machine("vsb-remove", &["jawata.jawata-chat", "jawata.jawata-java"]);
+        deploy(&m, DeployMode::Deploy, &["vscode"]);
+        fs::write(m.tools.path("calls.txt"), "").unwrap();
+
+        let result = deploy(&m, DeployMode::Delete, &["vscode"]);
+
+        for id in ["vscode", "jawata-chat", SETTINGS_ROW, EXTENSIONS_ROW] {
+            assert!(matches!(row(&result, id).status, DeployClientStatus::Success), "{id}: {}", row(&result, id).message);
+        }
+        let text = fs::read_to_string(&m.settings).unwrap();
+        assert!(text.contains("// my editor") && text.contains("\"editor.fontSize\": 14, // big"), "{text}");
+        assert_eq!(settings_value(&m), serde_json::json!({"editor.fontSize": 14, "files.autoSave": "off"}), "only the person's keys remain");
+        assert_eq!(
+            calls(&m.tools.0),
+            vec![
+                "--list-extensions".to_string(),
+                "--uninstall-extension jawata.jawata-chat".to_string(),
+                "--uninstall-extension jawata.jawata-java".to_string(),
+            ],
+            "and the competing Java extension is not touched"
+        );
+    }
+
+    #[test]
+    fn a_missing_code_is_said_and_the_rest_of_the_deploy_goes_on() {
+        let mut m = machine("vsb-nocode", &[]);
+        let mut env = m.fixture.service().editor_env.clone().unwrap();
+        env.path_var = Some(std::env::join_paths([m.tools.path("nowhere")]).unwrap());
+        m.fixture.service_mut().editor_env = Some(env);
+
+        let result = deploy(&m, DeployMode::Deploy, &["vscode"]);
+
+        let ext = row(&result, EXTENSIONS_ROW);
+        assert!(matches!(ext.status, DeployClientStatus::Skipped), "{}", ext.message);
+        assert!(ext.message.contains("no `code` command on PATH"), "{}", ext.message);
+        assert!(matches!(row(&result, SETTINGS_ROW).status, DeployClientStatus::Success), "the settings are still written");
+        assert!(matches!(row(&result, "vscode").status, DeployClientStatus::Success));
+        assert!(settings_value(&m).get("jawataJava.server").is_some());
+    }
+
+    #[test]
+    fn other_targets_do_not_touch_vscode_and_the_automatic_refresh_installs_nothing() {
+        let m = machine("vsb-others", &["redhat.java"]);
+        let result = deploy(&m, DeployMode::Deploy, &["claude"]);
+        assert!(result.clients.iter().all(|c| c.client != EXTENSIONS_ROW && c.client != SETTINGS_ROW), "no VS Code rows");
+        assert!(calls(&m.tools.0).is_empty());
+        assert_eq!(fs::read_to_string(&m.settings).unwrap(), EXISTING_SETTINGS, "the settings file is untouched");
+
+        // the refresh that follows a workspace change names VS Code, but a person did not ask
+        let refreshed = m
+            .fixture
+            .service()
+            .deploy_to_agents_with(
+                DeployToAgentsInput { mode: DeployMode::Deploy, target_clients: Some(vec!["vscode".into()]) },
+                false,
+            )
+            .unwrap();
+        assert!(refreshed.clients.iter().all(|c| c.client != EXTENSIONS_ROW && c.client != SETTINGS_ROW));
+        assert!(calls(&m.tools.0).is_empty(), "nothing was downloaded or installed by a refresh");
+        assert_eq!(fs::read_to_string(&m.settings).unwrap(), EXISTING_SETTINGS);
+    }
+
+    #[test]
+    fn a_preview_runs_nothing_and_writes_nothing() {
+        let m = machine("vsb-preview", &["redhat.java"]);
+        let result = deploy(&m, DeployMode::Preview, &["vscode"]);
+        assert!(calls(&m.tools.0).is_empty());
+        assert_eq!(fs::read_to_string(&m.settings).unwrap(), EXISTING_SETTINGS);
+        assert!(row(&result, SETTINGS_ROW).preview_content.as_deref().is_some_and(|t| t.contains("jawataJava.server")));
+        assert!(row(&result, EXTENSIONS_ROW).message.contains("nothing was run"));
+    }
+
+    #[test]
+    fn the_picker_lists_vscode_once_and_says_what_it_covers() {
+        let source = include_str!("../../src/lib/components/ProjectList.svelte");
+        assert_eq!(source.matches("label: \"VS Code\"").count(), 1, "one VS Code entry in the picker");
+        assert!(source.contains("jawata chat and jawata Java"), "the picker says what VS Code covers");
+        assert!(source.contains("competing Java extension"), "and that it removes the competing Java extension");
     }
 }
 
@@ -19974,5 +20437,126 @@ mod engine_switch_tests {
         fixture.service_mut().engine_verbs_stub = Some(Some(crate::engine_floor::surface_verbs()));
         assert_eq!(fixture.service().redeploy_seats_for_new_engine(), Ok(true), "once it answers, the deploy runs");
         assert!(fixture.skill_written());
+    }
+}
+
+/// Stage 21 (j): the editor launch run against a real service in a sandbox (a temp config folder, a local jar, no
+/// resident started). The scan, the workspace view, the handoff folder and the resident's address are the real ones; only
+/// the window and the process start are left out, so nothing is spawned and no port is opened.
+#[cfg(test)]
+mod editor_launch_service_tests {
+    use super::engine_switch_fixture::EngineSwitch;
+    use super::*;
+    use crate::editor_launch::{
+        answer_update, handoff_dir, handoff_id, run_editor_launch, EditorHost, EditorUi, Handoff, HandoffState, Pacing, PromptBook, Readiness,
+        UpdatePrompt,
+    };
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct CountingUi {
+        asked: RefCell<Vec<UpdatePrompt>>,
+    }
+    impl EditorUi for CountingUi {
+        fn ask(&self, prompt: &UpdatePrompt) {
+            self.asked.borrow_mut().push(prompt.clone());
+        }
+        fn prompts_changed(&self) {}
+        fn workspaces_changed(&self) {}
+        fn restore_last_running(&self) {}
+    }
+
+    fn java_project(dir: &Path) {
+        fs::create_dir_all(dir.join("src/main/java")).unwrap();
+        fs::write(dir.join("pom.xml"), "<project/>").unwrap();
+    }
+
+    const QUICK: Pacing = Pacing { poll: Duration::from_millis(1), give_up: Duration::from_millis(20), install_wait: Duration::from_millis(20) };
+
+    #[test]
+    fn the_real_service_gives_the_rule_its_workspaces_its_scan_its_file_and_its_resident_address() {
+        let fixture = EngineSwitch::new("editor-launch-real");
+        let service = fixture.service();
+        let work = fixture.dir().join("work");
+        java_project(&work.join("a"));
+        java_project(&work.join("b"));
+        let folders = vec![work.display().to_string()];
+
+        // the scan is the dashboard's: two projects under a folder that is not itself one
+        let found = EditorHost::scan_folder(service, &folders[0]).expect("the folder is scanned");
+        assert_eq!(found.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["a", "b"]);
+
+        // the workspace view holds the fixture's own workspace
+        let view = EditorHost::workspaces(service);
+        assert_eq!(view.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), vec!["alpha-ws"]);
+
+        // register one of the two in a workspace of its own: the editor's folder now matches it only partly
+        let skipped = EditorHost::add_projects(service, "work", &found[..1]).expect("one project goes in");
+        assert!(skipped.is_empty(), "{skipped:?}");
+        let (ui, book) = (CountingUi::default(), PromptBook::default());
+
+        run_editor_launch(service, &ui, &book, &folders, QUICK);
+
+        // nothing was added or started; the question is open; the file says so, in the studio's own folder
+        let still: Vec<String> = EditorHost::workspaces(service).into_iter().find(|(n, _)| n == "work").unwrap().1;
+        assert_eq!(still.len(), 1, "nothing was added before the answer: {still:?}");
+        let asked = ui.asked.borrow().clone();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].workspace, "work");
+        assert_eq!(asked[0].missing, vec![found[1].project_path.clone()]);
+        let file_path = handoff_dir(&service.studio_config_dir()).join(format!("{}.json", handoff_id(&folders)));
+        let file: Handoff = serde_json::from_str(&fs::read_to_string(&file_path).expect("the file is in the studio's config folder")).unwrap();
+        assert_eq!((file.state, file.workspace.as_str(), file.url.as_str(), file.key.as_str()), (HandoffState::Asking, "work", "", ""));
+
+        // "Not now": declined, and the workspace is still what it was
+        answer_update(service, &ui, book.take(&asked[0].id).unwrap(), false, QUICK);
+        let file: Handoff = serde_json::from_str(&fs::read_to_string(&file_path).unwrap()).unwrap();
+        assert_eq!(file.state, HandoffState::Declined);
+        assert_eq!(EditorHost::workspaces(service).into_iter().find(|(n, _)| n == "work").unwrap().1.len(), 1);
+
+        // the address is the base of the resident the deploy writes for this workspace, and its key
+        let server = service.knowledge_servers().into_iter().find(|s| s.workspace_name == "work").expect("the workspace has a resident");
+        let (url, key) = EditorHost::endpoint(service, "work").unwrap();
+        assert_eq!(url, server.url.strip_suffix("/mcp").unwrap(), "the value JAWATA_URL carries, without /mcp");
+        assert_eq!(key, server.token);
+        // and a workspace that was never started does not answer
+        assert_eq!(EditorHost::readiness(service, "work"), Readiness::Waiting);
+    }
+
+    #[test]
+    fn the_engine_is_missing_exactly_when_the_start_is_refused_for_want_of_one() {
+        let fixture = EngineSwitch::new("editor-launch-engine");
+        let service = fixture.service();
+        // a hand-picked jar is an engine: nothing is missing
+        assert!(!EditorHost::engine_missing(service));
+        // the managed engine, not installed in this sandbox: the start is refused, and the typed question says why
+        let mut settings = service.config_store.get_settings();
+        settings.global_runtime_source = crate::config::RuntimeSource::Managed;
+        service.config_store.write_settings(settings).unwrap();
+        assert!(EditorHost::engine_missing(service));
+        let refusal = EditorHost::start(service, "alpha-ws").expect_err("no engine to start");
+        assert!(refusal.contains("No managed JAWATA runtime is installed"), "control: this is the refusal the question stands for: {refusal}");
+    }
+
+    #[test]
+    fn a_launch_for_folders_without_java_writes_none_into_the_real_folder_and_registers_nothing() {
+        let fixture = EngineSwitch::new("editor-launch-none");
+        let service = fixture.service();
+        let docs = fixture.dir().join("docs");
+        fs::create_dir_all(&docs).unwrap();
+        let folders = vec![docs.display().to_string()];
+        let (ui, book) = (CountingUi::default(), PromptBook::default());
+        let before = EditorHost::workspaces(service);
+
+        run_editor_launch(service, &ui, &book, &folders, QUICK);
+
+        let file_path = handoff_dir(&service.studio_config_dir()).join(format!("{}.json", handoff_id(&folders)));
+        let file: Handoff = serde_json::from_str(&fs::read_to_string(file_path).unwrap()).unwrap();
+        assert_eq!(file.state, HandoffState::None);
+        assert_eq!(EditorHost::workspaces(service), before, "no workspace was made");
+        // the restore a launch like this asks for finds nothing that ran at last close, and starts nothing
+        assert_eq!(service.workspaces_to_auto_restore().len(), 0);
+        service.restore_last_running_workspaces().expect("nothing to restore is not an error");
+        assert!(ui.asked.borrow().is_empty());
     }
 }

@@ -11,6 +11,7 @@
   import { createEventDispatcher, onDestroy, onMount } from "svelte";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { confirmDestructive } from "../dialog";
+  import { memoryNotice } from "../memoryNotice";
   import {
     experienceVerb,
     knowledgeStatus,
@@ -163,6 +164,8 @@
     };
   };
   $: storeRows = buildStoreRows(statuses, storeMode);
+  // 28h Stage 21 (h)1: one place decides what is said about reachability, so the line and the hint cannot disagree.
+  $: notice = memoryNotice(statuses, statusReadOnce, readingText);
   // Self-healing selection: switching store mode regroups the rows and can orphan the key.
   $: if (storeRows.length > 0 && !storeRows.some((row) => row.key === selected)) {
     selected = (storeRows.find((row) => row.reachable) ?? storeRows[0]).key;
@@ -1055,7 +1058,7 @@
       <!-- Said once, and only after the store was actually asked: the seconds before the first
            answer read as "no workspaces" while three were running (his screenshot, 2026-10-22). -->
       <p class="summary-line">
-        {statusReadOnce ? "No workspaces, or their services are not reachable." : readingText}
+        {notice.summary}
       </p>
     {/if}
   </div>
@@ -1183,8 +1186,8 @@
             </button>
           </div>
         </details>
-      {#if autoRetrying && !busyAction}
-        <span class="hint">workspace starting — retrying automatically…</span>
+      {#if notice.hint && !busyAction}
+        <span class="hint">{notice.hint}</span>
       {/if}
       {#if busyAction}
         <span class="hint">running “{busyAction}”…</span>

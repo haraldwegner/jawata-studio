@@ -82,7 +82,7 @@
    * not recognise, so the run reported "Skipped: not selected in this deploy
    * run" for a box the user had ticked. Single-word clients hid the bug
    * because both spellings coincide. */
-  const deployTargetOptions: Array<{ key: keyof DeployTargetFlags; id: string; label: string }> = [
+  const deployTargetOptions: Array<{ key: keyof DeployTargetFlags; id: string; label: string; covers?: string }> = [
     { key: "cursor", id: "cursor", label: "Cursor" },
     { key: "claude", id: "claude", label: "Claude Code" },
     /* Sprint 28a (D1). This array is not a display convenience — it is the
@@ -97,7 +97,18 @@
        is never consulted to make true. */
     { key: "codex", id: "codex", label: "Codex" },
     { key: "copilotCli", id: "copilot_cli", label: "Copilot CLI" },
-    { key: "vscode", id: "vscode", label: "VS Code" },
+    /* Sprint 28h Stage 21 (c): ONE entry for VS Code. The backend reads this id and also writes the chat's agent
+       setting, jawata Java's server setting and the two settings that let an extension start the studio, installs
+       the two extensions, and removes the competing Java extension. Remove takes out the same things (that one is
+       not put back). */
+    {
+      key: "vscode",
+      id: "vscode",
+      label: "VS Code",
+      covers:
+        "The MCP entry, plus: installs jawata chat and jawata Java (needs the `code` command on PATH), writes their settings, " +
+        "and uninstalls the competing Java extension. Remove undoes all of it except that one, which is not put back."
+    },
     { key: "grok", id: "grok", label: "Grok" }
   ];
 
@@ -421,8 +432,14 @@
       .filter((entry) => entry.status === "failed")
       .map((entry) => entry.client);
     const base = deploySummary(result);
+    // Stage 21 (c): "the VS Code part was skipped" or "the release has no asset" must be said, not left as a count.
+    // The extension row is the one place the person is told why the editor part did not happen.
+    const editorNote = result.clients.find(
+      (entry) => entry.client === "vscode-extensions" && entry.status !== "success"
+    );
+    const note = editorNote ? ` — ${editorNote.message}` : "";
     return {
-      text: failedNames.length ? `${base} — failed: ${failedNames.join(", ")}` : base,
+      text: failedNames.length ? `${base} — failed: ${failedNames.join(", ")}${note}` : `${base}${note}`,
       failed: failedNames.length > 0
     };
   }
@@ -1100,8 +1117,11 @@
               disabled={disabled || deployBusy}
               type="checkbox"
             />
-            <span>{option.label}</span>
+            <span title={option.covers}>{option.label}</span>
           </label>
+          {#if option.covers && deployTargetsDraft[option.key]}
+            <p class="hint deploy-target-covers">{option.covers}</p>
+          {/if}
         {/each}
       </div>
       <div class="actions compact">
