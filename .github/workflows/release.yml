@@ -27,7 +27,7 @@ jobs:
       matrix:
         # Sprint 16: windows-2022 = x64 (MSVC), windows-11-arm = ARM64.
         # Both produce .msi (WiX) + setup .exe (NSIS) via targets: "all".
-        platform: [ubuntu-22.04, ubuntu-22.04-arm, macos-14, windows-2022, windows-11-arm]
+        platform: [ubuntu-22.04, ubuntu-22.04-arm, macos-15, windows-2022, windows-11-arm]
     runs-on: ${{ matrix.platform }}
 
     steps:
