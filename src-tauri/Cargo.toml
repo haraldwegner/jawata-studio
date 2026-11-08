@@ -1,6 +1,6 @@
 [package]
 name = "jawata-studio"
-version = "4.5.0"
+version = "4.5.1"
 description = "Desktop manager for running JAWATA MCP across multiple Java projects."
 license = "AGPL-3.0-only"
 edition = "2021"
@@ -52,6 +52,10 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_
 [dev-dependencies]
 # 28h S15 slice 2: the canary round is run for real against a mock app, so the link from the round to the seat
 # deploy is a behaviour and not a line of text.
+#
+# Not on Windows: the feature makes a unit-test program there stop at start with 0xc0000139 (the manifest it needs is not
+# embedded), which fails every test of the crate; see the note on `canary_duty_tests` in lib.rs.
+[target.'cfg(not(windows))'.dev-dependencies]
 tauri = { version = "2.10.3", features = ["test"] }
 
 # Sprint 28 (D-SHIM) — the workspace exists so `jawata-hook` can be a SIBLING

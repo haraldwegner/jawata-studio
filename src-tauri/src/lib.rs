@@ -2590,7 +2590,11 @@ mod background_launch_tests {
 /// 28h S15 (D27, the deploy trigger): the engine switch is noticed by the ready listener, but nothing
 /// deploys until the canary round asks. The round is RUN, against a mock app and a sandboxed service with
 /// a newer engine waiting, and what it did is read back from the disk.
-#[cfg(test)]
+// Not built on Windows: tauri's `test` feature links a Windows API that needs the application manifest, which a unit-test
+// program does not carry, so the program stops at start with 0xc0000139 (STATUS_ENTRYPOINT_NOT_FOUND) before any test runs
+// and takes every other test of the crate with it (release job 42489119961, windows-2022 and windows-11-arm). The
+// behaviour proven here has no platform part and runs on Linux and macOS.
+#[cfg(all(test, not(windows)))]
 mod canary_duty_tests {
     use super::*;
     use crate::manager_service::engine_switch_fixture::EngineSwitch;
