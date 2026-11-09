@@ -1232,6 +1232,31 @@ mod tests {
         assert_eq!(text.len() + code.len(), EMBEDDED_SEATS.len(), "every seat classified");
     }
 
+    /// D54 (h): `/setup` can start a project, and it starts one only in an empty folder, with no new seat.
+    /// His words: "How is starting a new project, some setup seat?". Each clause below is one a later edit
+    /// could drop without any other test noticing: the empty-folder guard (a new-project mode that may
+    /// run in a folder with files in it overwrites them), the proof by running (a project started green on
+    /// nobody's word), and the way back into the ordinary steps (a second declaration format).
+    #[test]
+    fn setup_can_start_a_project_but_only_in_an_empty_folder_and_proves_it_green() {
+        let setup = utility_body("setup");
+        assert!(setup.contains("NEW PROJECT mode"), "/setup has no new-project mode");
+        for clause in [
+            "Only an empty folder",
+            "Never overwrite a file",
+            "never turn an existing project into a new one",
+            "Ask once, with a recommendation",
+            "STEP 2 still\n  runs the green command",
+            "`jawata-project.md` comes\n  out of the same confirmation",
+            "No new seat",
+        ] {
+            assert!(setup.contains(clause), "the new-project mode lost the clause {clause:?}");
+        }
+        let new_project = setup.find("NEW PROJECT mode").unwrap();
+        let first_step = setup.find("## STEP 1").unwrap();
+        assert!(new_project < first_step, "the new-project mode must come before STEP 1, which it hands over to");
+    }
+
     /// D16: `/btw` and `/brainstorm` ship as TWO commands, and what `/btw`
     /// writes has a reader with a moment that fires.
     ///
@@ -1287,6 +1312,15 @@ mod tests {
             "the /sprint step names no consumed marker, so every pass re-offers every \
              capture and the disposition cannot be checked"
         );
+        // D54 (k): one folder per sprint, the plan in it, and the raw committed before it is deleted.
+        for clause in [
+            "One folder per sprint",
+            "docs/sprints/<product>/<sprint>/",
+            "never under\n`~/.claude/plans/`",
+            "The raw is COMMITTED before\nit is deleted at sign-off",
+        ] {
+            assert!(sprint.contains(clause), "the /sprint skill lost the folder rule clause {clause:?}");
+        }
         let auditor = EMBEDDED_SEATS
             .iter()
             .find(|(f, _)| *f == "spec-auditor.md")

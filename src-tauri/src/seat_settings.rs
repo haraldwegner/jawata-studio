@@ -424,6 +424,9 @@ pub struct SeatsView {
     /// The brains the principal and btw can run on: those the engine has a program for on this machine.
     #[serde(rename = "acpBrains")]
     pub acp_brains: Vec<String>,
+    /// The brains the chat could run on if their adapter were installed, each with the command that installs it (D54 (g)).
+    #[serde(rename = "missingAdapters")]
+    pub missing_adapters: Vec<crate::agent_brain_settings::MissingAdapter>,
 }
 
 /// The shipped seat of this name, parsed from the content embedded in this build.
@@ -491,7 +494,7 @@ pub fn seats_view(seats_dir: &Path, clients: Vec<ClientChoice>) -> SeatsView {
         })
         .collect();
     errors.sort();
-    SeatsView { seats: rows, clients, errors, acp_brains: Vec::new() }
+    SeatsView { seats: rows, clients, errors, acp_brains: Vec::new(), missing_adapters: Vec::new() }
 }
 
 /// What the view asks for. One variant per setting, so a request cannot name two at once.

@@ -19,6 +19,7 @@
   // deploy runs at once, so a toggle never waits on a second button somewhere else (C11-4: only
   // the seat commands, not every client's MCP configuration).
   import { createEventDispatcher, onMount } from "svelte";
+  import { adapterNotice } from "../adapterNotice";
   import {
     brainProbe,
     brainsStatus,
@@ -332,6 +333,14 @@
                       <span class="seat-note">To log in, run <code>{status.loginCommand}</code> in a terminal, then open this tab again.</span>
                     {:else if status && !status.installed}
                       <span class="project-error seat-note">{status.reason}</span>
+                    {/if}
+                    {#if isConversation(seat)}
+                      {#each view.missingAdapters ?? [] as missing (missing.brain)}
+                        {@const notice = adapterNotice(brainLabel(missing.brain), missing)}
+                        <span class="seat-note" title="The chat talks to a brain through its agent adapter. The studio downloads no agent program: you run the command, then open this tab again.">
+                          {notice.before} <code>{notice.command}</code> {notice.after}
+                        </span>
+                      {/each}
                     {/if}
                   {/if}
                 </dd>

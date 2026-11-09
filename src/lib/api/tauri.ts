@@ -897,6 +897,8 @@ export interface SeatsView {
   errors: string[];
   /** The brains the principal and btw can run on. */
   acpBrains: string[];
+  /** The brains the chat could run on if their adapter were installed, each with the command that installs it. */
+  missingAdapters: { brain: string; install: string }[];
 }
 
 /** One setting per request, so a call cannot name two at once. */

@@ -34,6 +34,16 @@ while dropping the doc's goal).
   retrievable at plan-creation time — **NOT a third document in the sprint tree.** They
   resurface as the plan's stage contracts.
 
+## One folder per sprint (Harald, 2026-11-09: *"Maybe we should make a folder per sprint in the docs folder"* · *"Yes, we should do so."*)
+
+Everything a sprint produces lives in ONE folder, `docs/sprints/<product>/<sprint>/`, in git:
+the spec, the raw while it exists, the plan, the architecture file, the checkpoint and audit
+reports, and the evidence. The plan is written into that folder and never under
+`~/.claude/plans/`, which a reader of the repository cannot open. The raw is COMMITTED before
+it is deleted at sign-off, so what the sprint started from stays in the history. A sprint that
+already exists in the old flat layout is moved by whoever owns that sprint, with every
+reference to its files updated; it is not moved while another branch is editing it.
+
 ## The reader split (binding on content and language)
 
 | | **SPRINT SPEC** | **PLAN** |

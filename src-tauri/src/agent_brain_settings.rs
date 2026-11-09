@@ -39,8 +39,18 @@ pub struct AgentBrainSettings {
     pub note: Option<String>,
 }
 
-/// The settings for what [`crate::brains::installed_program_path`] found.
+/// The model the principal's Cursor session is moved to once it is open (D54 (a), (b)), named the way Cursor's own session names it: it offers
+/// 47 models in a `model` option, and this is the `name` of the one whose value is `grok-4.5[effort=high,fast=true]`. The engine matches it against
+/// what the session offers and, when the account has no such model, leaves the session on Cursor's own Auto. It is chosen because Auto names no
+/// model and a row that must say which model is answering cannot say it for Auto; speed does not choose it (not measured: a first comparison on
+/// 2026-11-09 passed the model as a command-line argument, which Cursor's ACP mode ignores, so every run it timed was on Auto).
+pub const PRINCIPAL_CURSOR_MODEL: &str = "grok-4.5";
+
+/// The settings for what [`crate::brains::installed_program_path`] found. Only the principal names a model: the registry's Cursor entry, which
+/// hires and the reviewer start from, keeps Cursor's own default, because a model chosen for a conversation is not the model a hired architect
+/// should run on.
 pub fn settings_for(found: Result<Option<PathBuf>, String>) -> AgentBrainSettings {
+
     let nothing = |note: String| AgentBrainSettings { env: Vec::new(), note: Some(note) };
     match found {
         Err(reason) => nothing(format!("no agent brain was configured: {reason}")),
@@ -52,10 +62,11 @@ pub fn settings_for(found: Result<Option<PathBuf>, String>) -> AgentBrainSetting
             )),
             Some(program) => {
                 let one = serde_json::json!({ "command": [program, "acp"], "env": {} });
+                let principal = serde_json::json!({ "command": [program, "acp"], "env": {}, "model": PRINCIPAL_CURSOR_MODEL });
                 let registry = serde_json::json!({ CURSOR: one.clone() });
                 AgentBrainSettings {
                     env: vec![
-                        (BRAIN_ENV.to_string(), one.to_string()),
+                        (BRAIN_ENV.to_string(), principal.to_string()),
                         (HIRE_BRAINS_ENV.to_string(), registry.to_string()),
                         (REVIEWER_ENV.to_string(), one.to_string()),
                     ],
@@ -66,21 +77,81 @@ pub fn settings_for(found: Result<Option<PathBuf>, String>) -> AgentBrainSetting
     }
 }
 
-/// The ACP adapters a person may have installed, by the brain they start: an adapter that is on the path can run the principal
-/// or btw, and one that is not is never offered. None is downloaded here.
-const ADAPTERS: [(&str, &str); 3] = [("claude-code", "claude-agent-acp"), ("claude-code", "claude-code-acp"), ("codex", "codex-acp")];
+/// A program that speaks ACP on behalf of one brain, and what a person runs to get it. An adapter that is on the path can run the principal
+/// or btw, and one that is not is never offered. None is downloaded here: the person is told the `install` line and runs it.
+pub struct Adapter {
+    /// The brain it starts, named the way the engine's dialect names itself.
+    pub brain: &'static str,
+    /// The program looked for on the path.
+    pub program: &'static str,
+    /// The arguments that make that program speak ACP (Copilot's CLI does so only with `--acp`; the others are adapters that speak nothing else).
+    pub args: &'static [&'static str],
+    /// The command that installs it. Each package name was read from the package registry on 2026-11-09 and its `bin` name matches `program`.
+    pub install: &'static str,
+    /// Whether the program must be started with the person's own deployed jawata servers switched off. Copilot's CLI loads every server of its own
+    /// configuration into each turn, and the chat already gives the brain the engine itself: measured on 2026-11-09, one jawata server adds about
+    /// 51,000 input tokens to a turn, and with the three deployed here Copilot answered "Static system messages and tool definitions exceed the
+    /// model's usable context budget" and no answer. With them off it answered in 4 s.
+    pub without_own_servers: bool,
+}
 
-/// The settings for this machine, read from `path_var` (the `PATH` value).
+/// The adapters in the order they are tried: for a brain with two, the first found is used and the first is the one a person is told to install.
+pub const ADAPTERS: [Adapter; 4] = [
+    Adapter { brain: "claude-code", program: "claude-agent-acp", args: &[], install: "npm install -g @agentclientprotocol/claude-agent-acp", without_own_servers: false },
+    Adapter { brain: "claude-code", program: "claude-code-acp", args: &[], install: "npm install -g @zed-industries/claude-code-acp", without_own_servers: false },
+    Adapter { brain: "codex", program: "codex-acp", args: &[], install: "npm install -g @zed-industries/codex-acp", without_own_servers: false },
+    Adapter { brain: "copilot", program: "copilot", args: &["--acp"], install: "npm install -g @github/copilot", without_own_servers: true },
+];
+
+/// A brain a person can run the chat on whose adapter is not on this machine, with the one command that installs it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct MissingAdapter {
+    pub brain: String,
+    pub install: String,
+}
+
+/// The brains no adapter of which is on `path_var`, each with the install command of its first adapter, in [`ADAPTERS`] order. It reads the same
+/// list [`detect`] reads, so what is offered and what is said to be missing cannot disagree.
+pub fn missing_adapters(path_var: Option<&OsStr>) -> Vec<MissingAdapter> {
+    let mut missing: Vec<MissingAdapter> = Vec::new();
+    for adapter in &ADAPTERS {
+        let already = missing.iter().any(|m| m.brain == adapter.brain);
+        let found = ADAPTERS
+            .iter()
+            .filter(|other| other.brain == adapter.brain)
+            .any(|other| crate::brains::program_on_path(other.program, path_var).is_some());
+        if !already && !found {
+            missing.push(MissingAdapter { brain: adapter.brain.to_string(), install: adapter.install.to_string() });
+        }
+    }
+    missing
+}
+
+/// The settings for this machine, read from `path_var` (the `PATH` value), when the studio has deployed no server of its own.
 pub fn detect(path_var: Option<&OsStr>) -> AgentBrainSettings {
+    detect_with(path_var, &[])
+}
+
+/// The settings for this machine, read from `path_var`, for a machine on which `deployed_servers` are the names of the jawata servers the
+/// studio has written into the person's agents. An adapter that loads the person's own servers is told, by name, to leave them off.
+pub fn detect_with(path_var: Option<&OsStr>, deployed_servers: &[String]) -> AgentBrainSettings {
     let mut settings = settings_for(crate::brains::installed_program_path(CURSOR, path_var));
     let Some((_, registry)) = settings.env.iter_mut().find(|(name, _)| name == HIRE_BRAINS_ENV) else {
         return settings;
     };
     let mut programs: serde_json::Value = serde_json::from_str(registry).unwrap_or_else(|_| serde_json::json!({}));
-    for (brain, adapter) in ADAPTERS {
-        if programs.get(brain).is_none() {
-            if let Some(path) = crate::brains::program_on_path(adapter, path_var).and_then(|p| p.to_str().map(str::to_string)) {
-                programs[brain] = serde_json::json!({ "command": [path], "env": {} });
+    for adapter in &ADAPTERS {
+        if programs.get(adapter.brain).is_none() {
+            if let Some(path) = crate::brains::program_on_path(adapter.program, path_var).and_then(|p| p.to_str().map(str::to_string)) {
+                let mut command = vec![path];
+                command.extend(adapter.args.iter().map(|arg| arg.to_string()));
+                if adapter.without_own_servers {
+                    for server in deployed_servers {
+                        command.push("--disable-mcp-server".to_string());
+                        command.push(server.clone());
+                    }
+                }
+                programs[adapter.brain] = serde_json::json!({ "command": command, "env": {} });
             }
         }
     }
@@ -151,7 +222,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("jw-adapters-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        for name in ["agent", "codex-acp"] {
+        for name in ["agent", "codex-acp", "copilot"] {
             let file = dir.join(name);
             std::fs::write(&file, "#!/bin/sh\n").unwrap();
             std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -159,8 +230,100 @@ mod tests {
         let settings = detect(Some(dir.as_os_str()));
         let mut brains = acp_brains(&settings);
         brains.sort();
+        let registry: Value = serde_json::from_str(value_of(&settings, HIRE_BRAINS_ENV)).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(brains, vec!["codex".to_string(), "cursor".to_string()]);
+        assert_eq!(brains, vec!["codex".to_string(), "copilot".to_string(), "cursor".to_string()]);
+        // D54 (f): Copilot's CLI speaks ACP only with its own argument, so the registry carries the argument, and an adapter that needs none carries none.
+        let copilot = registry["copilot"]["command"].as_array().unwrap();
+        assert_eq!(copilot.len(), 2, "{copilot:?}");
+        assert!(copilot[0].as_str().unwrap().ends_with("copilot"), "{copilot:?}");
+        assert_eq!(copilot[1], "--acp");
+        assert_eq!(registry["codex"]["command"].as_array().unwrap().len(), 1, "codex-acp takes no argument");
+    }
+
+    #[cfg(unix)]
+    fn path_holding(names: &[&str], tag: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("jw-missing-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in names {
+            let file = dir.join(name);
+            std::fs::write(&file, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        dir
+    }
+
+    /// D54 (f): Copilot's CLI loads the person's own servers into every turn, and three jawata servers made it answer "Static system messages
+    /// and tool definitions exceed the model's usable context budget" and nothing else (measured 2026-11-09). So it is started with each
+    /// deployed server named off, and the adapters that read no such list are started as they were.
+    #[cfg(unix)]
+    #[test]
+    fn copilot_is_started_with_the_deployed_servers_off_and_the_others_are_not() {
+        let dir = path_holding(&["agent", "copilot", "codex-acp"], "c");
+        let deployed = vec!["jawata-alpha".to_string(), "jawata-beta".to_string()];
+        let with = detect_with(Some(dir.as_os_str()), &deployed);
+        let without = detect_with(Some(dir.as_os_str()), &[]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let words = |settings: &AgentBrainSettings, brain: &str| -> Vec<String> {
+            let registry: Value = serde_json::from_str(value_of(settings, HIRE_BRAINS_ENV)).unwrap();
+            registry[brain]["command"].as_array().unwrap().iter().skip(1).map(|w| w.as_str().unwrap().to_string()).collect()
+        };
+        assert_eq!(
+            words(&with, "copilot"),
+            vec!["--acp", "--disable-mcp-server", "jawata-alpha", "--disable-mcp-server", "jawata-beta"],
+            "each deployed server named off, after the argument that makes Copilot speak ACP"
+        );
+        assert_eq!(words(&without, "copilot"), vec!["--acp"], "no deployed server, nothing to switch off");
+        assert!(words(&with, "codex").is_empty(), "an adapter that loads no list of the person's servers is started bare");
+        assert!(words(&with, "cursor").iter().all(|w| w == "acp"), "Cursor's agent is started as before");
+    }
+
+    /// D54 (g): the Seats page names each brain whose adapter is not here with the command that installs it, read from the list that decides
+    /// what is offered. His words: "I can see your please install message".
+    #[cfg(unix)]
+    #[test]
+    fn a_brain_whose_adapter_is_absent_is_named_with_its_install_command_and_one_that_is_present_is_not() {
+        let dir = path_holding(&["agent", "claude-code-acp"], "a");
+        let missing = missing_adapters(Some(dir.as_os_str()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let brains: Vec<&str> = missing.iter().map(|m| m.brain.as_str()).collect();
+        assert_eq!(brains, vec!["codex", "copilot"], "the older Claude adapter alone counts as Claude being here: {missing:?}");
+        assert_eq!(missing[0].install, "npm install -g @zed-industries/codex-acp");
+        assert_eq!(missing[1].install, "npm install -g @github/copilot");
+
+        let none = path_holding(&["agent"], "b");
+        let missing = missing_adapters(Some(none.as_os_str()));
+        let _ = std::fs::remove_dir_all(&none);
+        assert_eq!(missing.iter().map(|m| m.brain.as_str()).collect::<Vec<_>>(), vec!["claude-code", "codex", "copilot"]);
+        assert_eq!(missing[0].install, "npm install -g @agentclientprotocol/claude-agent-acp", "the current adapter is the one a person is told to install");
+    }
+
+    #[test]
+    fn what_is_said_to_be_missing_and_what_is_offered_come_from_one_list() {
+        let offered: std::collections::BTreeSet<&str> = ADAPTERS.iter().map(|a| a.brain).collect();
+        let empty = std::env::temp_dir().join(format!("jw-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&empty).unwrap();
+        let missing: std::collections::BTreeSet<String> = missing_adapters(Some(empty.as_os_str())).into_iter().map(|m| m.brain).collect();
+        let _ = std::fs::remove_dir_all(&empty);
+        assert_eq!(missing.iter().map(String::as_str).collect::<std::collections::BTreeSet<_>>(), offered, "an empty path misses every brain the list offers");
+    }
+
+    /// D54 (a), (b): the principal's setting names the model its Cursor session is moved to, so a row can say which model is answering; the registry's
+    /// Cursor entry, which hires start from, and the reviewer name none and keep Cursor's own default. The model is not a command-line argument:
+    /// Cursor's ACP mode ignores `--model`, which is how a first version of this change named a model that never ran.
+    #[test]
+    fn the_principal_names_its_model_and_hires_and_the_reviewer_do_not() {
+        let settings = settings_for(found("/home/me/.local/bin/agent"));
+
+        let brain: Value = serde_json::from_str(value_of(&settings, BRAIN_ENV)).unwrap();
+        assert_eq!(brain["model"], PRINCIPAL_CURSOR_MODEL);
+        assert_eq!(brain["command"], serde_json::json!(["/home/me/.local/bin/agent", "acp"]), "no model argument: Cursor's ACP mode ignores it");
+        let reviewer: Value = serde_json::from_str(value_of(&settings, REVIEWER_ENV)).unwrap();
+        assert!(reviewer.get("model").is_none(), "the reviewer is not moved: {reviewer}");
+        let registry: Value = serde_json::from_str(value_of(&settings, HIRE_BRAINS_ENV)).unwrap();
+        assert!(registry["cursor"].get("model").is_none(), "a hired Cursor keeps Cursor's default: {registry}");
     }
 
     #[test]
@@ -181,7 +344,8 @@ mod tests {
             assert!(program["command"].is_array());
             assert_eq!(program["env"], serde_json::json!({}), "the program uses its own login: {program}");
             let keys: Vec<&String> = program.as_object().unwrap().keys().collect();
-            assert_eq!(keys, vec!["command", "env"], "exactly the engine's shape: {program}");
+            let expected: Vec<&str> = if program == &brain { vec!["command", "env", "model"] } else { vec!["command", "env"] };
+            assert_eq!(keys, expected, "exactly the engine's shape: {program}");
         }
         assert_eq!(registry.as_object().unwrap().len(), 1, "no entry for a brain that was not asked for: {registry}");
     }

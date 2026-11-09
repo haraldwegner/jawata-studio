@@ -1240,7 +1240,9 @@ impl ManagerService {
         if let Err(error) = materialized {
             view.errors.push(error);
         }
-        view.acp_brains = crate::agent_brain_settings::acp_brains(&crate::agent_brain_settings::detect(std::env::var_os("PATH").as_deref()));
+        let path = std::env::var_os("PATH");
+        view.acp_brains = crate::agent_brain_settings::acp_brains(&crate::agent_brain_settings::detect(path.as_deref()));
+        view.missing_adapters = crate::agent_brain_settings::missing_adapters(path.as_deref());
         view
     }
 
@@ -2895,6 +2897,17 @@ impl ManagerService {
             .config_store
             .get_or_allocate_workspace_state(&project.workspace_name)?;
 
+        // D54 (f): the names the studio gives its servers in the person's agents, one per workspace, so an agent program that loads the
+        // person's own servers can be told to leave them off (Copilot's CLI cannot carry three of them and answer).
+        let mut deployed_servers: Vec<String> = self
+            .config_store
+            .list_projects()
+            .iter()
+            .map(|p| mcp_server_id_for_workspace(&p.workspace_name))
+            .collect();
+        deployed_servers.sort();
+        deployed_servers.dedup();
+
         // studio#28: resolved here, once, so both runtime-source arms below get
         // the same answer and neither can construct a reference without one.
         let max_heap_mb = workspace_state.effective_max_heap_mb();
@@ -2922,7 +2935,7 @@ impl ManagerService {
                     // spawn can choose the token file over argv.
                     engine_version: Some(runtime.version.clone()),
                     seats_dir: Some(crate::config::display_path(&self.seats_dir())),
-                    agent_brain: crate::agent_brain_settings::detect(path_var),
+                    agent_brain: crate::agent_brain_settings::detect_with(path_var, &deployed_servers),
                 })
             }
             RuntimeSource::LocalJar { jar_path } => Ok(RuntimeReference {
@@ -2941,7 +2954,7 @@ impl ManagerService {
                 // generates its own (401 for every deployed client).
                 engine_version: None,
                 seats_dir: Some(crate::config::display_path(&self.seats_dir())),
-                agent_brain: crate::agent_brain_settings::detect(path_var),
+                agent_brain: crate::agent_brain_settings::detect_with(path_var, &deployed_servers),
             }),
         }
     }

@@ -12,7 +12,8 @@
 //!    tray; the extension adds one `--editor-folder <path>` per folder of its workspace, and reads the answer, the matched
 //!    jawata workspace's address and key, from `<handoffDir>/<id>.json`, see `editor_launch`). (`jawataChat.agent` is the
 //!    existing chat row's, `agent_registration`.) Text edits, so comments and every other key stay;
-//! 3. leaves `redhat.java` in place and says why, until jawata has its own Testing view and debugger (Sprint 28h D53 (n),
+//! 3. removes Microsoft's Project Manager for Java (`vscjava.vscode-java-dependency`) once jawata Java is in, so the Java
+//!    Projects view shows once (D54 (d)); leaves `redhat.java` in place and says why, until jawata has its own Testing view and debugger (Sprint 28h D53 (n),
 //!    Sprint 28i Stage 25), and writes `chat.disableAIFeatures` so that Copilot is gone from VS Code (D53 (p));
 //! 4. leaves Cursor alone: only a `code` found on PATH is run, and one that lives in a Cursor folder is refused.
 //!
@@ -37,6 +38,9 @@ pub const CHAT_EXTENSION_ID: &str = "jawata.jawata-chat";
 pub const JAVA_EXTENSION_ID: &str = "jawata.jawata-java";
 /// The extension that competes with jawata Java for the same files.
 pub const RIVAL_EXTENSION_ID: &str = "redhat.java";
+/// Microsoft's Project Manager for Java. It contributes a second "Java Projects" view beside the one jawata Java brings, so every project is
+/// listed twice (D54 (d), his words: "We have Java projetcs twice"). The deploy removes it once jawata Java is in.
+pub const PROJECT_MANAGER_EXTENSION_ID: &str = "vscjava.vscode-java-dependency";
 /// The repository whose latest release carries the two `.vsix` files.
 pub const EXTENSIONS_REPO: &str = "haraldwegner/jawata-chat";
 /// A folder of local `.vsix` files, used instead of the network (tests, offline use).
@@ -511,6 +515,20 @@ pub fn deploy_extensions(env: &EditorEnv, cache: &Path) -> ExtensionsReport {
             Err(e) => errors.push(e),
         }
     }
+    // Only after jawata Java is in, so that one Java Projects view is always there and never none.
+    if java_in && before.iter().any(|id| id == PROJECT_MANAGER_EXTENSION_ID) {
+        match run_code(&code, &["--uninstall-extension", PROJECT_MANAGER_EXTENSION_ID], env.step_timeout) {
+            Ok(out) if out.ok => changed.push(format!(
+                "uninstalled {PROJECT_MANAGER_EXTENSION_ID} (Microsoft's Project Manager for Java), because jawata Java brings the Java Projects view and the two listed every project twice"
+            )),
+            Ok(out) => errors.push(format!(
+                "`code --uninstall-extension {PROJECT_MANAGER_EXTENSION_ID}` failed (exit {:?}): {}; the Java Projects view will show twice until it is removed",
+                out.exit,
+                out.stderr.trim()
+            )),
+            Err(e) => errors.push(e),
+        }
+    }
     let rival_stays = before.iter().any(|id| id == RIVAL_EXTENSION_ID);
     let outcome = if errors.is_empty() { Outcome::Success } else { Outcome::Failed };
     let mut message = format!("VS Code: {} (source: {})", if changed.is_empty() { "nothing changed".to_string() } else { changed.join(", ") }, files.source);
@@ -868,6 +886,34 @@ mod tests {
             ]
         );
         assert!(report.message.contains("redhat.java is left in place until jawata has its own test view and debugger"), "{}", report.message);
+    }
+
+    /// D54 (d): with Microsoft's Project Manager for Java installed the Explorer showed Java Projects twice. The deploy removes it, after
+    /// jawata Java is in, and names it in the result; with jawata Java not installed it stays, so a Java Projects view is never none.
+    #[test]
+    fn the_second_java_projects_view_goes_after_jawata_java_is_in_and_is_named() {
+        let s = Scratch::new("projectmanager");
+        fake_code(&s.0, &["redhat.java", "vscjava.vscode-java-dependency", "vscjava.vscode-maven"]);
+        let vsix = vsix_folder(&s.0);
+        let env = env_over(&s.0, Some(vsix.clone()));
+
+        let report = deploy_extensions(&env, &s.path("cache"));
+
+        assert_eq!(report.outcome, Outcome::Success, "{}", report.message);
+        let all = calls(&s.0);
+        let uninstall = all.iter().position(|c| c == "--uninstall-extension vscjava.vscode-java-dependency").unwrap_or_else(|| panic!("{all:?}"));
+        let java = all.iter().position(|c| c.contains("jawata-java-")).unwrap();
+        assert!(uninstall > java, "after jawata Java is in, never before: {all:?}");
+        assert_eq!(all.iter().filter(|c| c.contains("--uninstall-extension")).count(), 1, "nothing else is removed: {all:?}");
+        assert!(report.message.contains("uninstalled vscjava.vscode-java-dependency (Microsoft's Project Manager for Java)"), "named: {}", report.message);
+        assert!(report.message.contains("redhat.java is left in place"), "the rival's sentence is unchanged: {}", report.message);
+
+        let kept = Scratch::new("projectmanagerkept");
+        fake_code(&kept.0, &["vscjava.vscode-java-dependency"]);
+        std::fs::write(kept.path("fail.txt"), "jawata-java").unwrap();
+        let report = deploy_extensions(&env_over(&kept.0, Some(vsix_folder(&kept.0))), &kept.path("cache"));
+        assert_eq!(report.outcome, Outcome::Failed);
+        assert!(calls(&kept.0).iter().all(|c| !c.contains("--uninstall-extension")), "{:?}", calls(&kept.0));
     }
 
     #[test]

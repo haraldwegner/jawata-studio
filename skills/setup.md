@@ -14,6 +14,27 @@ checks the repository out. The studio's own `projects.json` holds this machine's
 bookkeeping about a workspace — resident port, token, heap ceiling — and is true only
 here. They are not alternatives and neither can stand in for the other.
 
+## NEW PROJECT mode — an empty folder, or the human says the project does not exist yet
+
+`/setup` in a folder that holds no build file and no source, or `/setup new <kind>`, starts
+a project instead of declaring one. No new seat: this is `/setup` with a step in front.
+
+- **Only an empty folder.** If the folder holds anything but a `.git` folder, stop and say
+  what is there. Never overwrite a file, never create outside the folder you were pointed
+  at, and never turn an existing project into a new one.
+- **Ask once, with a recommendation:** the kind (a Maven Java library, a Maven Java
+  application, a Rust crate, a Python package, or a kind the human names), the project
+  name, and the language version. One message, the way STEP 3 asks.
+- **Create the smallest project of that kind that can be green:** the build file, one
+  source file, one test. Use the kind's own tool where it has one (`cargo new`,
+  `go mod init`); for Maven write the `pom.xml` with its `maven.compiler.release`, one
+  class and one JUnit test, because an archetype download is the thing that fails offline.
+- **Then it is the ordinary `/setup`.** The four facts are the ones you just wrote, read
+  back from the files you created, and the evidence for each is that file. STEP 2 still
+  runs the green command, and a project whose first green run fails is reported as that,
+  not written up as declared. STEPS 3 to 5 follow unchanged, so `jawata-project.md` comes
+  out of the same confirmation and the same parse check as for an existing project.
+
 ## STEP 1 — read, do not infer
 
 Establish each fact from the project itself, and keep what you read:

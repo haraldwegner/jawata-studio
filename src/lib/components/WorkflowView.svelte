@@ -6,7 +6,8 @@
   // nothing to fill in. Unlocked, a seat dragged onto another moves with everything under it, a click on the role
   // changes the role and a right-click says where its failures go. A placement the engine would refuse is refused here
   // with the engine's own reason before anything is stored, so the chart is always one the engine will load.
-  import { createEventDispatcher, onMount } from "svelte";
+  import { createEventDispatcher, onMount, tick } from "svelte";
+  import { fitScale } from "../fitScale";
   import {
     seatChange,
     workflowView,
@@ -42,6 +43,48 @@
       loadError = String(error);
     }
   }
+
+  // The chart fills the room it has (D54 (c)): measured at its natural size, then scaled by `fitScale`. The width is read from the frame and the
+  // height from the window, because the frame grows with the chart and measuring the height from it would never settle.
+  let frame: HTMLElement | null = null;
+  let chart: HTMLElement | null = null;
+  let scale = 1;
+  let framedWidth = 0;
+  /** The width the Helpers box hangs out to the right of the tree, which the tree's own width does not hold. */
+  let rightRoom = 0;
+
+  async function refit() {
+    if (!frame || !chart) return;
+    scale = 1;
+    rightRoom = 0;
+    await tick();
+    const root = chart?.firstElementChild as HTMLElement | null;
+    if (!frame || !root) return;
+    const helpersBox = chart.querySelector(".helpers-box");
+    rightRoom = helpersBox ? Math.max(0, Math.ceil(helpersBox.getBoundingClientRect().right - root.getBoundingClientRect().right)) : 0;
+    await tick();
+    framedWidth = frame.clientWidth;
+    const top = frame.getBoundingClientRect().top;
+    scale = fitScale(
+      { width: root.offsetWidth, height: root.offsetHeight },
+      { width: frame.clientWidth, height: Math.max(240, window.innerHeight - top - 24) },
+    );
+  }
+
+  $: if (view || folded) void refit();
+
+  onMount(() => {
+    const observer = new ResizeObserver(() => {
+      if (frame && frame.clientWidth !== framedWidth) void refit();
+    });
+    if (frame) observer.observe(frame);
+    const onWindow = () => void refit();
+    window.addEventListener("resize", onWindow);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", onWindow);
+    };
+  });
 
   async function apply(row: WorkflowRow, change: SeatChange) {
     busy = true;
@@ -210,8 +253,9 @@
       <p class="project-error" title="The engine refuses a tree that breaks a rule and uses the default one in its place.">{refusal}</p>
     {/each}
 
-    <div class="org" class:unlocked role="tree">
-      <ul>
+    <div class="org-frame" bind:this={frame}>
+    <div class="org" class:unlocked role="tree" bind:this={chart} style:zoom={scale}>
+      <ul style:padding-right={`${rightRoom}px`}>
         <li>
           <div class="root-wrap">
             <div
@@ -239,6 +283,7 @@
           {@render children(TOP)}
         </li>
       </ul>
+    </div>
     </div>
   {/if}
 
@@ -302,12 +347,15 @@
     right: 50%;
     width: 50%;
     height: 12px;
-    border-top: 1px solid var(--line);
+    border-top: 2px solid var(--text);
   }
+  /* The lines are 2 px in the text colour (D54 (c)): 1 px in a pale line colour was "hardly visible". Every vertical is centred on the middle of
+     its box by shifting it back half its own width, so a 2 px line does not step sideways where a branch meets its parent. */
   .org li::after {
     right: auto;
-    left: 50%;
-    border-left: 1px solid var(--line);
+    left: calc(50% - 1px);
+    width: calc(50% + 1px);
+    border-left: 2px solid var(--text);
   }
   .org li:only-child::before,
   .org li:only-child::after {
@@ -321,18 +369,26 @@
     border: 0 none;
   }
   .org li:last-child::before {
-    border-right: 1px solid var(--line);
+    right: calc(50% - 1px);
+    width: calc(50% + 1px);
+    border-right: 2px solid var(--text);
   }
   .org ul ul::before {
     content: "";
     position: absolute;
     top: 0;
-    left: 50%;
+    left: calc(50% - 1px);
     height: 12px;
-    border-left: 1px solid var(--line);
+    border-left: 2px solid var(--text);
   }
   .org > ul {
     padding-top: 0;
+    /* Its own width, so the chart's natural size can be read and scaled to the room (D54 (c)). */
+    width: max-content;
+    margin: 0 auto;
+  }
+  .org-frame {
+    width: 100%;
   }
   .org > ul > li {
     padding-top: 0;
