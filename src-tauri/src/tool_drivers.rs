@@ -112,7 +112,7 @@ fn reaches(seat_text: &str, tool: &str) -> bool {
 
 /// The seats whose job is to DECIDE which tool an instruction names; the worker runs what they write.
 const INSTRUCTION_GIVERS: &[&str] = &["chief-engineer.md", "pm.md"];
-const INSTRUCTION_RUNNER: &str = "worker.md";
+const INSTRUCTION_RUNNER: &str = "developer.md";
 
 /// Who drives `tool` under the strict reading, over `seats` (name, text). `Some((namer, carrier))`.
 pub fn strict_driver(seats: &[(&str, &str)], tool: &str, universe: &BTreeSet<String>) -> Option<(String, String)> {
@@ -213,7 +213,7 @@ mod tests {
             let (namer, carrier) = strict_driver(&seats, tool, &universe).unwrap_or_else(|| panic!("{tool} has no strict driver"));
             assert_eq!(&namer, seat, "{tool}: the seat that writes it");
             // dependency and hierarchy change code: the chief engineer decides, the worker runs.
-            let expected_carrier = if matches!(tool, "dependency" | "hierarchy") { "worker.md" } else { *seat };
+            let expected_carrier = if matches!(tool, "dependency" | "hierarchy") { "developer.md" } else { *seat };
             assert_eq!(carrier, expected_carrier, "{tool}: the seat that carries it");
         }
     }
@@ -265,13 +265,13 @@ fn a_stance_with_an_empty_tools_list_drives_what_it_writes_and_a_file_without_th
         let giver = "---\ntools: [analyze]\n---\nName `hierarchy` when a member moves.";
         let worker_without = "---\ntools: [extract]\n---\n";
         let worker_with = "---\ntools: [hierarchy]\n---\n";
-        assert_eq!(strict_driver(&[("chief-engineer.md", giver), ("worker.md", worker_without)], "hierarchy", &universe), None);
+        assert_eq!(strict_driver(&[("chief-engineer.md", giver), ("developer.md", worker_without)], "hierarchy", &universe), None);
         assert_eq!(
-            strict_driver(&[("chief-engineer.md", giver), ("worker.md", worker_with)], "hierarchy", &universe),
-            Some(("chief-engineer.md".to_string(), "worker.md".to_string()))
+            strict_driver(&[("chief-engineer.md", giver), ("developer.md", worker_with)], "hierarchy", &universe),
+            Some(("chief-engineer.md".to_string(), "developer.md".to_string()))
         );
         // a seat that is not an instruction giver does not drive through the worker
-        assert_eq!(strict_driver(&[("debugger.md", giver), ("worker.md", worker_with)], "hierarchy", &universe), None);
+        assert_eq!(strict_driver(&[("debugger.md", giver), ("developer.md", worker_with)], "hierarchy", &universe), None);
     }
 
     /// `load_project` is accepted undriven, with its reason; the accepted set is exactly that, and no

@@ -51,12 +51,12 @@
   .help-header {
     margin-bottom: 1.5rem;
     padding-bottom: 1rem;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+    border-bottom: 1px solid rgba(var(--line-rgb), 0.15);
   }
 
   .markdown-body {
     flex: 1;
-    color: #e2e8f0;
+    color: var(--text-soft);
     line-height: 1.6;
     font-size: 0.95rem;
     max-width: 800px;
@@ -70,7 +70,7 @@
     font-weight: 600;
     margin-top: 0;
     margin-bottom: 1rem;
-    color: #f8fafc;
+    color: var(--text-strong);
   }
 
   :global(.markdown-body h2) {
@@ -78,8 +78,8 @@
     font-weight: 600;
     margin-top: 2rem;
     margin-bottom: 0.75rem;
-    color: #f8fafc;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+    color: var(--text-strong);
+    border-bottom: 1px solid rgba(var(--line-rgb), 0.15);
     padding-bottom: 0.3rem;
   }
 
@@ -88,7 +88,7 @@
     font-weight: 600;
     margin-top: 1.5rem;
     margin-bottom: 0.5rem;
-    color: #e2e8f0;
+    color: var(--text-soft);
   }
 
   :global(.markdown-body p) {
@@ -102,7 +102,7 @@
     max-width: 100%;
     height: auto;
     margin: 0.5rem 0 1rem;
-    border: 1px solid rgba(148, 163, 184, 0.25);
+    border: 1px solid rgba(var(--line-rgb), 0.25);
     border-radius: 10px;
   }
 
@@ -118,7 +118,7 @@
 
   :global(.markdown-body strong) {
     font-weight: 600;
-    color: #f8fafc;
+    color: var(--text-strong);
   }
 
   :global(.markdown-body em) {
@@ -126,7 +126,7 @@
   }
 
   :global(.markdown-body a) {
-    color: #60a5fa;
+    color: var(--accent);
     text-decoration: none;
   }
 
@@ -135,21 +135,21 @@
   }
 
   :global(.markdown-body code) {
-    background: rgba(15, 23, 42, 0.6);
+    background: rgba(var(--panel-rgb), 0.6);
     padding: 0.2em 0.4em;
     border-radius: 4px;
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     font-size: 0.85em;
-    color: #cbd5e1;
+    color: var(--text-soft);
   }
 
   :global(.markdown-body pre) {
-    background: rgba(15, 23, 42, 0.8);
+    background: rgba(var(--panel-rgb), 0.8);
     padding: 1rem;
     border-radius: 8px;
     overflow-x: auto;
     margin-bottom: 1rem;
-    border: 1px solid rgba(148, 163, 184, 0.15);
+    border: 1px solid rgba(var(--line-rgb), 0.15);
   }
 
   :global(.markdown-body pre code) {
@@ -162,8 +162,8 @@
     margin: 0 0 1rem 0;
     padding: 0.5rem 1rem;
     border-left: 4px solid #3b82f6;
-    background: rgba(59, 130, 246, 0.1);
-    color: #cbd5e1;
+    background: rgba(var(--accent-strong-rgb), 0.1);
+    color: var(--text-soft);
     border-radius: 0 4px 4px 0;
   }
 
@@ -176,21 +176,21 @@
 
   :global(.markdown-body th),
   :global(.markdown-body td) {
-    border: 1px solid rgba(148, 163, 184, 0.22);
+    border: 1px solid rgba(var(--line-rgb), 0.22);
     padding: 0.45rem 0.65rem;
     text-align: left;
     vertical-align: top;
   }
 
   :global(.markdown-body th) {
-    background: rgba(15, 23, 42, 0.5);
-    color: #f8fafc;
+    background: rgba(var(--panel-rgb), 0.5);
+    color: var(--text-strong);
     font-weight: 600;
   }
 
   :global(.markdown-body hr) {
     border: none;
-    border-top: 1px solid rgba(148, 163, 184, 0.2);
+    border-top: 1px solid rgba(var(--line-rgb), 0.2);
     margin: 1.5rem 0;
   }
 
@@ -200,7 +200,7 @@
     height: auto;
     margin: 1rem auto;
     border-radius: 8px;
-    border: 1px solid rgba(148, 163, 184, 0.22);
+    border: 1px solid rgba(var(--line-rgb), 0.22);
     box-shadow: 0 4px 18px rgba(0, 0, 0, 0.22);
   }
 
@@ -210,7 +210,7 @@
     justify-content: flex-end;
     align-items: center;
     padding: 0.58rem 0.82rem;
-    border-top: 1px solid rgba(148, 163, 184, 0.22);
+    border-top: 1px solid rgba(var(--line-rgb), 0.22);
   }
 
   .about-button {

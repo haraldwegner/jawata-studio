@@ -12,8 +12,9 @@ use std::path::Path;
 /// fails the build on a seat that exists on disk and is registered here).
 /// Materialized into `<config>/seats/` where absent; the materialized copy
 /// wins so a user-edited seat regenerates every channel on redeploy.
-pub const EMBEDDED_SEATS: [(&str, &str); 18] = [
+pub const EMBEDDED_SEATS: [(&str, &str); 20] = [
     ("architect.md", include_str!("../../seats/architect.md")),
+    ("btw.md", include_str!("../../seats/btw.md")),
     ("cataloguer.md", include_str!("../../seats/cataloguer.md")),
     ("chief-engineer.md", include_str!("../../seats/chief-engineer.md")),
     ("debugger.md", include_str!("../../seats/debugger.md")),
@@ -30,7 +31,8 @@ pub const EMBEDDED_SEATS: [(&str, &str); 18] = [
     ("test-manager.md", include_str!("../../seats/test-manager.md")),
     ("test-writer.md", include_str!("../../seats/test-writer.md")),
     ("ux.md", include_str!("../../seats/ux.md")),
-    ("worker.md", include_str!("../../seats/worker.md")),
+    ("developer.md", include_str!("../../seats/developer.md")),
+    ("senior-developer.md", include_str!("../../seats/senior-developer.md")),
 ];
 
 /// seat name → command name. The command-bearing seats; spec-editor/spec-auditor live in
@@ -43,7 +45,7 @@ pub const EMBEDDED_SEATS: [(&str, &str); 18] = [
 /// are the seat's own `purpose:` (see [`seat_description`]); a second copy here had drifted from
 /// the seat file for every seat, because the purposes were rewritten in plain language and these
 /// lines were not.
-pub const COMMAND_MAP: [(&str, &str); 16] = [
+pub const COMMAND_MAP: [(&str, &str); 15] = [
     ("main", "main"),
     ("cataloguer", "catalogue"),
     ("javadoc-writer", "javadocs"),
@@ -59,7 +61,6 @@ pub const COMMAND_MAP: [(&str, &str); 16] = [
     // typed word like the rest, and its card in the chat shows it.
     ("pm", "pm"),
     ("chief-engineer", "chief-engineer"),
-    ("worker", "worker"),
     ("observer", "observer"),
     ("test-manager", "test-manager"),
 ];
@@ -71,7 +72,7 @@ pub const PIPELINE_SEATS: [&str; 2] = ["spec-editor", "spec-auditor"];
 /// call the project manager directly?"). Each is a row of [`COMMAND_MAP`] like any typed seat; this list only says which rows
 /// are helpers, so the roster block that sits in every session's context names them on ONE line instead of five — the block
 /// has a recorded line budget, and a row each would have taken it over.
-pub const HIRED_SEATS: [&str; 5] = ["pm", "chief-engineer", "worker", "observer", "test-manager"];
+pub const HIRED_SEATS: [&str; 4] = ["pm", "chief-engineer", "observer", "test-manager"];
 
 pub fn command_for(seat_name: &str) -> Option<&'static str> {
     COMMAND_MAP
@@ -223,11 +224,44 @@ pub fn materialize_seats(seats_dir: &Path) -> Result<SeatMaterialization, String
             }
         }
     }
+    // D53 (l): a seat this build no longer ships goes, unless the person edited it.
+    for file in RETIRED_SEATS {
+        let path = seats_dir.join(file);
+        let unedited = manifest.get(file).is_some_and(|hash| fs::read_to_string(&path).is_ok_and(|text| content_hash(&text) == *hash));
+        if unedited {
+            fs::remove_file(&path).map_err(|e| format!("cannot remove {}: {e}", path.display()))?;
+            manifest.remove(file);
+        }
+    }
     let rendered = serde_json::to_string_pretty(&manifest)
         .map_err(|e| format!("cannot render the seed manifest: {e}"))?;
     fs::write(&manifest_path, rendered)
         .map_err(|e| format!("cannot write {}: {e}", manifest_path.display()))?;
+    materialize_typed_skills(seats_dir)?;
     Ok(report)
+}
+
+/// Seat files an earlier build shipped and this one does not.
+const RETIRED_SEATS: [&str; 1] = ["worker.md"];
+
+/// The skills a person starts with a typed word in the chat's `/` list (D53 (d)). The rest of
+/// [`UTILITY_MAP`] has a control of its own in the chat: Autocontinue is a button and `/btw` is the side panel.
+pub const TYPED_SKILLS: [&str; 4] = ["brainstorm", "memorize", "setup", "sprint"];
+
+/// The folder of the typed skills, beside the seats folder; the engine lists them under the same format as seats.
+pub fn typed_skills_dir(seats_dir: &Path) -> std::path::PathBuf {
+    seats_dir.parent().unwrap_or(seats_dir).join("skills")
+}
+
+fn materialize_typed_skills(seats_dir: &Path) -> Result<(), String> {
+    let dir = typed_skills_dir(seats_dir);
+    fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    for (command, description) in UTILITY_MAP.iter().filter(|(command, _)| TYPED_SKILLS.contains(command)) {
+        let path = dir.join(format!("{command}.md"));
+        let text = format!("---\nname: {command}\npurpose: {description}\n---\n{}\n", utility_body(command));
+        fs::write(&path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// The Lane-1 stance-handoff contract embedded in every generated command:
@@ -1188,8 +1222,8 @@ mod tests {
         code.sort();
         assert_eq!(
             text,
-            vec!["observer", "report", "review", "spec-auditor", "spec-editor"],
-            "the text seats are the ones whose input is an ARTIFACT (the observer's is the window it is shown)"
+            vec!["btw", "observer", "report", "review", "spec-auditor", "spec-editor"],
+            "the text seats are the ones whose input is an ARTIFACT (the observer's is the window it is shown; btw's is the question)"
         );
         assert!(
             code.contains(&"architect".to_string()),
@@ -1529,7 +1563,7 @@ mod tests {
     fn speed_clauses() -> Vec<SpeedClause> {
         let ceiling = EMBEDDED_SEATS
             .iter()
-            .find(|(f, _)| *f == "worker.md")
+            .find(|(f, _)| *f == "developer.md")
             .and_then(|(_, body)| body.lines().find_map(|l| l.strip_prefix("max_tool_steps:")))
             .map(|v| v.trim().to_string())
             .expect("the worker declares max_tool_steps in its frontmatter");
@@ -1545,17 +1579,17 @@ mod tests {
             own("S3", "pm", "A checkpoint record never carries a fifth round without his word beside it."),
             own("S4", "pm", "THE RECORD IS WRITTEN FROM GATE RESULTS, NEVER FROM THE ENGINEER'S NARRATIVE (D17 S4)."),
             own("S4", "pm", "Every number in a record sits beside the command that produced it, in the same action."),
-            own("S5", "worker", "READ THE GATE'S OWN SUMMARY LINE, NEVER A WRAPPER'S STATUS (D17 S5)."),
-            own("S5", "worker", "Whatever a gate prints goes to a file, and the summary line you read is the one in that file."),
-            own("S5", "worker", "A call refused twice for the same reason changes shape or you stop and say so, and a repeat made only to read output you dropped is a defect of this seat."),
-            own("S6", "worker", "YOUR CONTEXT ENDS WITH YOUR UNIT (D17 S6)."),
-            own("S6", "worker", "You carry nothing from one instruction to the next."),
-            own("S6", "worker", &format!("Your reset budget is {ceiling} tool steps, the `max_tool_steps` above: at {ceiling} you stop and report where you are.")),
+            own("S5", "developer", "READ THE GATE'S OWN SUMMARY LINE, NEVER A WRAPPER'S STATUS (D17 S5)."),
+            own("S5", "developer", "Whatever a gate prints goes to a file, and the summary line you read is the one in that file."),
+            own("S5", "developer", "A call refused twice for the same reason changes shape or you stop and say so, and a repeat made only to read output you dropped is a defect of this seat."),
+            own("S6", "developer", "YOUR CONTEXT ENDS WITH YOUR UNIT (D17 S6)."),
+            own("S6", "developer", "You carry nothing from one instruction to the next."),
+            own("S6", "developer", &format!("Your reset budget is {ceiling} tool steps, the `max_tool_steps` above: at {ceiling} you stop and report where you are.")),
             own("S7", "pm", "EVERY INSTRUCTION DECLARES THE SIZE OF WHAT IT PRODUCES, AND YOU DROP THE CONTEXT YOU DO NOT READ (D17 S7)."),
             own("S7", "pm", "The brief states the expected output size of each instruction (files changed, lines of answer); a run whose cost is an order off that size stops and reports, and what the next step does not read is dropped from the brief, not carried."),
-            own("S7", "worker", "NAME THE SIZE OF WHAT YOU PRODUCE (D17 S7)."),
-            own("S7", "worker", "Your report states the expected size of the output the instruction asks for, in files changed, before you call."),
-            own("S7", "worker", "A run whose cost is an order of magnitude off that size stops and reports."),
+            own("S7", "developer", "NAME THE SIZE OF WHAT YOU PRODUCE (D17 S7)."),
+            own("S7", "developer", "Your report states the expected size of the output the instruction asks for, in files changed, before you call."),
+            own("S7", "developer", "A run whose cost is an order of magnitude off that size stops and reports."),
         ]
     }
 
@@ -1942,20 +1976,20 @@ mod tests {
             "{rendered}"
         );
         assert!(
-            rendered.contains("11 are direct roles; 2 live in /sprint; 5 are hired helpers you can also call by their word"),
+            rendered.contains("11 are direct roles; 2 live in /sprint; 4 are hired helpers you can also call by their word"),
             "{rendered}"
         );
         assert!(
             rendered.contains(
                 "chief-engineer (`/chief-engineer`) + observer (`/observer`) + pm (`/pm`) + test-manager (`/test-manager`) \
-                 + worker (`/worker`) — hired by the principal, and each also runs when you type its word"
+                 — hired by the principal, and each also runs when you type its word"
             ),
             "{rendered}"
         );
         assert_eq!(
-            COMMAND_MAP.len() + PIPELINE_SEATS.len(),
+            COMMAND_MAP.len() + PIPELINE_SEATS.len() + ["developer", "senior-developer", "btw"].len(),
             EMBEDDED_SEATS.len(),
-            "every embedded seat is typed or in the pipeline — none uncounted; the hired helpers are typed too"
+            "every embedded seat is typed, in the pipeline, or one of the three no person types — none uncounted; the hired helpers are typed too"
         );
         assert!(
             HIRED_SEATS.iter().all(|seat| command_for(seat).is_some()),

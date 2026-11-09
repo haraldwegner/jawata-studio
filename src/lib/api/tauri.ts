@@ -827,6 +827,11 @@ export function eclipseWorkspaces(): Promise<EclipseWorkspaceRow[]> {
   return invoke<EclipseWorkspaceRow[]>("eclipse_workspaces");
 }
 
+/** Stop listing one Eclipse workspace that is not running. Nothing is stopped or deleted. */
+export function forgetEclipseWorkspace(path: string): Promise<void> {
+  return invoke<void>("forget_eclipse_workspace", { path });
+}
+
 /** Per-workspace dependency-resolution report. One health_check per resident. */
 export function resolutionStatus(): Promise<ResolutionStatus[]> {
   return invoke<ResolutionStatus[]>("resolution_status");
@@ -890,6 +895,8 @@ export interface SeatsView {
   clients: ClientChoice[];
   /** Malformed seat files and an unreadable settings file. Never swallowed. */
   errors: string[];
+  /** The brains the principal and btw can run on. */
+  acpBrains: string[];
 }
 
 /** One setting per request, so a call cannot name two at once. */
@@ -927,6 +934,11 @@ export function brainProbe(brain: string, model: string | null): Promise<ProbeRe
 
 
 /** Every deployed seat with its four settings. File reads only. */
+/** What a dark or light VS Code left for the studio (D53 (t)); null when it left nothing. */
+export function editorTheme(): Promise<import("../editorPalette").EditorThemeFile | null> {
+  return invoke("editor_theme");
+}
+
 export function seatsView(): Promise<SeatsView> {
   return invoke("seats_view");
 }
@@ -979,6 +991,8 @@ export interface WorkflowRow {
   placed: boolean;
   /** Why the seat has no place in the tree (the signed tree does not know it and it is not placed); null when it has one. */
   noPlaceReason: string | null;
+  /** A seat of the default tree that has no seat file: shown, and not movable. */
+  noFile: boolean;
 }
 
 export interface WorkflowView {

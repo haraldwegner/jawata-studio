@@ -193,6 +193,8 @@ pub struct WorkflowRow {
     /// Why the seat has no place in the tree, when it has none: the engine's signed tree does not know
     /// it and the person has not placed it. A seat shows its place or this, never two empty fields.
     pub no_place_reason: Option<String>,
+    /// A seat of the default tree that has no seat file: it is shown so the tree is whole, and cannot be moved.
+    pub no_file: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -218,7 +220,7 @@ pub struct WorkflowView {
 
 /// The plain reason a seat has no place in the tree (Sprint 28h Stage 21 (h)2). The engine's
 /// `SeatTree.standard()` places fifteen seats and leaves out `observer`, `report`, `review`,
-/// `rottenmeier` and `worker`; the view used to show those with two empty fields, as though the
+/// and `rottenmeier`; the view used to show those with two empty fields, as though the
 /// studio had failed to load a place. Each reason says what starts the seat instead of a hire.
 pub fn no_place_reason(seat: &str, command: Option<&str>) -> String {
     match seat {
@@ -226,7 +228,7 @@ pub fn no_place_reason(seat: &str, command: Option<&str>) -> String {
         "report" => "Nothing hires it. You type /report yourself when you want a bug report drafted.".to_string(),
         "review" => "Nothing hires it. You type /review yourself, and it also runs on its own schedule.".to_string(),
         "rottenmeier" => "Nothing hires it. It starts when you are rude or interrupt, or when you type /rottenmeier.".to_string(),
-        "worker" => "The engine's tree has no seat of this name, so no seat hires it. The tree's workers are developer, senior-developer, javadoc-writer and test-writer.".to_string(),
+        "btw" => "Nothing hires it. It answers the btw panel, the side discussion.".to_string(),
         _ => match command {
             Some(command) => format!(
                 "The engine's tree does not know this seat, so nothing hires it. You type {command} yourself."
@@ -268,9 +270,25 @@ pub fn workflow_view(seats_dir: &Path) -> WorkflowView {
                     escalates_to: n.escalates_to.clone(),
                 }),
                 placed: settings.workflow(&seat.name).is_some(),
+                no_file: false,
             }
         })
         .collect();
+    for (name, node) in &signed {
+        if !rows.iter().any(|row| &row.name == name) {
+            rows.push(WorkflowRow {
+                name: name.clone(),
+                command: None,
+                parent: node.parent.clone(),
+                role: node.role.clone(),
+                escalates_to: node.escalates_to.clone(),
+                signed: Some(SignedPlace { parent: node.parent.clone(), role: node.role.clone(), escalates_to: node.escalates_to.clone() }),
+                placed: false,
+                no_place_reason: None,
+                no_file: true,
+            });
+        }
+    }
     rows.sort_by(|a, b| (a.parent.as_str(), a.name.as_str()).cmp(&(b.parent.as_str(), b.name.as_str())));
     let mut places: Vec<String> = std::iter::once(TOP.to_string()).chain(tree.keys().cloned()).collect();
     places.sort();
@@ -317,6 +335,9 @@ mod tests {
         assert_eq!(cataloguer.parent, "chief-engineer");
         assert!(view.places.contains(&"developer".to_string()), "a seat of the signed tree without a file can still be a parent");
         assert!(view.rows.iter().all(|r| r.name != "main"), "main is the top and is not placed");
+        assert!(SIGNED.iter().all(|(seat, ..)| view.rows.iter().any(|r| r.name == *seat)), "every seat of the default tree has a place on the chart");
+        assert!(view.rows.iter().find(|r| r.name == "consultant").unwrap().no_file, "the consultant has no seat file and says so");
+        assert!(view.rows.iter().all(|r| r.name != "worker"), "the seat named worker is gone");
     }
 
     #[test]
@@ -453,13 +474,13 @@ mod tests {
     }
 
     /// Stage 21 (h)2. The engine's `SeatTree.standard()` leaves out observer, report, review, rottenmeier and
-    /// worker. Their rows showed two empty fields; now every row shows its place or says why it has none.
+    /// btw. Their rows showed two empty fields; now every row shows its place or says why it has none.
     #[test]
     fn every_seat_shows_its_place_or_the_reason_it_has_none() {
         let seats = deployed("noplace");
         let view = workflow_view(&seats);
         let named: Vec<&str> = view.rows.iter().map(|r| r.name.as_str()).collect();
-        for left_out in ["observer", "report", "review", "rottenmeier", "worker"] {
+        for left_out in ["observer", "report", "review", "rottenmeier", "btw"] {
             assert!(named.contains(&left_out), "control: {left_out} is a shipped seat with a row, got {named:?}");
             let row = view.rows.iter().find(|r| r.name == left_out).unwrap();
             assert!(row.parent.is_empty() && row.role.is_empty(), "{left_out} is outside the signed tree");
@@ -467,7 +488,7 @@ mod tests {
             assert!(reason.len() > 20 && reason.contains("hire"), "{left_out}: {reason}");
         }
         assert!(
-            SIGNED.iter().all(|(seat, ..)| !["observer", "report", "review", "rottenmeier", "worker"].contains(seat)),
+            SIGNED.iter().all(|(seat, ..)| !["observer", "report", "review", "rottenmeier", "btw"].contains(seat)),
             "control: the signed table really leaves those five out (SeatTree.standard() does)"
         );
         // The invariant for every row of the shipped seats, so a sixth such seat cannot show two empty fields.

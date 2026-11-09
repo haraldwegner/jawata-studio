@@ -97,7 +97,7 @@
   .editor-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(2, 6, 23, 0.75);
+    background: rgba(var(--shade-rgb), 0.75);
     backdrop-filter: blur(4px);
     display: flex;
     align-items: center;
@@ -110,8 +110,8 @@
     max-width: 560px;
     max-height: 80vh;
     overflow: auto;
-    background: rgba(15, 23, 42, 0.97);
-    border: 1px solid rgba(148, 163, 184, 0.2);
+    background: rgba(var(--panel-rgb), 0.97);
+    border: 1px solid rgba(var(--line-rgb), 0.2);
     border-radius: 12px;
     box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
     padding: 1.5rem;
@@ -120,32 +120,32 @@
   h2 {
     margin: 0 0 0.75rem;
     font-size: 1.15rem;
-    color: #f8fafc;
+    color: var(--text-strong);
   }
 
   h3 {
     margin: 0.9rem 0 0.3rem;
     font-size: 0.85rem;
-    color: #94a3b8;
+    color: var(--muted);
     font-weight: 600;
   }
 
   .editor-question {
     margin: 0;
     line-height: 1.55;
-    color: #cbd5e1;
+    color: var(--text-soft);
   }
 
   ul {
     margin: 0;
     padding-left: 1.1rem;
-    color: #cbd5e1;
+    color: var(--text-soft);
     font-size: 0.85rem;
   }
 
   .editor-failure {
     margin: 0.9rem 0 0;
-    color: #fca5a5;
+    color: var(--danger-soft);
     font-size: 0.85rem;
   }
 
@@ -165,22 +165,22 @@
 
   .btn-decline {
     background: transparent;
-    border-color: rgba(148, 163, 184, 0.3);
-    color: #cbd5e1;
+    border-color: rgba(var(--line-rgb), 0.3);
+    color: var(--text-soft);
   }
 
   .btn-decline:hover:not(:disabled) {
-    background: rgba(148, 163, 184, 0.12);
-    color: #f8fafc;
+    background: rgba(var(--line-rgb), 0.12);
+    color: var(--text-strong);
   }
 
   .btn-update {
-    background: #2563eb;
-    color: #ffffff;
+    background: var(--accent-strong);
+    color: var(--text-strong);
   }
 
   .btn-update:hover:not(:disabled) {
-    background: #1d4ed8;
+    background: var(--accent-deep);
   }
 
   button:disabled {

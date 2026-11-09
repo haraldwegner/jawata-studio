@@ -1027,6 +1027,8 @@ pub fn run() {
             commands::field_status,
             commands::workspace_readability,
             commands::eclipse_workspaces,
+            commands::forget_eclipse_workspace,
+            commands::editor_theme,
             commands::field_set_silence,
             commands::seats_view,
             commands::workflow_view,

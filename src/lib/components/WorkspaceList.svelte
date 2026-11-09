@@ -26,6 +26,9 @@
   /** Optional: delete every workspace. Lives here, beside the workspaces it removes
    * (his ruling 2026-10-22), and is greyed while any workspace runs. */
   export let onDeleteAll: (() => void) | undefined = undefined;
+  /** Optional: stop listing an Eclipse workspace that is not running (right-click on its row). Nothing is
+   * stopped or deleted. */
+  export let onForgetEclipse: ((path: string) => void) | undefined = undefined;
   /** Optional: drop handler for projects dragged from ProjectList onto
    * a workspace row. When omitted the rows are not drop targets. */
   export let onProjectsDropped:
@@ -186,9 +189,21 @@
     const where = ew.path ? ` (${ew.path})` : "";
     const names = ew.projects.map((p) => p.name).join(", ");
     return (
-      `Eclipse workspace${where}. Studio shows it and cannot start or stop it: open or close it in Eclipse.` +
+      `Eclipse workspace${where}. Studio shows it and cannot start or stop it: open or close it in Eclipse. Right-click a workspace that is not running to forget it.` +
       (names ? ` Projects: ${names}.` : "")
     );
+  }
+
+  function openEclipseContextMenu(event: MouseEvent, ew: EclipseWorkspaceRow) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (disabled || ew.running || !ew.path || !onForgetEclipse) return;
+    const path = ew.path;
+    contextMenu = {
+      x: event.clientX,
+      y: event.clientY,
+      items: [{ label: "Forget this workspace", onSelect: () => onForgetEclipse?.(path) }],
+    };
   }
 
   /** Currently-open right-click context menu. Closed = null. */
@@ -294,6 +309,7 @@
         <div
           class="workspace-row workspace-row-eclipse"
           title={eclipseTitle(ew)}
+          on:contextmenu={(e) => openEclipseContextMenu(e, ew)}
           role="presentation"
         >
           <span class="workspace-row-select workspace-row-static">

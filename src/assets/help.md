@@ -58,7 +58,7 @@ A seat is a narrow role an agent takes when you type its command, such as `/refa
 
 ## Workflow
 
-Where each seat sits when work is handed on: which seat it **Reports to**, its role (**Is a**), and which seat it escalates to. A seat the engine's tree does not place says why instead of showing empty fields. Choose a parent and a role to put such a seat in the tree; the choice is written into the deployed seat file, and the studio refuses it, with the engine's reason, when the engine would refuse it. Removing the placement takes the three lines out again, even from a file you edited.
+Who hires whom, drawn as an org chart: each seat sits under the seat that hires it, and the seats with nothing under them stand in one column below their parent. The chart opens **Locked**, so there is nothing to fill in. **Unlock** it to change the tree: drag a seat onto another seat and everything under it moves along; click a seat's role (lead, worker or reviewer) to change it; right-click a seat for where its failures go and for **Back to default**. A move the engine would refuse snaps back and says why. **Helpers** beside the principal are not hired: each one's mouseover says what starts it. A seat you moved has a coloured border, and **Back to default** at the top returns every seat to the default tree.
 
 ## Settings
 

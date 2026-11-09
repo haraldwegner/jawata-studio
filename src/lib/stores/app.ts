@@ -9,6 +9,7 @@ import {
   deleteAllProjects,
   deleteProject,
   eclipseWorkspaces as eclipseWorkspacesApi,
+  forgetEclipseWorkspace as forgetEclipseWorkspaceApi,
   downloadOrUpdateJawata,
   getDashboard,
   getRuntimeStatus,
@@ -393,6 +394,16 @@ export function createAppStore() {
     );
   }
 
+  /** Stop listing an Eclipse workspace that is not running, then show the list without it. */
+  async function forgetEclipseWorkspace(path: string) {
+    try {
+      await forgetEclipseWorkspaceApi(path);
+    } catch (e) {
+      console.error("forgetting an Eclipse workspace failed", e);
+    }
+    await refreshEclipseWorkspaces();
+  }
+
   async function refreshEclipseWorkspaces() {
     try {
       const rows = await eclipseWorkspacesApi();
@@ -596,6 +607,7 @@ export function createAppStore() {
     subscribe,
     load,
     setProjectWorkspaceEntry,
+    forgetEclipseWorkspace,
     renameWorkspaceEntry,
     deleteWorkspaceEntry,
     setWorkspaceHeapBound,

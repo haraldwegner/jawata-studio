@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
+  import { followEditorTheme } from "./lib/editorTheme";
   import { listen } from "@tauri-apps/api/event";
   import ContextMenu from "./lib/components/ContextMenu.svelte";
   import ProjectForm from "./lib/components/ProjectForm.svelte";
@@ -226,6 +227,7 @@
       ? runtimeSource.jarPath
       : runtimeSubtitle;
 
+  onMount(followEditorTheme);
   onMount(() => {
     void getManagerAppVersion().then((v) => {
       managerAppVersion = v;
@@ -528,6 +530,7 @@
                 }
               }}
               eclipseWorkspaces={$appStore.eclipseWorkspaces ?? []}
+              onForgetEclipse={(path) => appStore.forgetEclipseWorkspace(path)}
               projects={$appStore.projects ?? []}
               runtimeStatuses={$appStore.runtimeStatuses ?? {}}
             />

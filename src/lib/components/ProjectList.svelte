@@ -99,15 +99,16 @@
     { key: "copilotCli", id: "copilot_cli", label: "Copilot CLI" },
     /* Sprint 28h Stage 21 (c): ONE entry for VS Code. The backend reads this id and also writes the chat's agent
        setting, jawata Java's server setting and the two settings that let an extension start the studio, installs
-       the two extensions, and removes the competing Java extension. Remove takes out the same things (that one is
-       not put back). */
+       the two extensions and turns off VS Code's AI features; Red Hat's Java extension stays until 28i Stage 25 (D53 (n)).
+       Remove takes out the same things. */
     {
       key: "vscode",
       id: "vscode",
       label: "VS Code",
       covers:
-        "The MCP entry, plus: installs jawata chat and jawata Java (needs the `code` command on PATH), writes their settings, " +
-        "and uninstalls the competing Java extension. Remove undoes all of it except that one, which is not put back."
+        "The MCP entry, plus: installs jawata chat and jawata Java (needs the `code` command on PATH), writes their settings " +
+        "and turns off VS Code's built-in AI features, Copilot among them. Language Support for Java by Red Hat stays installed " +
+        "until jawata has its own test view and debugger. Remove undoes all of it."
     },
     { key: "grok", id: "grok", label: "Grok" }
   ];
@@ -418,13 +419,18 @@
     };
   }
 
+  /** The last run, named for what it was: "Last deploy" or "Last remove", never the engine's mode word. */
   function deploySummary(result: DeployToAgentsResult): string {
-    const succeeded = result.clients.filter((entry) => entry.status === "success").length;
-    const total = result.clients.length;
-    const failed = result.clients.filter((entry) => entry.status === "failed").length;
-    const skipped = result.clients.filter((entry) => entry.status === "skipped").length;
-    const actionLabel = result.mode === "delete" ? "updated" : "deployed";
-    return `${result.mode}: ${actionLabel} ${succeeded}/${total} clients (${succeeded} success, ${failed} failed, ${skipped} skipped)`;
+    // The editor extensions are one step of a run, not an agent he ticked; they are said in the note below.
+    const agents = result.clients.filter((entry) => entry.client !== "vscode-extensions");
+    const total = agents.length;
+    const succeeded = agents.filter((entry) => entry.status === "success").length;
+    const failed = agents.filter((entry) => entry.status === "failed").length;
+    const skipped = agents.filter((entry) => entry.status === "skipped").length;
+    const run = result.mode === "delete" ? "Last remove" : "Last deploy";
+    const done = result.mode === "delete" ? "cleared" : "set up";
+    const rest = [failed ? `${failed} failed` : "", skipped ? `${skipped} skipped` : ""].filter(Boolean).join(", ");
+    return `${run}: ${succeeded} of ${total} agents ${done}${rest ? `, ${rest}` : ""}`;
   }
 
   function deployStatusLine(result: DeployToAgentsResult): { text: string; failed: boolean } {
@@ -434,9 +440,7 @@
     const base = deploySummary(result);
     // Stage 21 (c): "the VS Code part was skipped" or "the release has no asset" must be said, not left as a count.
     // The extension row is the one place the person is told why the editor part did not happen.
-    const editorNote = result.clients.find(
-      (entry) => entry.client === "vscode-extensions" && entry.status !== "success"
-    );
+    const editorNote = result.clients.find((entry) => entry.client === "vscode-extensions");
     const note = editorNote ? ` — ${editorNote.message}` : "";
     return {
       text: failedNames.length ? `${base} — failed: ${failedNames.join(", ")}${note}` : `${base}${note}`,
@@ -1089,7 +1093,7 @@
       class:active={showDeployTargetPicker && pendingDeployMode === "deploy"}
       disabled={disabled || deployBusy}
       on:click={() => openDeployTargetPicker("deploy")}
-      title="Write the jawata entry of every workspace into the config files of the agents you tick next. Run it again after adding or renaming a workspace; it rewrites only what differs."
+      title="Write the jawata entry of every workspace into the config files of the agents you tick next, and into VS Code its two extensions and their settings. Copilot is turned off in VS Code. Red Hat's Java extension stays until jawata has its own test view and debugger. Run it again after adding or renaming a workspace; it rewrites only what differs."
       type="button"
     >
       {deployBusy ? "Deploying..." : "Deploy to agents"}
@@ -1119,24 +1123,19 @@
             />
             <span title={option.covers}>{option.label}</span>
           </label>
-          {#if option.covers && deployTargetsDraft[option.key]}
-            <p class="hint deploy-target-covers">{option.covers}</p>
-          {/if}
         {/each}
       </div>
       <div class="actions compact">
         <button disabled={disabled || deployBusy} on:click={closeDeployTargetPicker} type="button">Cancel</button>
         <button
           disabled={disabled || deployBusy || selectedDeployTargetCount === 0}
+          title={selectedDeployTargetCount === 0 ? "Tick at least one agent first." : undefined}
           on:click={runDeployWithTargets}
           type="button"
         >
           {runActionLabel(pendingDeployMode)}
         </button>
       </div>
-      {#if selectedDeployTargetCount === 0}
-        <p class="project-error">Select at least one deploy target.</p>
-      {/if}
     </div>
   {/if}
 

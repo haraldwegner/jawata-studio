@@ -12,8 +12,8 @@
 //!    tray; the extension adds one `--editor-folder <path>` per folder of its workspace, and reads the answer, the matched
 //!    jawata workspace's address and key, from `<handoffDir>/<id>.json`, see `editor_launch`). (`jawataChat.agent` is the
 //!    existing chat row's, `agent_registration`.) Text edits, so comments and every other key stay;
-//! 3. uninstalls `redhat.java` when it is installed, because it competes with jawata Java. Never put back,
-//!    and only after jawata Java is installed, so a failed download never leaves a machine with no Java support;
+//! 3. leaves `redhat.java` in place and says why, until jawata has its own Testing view and debugger (Sprint 28h D53 (n),
+//!    Sprint 28i Stage 25), and writes `chat.disableAIFeatures` so that Copilot is gone from VS Code (D53 (p));
 //! 4. leaves Cursor alone: only a `code` found on PATH is run, and one that lives in a Cursor folder is refused.
 //!
 //! Everything that touches the machine takes an [`EditorEnv`] (the PATH, the local `.vsix` folder, the release
@@ -41,6 +41,11 @@ pub const RIVAL_EXTENSION_ID: &str = "redhat.java";
 pub const EXTENSIONS_REPO: &str = "haraldwegner/jawata-chat";
 /// A folder of local `.vsix` files, used instead of the network (tests, offline use).
 pub const VSIX_DIR_ENV: &str = "JAWATA_STUDIO_VSIX_DIR";
+
+/// VS Code's own switch for Copilot's chat and suggestions (D53 (p)).
+pub const AI_OFF_KEY: &str = "chat.disableAIFeatures";
+/// Written beside it when the deploy set it, so Remove takes back only what the deploy wrote.
+pub const AI_OFF_BY_DEPLOY_KEY: &str = "jawataChat.copilotOffByDeploy";
 
 pub const JAVA_SERVER_KEY: &str = "jawataJava.server";
 pub const CHAT_STUDIO_KEY: &str = "jawataChat.studio";
@@ -506,27 +511,19 @@ pub fn deploy_extensions(env: &EditorEnv, cache: &Path) -> ExtensionsReport {
             Err(e) => errors.push(e),
         }
     }
-    if before.iter().any(|id| id == RIVAL_EXTENSION_ID) {
-        if java_in {
-            match run_code(&code, &["--uninstall-extension", RIVAL_EXTENSION_ID], env.step_timeout) {
-                Ok(out) if out.ok => changed.push(format!("uninstalled {RIVAL_EXTENSION_ID}")),
-                Ok(out) => errors.push(format!("`code --uninstall-extension {RIVAL_EXTENSION_ID}` failed (exit {:?}): {}", out.exit, out.stderr.trim())),
-                Err(e) => errors.push(e),
-            }
-        } else {
-            errors.push(format!("{RIVAL_EXTENSION_ID} was left installed because jawata Java was not installed"));
-        }
-    }
+    let rival_stays = before.iter().any(|id| id == RIVAL_EXTENSION_ID);
     let outcome = if errors.is_empty() { Outcome::Success } else { Outcome::Failed };
     let mut message = format!("VS Code: {} (source: {})", if changed.is_empty() { "nothing changed".to_string() } else { changed.join(", ") }, files.source);
+    if rival_stays {
+        message.push_str(&format!(". {RIVAL_EXTENSION_ID} is left in place until jawata has its own test view and debugger"));
+    }
     if !errors.is_empty() {
         message.push_str(&format!(". Not done: {}", errors.join("; ")));
     }
     ExtensionsReport { outcome, message, changed, errors, code: Some(code) }
 }
 
-/// Take out the two extensions the deploy installed. `redhat.java` is not put back: the deploy removed it for
-/// good, and the person installs it again if they want it.
+/// Take out the two extensions the deploy installed.
 pub fn remove_extensions(env: &EditorEnv) -> ExtensionsReport {
     let code = match locate(env) {
         Ok(code) => code,
@@ -616,6 +613,20 @@ pub fn editor_keys_merged(existing: Option<&str>, java: &Launch, studio: Option<
         wanted.push((CHAT_STUDIO_KEY, studio_value(studio, handoff_dir), is_studio_entry));
         wanted.push((JAVA_STUDIO_KEY, studio_value(studio, handoff_dir), is_studio_entry));
     }
+    // D53 (p): Copilot off. If the person had already turned it off, Remove must leave that as it was, so no mark is written.
+    let already_off = existing
+        .filter(|t| !t.trim().is_empty())
+        .and_then(|t| read_root(t).ok())
+        .and_then(|root| root.member(AI_OFF_KEY).map(|m| m.value.to_value() == json!(true)))
+        .unwrap_or(false);
+    let marked = existing
+        .filter(|t| !t.trim().is_empty())
+        .and_then(|t| read_root(t).ok())
+        .is_some_and(|root| root.member(AI_OFF_BY_DEPLOY_KEY).is_some());
+    wanted.push((AI_OFF_KEY, json!(true), Value::is_boolean));
+    if !already_off || marked {
+        wanted.push((AI_OFF_BY_DEPLOY_KEY, json!(true), Value::is_boolean));
+    }
     let Some(text) = existing.filter(|t| !t.trim().is_empty()) else {
         let mut root = parse_object(existing)?;
         for (key, value, _) in wanted {
@@ -643,7 +654,7 @@ pub fn editor_keys_without(existing: &str) -> Result<String, String> {
         return Ok(render(parse_object(Some(existing))?));
     }
     let root = read_root(existing)?;
-    let ours: Vec<usize> = EDITOR_KEYS
+    let mut ours: Vec<usize> = EDITOR_KEYS
         .iter()
         .filter_map(|key| {
             let index = root.member_index(key)?;
@@ -652,6 +663,11 @@ pub fn editor_keys_without(existing: &str) -> Result<String, String> {
             is_ours.then_some(index)
         })
         .collect();
+    // Copilot comes back only when it was this deploy that turned it off.
+    if let Some(mark) = root.member_index(AI_OFF_BY_DEPLOY_KEY) {
+        ours.push(mark);
+        ours.extend(root.member_index(AI_OFF_KEY));
+    }
     jsonc_edit::apply(existing, jsonc_edit::remove_members(existing, &root, &ours))
 }
 
@@ -800,6 +816,30 @@ mod tests {
     use std::collections::BTreeMap;
     use std::io::Write as _;
 
+    /// D53 (n) against a real VS Code, because a fake `code` that always succeeds is how the old removal shipped broken. Never Cursor:
+    /// `JAWATA_REAL_CODE_DIR` is a folder holding a `code` wrapper bound to an isolated profile that has Red Hat and the extensions
+    /// depending on it, `JAWATA_REAL_VSIX_DIR` the two built extensions. Run with `--ignored`.
+    #[test]
+    #[ignore]
+    fn on_a_real_vs_code_both_extensions_arrive_and_red_hat_stays_with_the_reason() {
+        let bin = PathBuf::from(std::env::var("JAWATA_REAL_CODE_DIR").expect("JAWATA_REAL_CODE_DIR"));
+        let env = EditorEnv {
+            path_var: Some(std::env::join_paths([bin]).unwrap()),
+            vsix_dir: Some(PathBuf::from(std::env::var("JAWATA_REAL_VSIX_DIR").expect("JAWATA_REAL_VSIX_DIR"))),
+            release_api: None,
+            studio: None,
+            step_timeout: Duration::from_secs(120),
+        };
+        let s = Scratch::new("realcode");
+        let report = deploy_extensions(&env, &s.0);
+        assert_eq!(report.outcome, Outcome::Success, "{}", report.message);
+        assert!(report.message.contains("redhat.java is left in place until jawata has its own test view and debugger"), "{}", report.message);
+        let after = listed(report.code.as_ref().unwrap(), &env).unwrap();
+        for id in [CHAT_EXTENSION_ID, JAVA_EXTENSION_ID, RIVAL_EXTENSION_ID, "vscjava.vscode-java-test", "vscjava.vscode-java-debug", "vscjava.vscode-java-dependency", "vscjava.vscode-maven", "vscjava.vscode-gradle"] {
+            assert!(after.iter().any(|installed| installed.eq_ignore_ascii_case(id)), "{id} is not installed: {after:?}");
+        }
+    }
+
     #[test]
     fn the_files_are_picked_by_exact_name_and_the_newest_version() {
         assert_eq!(vsix_version("jawata-chat-0.2.0.vsix", "jawata-chat"), semver::Version::parse("0.2.0").ok());
@@ -810,7 +850,7 @@ mod tests {
     }
 
     #[test]
-    fn a_deploy_installs_both_extensions_removes_the_rival_and_makes_exactly_these_calls() {
+    fn a_deploy_installs_both_extensions_leaves_the_rival_and_says_why() {
         let s = Scratch::new("deploy");
         fake_code(&s.0, &["ms-python.python", "redhat.java", "REDHAT.vscode-yaml"]);
         let vsix = vsix_folder(&s.0);
@@ -825,10 +865,9 @@ mod tests {
                 "--list-extensions".to_string(),
                 format!("--install-extension {} --force", vsix.join("jawata-chat-0.2.0.vsix").display()),
                 format!("--install-extension {} --force", vsix.join("jawata-java-0.1.0.vsix").display()),
-                "--uninstall-extension redhat.java".to_string(),
             ]
         );
-        assert!(report.message.contains("uninstalled redhat.java"), "{}", report.message);
+        assert!(report.message.contains("redhat.java is left in place until jawata has its own test view and debugger"), "{}", report.message);
     }
 
     #[test]
@@ -845,7 +884,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rival_is_kept_when_jawata_java_could_not_be_installed() {
+    fn the_rival_stays_when_jawata_java_could_not_be_installed_and_only_that_failure_is_reported() {
         let s = Scratch::new("rivalkept");
         fake_code(&s.0, &["redhat.java"]);
         std::fs::write(s.path("fail.txt"), "jawata-java").unwrap();
@@ -855,7 +894,6 @@ mod tests {
 
         assert_eq!(report.outcome, Outcome::Failed);
         assert!(calls(&s.0).iter().all(|c| !c.contains("--uninstall-extension")), "{:?}", calls(&s.0));
-        assert!(report.message.contains("redhat.java was left installed"), "{}", report.message);
         assert!(report.message.contains("boom"), "the editor's own words reach the result: {}", report.message);
         assert!(report.changed.iter().any(|c| c.contains(CHAT_EXTENSION_ID)), "the chat still went in");
     }

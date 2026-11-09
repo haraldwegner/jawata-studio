@@ -96,8 +96,22 @@
     return "";
   }
 
+  /** The two seats a person talks to directly; each runs on a brain the engine can start for a conversation. */
+  const CONVERSATION = ["main", "btw"];
+  const isConversation = (seat: SeatRow) => CONVERSATION.includes(seat.name);
+
   function brainOptions(seat: SeatRow): BrainOption[] {
     const options: BrainOption[] = [];
+    if (isConversation(seat)) {
+      for (const b of brains.filter((x) => view?.acpBrains.includes(x.id))) {
+        options.push({ value: `${b.id}|`, label: `${b.label}${loginNote(b)}` });
+      }
+      const chosen = `${seat.brain}|`;
+      if (!options.some((o) => o.value === chosen)) {
+        options.unshift({ value: chosen, label: `${brainLabel(seat.brain)} (not available on this machine)` });
+      }
+      return options;
+    }
     for (const b of brains.filter((x) => x.hirable && x.installed)) {
       // Choosing a brain whose writes are held only by an instruction to the model is the seat's
       // word that it may run that way (the engine refuses the hire otherwise), so say it here.
@@ -197,14 +211,19 @@
   $: groups = view
     ? [
         {
+          title: "Who you talk to",
+          hint: "The principal is the agent you talk to in the jawata chat. btw is the side discussion in the panel on the right. The brain chosen here is what the next conversation runs on; you can change the principal's during a conversation on its row in Agent Control.",
+          seats: view.seats.filter(isConversation),
+        },
+        {
           title: "You type these",
           hint: "Each has a command you type in your agent's chat. The On switch adds or removes that command in your agents.",
-          seats: view.seats.filter((seat) => seat.command),
+          seats: view.seats.filter((seat) => seat.command && !isConversation(seat)),
         },
         {
           title: "Another seat hires these",
           hint: "They have no command. A seat hires one for a job, gives it a brief and checks what comes back. You choose only which brain they use.",
-          seats: view.seats.filter((seat) => !seat.command && !seat.pipeline),
+          seats: view.seats.filter((seat) => !seat.command && !seat.pipeline && !isConversation(seat)),
         },
         {
           title: "Inside /sprint",
@@ -227,8 +246,8 @@
       class="summary-line"
       title="A seat is a narrow engineering role an agent can take. Open a row for when it is used, its brain and which of your agents get its command."
     >
-      <strong>{view.seats.filter((seat) => seat.command).length}</strong> you type ·
-      {view.seats.filter((seat) => !seat.command && !seat.pipeline).length} hired by other seats ·
+      <strong>{view.seats.filter((seat) => seat.command && !isConversation(seat)).length}</strong> you type ·
+      {view.seats.filter((seat) => !seat.command && !seat.pipeline && !isConversation(seat)).length} hired by other seats ·
       {view.seats.filter((seat) => !seat.command && seat.pipeline).length} inside /sprint
     </p>
   {/if}
@@ -362,7 +381,7 @@
   }
   .seat-group h3 {
     margin: 0.6rem 0 0;
-    color: #cbd5e1;
+    color: var(--text-soft);
   }
   /* One row per seat: name and command, the On switch, then what it is for in one sentence. The
      sentence wraps rather than being cut, so nothing in it is hidden behind an ellipsis. */
@@ -380,7 +399,7 @@
     font-weight: 600;
   }
   .seat-command {
-    color: #93c5fd;
+    color: var(--accent-soft);
     font-weight: 500;
   }
   /* The switch sits BESIDE the fold, not inside its <summary>: a control inside a summary can toggle the
@@ -409,7 +428,7 @@
   /* The purpose is what a person decides on, so it reads at body size, not as a muted aside. */
   .seat-purpose {
     margin: 0;
-    color: #cbd5e1;
+    color: var(--text-soft);
     font-size: 0.95rem;
     line-height: 1.45;
   }
@@ -421,7 +440,7 @@
     font-size: 0.9rem;
   }
   .seat-facts dt {
-    color: #94a3b8;
+    color: var(--muted);
   }
   /* A login failure is something to act on, so it reads at the size of the line it sits in. */
   .seat-facts .project-error {

@@ -588,6 +588,15 @@ impl ManagerService {
 
     /// The rows for these readings, remembering what they show. Split from the folder read so a test can feed it readings.
     fn rows_and_remember(&self, readings: &[eclipse_notes::NoteReading]) -> Vec<EclipseWorkspaceRow> {
+        // A workspace the person asked studio to forget stays off the list while its note is stale; an Eclipse that
+        // has it open again (a live note) brings it back.
+        let forgotten = self.config_store.forgotten_eclipse_workspaces();
+        let readings: Vec<eclipse_notes::NoteReading> = readings
+            .iter()
+            .filter(|r| r.status == eclipse_notes::NoteStatus::Live || !r.workspace_path.as_deref().is_some_and(|p| forgotten.iter().any(|f| f == p)))
+            .cloned()
+            .collect();
+        let readings = readings.as_slice();
         let mut rows = Vec::new();
         // The merge runs inside the settings lock, on the list stored at that moment; the tray asks every second,
         // and an unchanged list is not a write.
@@ -600,6 +609,12 @@ impl ManagerService {
             eprintln!("[jawata-studio] the Eclipse workspaces seen could not be remembered: {error}");
         }
         rows
+    }
+
+    /// The person asked studio to forget this Eclipse workspace (a row that is not running). Nothing is stopped or
+    /// deleted: studio only stops listing it.
+    pub fn forget_eclipse_workspace(&self, path: &str) -> Result<(), String> {
+        self.config_store.forget_eclipse_workspace(path)
     }
 
     /// Check for a new runtime, and install it when the policy says so.
@@ -1209,6 +1224,12 @@ impl ManagerService {
 
     /// The seats view: every deployed seat with what it is for, when it fires, its tools,
     /// gates and brain, and the four settings. Reads files only.
+    /// The colours VS Code left for the studio, beside the folder of editor answers (D53 (t)). A file that is not JSON is the same as none.
+    pub fn editor_theme(&self) -> Option<serde_json::Value> {
+        let text = fs::read_to_string(self.config_store.paths().config_dir.join("editor-theme.json")).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
     pub fn seats_view(&self) -> crate::seat_settings::SeatsView {
         // Seats are materialized by a deploy, so on a fresh install - or before any client is
         // selected - the directory is empty and the view would show a bare heading. The pass
@@ -1219,6 +1240,7 @@ impl ManagerService {
         if let Err(error) = materialized {
             view.errors.push(error);
         }
+        view.acp_brains = crate::agent_brain_settings::acp_brains(&crate::agent_brain_settings::detect(std::env::var_os("PATH").as_deref()));
         view
     }
 
@@ -5500,6 +5522,21 @@ fn write_managed_seat_commands(
     force_rewrite: bool,
 ) -> Result<Vec<String>, String> {
     let mut changed_paths = Vec::new();
+    // D53 (l): the command of a seat this build no longer has goes from the client, if it is ours.
+    for retired in ["worker"] {
+        let path = if seat_layout_is_skill(client) {
+            commands_dir.join(retired).join("SKILL.md")
+        } else {
+            commands_dir.join(format!("{retired}.md"))
+        };
+        if path.exists() && is_studio_generated(&path) {
+            fs::remove_file(&path).map_err(|e| format!("{client}: cannot remove {}: {e}", path.display()))?;
+            if seat_layout_is_skill(client) {
+                let _ = fs::remove_dir(commands_dir.join(retired));
+            }
+            changed_paths.push(display_path(&path));
+        }
+    }
     for seat in seats {
         // A seat with no typed command has nothing to write OR remove.
         let Some(cmd) = crate::conductor::command_for(&seat.name) else { continue };
@@ -18168,11 +18205,11 @@ judge was never told to give"
                 .unwrap_or_else(|| panic!("{name} is not an embedded seat"))
         };
         let declares = |name: &str| file_of(name).lines().any(|line| line.trim() == "changes_code: true");
-        assert!(declares("worker"), "the worker's file must say changes_code: true, or every hire of it runs read-only");
+        assert!(declares("developer"), "the developer's file must say changes_code: true, or every hire of it runs read-only");
         for seat in ["pm", "architect", "ux", "chief-engineer", "test-manager"] {
             assert!(!declares(seat), "{seat} is a non-writing seat and declares changes_code: true");
         }
-        let worker = tools_of("worker");
+        let worker = tools_of("developer");
         let carried = changing.iter().filter(|t| worker.contains(t)).count();
         assert!(carried >= 12, "the worker declares only {carried} of the engine's code-changing tools: {worker:?}");
         for needed in ["rename_symbol", "extract", "change_method_signature", "compile_workspace"] {
@@ -19591,8 +19628,9 @@ mod eclipse_rows_tests {
         let dashboard = service.load_dashboard().expect("dashboard");
         let rows: Vec<(&str, bool)> = dashboard.eclipse_workspaces.iter().map(|r| (r.name.as_str(), r.running)).collect();
         let _ = fs::remove_dir_all(&dir);
-        // live is running; stale (pid gone), reused (pid reused) and newer (not read further) are not.
-        assert_eq!(vec![("live", true), ("newer", false), ("reused", false), ("stale", false)], rows);
+        // live is running; stale (pid gone) and newer (not read further) are not. reused (pid reused) holds no
+        // project, so there is nothing to list.
+        assert_eq!(vec![("live", true), ("newer", false), ("stale", false)], rows);
     }
 
     #[test]
@@ -19611,7 +19649,7 @@ mod eclipse_rows_tests {
             })
             .collect();
         let list_labels: Vec<String> = dashboard.eclipse_workspaces.iter().map(|r| r.tray_label()).collect();
-        assert_eq!(4, list_labels.len());
+        assert_eq!(3, list_labels.len());
         assert_eq!(list_labels, tray_labels, "same rows, same order, same words");
         assert_eq!(
             dashboard.eclipse_workspaces.iter().map(|r| format!("tray_eclipse:{}", r.id)).collect::<Vec<_>>(),
@@ -19632,7 +19670,7 @@ mod eclipse_rows_tests {
             .iter()
             .filter(|r| matches!(r, crate::TrayRow::Item { id, .. } | crate::TrayRow::Check { id, .. } if id.starts_with("tray_eclipse:")))
             .collect();
-        assert_eq!(4, eclipse.len());
+        assert_eq!(3, eclipse.len());
         for row in eclipse {
             match row {
                 // A greyed item with an id the menu handler does not act on: clicking it does nothing, and there is no check mark to switch.
@@ -19661,7 +19699,9 @@ mod eclipse_rows_tests {
         let start = source.find("{#each eclipseWorkspaces as").expect("the list has an Eclipse block");
         let block = &source[start..start + source[start..].find("{/each}").expect("the Eclipse block is closed")];
         assert!(block.contains("ew.name") && block.contains("status-lamp"), "this is the Eclipse row template: {block}");
-        let actionable = |token: &str| token.starts_with("on:") || token.starts_with("onclick") || token.starts_with("use:");
+        // Forgetting a closed workspace is on the right-click menu, which only stops listing it; it starts and stops
+        // nothing, so `on:contextmenu` is the one handler an Eclipse row carries.
+        let actionable = |token: &str| (token.starts_with("on:") && !token.starts_with("on:contextmenu")) || token.starts_with("onclick") || token.starts_with("use:");
         assert!(
             !block.split_whitespace().any(actionable),
             "an Eclipse row must carry no event handler or action: {block}"
@@ -19726,7 +19766,7 @@ mod eclipse_rows_tests {
         let remembered = service.get_settings().eclipse_workspaces;
         let mut names: Vec<&str> = remembered.iter().map(|r| r.name.as_str()).collect();
         names.sort();
-        assert_eq!(vec!["live", "reused", "stale"], names, "every workspace studio could read a path from");
+        assert_eq!(vec!["live", "stale"], names, "every workspace studio could read a path from that holds a project");
         let on_disk = fs::read_to_string(dir.join("settings.json")).expect("the settings file");
         assert!(on_disk.contains("eclipseWorkspaces") && on_disk.contains("/home/user/eclipse-ws/live"), "persisted in studio's own settings");
 
@@ -19738,6 +19778,26 @@ mod eclipse_rows_tests {
         assert!(!live.running);
         assert_eq!("not running", live.status_text);
         assert_eq!(2, live.projects.len(), "with its last project list");
+    }
+
+    #[test]
+    fn a_forgotten_closed_workspace_leaves_the_list_and_stays_off_it_until_eclipse_has_it_open_again() {
+        let dir = temp("forget");
+        let (service, notes) = service_with_fixture_notes(&dir);
+        let live_note = notes.join("eclipse-1111111111111111.json");
+        let text = fs::read_to_string(&live_note).unwrap();
+        let _ = service.eclipse_workspace_rows();
+        // Eclipse closes: the note is gone, the workspace holds two projects, so it stays listed.
+        fs::remove_file(&live_note).unwrap();
+        let path = service.eclipse_workspace_rows().into_iter().find(|r| r.name == "live").and_then(|r| r.path).expect("listed, closed");
+        service.forget_eclipse_workspace(&path).expect("forget");
+        assert!(!service.eclipse_workspace_rows().iter().any(|r| r.name == "live"), "forgotten: not listed");
+        assert!(service.get_settings().eclipse_workspaces.iter().all(|w| w.name != "live"), "and not remembered");
+        // Eclipse opens it again: a live note brings it back.
+        fs::write(&live_note, text).unwrap();
+        let back = service.eclipse_workspace_rows();
+        let _ = fs::remove_dir_all(&dir);
+        assert!(back.iter().any(|r| r.name == "live" && r.running), "a live note outranks the forgetting");
     }
 
     /// The tray thread and the command thread both ask for the rows. Each reads what is remembered, adds what it sees
@@ -19758,7 +19818,7 @@ mod eclipse_rows_tests {
             workspace_path: Some(format!("/ws/{thread}/{i}")),
             pid: 1,
             port: Some(1),
-            projects: vec![],
+            projects: vec![crate::eclipse_notes::EclipseProject { name: "p".into(), path: "/p".into(), open: true }],
             detail: String::new(),
         };
         let handles: Vec<_> = ["a", "b"]
@@ -20086,7 +20146,6 @@ mod vscode_bundle_tests {
                 "--list-extensions".to_string(),
                 format!("--install-extension {} --force", vsix.join("jawata-chat-0.2.0.vsix").display()),
                 format!("--install-extension {} --force", vsix.join("jawata-java-0.1.0.vsix").display()),
-                "--uninstall-extension redhat.java".to_string(),
             ]
         );
     }
@@ -20170,7 +20229,8 @@ mod vscode_bundle_tests {
         let source = include_str!("../../src/lib/components/ProjectList.svelte");
         assert_eq!(source.matches("label: \"VS Code\"").count(), 1, "one VS Code entry in the picker");
         assert!(source.contains("jawata chat and jawata Java"), "the picker says what VS Code covers");
-        assert!(source.contains("competing Java extension"), "and that it removes the competing Java extension");
+        assert!(source.contains("Red Hat stays installed"), "and that Red Hat's extension stays for now (D53 (m), (n))");
+        assert!(!source.contains("uninstalls the competing Java extension"), "it no longer promises a removal the deploy does not do");
     }
 }
 

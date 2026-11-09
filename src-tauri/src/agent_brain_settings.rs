@@ -66,9 +66,37 @@ pub fn settings_for(found: Result<Option<PathBuf>, String>) -> AgentBrainSetting
     }
 }
 
+/// The ACP adapters a person may have installed, by the brain they start: an adapter that is on the path can run the principal
+/// or btw, and one that is not is never offered. None is downloaded here.
+const ADAPTERS: [(&str, &str); 3] = [("claude-code", "claude-agent-acp"), ("claude-code", "claude-code-acp"), ("codex", "codex-acp")];
+
 /// The settings for this machine, read from `path_var` (the `PATH` value).
 pub fn detect(path_var: Option<&OsStr>) -> AgentBrainSettings {
-    settings_for(crate::brains::installed_program_path(CURSOR, path_var))
+    let mut settings = settings_for(crate::brains::installed_program_path(CURSOR, path_var));
+    let Some((_, registry)) = settings.env.iter_mut().find(|(name, _)| name == HIRE_BRAINS_ENV) else {
+        return settings;
+    };
+    let mut programs: serde_json::Value = serde_json::from_str(registry).unwrap_or_else(|_| serde_json::json!({}));
+    for (brain, adapter) in ADAPTERS {
+        if programs.get(brain).is_none() {
+            if let Some(path) = crate::brains::program_on_path(adapter, path_var).and_then(|p| p.to_str().map(str::to_string)) {
+                programs[brain] = serde_json::json!({ "command": [path], "env": {} });
+            }
+        }
+    }
+    *registry = programs.to_string();
+    settings
+}
+
+/// The brains the engine has a program for on this machine, which is what the principal and btw can run on.
+pub fn acp_brains(settings: &AgentBrainSettings) -> Vec<String> {
+    settings
+        .env
+        .iter()
+        .find(|(name, _)| name == HIRE_BRAINS_ENV)
+        .and_then(|(_, registry)| serde_json::from_str::<serde_json::Value>(registry).ok())
+        .and_then(|programs| programs.as_object().map(|map| map.keys().cloned().collect()))
+        .unwrap_or_default()
 }
 
 /// `base` with the agent settings set: an entry of the same name already in `base` is replaced, never
@@ -114,6 +142,25 @@ mod tests {
         assert_eq!(reviewer["command"], serde_json::json!(["/home/me/.local/bin/agent", "acp"]));
         let registry: Value = serde_json::from_str(value_of(&settings, HIRE_BRAINS_ENV)).unwrap();
         assert_eq!(registry["cursor"]["command"], serde_json::json!(["/home/me/.local/bin/agent", "acp"]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_adapter_on_the_path_joins_the_registry_and_an_absent_one_does_not() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("jw-adapters-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["agent", "codex-acp"] {
+            let file = dir.join(name);
+            std::fs::write(&file, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let settings = detect(Some(dir.as_os_str()));
+        let mut brains = acp_brains(&settings);
+        brains.sort();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(brains, vec!["codex".to_string(), "cursor".to_string()]);
     }
 
     #[test]

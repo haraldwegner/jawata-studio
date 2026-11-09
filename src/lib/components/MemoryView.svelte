@@ -1573,7 +1573,7 @@
   }
   .lane {
     padding: 0.15rem 0.5rem;
-    border: 1px solid rgba(148, 163, 184, 0.28);
+    border: 1px solid rgba(var(--line-rgb), 0.28);
     border-radius: 999px;
     font-size: 0.8rem;
     white-space: nowrap;
@@ -1623,7 +1623,7 @@
   .result-block {
     margin-top: 0.4rem;
     padding-top: 0.6rem;
-    border-top: 1px solid rgba(148, 163, 184, 0.18);
+    border-top: 1px solid rgba(var(--line-rgb), 0.18);
   }
   .result-block h4 {
     margin: 0 0 0.35rem;
@@ -1641,7 +1641,7 @@
   td {
     text-align: left;
     padding: 0.3rem 0.55rem;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+    border-bottom: 1px solid rgba(var(--line-rgb), 0.18);
     white-space: nowrap;
   }
   tr.unreachable {
@@ -1665,8 +1665,8 @@
     justify-content: space-between;
     gap: 0.6rem;
     padding: 0.35rem 0.55rem;
-    border: 1px solid rgba(96, 165, 250, 0.25);
-    background: rgba(59, 130, 246, 0.08);
+    border: 1px solid rgba(var(--accent-rgb), 0.25);
+    background: rgba(var(--accent-strong-rgb), 0.08);
     border-radius: 8px;
   }
   .root-list button {
@@ -1680,7 +1680,7 @@
     padding: 0.1rem 0;
   }
   button.danger {
-    color: #f87171;
+    color: var(--danger);
   }
   details summary {
     cursor: pointer;
@@ -1691,7 +1691,7 @@
     max-height: 300px;
     overflow: auto;
     font-size: 0.75rem;
-    background: rgba(148, 163, 184, 0.08);
+    background: rgba(var(--line-rgb), 0.08);
     padding: 0.5rem;
     border-radius: 8px;
   }

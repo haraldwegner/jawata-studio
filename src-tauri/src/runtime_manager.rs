@@ -436,6 +436,8 @@ pub struct RuntimeReference {
 /// The engine's environment name for the seat-files folder (jawata-mcp `DefaultEngineSettings`:
 /// `jawata.agent.seatsDir`). An engine that does not read it ignores it.
 pub const SEATS_DIR_ENV: &str = "JAWATA_AGENT_SEATS_DIR";
+/// The engine's environment name for the folder of the typed skills, beside the seats folder (D53 (d)).
+pub const SKILLS_DIR_ENV: &str = "JAWATA_AGENT_SKILLS_DIR";
 
 /// Launch request for one jawata spawn. Manager_service has already
 /// written `<workspace_dir>/workspace.json` with the full project list of
@@ -1349,7 +1351,13 @@ impl RuntimeManager {
         let seats: Vec<(String, String)> = reference
             .seats_dir
             .iter()
-            .map(|dir| (SEATS_DIR_ENV.to_string(), dir.clone()))
+            .flat_map(|dir| {
+                let skills = crate::conductor::typed_skills_dir(std::path::Path::new(dir));
+                [
+                    (SEATS_DIR_ENV.to_string(), dir.clone()),
+                    (SKILLS_DIR_ENV.to_string(), skills.to_string_lossy().into_owned()),
+                ]
+            })
             .collect();
         // 28h S15: and the brains the engine's own agent starts, from what this machine has installed.
         let env = crate::agent_brain_settings::applied_to(seats, &reference.agent_brain);
@@ -2148,8 +2156,11 @@ mod tests {
 
         assert_eq!(
             spec.env,
-            vec![("JAWATA_AGENT_SEATS_DIR".to_string(), "/cfg/jawata/seats".to_string())],
-            "the engine gets the seats folder in its environment"
+            vec![
+                ("JAWATA_AGENT_SEATS_DIR".to_string(), "/cfg/jawata/seats".to_string()),
+                ("JAWATA_AGENT_SKILLS_DIR".to_string(), "/cfg/jawata/skills".to_string()),
+            ],
+            "the engine gets the seats folder and the skills folder beside it in its environment"
         );
         assert_eq!(SEATS_DIR_ENV, "JAWATA_AGENT_SEATS_DIR");
 
@@ -2172,18 +2183,18 @@ mod tests {
         let names: Vec<&str> = spec.env.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(
             names,
-            vec!["JAWATA_AGENT_SEATS_DIR", "JAWATA_AGENT_BRAIN", "JAWATA_AGENT_HIRE_BRAINS", "JAWATA_AGENT_REVIEWER"]
+            vec!["JAWATA_AGENT_SEATS_DIR", "JAWATA_AGENT_SKILLS_DIR", "JAWATA_AGENT_BRAIN", "JAWATA_AGENT_HIRE_BRAINS", "JAWATA_AGENT_REVIEWER"]
         );
         let old_text = old_program.to_string_lossy().replace('\\', "\\\\");
-        assert!(spec.env[1].1.contains(&old_text), "{} in {}", old_text, spec.env[1].1);
+        assert!(spec.env[2].1.contains(&old_text), "{} in {}", old_text, spec.env[2].1);
 
         // The program moved: the next start carries the new path, each name still once.
         let (new_path, new_program) = fake_agent_path("new");
         request.reference.agent_brain = crate::agent_brain_settings::detect(Some(&new_path));
         let spec = manager.command_spec_for(&request);
-        assert_eq!(spec.env.len(), 4, "{:?}", spec.env);
+        assert_eq!(spec.env.len(), 5, "{:?}", spec.env);
         let new_text = new_program.to_string_lossy().replace('\\', "\\\\");
-        assert!(spec.env[1].1.contains(&new_text) && !spec.env[1].1.contains(&old_text), "{}", spec.env[1].1);
+        assert!(spec.env[2].1.contains(&new_text) && !spec.env[2].1.contains(&old_text), "{}", spec.env[2].1);
         for program in [old_program, new_program] {
             let _ = std::fs::remove_dir_all(program.parent().unwrap());
         }

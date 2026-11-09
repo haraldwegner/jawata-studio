@@ -500,6 +500,12 @@ pub fn eclipse_workspaces(
     Ok(state.manager_service.eclipse_workspace_rows())
 }
 
+/// Stop listing one Eclipse workspace (a row that is not running). Nothing is stopped or deleted.
+#[tauri::command]
+pub fn forget_eclipse_workspace(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    state.manager_service.forget_eclipse_workspace(&path)
+}
+
 /// Everything the field view and the `/report` tile render: the per-workspace
 /// piles, the machine's reach counters and utilization number (with its
 /// caveat), the lane state, and the last canary reading.
@@ -540,6 +546,12 @@ pub fn field_set_silence(
 }
 
 // ===== Sprint 28g (D19 / D20): the seats view =====
+
+/// What a VS Code window left for the studio about its colours (D53 (t)); nothing when it left nothing or the file cannot be read.
+#[tauri::command]
+pub fn editor_theme(state: State<'_, AppState>) -> Option<serde_json::Value> {
+    state.manager_service.editor_theme()
+}
 
 /// Everything the seats view renders. Sync on purpose — file reads only.
 #[tauri::command]

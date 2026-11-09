@@ -512,6 +512,20 @@ pub fn installed_program_path(id: &str, path_var: Option<&std::ffi::OsStr>) -> R
     Ok(None)
 }
 
+/// The full path of a program called `name`, when one of the folders of `path_var` has it.
+pub fn program_on_path(name: &str, path_var: Option<&std::ffi::OsStr>) -> Option<std::path::PathBuf> {
+    let path_var = path_var?;
+    for dir in std::env::split_paths(path_var).filter(|d| d.is_absolute()) {
+        for file in program_file_names(name) {
+            let candidate = dir.join(file);
+            if is_executable_file(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 /// The file names a program called `name` can have in a folder on this system.
 fn program_file_names(name: &str) -> Vec<String> {
     if cfg!(windows) {

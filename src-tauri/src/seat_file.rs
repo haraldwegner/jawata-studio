@@ -404,6 +404,12 @@ pub fn parse_seat_definition(text: &str) -> Result<SeatDefinition, String> {
                     other => return Err(format!("enabled '{other}': expected true or false")),
                 }
             }
+            // Read by the engine alone: `typed: false` keeps a seat off the chat's `/` list (D53 (d)).
+            "typed" => {
+                if value != "true" && value != "false" {
+                    return Err(format!("typed '{value}': expected true or false"));
+                }
+            }
             "accepts_uncontained_writes" => {
                 accepts_uncontained_writes = match value {
                     "true" => true,
@@ -874,12 +880,14 @@ mod tests {
 
     /// Harald, 2026-10-12: *"No fake model names!"* The shipped seats named `claude-sonnet-5` and
     /// `claude-haiku-4-5`, which no program on the machine vouched for. Until a name is read off
-    /// a brain itself, no shipped seat names one.
+    /// a brain itself, no shipped seat names one. The one exception is his own word of 2026-11-08 (D53 (j)), *"rottenmeier -> gets
+    /// Claude sonnet as default"*, written as the alias `sonnet`, which the Claude program itself resolves.
     #[test]
     fn no_shipped_seat_names_a_model_nobody_verified() {
         for (file, body) in crate::conductor::EMBEDDED_SEATS.iter() {
             let seat = parse_seat_definition(body).unwrap_or_else(|e| panic!("{file}: {e}"));
-            assert_eq!(seat.model, "", "{file} names model '{}'", seat.model);
+            let expected = if *file == "rottenmeier.md" { "sonnet" } else { "" };
+            assert_eq!(seat.model, expected, "{file} names model '{}'", seat.model);
         }
     }
 

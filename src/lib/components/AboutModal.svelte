@@ -99,7 +99,7 @@
     left: 0;
     width: 100vw;
     height: 100vh;
-    background: rgba(2, 6, 23, 0.75);
+    background: rgba(var(--shade-rgb), 0.75);
     backdrop-filter: blur(4px);
     display: flex;
     align-items: center;
@@ -112,8 +112,8 @@
     max-width: 480px;
     max-height: 90vh;
     overflow-y: auto;
-    background: rgba(15, 23, 42, 0.95);
-    border: 1px solid rgba(148, 163, 184, 0.2);
+    background: rgba(var(--panel-rgb), 0.95);
+    border: 1px solid rgba(var(--line-rgb), 0.2);
     border-radius: 12px;
     box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
     padding: 1.5rem;
@@ -125,7 +125,7 @@
     align-items: center;
     margin-bottom: 1rem;
     padding-bottom: 1rem;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+    border-bottom: 1px solid rgba(var(--line-rgb), 0.1);
   }
 
   .modal-header h2 {
@@ -139,18 +139,18 @@
     font-size: 1.5rem;
     line-height: 1;
     padding: 0 0.5rem;
-    color: #94a3b8;
+    color: var(--muted);
     cursor: pointer;
   }
 
   .close-button:hover {
-    color: #f8fafc;
+    color: var(--text-strong);
   }
 
   .about-hero {
     text-align: center;
     padding: 1.5rem 0;
-    background: rgba(30, 41, 59, 0.5);
+    background: rgba(var(--raised-rgb), 0.5);
     border-radius: 8px;
     margin-bottom: 1rem;
   }
@@ -158,7 +158,7 @@
   .app-title {
     font-size: 1.5rem;
     font-weight: 600;
-    color: #f8fafc;
+    color: var(--text-strong);
     margin-bottom: 0.25rem;
   }
 
@@ -174,7 +174,7 @@
     font-size: 0.875rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: #94a3b8;
+    color: var(--muted);
     margin-bottom: 0.5rem;
   }
 
@@ -199,7 +199,7 @@
   }
 
   .credits-list a {
-    color: #60a5fa;
+    color: var(--accent);
     text-decoration: none;
   }
 
@@ -210,7 +210,7 @@
   .modal-footer {
     margin-top: 1.5rem;
     padding-top: 1rem;
-    border-top: 1px solid rgba(148, 163, 184, 0.1);
+    border-top: 1px solid rgba(var(--line-rgb), 0.1);
     display: flex;
     justify-content: flex-end;
   }

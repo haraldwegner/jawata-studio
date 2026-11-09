@@ -405,7 +405,8 @@ pub struct EclipseWorkspaceRow {
 /// The rows to show and the list to remember, from what the folder holds now and what was remembered.
 ///
 /// A workspace studio has seen stays listed when its note is gone (Eclipse closed and deleted it) or stale (it
-/// crashed). The malformed note has no row: it names nothing studio can show.
+/// crashed), provided it held a project when last seen: a closed workspace with none is dropped. The malformed
+/// note has no row: it names nothing studio can show.
 pub(crate) fn eclipse_rows(
     readings: &[NoteReading],
     remembered: &[RememberedEclipseWorkspace],
@@ -445,6 +446,10 @@ pub(crate) fn eclipse_rows(
             (NoteStatus::Malformed, _) => {}
         }
     }
+
+    // A workspace that holds no project and is not open shows the person nothing to look at and nothing to
+    // decide: it is not listed and not remembered (an empty "ws" from a throwaway Eclipse run was ten rows).
+    known.retain(|path, w| running.contains(path) || !w.projects.is_empty());
 
     let mut rows: Vec<EclipseWorkspaceRow> = known
         .values()
@@ -777,30 +782,31 @@ mod tests {
     }
 
     #[test]
-    fn the_fixtures_make_one_running_one_not_running_and_one_newer_row_and_no_row_for_the_malformed_one() {
+    fn the_fixtures_make_one_running_one_not_running_and_one_newer_row_and_no_row_for_a_note_with_nothing_to_show() {
         let (rows, remembered) = rows_of(&fixtures(), &[]);
         let by_name = |n: &str| rows.iter().find(|r| r.name == n).unwrap_or_else(|| panic!("no row {n}"));
-        assert_eq!(4, rows.len(), "live, stale, reused, newer; the malformed note has no row: {rows:?}");
-        assert!(by_name("live").running);
-        assert_eq!("running", by_name("live").status_text);
+        // The reused note names a workspace that holds no project and is not open: nothing to show.
+        // The malformed note names nothing at all.
+        assert_eq!(3, rows.len(), "live, stale and newer: {rows:?}");
         assert!(!by_name("stale").running);
         assert_eq!("not running", by_name("stale").status_text);
-        assert!(!by_name("reused").running);
+        assert!(by_name("live").running);
+        assert_eq!("running", by_name("live").status_text);
         let newer = by_name("newer");
         assert!(newer.newer_jawata && !newer.running);
         assert_eq!("Eclipse workspace (newer jawata)", newer.status_text);
         assert!(newer.projects.is_empty());
         assert_eq!(2, by_name("live").projects.len());
-        // Studio remembers the three it could read a path from, and not the newer one it must not guess at.
+        // Studio remembers the one it could read a path from that has something to show.
         let mut names: Vec<&str> = remembered.iter().map(|r| r.name.as_str()).collect();
         names.sort();
-        assert_eq!(vec!["live", "reused", "stale"], names);
+        assert_eq!(vec!["live", "stale"], names);
     }
 
     #[test]
     fn a_workspace_that_was_seen_and_whose_note_is_gone_stays_listed_as_not_running() {
         let dir = temp_dir("remember");
-        fs::write(dir.join("eclipse-aaaaaaaaaaaaaaaa.json"), GOOD).unwrap();
+        fs::write(dir.join("eclipse-aaaaaaaaaaaaaaaa.json"), GOOD.replace("\"projects\":[]", "\"projects\":[{\"name\":\"p\",\"path\":\"/p\",\"open\":true}]")).unwrap();
         let (rows, remembered) = eclipse_rows(&read_notes(Some(&dir), &|_, _| true), &[]);
         assert!(rows[0].running);
         // Eclipse closes cleanly and deletes its note.
@@ -836,13 +842,25 @@ mod tests {
     }
 
     #[test]
+    fn a_closed_workspace_that_held_no_project_is_not_listed_and_not_remembered() {
+        let empty = RememberedEclipseWorkspace { path: "/tmp/x/ws".into(), name: "ws".into(), projects: vec![] };
+        let (rows, remembered) = eclipse_rows(&[], &[empty]);
+        assert!(rows.is_empty(), "an empty closed workspace has nothing to show: {rows:?}");
+        assert!(remembered.is_empty(), "and it leaves the remembered list");
+    }
+
+    #[test]
     fn three_open_and_one_closed_are_three_running_and_one_not_running() {
         let dir = temp_dir("three");
         for (i, name) in ["a", "b", "c"].iter().enumerate() {
             let body = GOOD.replace("\"workspaceName\":\"w\"", &format!("\"workspaceName\":\"{name}\"")).replace("\"/w\"", &format!("\"/ws/{name}\""));
             fs::write(dir.join(format!("eclipse-{i:016}.json")), body).unwrap();
         }
-        let closed = RememberedEclipseWorkspace { path: "/ws/d".into(), name: "d".into(), projects: vec![] };
+        let closed = RememberedEclipseWorkspace {
+            path: "/ws/d".into(),
+            name: "d".into(),
+            projects: vec![EclipseProject { name: "p".into(), path: "/p".into(), open: true }],
+        };
         let (rows, _) = eclipse_rows(&read_notes(Some(&dir), &|_, _| true), &[closed]);
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(vec![("a", true), ("b", true), ("c", true), ("d", false)], rows.iter().map(|r| (r.name.as_str(), r.running)).collect::<Vec<_>>());

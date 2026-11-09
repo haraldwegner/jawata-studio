@@ -421,6 +421,9 @@ pub struct SeatsView {
     pub clients: Vec<ClientChoice>,
     /// Malformed seat files and an unreadable settings file, named. Never swallowed.
     pub errors: Vec<String>,
+    /// The brains the principal and btw can run on: those the engine has a program for on this machine.
+    #[serde(rename = "acpBrains")]
+    pub acp_brains: Vec<String>,
 }
 
 /// The shipped seat of this name, parsed from the content embedded in this build.
@@ -488,7 +491,7 @@ pub fn seats_view(seats_dir: &Path, clients: Vec<ClientChoice>) -> SeatsView {
         })
         .collect();
     errors.sort();
-    SeatsView { seats: rows, clients, errors }
+    SeatsView { seats: rows, clients, errors, acp_brains: Vec::new() }
 }
 
 /// What the view asks for. One variant per setting, so a request cannot name two at once.

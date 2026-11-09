@@ -600,7 +600,7 @@
           href="https://github.com/haraldwegner/jawata-studio/releases"
           target="_blank"
           rel="noopener noreferrer"
-          style="color: #60a5fa; text-decoration: underline;"
+          style="color: var(--accent); text-decoration: underline;"
         >
           Check for jawata-studio updates
         </a>

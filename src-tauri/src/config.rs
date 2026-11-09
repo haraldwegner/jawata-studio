@@ -307,6 +307,11 @@ pub struct ManagerSettings {
     /// record: it is never written into the Eclipse workspace folder, and nothing here starts anything.
     #[serde(default)]
     pub eclipse_workspaces: Vec<crate::eclipse_notes::RememberedEclipseWorkspace>,
+    /// The Eclipse workspaces the person told studio to forget. Studio never deletes an Eclipse note (a delete
+    /// could race a restarting Eclipse), so a workspace whose stale note is still on disk would be listed again
+    /// at the next poll; its path here keeps it off the list until Eclipse has it open again.
+    #[serde(default)]
+    pub forgotten_eclipse_workspaces: Vec<String>,
 }
 
 pub fn default_experience_store_mode() -> String {
@@ -469,6 +474,7 @@ impl ManagerSettings {
             // store's own story folder. Studio keeps no second copy of that rule.
             experience_stories_dir: None,
             eclipse_workspaces: Vec::new(),
+            forgotten_eclipse_workspaces: Vec::new(),
         }
     }
 
@@ -1397,6 +1403,22 @@ impl ConfigStore {
             return Ok(());
         }
         guard.eclipse_workspaces = merged;
+        write_json(&self.paths.settings_file, &*guard)
+    }
+
+    /// The Eclipse workspaces the person asked studio to forget, by path.
+    pub fn forgotten_eclipse_workspaces(&self) -> Vec<String> {
+        self.settings.lock().expect("settings mutex poisoned").forgotten_eclipse_workspaces.clone()
+    }
+
+    /// Forget one Eclipse workspace: it leaves the remembered list and its path joins the forgotten ones, in one
+    /// write under the settings lock.
+    pub fn forget_eclipse_workspace(&self, path: &str) -> Result<(), String> {
+        let mut guard = self.settings.lock().expect("settings mutex poisoned");
+        guard.eclipse_workspaces.retain(|w| w.path != path);
+        if !guard.forgotten_eclipse_workspaces.iter().any(|p| p == path) {
+            guard.forgotten_eclipse_workspaces.push(path.to_string());
+        }
         write_json(&self.paths.settings_file, &*guard)
     }
 

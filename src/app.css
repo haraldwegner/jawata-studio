@@ -1,4 +1,31 @@
 :root {
+  /* D53 (t): the colours by name. These are our blue; a dark VS Code replaces them while it reports (see lib/editorTheme.ts). */
+  --bg: #0b1020;
+  --text: #f1f5f9;
+  --text-strong: #f8fafc;
+  --text-soft: #cbd5e1;
+  --muted: #94a3b8;
+  --accent: #60a5fa;
+  --accent-soft: #93c5fd;
+  --accent-strong: #2563eb;
+  --accent-deep: #1d4ed8;
+  --danger: #f87171;
+  --danger-soft: #fca5a5;
+  --warn: #fbbf24;
+  --ok: #34d399;
+  --ok-soft: #86efac;
+  --line-rgb: 148, 163, 184;
+  --accent-rgb: 96, 165, 250;
+  --accent-strong-rgb: 37, 99, 235;
+  --accent-deep-rgb: 30, 64, 175;
+  --panel-rgb: 15, 23, 42;
+  --raised-rgb: 30, 41, 59;
+  --shade-rgb: 2, 6, 23;
+  --line: rgba(var(--line-rgb), 0.35);
+  --panel: rgba(var(--panel-rgb), 0.7);
+}
+
+:root {
   color-scheme: dark;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
@@ -6,8 +33,8 @@
   line-height: 1.4;
   font-weight: 400;
   font-size: 14px;
-  background: #0b1020;
-  color: #f1f5f9;
+  background: var(--bg);
+  color: var(--text);
 }
 
 * {
@@ -19,8 +46,8 @@ body {
   min-width: 320px;
   min-height: 100vh;
   background:
-    radial-gradient(circle at top, rgba(37, 99, 235, 0.2), transparent 30%),
-    #0b1020;
+    radial-gradient(circle at top, rgba(var(--accent-strong-rgb), 0.2), transparent 30%),
+    var(--bg);
 }
 
 button,
@@ -90,14 +117,14 @@ button {
   position: absolute;
   inset: 0;
   border-radius: 999px;
-  background: rgba(148, 163, 184, 0.15);
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(var(--line-rgb), 0.15);
+  border: 1px solid rgba(var(--line-rgb), 0.2);
   transition: background 120ms ease, border-color 120ms ease;
 }
 
 .dashboard-splitter:hover::before {
-  background: rgba(148, 163, 184, 0.22);
-  border-color: rgba(148, 163, 184, 0.32);
+  background: rgba(var(--line-rgb), 0.22);
+  border-color: rgba(var(--line-rgb), 0.32);
 }
 
 .dashboard-column {
@@ -166,18 +193,18 @@ button {
   align-items: center;
   gap: 0.5rem;
   padding: 0.35rem 0.45rem;
-  background: rgba(15, 23, 42, 0.55);
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(var(--panel-rgb), 0.55);
+  border: 1px solid rgba(var(--line-rgb), 0.18);
   border-radius: 10px;
 }
 
 .workspace-row:hover {
-  background: rgba(148, 163, 184, 0.1);
+  background: rgba(var(--line-rgb), 0.1);
 }
 
 .workspace-row.active {
-  border-color: rgba(96, 165, 250, 0.55);
-  background: rgba(37, 99, 235, 0.16);
+  border-color: rgba(var(--accent-rgb), 0.55);
+  background: rgba(var(--accent-strong-rgb), 0.16);
 }
 
 .workspace-row-select {
@@ -196,7 +223,7 @@ button {
 
 .workspace-row-name {
   font-weight: 600;
-  color: #f1f5f9;
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -214,15 +241,15 @@ button {
 
 .eclipse-chip {
   padding: 0 0.4rem;
-  border: 1px solid rgba(148, 163, 184, 0.45);
+  border: 1px solid rgba(var(--line-rgb), 0.45);
   border-radius: 999px;
   font-size: 0.7rem;
   letter-spacing: 0.02em;
 }
 
 .workspace-new-row {
-  background: rgba(37, 99, 235, 0.08);
-  border-color: rgba(96, 165, 250, 0.32);
+  background: rgba(var(--accent-strong-rgb), 0.08);
+  border-color: rgba(var(--accent-rgb), 0.32);
   display: grid;
   grid-template-columns: auto 1fr;
 }
@@ -231,7 +258,7 @@ button {
   border: none;
   background: transparent;
   padding: 0.2rem 0.3rem;
-  color: #f8fafc;
+  color: var(--text-strong);
   font-size: 0.92rem;
 }
 
@@ -239,14 +266,14 @@ button {
   text-align: left;
   padding: 0.4rem 0.6rem;
   background: transparent;
-  border: 1px dashed rgba(148, 163, 184, 0.35);
+  border: 1px dashed rgba(var(--line-rgb), 0.35);
   border-radius: 10px;
-  color: #cbd5f5;
+  color: var(--text-soft);
 }
 
 .workspace-add:hover:not(:disabled) {
-  background: rgba(148, 163, 184, 0.08);
-  border-color: rgba(148, 163, 184, 0.55);
+  background: rgba(var(--line-rgb), 0.08);
+  border-color: rgba(var(--line-rgb), 0.55);
 }
 
 /* Memory's four actions are one size, the More menu's summary included (his "should have equally",
@@ -274,7 +301,7 @@ button {
 /* A project row's path, under its name (restored 2026-10-22). */
 .path {
   margin-top: 0.02rem;
-  color: #94a3b8;
+  color: var(--muted);
   font-size: 0.74rem;
   white-space: nowrap;
   overflow: hidden;
@@ -302,10 +329,10 @@ button {
   display: grid;
   gap: 0.1rem;
   padding: 0.3rem;
-  background: rgba(15, 23, 42, 0.98);
-  border: 1px solid rgba(148, 163, 184, 0.32);
+  background: rgba(var(--panel-rgb), 0.98);
+  border: 1px solid rgba(var(--line-rgb), 0.32);
   border-radius: 10px;
-  box-shadow: 0 14px 36px rgba(2, 6, 23, 0.6);
+  box-shadow: 0 14px 36px rgba(var(--shade-rgb), 0.6);
 }
 
 .context-menu-item {
@@ -314,21 +341,21 @@ button {
   border: none;
   padding: 0.4rem 0.6rem;
   border-radius: 6px;
-  color: #f1f5f9;
+  color: var(--text);
   font-size: 0.88rem;
 }
 
 .context-menu-item:hover:not(:disabled) {
-  background: rgba(96, 165, 250, 0.18);
+  background: rgba(var(--accent-rgb), 0.18);
 }
 
 .context-menu-item.danger {
-  color: #fca5a5;
+  color: var(--danger-soft);
 }
 
 .context-menu-item.danger:hover:not(:disabled) {
   background: rgba(239, 68, 68, 0.2);
-  color: #fecaca;
+  color: var(--danger-soft);
 }
 
 /* Hover-revealed icon row on the left workspace list. The buttons are
@@ -355,29 +382,29 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: rgba(15, 23, 42, 0.6);
-  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(var(--panel-rgb), 0.6);
+  border: 1px solid rgba(var(--line-rgb), 0.28);
   border-radius: 6px;
   font-size: 0.78rem;
-  color: #cbd5f5;
+  color: var(--text-soft);
 }
 
 .workspace-row-icon:hover:not(:disabled) {
-  background: rgba(148, 163, 184, 0.18);
+  background: rgba(var(--line-rgb), 0.18);
 }
 
 .workspace-row-icon.danger:hover:not(:disabled) {
   background: rgba(239, 68, 68, 0.2);
-  color: #fecaca;
+  color: var(--danger-soft);
   border-color: rgba(239, 68, 68, 0.45);
 }
 
 .panel {
-  background: rgba(15, 23, 42, 0.88);
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(var(--panel-rgb), 0.88);
+  border: 1px solid rgba(var(--line-rgb), 0.18);
   border-radius: 18px;
   padding: 1rem;
-  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.25);
+  box-shadow: 0 12px 30px rgba(var(--panel-rgb), 0.25);
 }
 
 .stack {
@@ -398,7 +425,7 @@ button {
      visible; an opaque fill removes the per-frame cost with no real
      visual change. (WebView2 on Windows composites this cheaply, which
      is why Windows scrolling was already smooth.) */
-  background: rgb(11, 16, 32);
+  background: var(--bg);
 }
 
 .dashboard-main {
@@ -431,27 +458,27 @@ button {
 .tab {
   background: transparent;
   border: 1px solid transparent;
-  color: #94a3b8;
+  color: var(--muted);
   padding: 0.5rem 1rem;
   border-radius: 8px;
   font-weight: 500;
 }
 
 .tab:hover {
-  background: rgba(148, 163, 184, 0.1);
-  color: #f1f5f9;
+  background: rgba(var(--line-rgb), 0.1);
+  color: var(--text);
 }
 
 .tab.active {
-  background: rgba(37, 99, 235, 0.15);
-  border-color: rgba(37, 99, 235, 0.4);
-  color: #60a5fa;
+  background: rgba(var(--accent-strong-rgb), 0.15);
+  border-color: rgba(var(--accent-strong-rgb), 0.4);
+  color: var(--accent);
 }
 
 .eyebrow,
 .label,
 .muted {
-  color: #94a3b8;
+  color: var(--muted);
 }
 
 .eyebrow {
@@ -526,11 +553,11 @@ button {
   margin-top: 1rem;
   min-height: 3.15rem;
   padding: 0.42rem 0.65rem;
-  border: 1px solid rgba(148, 163, 184, 0.22);
+  border: 1px solid rgba(var(--line-rgb), 0.22);
   border-radius: 12px;
   /* Sprint 16.1 (bugs.md #20): opaque, no backdrop-filter — see .hero. */
-  background: rgb(11, 16, 32);
-  box-shadow: 0 -10px 26px rgba(2, 6, 23, 0.35);
+  background: var(--bg);
+  box-shadow: 0 -10px 26px rgba(var(--shade-rgb), 0.35);
 }
 
 .settings-save-footer .save-settings-button {
@@ -549,7 +576,7 @@ button {
 
 .settings-save-status {
   font-size: 0.78rem;
-  color: #94a3b8;
+  color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -557,7 +584,7 @@ button {
 }
 
 .settings-save-status.success {
-  color: #86efac;
+  color: var(--ok-soft);
 }
 
 .settings-save-status.error {
@@ -565,7 +592,7 @@ button {
 }
 
 .settings-save-status.saving {
-  color: #93c5fd;
+  color: var(--accent-soft);
 }
 
 .machine-controls-grid {
@@ -579,10 +606,10 @@ button {
 }
 
 .machine-control-card {
-  border: 1px solid rgba(148, 163, 184, 0.16);
+  border: 1px solid rgba(var(--line-rgb), 0.16);
   border-radius: 12px;
   padding: 0.6rem;
-  background: rgba(15, 23, 42, 0.42);
+  background: rgba(var(--panel-rgb), 0.42);
   gap: 0.5rem;
   min-height: 0;
   height: 100%;
@@ -649,9 +676,9 @@ button {
   gap: 0.25rem;
   padding: 0.18rem 0.45rem;
   border-radius: 999px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  background: rgba(30, 41, 59, 0.45);
-  color: #cbd5e1;
+  border: 1px solid rgba(var(--line-rgb), 0.24);
+  background: rgba(var(--raised-rgb), 0.45);
+  color: var(--text-soft);
   font-size: 0.73rem;
 }
 
@@ -660,7 +687,7 @@ button {
   padding-left: 1rem;
   display: grid;
   gap: 0.2rem;
-  color: #cbd5e1;
+  color: var(--text-soft);
   font-size: 0.9rem;
 }
 
@@ -715,12 +742,12 @@ button {
 }
 
 .probe-result {
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  border: 1px solid rgba(var(--line-rgb), 0.2);
   border-radius: 12px;
   padding: 0.6rem;
   display: grid;
   gap: 0.25rem;
-  background: rgba(15, 23, 42, 0.45);
+  background: rgba(var(--panel-rgb), 0.45);
 }
 
 .probe-result.ok {
@@ -734,7 +761,7 @@ button {
 .mcp-source-badge {
   display: inline-flex;
   align-items: center;
-  border: 1px solid rgba(148, 163, 184, 0.25);
+  border: 1px solid rgba(var(--line-rgb), 0.25);
   border-radius: 999px;
   padding: 0.1rem 0.4rem;
   font-size: 0.68rem;
@@ -743,8 +770,8 @@ button {
 }
 
 .mcp-source-badge.manual {
-  border-color: rgba(96, 165, 250, 0.5);
-  color: #93c5fd;
+  border-color: rgba(var(--accent-rgb), 0.5);
+  color: var(--accent-soft);
 }
 
 .mcp-source-badge.auto {
@@ -753,14 +780,14 @@ button {
 }
 
 .mcp-source-badge.missing {
-  border-color: rgba(148, 163, 184, 0.3);
-  color: #94a3b8;
+  border-color: rgba(var(--line-rgb), 0.3);
+  color: var(--muted);
 }
 
 .section-divider {
   margin: 0.15rem 0 0.1rem;
   border: 0;
-  border-top: 1px solid rgba(148, 163, 184, 0.22);
+  border-top: 1px solid rgba(var(--line-rgb), 0.22);
 }
 
 .candidate-list {
@@ -820,20 +847,20 @@ h3 {
   display: grid;
   gap: 0.4rem;
   padding: 0.55rem 0.65rem;
-  border: 1px solid rgba(96, 165, 250, 0.32);
+  border: 1px solid rgba(var(--accent-rgb), 0.32);
   border-radius: 12px;
-  background: rgba(37, 99, 235, 0.08);
+  background: rgba(var(--accent-strong-rgb), 0.08);
 }
 
 .workspace-picker .field span {
-  color: #cbd5f5;
+  color: var(--text-soft);
   font-weight: 600;
 }
 
 .field span,
 dt {
   font-size: 0.82rem;
-  color: #cbd5e1;
+  color: var(--text-soft);
 }
 
 .field-row {
@@ -846,10 +873,10 @@ dt {
 input,
 select {
   width: 100%;
-  border: 1px solid rgba(148, 163, 184, 0.22);
+  border: 1px solid rgba(var(--line-rgb), 0.22);
   border-radius: 12px;
-  background: rgba(15, 23, 42, 0.7);
-  color: #f8fafc;
+  background: rgba(var(--panel-rgb), 0.7);
+  color: var(--text-strong);
   padding: 0.62rem 0.75rem;
 }
 
@@ -862,17 +889,17 @@ select {
 }
 
 button {
-  border: 1px solid rgba(148, 163, 184, 0.22);
+  border: 1px solid rgba(var(--line-rgb), 0.22);
   border-radius: 12px;
-  background: rgba(30, 41, 59, 0.8);
-  color: #f8fafc;
+  background: rgba(var(--raised-rgb), 0.8);
+  color: var(--text-strong);
   padding: 0.58rem 0.82rem;
   font-size: 0.92rem;
 }
 
 button.primary {
-  background: linear-gradient(135deg, #2563eb, #1d4ed8);
-  border-color: rgba(37, 99, 235, 0.4);
+  background: linear-gradient(135deg, var(--accent-strong), var(--accent-deep));
+  border-color: rgba(var(--accent-strong-rgb), 0.4);
 }
 
 button:disabled {
@@ -900,8 +927,8 @@ button:disabled {
 }
 
 .project-list-toolbar.segmented-actions {
-  border-color: rgba(148, 163, 184, 0.35);
-  background: rgba(30, 41, 59, 0.85);
+  border-color: rgba(var(--line-rgb), 0.35);
+  background: rgba(var(--raised-rgb), 0.85);
 }
 
 .project-list-toolbar.segmented-actions button {
@@ -926,7 +953,7 @@ button:disabled {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: #cbd5e1;
+  color: var(--text-soft);
 }
 
 /* S19-49: Deploy and Remove are two actions, not a mode switch, so they are two ordinary buttons side by
@@ -945,7 +972,7 @@ button:disabled {
 }
 
 .deploy-buttons button.active {
-  outline: 2px solid rgba(96, 165, 250, 0.6);
+  outline: 2px solid rgba(var(--accent-rgb), 0.6);
 }
 
 .project-list-header {
@@ -987,12 +1014,12 @@ button:disabled {
 
 .aggregate-pill.running {
   background: rgba(16, 185, 129, 0.2);
-  color: #34d399;
+  color: var(--ok);
 }
 
 .aggregate-pill.stopped {
-  background: rgba(71, 85, 105, 0.45);
-  color: #cbd5e1;
+  background: rgba(var(--line-rgb), 0.45);
+  color: var(--text-soft);
 }
 
 .aggregate-pill.partial {
@@ -1002,24 +1029,24 @@ button:disabled {
 
 .aggregate-pill.failed {
   background: rgba(248, 113, 113, 0.18);
-  color: #fca5a5;
+  color: var(--danger-soft);
 }
 
 .aggregate-pill.starting {
   background: rgba(245, 158, 11, 0.22);
-  color: #fbbf24;
+  color: var(--warn);
 }
 
 .segmented-actions {
-  border: 1px solid rgba(148, 163, 184, 0.22);
+  border: 1px solid rgba(var(--line-rgb), 0.22);
   border-radius: 10px;
   overflow: hidden;
-  background: rgba(30, 41, 59, 0.6);
+  background: rgba(var(--raised-rgb), 0.6);
 }
 
 .segmented-actions button {
   border: none;
-  border-right: 1px solid rgba(148, 163, 184, 0.2);
+  border-right: 1px solid rgba(var(--line-rgb), 0.2);
   border-radius: 0;
   background: transparent;
   padding: 0.48rem 0.76rem;
@@ -1031,14 +1058,14 @@ button:disabled {
 }
 
 .segmented-actions button:hover:not(:disabled) {
-  background: rgba(148, 163, 184, 0.12);
+  background: rgba(var(--line-rgb), 0.12);
 }
 
 .deploy-target-picker {
-  border: 1px solid rgba(96, 165, 250, 0.35);
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
   border-radius: 12px;
   padding: 0.6rem 0.7rem;
-  background: rgba(15, 23, 42, 0.58);
+  background: rgba(var(--panel-rgb), 0.58);
   display: grid;
   gap: 0.45rem;
   width: 100%;
@@ -1056,16 +1083,16 @@ button:disabled {
 .project-card {
   display: grid;
   gap: 0.3rem;
-  border: 1px solid rgba(148, 163, 184, 0.16);
+  border: 1px solid rgba(var(--line-rgb), 0.16);
   border-radius: 14px;
   padding: 0.55rem 0.65rem;
-  background: rgba(15, 23, 42, 0.6);
+  background: rgba(var(--panel-rgb), 0.6);
   min-width: 0;
   overflow: visible;
 }
 
 .project-card.selected {
-  border-color: rgba(96, 165, 250, 0.55);
+  border-color: rgba(var(--accent-rgb), 0.55);
 }
 
 /* Sprint 10 v0.10.4: workspace-grouped Dashboard view. One card per
@@ -1073,10 +1100,10 @@ button:disabled {
 .workspace-card {
   display: grid;
   gap: 0.4rem;
-  border: 1px solid rgba(148, 163, 184, 0.22);
+  border: 1px solid rgba(var(--line-rgb), 0.22);
   border-radius: 14px;
   padding: 0.6rem 0.75rem;
-  background: rgba(15, 23, 42, 0.45);
+  background: rgba(var(--panel-rgb), 0.45);
   min-width: 0;
 }
 
@@ -1104,14 +1131,14 @@ button:disabled {
   align-items: center;
   justify-content: center;
   background: transparent;
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  border: 1px solid rgba(var(--line-rgb), 0.18);
   border-radius: 6px;
   font-size: 0.85rem;
-  color: #cbd5f5;
+  color: var(--text-soft);
 }
 
 .workspace-toggle:hover:not(:disabled) {
-  background: rgba(148, 163, 184, 0.14);
+  background: rgba(var(--line-rgb), 0.14);
 }
 
 /* Sprint 10 v0.10.4 (Tier 2 polish): smooth chevron rotation when
@@ -1130,14 +1157,14 @@ button:disabled {
    per-project badges so the workspace-level state reads first. */
 .badge.workspace-status.running {
   background: rgba(34, 197, 94, 0.22);
-  color: #86efac;
+  color: var(--ok-soft);
   border-color: rgba(34, 197, 94, 0.45);
 }
 
 .badge.workspace-status.stopped {
-  background: rgba(148, 163, 184, 0.18);
-  color: #cbd5f5;
-  border-color: rgba(148, 163, 184, 0.35);
+  background: rgba(var(--line-rgb), 0.18);
+  color: var(--text-soft);
+  border-color: rgba(var(--line-rgb), 0.35);
 }
 
 .badge.workspace-status.starting {
@@ -1153,12 +1180,12 @@ button:disabled {
   border-radius: 6px;
   font-size: 1rem;
   font-weight: 600;
-  color: #f8fafc;
+  color: var(--text-strong);
   cursor: text;
 }
 
 .workspace-name:hover:not(:disabled) {
-  border-color: rgba(148, 163, 184, 0.35);
+  border-color: rgba(var(--line-rgb), 0.35);
 }
 
 .workspace-rename-input {
@@ -1166,9 +1193,9 @@ button:disabled {
   font-weight: 600;
   padding: 0.15rem 0.4rem;
   border-radius: 6px;
-  border: 1px solid rgba(96, 165, 250, 0.55);
-  background: rgba(15, 23, 42, 0.7);
-  color: #f8fafc;
+  border: 1px solid rgba(var(--accent-rgb), 0.55);
+  background: rgba(var(--panel-rgb), 0.7);
+  color: var(--text-strong);
   min-width: 12rem;
 }
 
@@ -1177,9 +1204,9 @@ button:disabled {
   font-weight: 600;
   padding: 0.15rem 0.4rem;
   border-radius: 6px;
-  border: 1px solid rgba(96, 165, 250, 0.55);
-  background: rgba(15, 23, 42, 0.7);
-  color: #f8fafc;
+  border: 1px solid rgba(var(--accent-rgb), 0.55);
+  background: rgba(var(--panel-rgb), 0.7);
+  color: var(--text-strong);
   min-width: 14rem;
 }
 
@@ -1191,8 +1218,8 @@ button:disabled {
   padding: 0.5rem 0.75rem;
   margin: 0 0 0.5rem 0;
   border-radius: 8px;
-  border: 1px solid rgba(96, 165, 250, 0.45);
-  background: rgba(30, 64, 175, 0.18);
+  border: 1px solid rgba(var(--accent-rgb), 0.45);
+  background: rgba(var(--accent-deep-rgb), 0.18);
 }
 
 .bulk-action-count {
@@ -1212,12 +1239,12 @@ button:disabled {
   cursor: pointer;
   align-self: start;
   justify-self: start;
-  accent-color: #60a5fa;
+  accent-color: var(--accent);
 }
 
 .project-card.selected-row {
-  background: rgba(30, 64, 175, 0.18);
-  border-color: rgba(96, 165, 250, 0.55);
+  background: rgba(var(--accent-deep-rgb), 0.18);
+  border-color: rgba(var(--accent-rgb), 0.55);
 }
 
 .project-card.dragging {
@@ -1226,9 +1253,9 @@ button:disabled {
 
 .workspace-header.drag-over,
 .workspace-row.drag-over {
-  outline: 2px solid rgba(96, 165, 250, 0.85);
+  outline: 2px solid rgba(var(--accent-rgb), 0.85);
   outline-offset: -2px;
-  background: rgba(30, 64, 175, 0.22);
+  background: rgba(var(--accent-deep-rgb), 0.22);
 }
 
 .workspace-status {
@@ -1246,7 +1273,7 @@ button:disabled {
 .workspace-projects {
   margin-left: 0.5rem;
   padding-left: 0.6rem;
-  border-left: 2px solid rgba(148, 163, 184, 0.12);
+  border-left: 2px solid rgba(var(--line-rgb), 0.12);
   /* Sprint 10 v0.10.4: cap each workspace's project list height so
      it scrolls internally instead of pushing the workspace cards down
      the column. Only the column itself scrolls when there are many
@@ -1265,7 +1292,7 @@ button:disabled {
 .empty-workspace-hint {
   margin: 0;
   padding: 0.5rem 0.6rem;
-  border: 1px dashed rgba(148, 163, 184, 0.22);
+  border: 1px dashed rgba(var(--line-rgb), 0.22);
   border-radius: 8px;
 }
 
@@ -1277,14 +1304,14 @@ button:disabled {
   gap: 0.4rem;
   padding: 0.4rem 0.5rem;
   margin-top: 0.3rem;
-  border: 1px solid rgba(96, 165, 250, 0.32);
+  border: 1px solid rgba(var(--accent-rgb), 0.32);
   border-radius: 8px;
-  background: rgba(37, 99, 235, 0.08);
+  background: rgba(var(--accent-strong-rgb), 0.08);
 }
 
 .move-dropdown-label {
   font-size: 0.82rem;
-  color: #cbd5e1;
+  color: var(--text-soft);
 }
 
 .move-dropdown select,
@@ -1295,7 +1322,7 @@ button:disabled {
 }
 
 .project-card.nested {
-  background: rgba(15, 23, 42, 0.35);
+  background: rgba(var(--panel-rgb), 0.35);
 }
 
 .project-row {
@@ -1342,7 +1369,7 @@ button:disabled {
 }
 
 .meta span {
-  color: #cbd5e1;
+  color: var(--text-soft);
   font-size: 0.78rem;
 }
 
@@ -1388,7 +1415,7 @@ button:disabled {
 .project-error {
   margin: 0.05rem 0 0;
   font-size: 0.74rem;
-  color: #f87171;
+  color: var(--danger);
 }
 
 .badge {
@@ -1408,22 +1435,22 @@ button:disabled {
   width: 0.92rem;
   height: 0.92rem;
   border-radius: 999px;
-  background: #cbd5e1;
+  background: var(--text-soft);
   box-shadow: 0 0 0 3px rgba(203, 213, 225, 0.18);
 }
 
 .status-lamp.stopped {
-  background: #94a3b8;
-  box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.25);
+  background: var(--muted);
+  box-shadow: 0 0 0 2px rgba(var(--line-rgb), 0.25);
 }
 
 .status-lamp.starting {
-  background: #fbbf24;
+  background: var(--warn);
   box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.3);
 }
 
 .status-lamp.running {
-  background: #34d399;
+  background: var(--ok);
   box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.3);
 }
 
@@ -1439,27 +1466,27 @@ button:disabled {
 }
 
 .status-lamp.failed {
-  background: #f87171;
+  background: var(--danger);
   box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.3);
 }
 
 .badge.stopped {
-  background: rgba(71, 85, 105, 0.45);
+  background: rgba(var(--line-rgb), 0.45);
 }
 
 .badge.starting {
   background: rgba(245, 158, 11, 0.22);
-  color: #fbbf24;
+  color: var(--warn);
 }
 
 .badge.running {
   background: rgba(16, 185, 129, 0.18);
-  color: #34d399;
+  color: var(--ok);
 }
 
 .badge.failed {
   background: rgba(239, 68, 68, 0.18);
-  color: #f87171;
+  color: var(--danger);
 }
 
 .detail-header {
@@ -1472,7 +1499,7 @@ button:disabled {
 
 dd {
   margin: 0;
-  color: #f8fafc;
+  color: var(--text-strong);
   font-size: 0.9rem;
   line-height: 1.2;
   word-break: break-word;
@@ -1483,10 +1510,10 @@ dd {
 }
 
 .empty-state {
-  border: 1px dashed rgba(148, 163, 184, 0.24);
+  border: 1px dashed rgba(var(--line-rgb), 0.24);
   border-radius: 14px;
   padding: 0.8rem;
-  color: #94a3b8;
+  color: var(--muted);
   font-size: 0.9rem;
 }
 
@@ -1497,10 +1524,10 @@ dd {
 }
 
 .info-card {
-  border: 1px solid rgba(148, 163, 184, 0.16);
+  border: 1px solid rgba(var(--line-rgb), 0.16);
   border-radius: 14px;
   padding: 0.7rem;
-  background: rgba(15, 23, 42, 0.55);
+  background: rgba(var(--panel-rgb), 0.55);
   display: grid;
   gap: 0.25rem;
 }
@@ -1509,7 +1536,7 @@ dd {
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  color: #cbd5e1;
+  color: var(--text-soft);
   font-size: 0.9rem;
 }
 
@@ -1531,7 +1558,7 @@ dd {
 }
 
 .hint {
-  color: #94a3b8;
+  color: var(--muted);
   font-size: 0.8rem;
 }
 
@@ -1562,19 +1589,19 @@ dd {
 
 .advanced-toggle summary {
   cursor: pointer;
-  color: #94a3b8;
+  color: var(--muted);
   font-size: 0.9rem;
   user-select: none;
 }
 
 .advanced-toggle summary:hover {
-  color: #cbd5e1;
+  color: var(--text-soft);
 }
 
 .advanced-content {
   margin-top: 1rem;
   padding-left: 0.5rem;
-  border-left: 2px solid rgba(148, 163, 184, 0.18);
+  border-left: 2px solid rgba(var(--line-rgb), 0.18);
 }
 
 @media (max-width: 960px) {
@@ -1664,22 +1691,22 @@ dd {
    detail folded. `.fold` is a native <details>, so it needs no script and keeps its own state. */
 .summary-line {
   margin: 0;
-  color: #cbd5e1;
+  color: var(--text-soft);
   font-size: 0.95rem;
 }
 
 .summary-line strong {
-  color: #f1f5f9;
+  color: var(--text);
 }
 
 .summary-line.attention strong {
-  color: #fbbf24;
+  color: var(--warn);
 }
 
 .fold {
-  border: 1px solid rgba(148, 163, 184, 0.22);
+  border: 1px solid rgba(var(--line-rgb), 0.22);
   border-radius: 12px;
-  background: rgba(15, 23, 42, 0.45);
+  background: rgba(var(--panel-rgb), 0.45);
 }
 
 .fold > summary {
@@ -1698,7 +1725,7 @@ dd {
 
 .fold > summary::before {
   content: "▸";
-  color: #94a3b8;
+  color: var(--muted);
   transition: transform 0.12s;
 }
 
@@ -1726,10 +1753,10 @@ dd {
   list-style: none;
   cursor: pointer;
   padding: 0.45rem 0.8rem;
-  border: 1px solid rgba(148, 163, 184, 0.35);
+  border: 1px solid rgba(var(--line-rgb), 0.35);
   border-radius: 10px;
-  background: rgba(30, 41, 59, 0.85);
-  color: #e2e8f0;
+  background: rgba(var(--raised-rgb), 0.85);
+  color: var(--text-soft);
   white-space: nowrap;
 }
 
@@ -1746,7 +1773,7 @@ dd {
   min-width: 11rem;
   margin-top: 0.3rem;
   padding: 0.4rem;
-  border: 1px solid rgba(148, 163, 184, 0.35);
+  border: 1px solid rgba(var(--line-rgb), 0.35);
   border-radius: 10px;
   background: #0f172a;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
@@ -1768,11 +1795,11 @@ dd {
   padding: 0.35rem 0.5rem;
   text-align: left;
   vertical-align: top;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+  border-bottom: 1px solid rgba(var(--line-rgb), 0.15);
 }
 
 .agents-table th {
-  color: #94a3b8;
+  color: var(--muted);
   font-weight: 600;
   font-size: 0.85rem;
 }
@@ -1780,7 +1807,7 @@ dd {
 .agents-table .agent-path > summary {
   cursor: pointer;
   word-break: break-all;
-  color: #cbd5e1;
+  color: var(--text-soft);
 }
 
 /* S19-52: the field, Browse and Clear sit in one row; with the two-column grid Clear wrapped to a row of its own
