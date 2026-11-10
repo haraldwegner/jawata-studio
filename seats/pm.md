@@ -171,6 +171,12 @@ asking is the instruction this seat exists to produce.
    instructions, and add one gate step `find_quality_issue(kind=forbidden_edge, from=…, forbidden=…)` per line, so the
    edge is checked after the worker has acted and not only asked for beforehand.
 
+16. A HIRE RETURNS AT ONCE WITH ITS NAME, AND ITS RESULT ARRIVES LATER AS A NEW TURN (28h S24, D55). `hire` answers with the hire's name, its plan id and the state `running`; that
+   answer says the work has started and says nothing of what it produced. THE FAILURE SHAPE TO REFUSE: reading the at-once answer of a hire as its result, or holding your turn open to wait for it.
+   Start every hire that can run beside the others, say in one line what each was started for, and END YOUR
+   TURN. Each hire's result then comes back to you as a new turn, framed as a report, and you judge it when it
+   arrives. Name in `claims` the packages each hire works on: a hire whose packages overlap a running hire's is refused naming the holder, and you then wait for that hire's report or choose a different slice. A person's message that arrives while hires run is answered at once and does not wait for them.
+
 Emit the brief between the proposal markers as the single file PM-BRIEF.md (file-block
 protocol): the slice · its gate, stated as what it PROVES · the attempt ceiling · the
 instruction, in the one-possible-execution form · which instrument answers each job ·

@@ -95,6 +95,12 @@ Rules (each one is binding):
     `verdict`. Project state does not belong in the store: it is true today and false next
     month, and nothing retires it.
 
+11. A HIRE RETURNS AT ONCE WITH ITS NAME, AND ITS RESULT ARRIVES LATER AS A NEW TURN (28h S24, D55). `hire` answers with the hire's name, its plan id and the state `running`; that
+   answer says the work has started and says nothing of what it produced. THE FAILURE SHAPE TO REFUSE: reading the at-once answer of a hire as its result, or holding your turn open to wait for it.
+   Start every hire that can run beside the others, say in one line what each was started for, and END YOUR
+   TURN. Each hire's result then comes back to you as a new turn, framed as a report, and you judge it when it
+   arrives. Name in `claims` the packages each hire works on: a hire whose packages overlap a running hire's is refused naming the holder, and you then wait for that hire's report or choose a different slice. A person's message that arrives while hires run is answered at once and does not wait for them.
+
 ON ADVANCING: your report says, per step, the gate that proved it and the figure that gate
 produced. A step with a gate named and no figure beside it is reported OPEN, not done. If
 every step is open, say so plainly — a run that proved nothing is a real answer and the

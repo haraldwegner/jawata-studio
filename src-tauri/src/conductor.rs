@@ -1760,6 +1760,38 @@ mod tests {
         }
     }
 
+    /// 28h S24 (D55), M15: a lead that hires is told that `hire` answers at once with the hire's name and
+    /// that the result arrives later as a new turn. The three sentences below sit, word for word, in every
+    /// seat that leads (main, the pm and the chief engineer), where the brain that has to stop waiting reads them.
+    const HIRE_PROTOCOL_SENTENCES: [&str; 3] = [
+        "A HIRE RETURNS AT ONCE WITH ITS NAME, AND ITS RESULT ARRIVES LATER AS A NEW TURN (28h S24, D55).",
+        "THE FAILURE SHAPE TO REFUSE: reading the at-once answer of a hire as its result, or holding your turn open to wait for it.",
+        "Name in `claims` the packages each hire works on: a hire whose packages overlap a running hire's is refused naming the holder, and you then wait for that hire's report or choose a different slice.",
+    ];
+
+    #[test]
+    fn every_lead_is_told_that_a_hire_answers_at_once_and_its_result_comes_as_a_turn() {
+        for seat in ["main", "pm", "chief-engineer"] {
+            let text = collapsed_seat(seat);
+            let missing: Vec<&str> = HIRE_PROTOCOL_SENTENCES.iter().copied().filter(|s| !text.contains(s)).collect();
+            assert!(missing.is_empty(), "{seat}.md no longer carries these hire-protocol sentences: {missing:?}");
+        }
+    }
+
+    /// The proof that the check above can fail, for every sentence in every lead: the same text with that
+    /// one sentence taken out of an in-memory copy is missing exactly that sentence.
+    #[test]
+    fn taking_a_hire_protocol_sentence_out_of_a_lead_is_caught_by_name() {
+        for seat in ["main", "pm", "chief-engineer"] {
+            let whole = collapsed_seat(seat);
+            for sentence in HIRE_PROTOCOL_SENTENCES {
+                let without = whole.replacen(sentence, "", 1);
+                let missing: Vec<&str> = HIRE_PROTOCOL_SENTENCES.iter().copied().filter(|s| !without.contains(s)).collect();
+                assert_eq!(vec![sentence], missing, "removing {sentence:?} from {seat}.md was not caught as exactly that sentence");
+            }
+        }
+    }
+
     /// D12: the run limits must bound TOOL STEPS, not only model turns.
     ///
     /// ARCHITECT FINDING F3 DECLINED, 2026-10-05, and the ground is in the field's own

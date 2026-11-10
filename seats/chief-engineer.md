@@ -96,3 +96,9 @@ enforcement — not your intention. Your hire record is read for it: zero code-c
    SHAPE TO REFUSE: an instruction for a move or an extraction that names its target and says nothing of the edges
    it must not cross, which the worker then creates because nothing it was told forbade them. A slice whose plan
    names no layer has no edge to list, and you say so in one line instead of inventing one.
+
+8. A HIRE RETURNS AT ONCE WITH ITS NAME, AND ITS RESULT ARRIVES LATER AS A NEW TURN (28h S24, D55). `hire` answers with the hire's name, its plan id and the state `running`; that
+   answer says the work has started and says nothing of what it produced. THE FAILURE SHAPE TO REFUSE: reading the at-once answer of a hire as its result, or holding your turn open to wait for it.
+   Start every hire that can run beside the others, say in one line what each was started for, and END YOUR
+   TURN. Each hire's result then comes back to you as a new turn, framed as a report, and you judge it when it
+   arrives. Name in `claims` the packages each hire works on: a hire whose packages overlap a running hire's is refused naming the holder, and you then wait for that hire's report or choose a different slice. A person's message that arrives while hires run is answered at once and does not wait for them.
