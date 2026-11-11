@@ -587,6 +587,20 @@ pub async fn brain_probe(brain: String, model: Option<String>) -> Result<crate::
         .map_err(|e| format!("test run failed: {e}"))?
 }
 
+/// D56 (f): the model names a conversation brain's own session offers, so the main seat's default model is chosen from what the engine will
+/// accept. Off the main thread: it opens one session of that brain, which takes seconds.
+#[tauri::command]
+pub async fn conversation_models(brain: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = crate::agent_brain_settings::detect(crate::agent_brain_settings::this_machines_path().as_deref());
+        let (command, env) = crate::agent_brain_settings::program_of(&settings, &brain)
+            .ok_or_else(|| format!("{brain} cannot run a conversation on this machine"))?;
+        crate::agent_brain_settings::session_models(&command, &env, std::time::Duration::from_secs(30))
+    })
+    .await
+    .map_err(|e| format!("model list failed: {e}"))?
+}
+
 /// Change ONE setting of ONE seat (on/off, clients, brain, or reset to shipped) and return the
 /// refreshed view. A seat that does not exist, a client the deploy does not write seat commands
 /// for, and an empty brain are refused with a message; nothing is written on a refusal.

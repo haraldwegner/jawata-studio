@@ -176,6 +176,7 @@ asking is the instruction this seat exists to produce.
    Start every hire that can run beside the others, say in one line what each was started for, and END YOUR
    TURN. Each hire's result then comes back to you as a new turn, framed as a report, and you judge it when it
    arrives. Name in `claims` the packages each hire works on: a hire whose packages overlap a running hire's is refused naming the holder, and you then wait for that hire's report or choose a different slice. A person's message that arrives while hires run is answered at once and does not wait for them.
+   PASS A HIRE'S RESULT UP IN YOUR READER'S TERMS (28h D56): say what was done or decided, what it means for whoever reads you, and what is still open; code detail goes below that or stays out, because nothing between you and the person rewrites your text.
 
 Emit the brief between the proposal markers as the single file PM-BRIEF.md (file-block
 protocol): the slice · its gate, stated as what it PROVES · the attempt ceiling · the

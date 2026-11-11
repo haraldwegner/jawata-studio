@@ -934,6 +934,11 @@ export function brainProbe(brain: string, model: string | null): Promise<ProbeRe
   return invoke("brain_probe", { brain, model });
 }
 
+/** The model names a conversation brain's own session offers (D56 (f)): opens one session of that brain, so it takes seconds. */
+export function conversationModels(brain: string): Promise<string[]> {
+  return invoke("conversation_models", { brain });
+}
+
 
 /** Every deployed seat with its four settings. File reads only. */
 /** What a dark or light VS Code left for the studio (D53 (t)); null when it left nothing. */

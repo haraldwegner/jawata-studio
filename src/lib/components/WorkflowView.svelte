@@ -54,6 +54,9 @@
   let rightRoom = 0;
 
   async function refit() {
+    // The first fit is asked for when the tree arrives, before the frame is drawn: wait for it, or the fit returns early and the chart
+    // keeps its natural size until the window is resized (D56 (d)).
+    await tick();
     if (!frame || !chart) return;
     scale = 1;
     rightRoom = 0;
@@ -73,15 +76,18 @@
 
   $: if (view || folded) void refit();
 
+  let observer: ResizeObserver | null = null;
+  $: if (observer && frame) observer.observe(frame);
+
   onMount(() => {
-    const observer = new ResizeObserver(() => {
+    observer = new ResizeObserver(() => {
       if (frame && frame.clientWidth !== framedWidth) void refit();
     });
-    if (frame) observer.observe(frame);
     const onWindow = () => void refit();
     window.addEventListener("resize", onWindow);
     return () => {
-      observer.disconnect();
+      observer?.disconnect();
+      observer = null;
       window.removeEventListener("resize", onWindow);
     };
   });
@@ -238,6 +244,8 @@
       <button class="secondary" class:unlocked type="button" disabled={disabled} title="Locked: the tree can only be read. Unlocked: drag a seat onto another to move it with everything under it, click a role to change it, right-click a seat for where its failures go." onclick={() => (unlocked = !unlocked)}>{unlocked ? "Unlocked" : "Locked"}</button>
     </div>
   </div>
+  <p class="wf-explain">Who hires whom: each seat sits under the seat that hires it, and only that seat can hire it. A lead plans and hands work down, a worker changes code, a reviewer reads and reports.</p>
+  <p class="wf-explain">Unlock to change it: drag a seat onto another to move it with everything under it, click a role to change it, right-click a seat to choose where its failures go.</p>
 
   {#if loadError}
     <p class="project-error">{loadError}</p>
@@ -305,6 +313,11 @@
 </section>
 
 <style>
+  .wf-explain {
+    margin: 0;
+    color: var(--muted, var(--text));
+    max-width: 72ch;
+  }
   .wf-head {
     display: flex;
     justify-content: space-between;
@@ -399,8 +412,10 @@
   }
   .box {
     position: relative;
-    width: 172px;
-    border: 1px solid var(--line);
+    /* Wide enough for "senior-developer" beside its role with the 2 px border. */
+    width: 196px;
+    /* As heavy as the connecting lines, which are 2 px in the text colour (D56 (d): "They are tiny"). */
+    border: 2px solid var(--text);
     border-radius: 5px;
     background: var(--panel);
     padding: 2px 16px 2px 7px;

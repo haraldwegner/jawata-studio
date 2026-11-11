@@ -1240,7 +1240,7 @@ impl ManagerService {
         if let Err(error) = materialized {
             view.errors.push(error);
         }
-        let path = std::env::var_os("PATH");
+        let path = crate::agent_brain_settings::this_machines_path();
         view.acp_brains = crate::agent_brain_settings::acp_brains(&crate::agent_brain_settings::detect(path.as_deref()));
         view.missing_adapters = crate::agent_brain_settings::missing_adapters(path.as_deref());
         view
@@ -2869,7 +2869,7 @@ impl ManagerService {
             project,
             settings,
             installed_runtime,
-            std::env::var_os("PATH").as_deref(),
+            crate::agent_brain_settings::this_machines_path().as_deref(),
         )
     }
 
@@ -5138,7 +5138,7 @@ fn vscode_editor_results_at(
         None => skipped_client_result(
             vs::EXTENSIONS_ROW,
             None,
-            "Preview: would install jawata chat and jawata Java, and uninstall redhat.java if it is installed; nothing was run.",
+            "Preview: would install the editor extensions jawata chat and jawata Java through each editor command on PATH (code, codium, code-oss), and remove Language Support for Java by Red Hat with the extensions that need it; nothing was run.",
         ),
         Some(report) => DeployClientResult {
             client: vs::EXTENSIONS_ROW.to_string(),
@@ -13559,7 +13559,7 @@ judge was never told to give"
             .resolve_runtime_reference_on_path(&project, &settings, Some(&runtime), Some(&with_agent))
             .expect("a managed runtime resolves");
         let names: Vec<&str> = managed.agent_brain.env.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(names, vec!["JAWATA_AGENT_BRAIN", "JAWATA_AGENT_HIRE_BRAINS", "JAWATA_AGENT_REVIEWER"], "a managed runtime");
+        assert_eq!(names, vec!["JAWATA_AGENT_BRAIN", "JAWATA_AGENT_HIRE_BRAINS"], "a managed runtime");
         assert!(managed.agent_brain.env[0].1.contains(&program.to_string_lossy().replace('\\', "\\\\")), "{:?}", managed.agent_brain.env[0]);
 
         let mut local = settings.clone();
@@ -20150,15 +20150,16 @@ mod vscode_bundle_tests {
                 "{key}: the extension is told the folder the studio leaves its answer in"
             );
         }
-        // the extensions and the rival
+        // the extensions, and Red Hat's removed once jawata Java is in (D56 (b))
         assert!(matches!(row(&result, EXTENSIONS_ROW).status, DeployClientStatus::Success), "{}", row(&result, EXTENSIONS_ROW).message);
         let vsix = m.tools.path("vsix");
         assert_eq!(
             calls(&m.tools.0),
             vec![
-                "--list-extensions".to_string(),
+                "--list-extensions --show-versions".to_string(),
                 format!("--install-extension {} --force", vsix.join("jawata-chat-0.2.0.vsix").display()),
                 format!("--install-extension {} --force", vsix.join("jawata-java-0.1.0.vsix").display()),
+                "--uninstall-extension redhat.java".to_string(),
             ]
         );
     }
@@ -20180,7 +20181,7 @@ mod vscode_bundle_tests {
         assert_eq!(
             calls(&m.tools.0),
             vec![
-                "--list-extensions".to_string(),
+                "--list-extensions --show-versions".to_string(),
                 "--uninstall-extension jawata.jawata-chat".to_string(),
                 "--uninstall-extension jawata.jawata-java".to_string(),
             ],
@@ -20242,8 +20243,8 @@ mod vscode_bundle_tests {
         let source = include_str!("../../src/lib/components/ProjectList.svelte");
         assert_eq!(source.matches("label: \"VS Code\"").count(), 1, "one VS Code entry in the picker");
         assert!(source.contains("jawata chat and jawata Java"), "the picker says what VS Code covers");
-        assert!(source.contains("Red Hat stays installed"), "and that Red Hat's extension stays for now (D53 (m), (n))");
-        assert!(!source.contains("uninstalls the competing Java extension"), "it no longer promises a removal the deploy does not do");
+        assert!(source.contains("Removes Language Support for Java by Red Hat and the extensions that need it"), "and that Red Hat's goes (D56 (b))");
+        assert!(!source.contains("Red Hat stays installed"), "the old promise that it stays is gone");
     }
 }
 

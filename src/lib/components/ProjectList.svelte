@@ -12,6 +12,7 @@
   // the two sides of the join cannot drift on what counts as the same path.
   import { projectPathKey } from "../api/tauri";
   import ContextMenu from "./ContextMenu.svelte";
+  import { deployStatusLines } from "../deployStatus";
 
   interface ContextMenuItem {
     label: string;
@@ -99,16 +100,18 @@
     { key: "copilotCli", id: "copilot_cli", label: "Copilot CLI" },
     /* Sprint 28h Stage 21 (c): ONE entry for VS Code. The backend reads this id and also writes the chat's agent
        setting, jawata Java's server setting and the two settings that let an extension start the studio, installs
-       the two extensions and turns off VS Code's AI features; Red Hat's Java extension stays until 28i Stage 25 (D53 (n)).
-       Remove takes out the same things. */
+       the two extensions through every editor command on PATH (code, codium, code-oss) and turns off VS Code's AI features;
+       Red Hat's Java extension and the extensions that need it are removed, since jawata Java has its own Testing view and
+       debugger (D56 (b)). Remove takes out what the deploy installed and wrote. */
     {
       key: "vscode",
       id: "vscode",
       label: "VS Code",
       covers:
-        "The MCP entry, plus: installs jawata chat and jawata Java (needs the `code` command on PATH), writes their settings " +
-        "and turns off VS Code's built-in AI features, Copilot among them. Language Support for Java by Red Hat stays installed " +
-        "until jawata has its own test view and debugger. Remove undoes all of it."
+        "The jawata server entry, plus: installs the editor extensions jawata chat and jawata Java through each editor command on PATH " +
+        "(`code`, `codium`, `code-oss`), writes their settings and turns off VS Code's built-in AI features, Copilot among them. " +
+        "Removes Language Support for Java by Red Hat and the extensions that need it, because jawata Java brings its own Testing view " +
+        "and debugger. Remove takes out the two jawata extensions and the settings; it does not install Red Hat's back."
     },
     { key: "grok", id: "grok", label: "Grok" }
   ];
@@ -419,34 +422,8 @@
     };
   }
 
-  /** The last run, named for what it was: "Last deploy" or "Last remove", never the engine's mode word. */
-  function deploySummary(result: DeployToAgentsResult): string {
-    // The editor extensions are one step of a run, not an agent he ticked; they are said in the note below.
-    const agents = result.clients.filter((entry) => entry.client !== "vscode-extensions");
-    const total = agents.length;
-    const succeeded = agents.filter((entry) => entry.status === "success").length;
-    const failed = agents.filter((entry) => entry.status === "failed").length;
-    const skipped = agents.filter((entry) => entry.status === "skipped").length;
-    const run = result.mode === "delete" ? "Last remove" : "Last deploy";
-    const done = result.mode === "delete" ? "cleared" : "set up";
-    const rest = [failed ? `${failed} failed` : "", skipped ? `${skipped} skipped` : ""].filter(Boolean).join(", ");
-    return `${run}: ${succeeded} of ${total} agents ${done}${rest ? `, ${rest}` : ""}`;
-  }
-
-  function deployStatusLine(result: DeployToAgentsResult): { text: string; failed: boolean } {
-    const failedNames = result.clients
-      .filter((entry) => entry.status === "failed")
-      .map((entry) => entry.client);
-    const base = deploySummary(result);
-    // Stage 21 (c): "the VS Code part was skipped" or "the release has no asset" must be said, not left as a count.
-    // The extension row is the one place the person is told why the editor part did not happen.
-    const editorNote = result.clients.find((entry) => entry.client === "vscode-extensions");
-    const note = editorNote ? ` — ${editorNote.message}` : "";
-    return {
-      text: failedNames.length ? `${base} — failed: ${failedNames.join(", ")}${note}` : `${base}${note}`,
-      failed: failedNames.length > 0
-    };
-  }
+  // D56 (b): the last run as two lines, the editor extensions and the jawata servers per agent, by name (deployStatus.ts).
+  $: deployStatus = lastDeployResult ? deployStatusLines(lastDeployResult) : undefined;
 
   function openDeployTargetPicker(mode: DeployMode) {
     pendingDeployMode = mode;
@@ -1093,7 +1070,7 @@
       class:active={showDeployTargetPicker && pendingDeployMode === "deploy"}
       disabled={disabled || deployBusy}
       on:click={() => openDeployTargetPicker("deploy")}
-      title="Write the jawata entry of every workspace into the config files of the agents you tick next, and into VS Code its two extensions and their settings. Copilot is turned off in VS Code. Red Hat's Java extension stays until jawata has its own test view and debugger. Run it again after adding or renaming a workspace; it rewrites only what differs."
+      title="Write the jawata entry of every workspace into the config files of the agents you tick next, and into VS Code (and VSCodium or Code - OSS when they are on PATH) its two extensions and their settings. Copilot is turned off in VS Code. Red Hat's Java extension and the extensions that need it are removed, because jawata Java brings its own Testing view and debugger. Run it again after adding or renaming a workspace; it rewrites only what differs."
       type="button"
     >
       {deployBusy ? "Deploying..." : "Deploy to agents"}
@@ -1141,15 +1118,15 @@
 
   {#if deployError}
     <p class="project-error">{deployError}</p>
-  {:else if lastDeployResult}
-    <!-- Sprint 28a 2b (Harald's ruling): ONE status line, and it STAYS — the
-         status is informative (is it deployed or not). No dismiss, no line per
-         agent; failures are named inline because a failure is the one thing
-         worth more than a count. Staleness is handled at the source: starting
-         a new run clears the previous result in the store. -->
-    <p class={deployStatusLine(lastDeployResult).failed ? "project-error" : "hint"}>
-      {deployStatusLine(lastDeployResult).text}
-    </p>
+  {:else if deployStatus}
+    <!-- Sprint 28a 2b (Harald's ruling): the status STAYS — it is informative
+         (is it deployed or not). No dismiss, no line per agent; failures are
+         named inline. D56 (b): two lines, the editor extensions installed or
+         removed and the jawata servers set up per agent. Staleness is handled
+         at the source: starting a new run clears the previous result. -->
+    {#each deployStatus.lines as line}
+      <p class={deployStatus.failed ? "project-error" : "hint"}>{line}</p>
+    {/each}
   {/if}
 </section>
 </div>

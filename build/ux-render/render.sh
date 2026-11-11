@@ -44,7 +44,7 @@ shoot() { # name, query
         echo "rendered $1.png"
     fi
 }
-for tab in Dashboard Memory Reporting Seats Settings Help; do
+for tab in Dashboard Memory Reporting Seats Workflow Settings Help; do
     t=$(echo "$tab" | tr 'A-Z' 'a-z')
     shoot "$t" "tab=$tab"
     shoot "$t-open" "tab=$tab&open=1"

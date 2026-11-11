@@ -23,6 +23,7 @@
   import {
     brainProbe,
     brainsStatus,
+    conversationModels,
     seatChange,
     seatsView,
     type BrainStatus,
@@ -47,10 +48,14 @@
   let loadError = "";
   let actionError = "";
   let busy = false;
+  /** D56 (f): per conversation brain, the model names its own session offers, asked once per page; the default
+   * model of main and btw is chosen from these, because they are the names the engine accepts. */
+  let sessionModels: Record<string, string[]> = {};
   async function load() {
     try {
       view = await seatsView();
       void checkBrains(view);
+      void readSessionModels(view);
       loadError = "";
     } catch (error) {
       loadError = String(error);
@@ -67,6 +72,19 @@
       actionError = `brain check: ${String(error)}`;
     } finally {
       brainsChecking = false;
+    }
+  }
+
+  async function readSessionModels(current: SeatsView) {
+    for (const brain of current.acpBrains ?? []) {
+      if (sessionModels[brain]) continue;
+      try {
+        const names = await conversationModels(brain);
+        // "Auto" (Cursor) and "Default (recommended)" (Claude) are the brain's own default, which the first entry already offers.
+        sessionModels = { ...sessionModels, [brain]: names.filter((n) => !/^(auto|default\b)/i.test(n.trim())) };
+      } catch {
+        // A brain whose session could not be opened offers its default only; the row says nothing more.
+      }
     }
   }
 
@@ -101,15 +119,20 @@
   const CONVERSATION = ["main", "btw"];
   const isConversation = (seat: SeatRow) => CONVERSATION.includes(seat.name);
 
-  function brainOptions(seat: SeatRow): BrainOption[] {
+  // `_models` is passed so the list is drawn again when a brain's model names arrive.
+  function brainOptions(seat: SeatRow, _models: Record<string, string[]> = sessionModels): BrainOption[] {
     const options: BrainOption[] = [];
     if (isConversation(seat)) {
       for (const b of brains.filter((x) => view?.acpBrains.includes(x.id))) {
-        options.push({ value: `${b.id}|`, label: `${b.label}${loginNote(b)}` });
+        options.push({ value: `${b.id}|`, label: `${b.label} — its default model${loginNote(b)}` });
+        for (const m of sessionModels[b.id] ?? []) options.push({ value: `${b.id}|${m}`, label: `${b.label} — ${m}${loginNote(b)}` });
       }
-      const chosen = `${seat.brain}|`;
+      const chosen = `${seat.brain}|${seat.model ?? ""}`;
       if (!options.some((o) => o.value === chosen)) {
-        options.unshift({ value: chosen, label: `${brainLabel(seat.brain)} (not available on this machine)` });
+        options.unshift({
+          value: chosen,
+          label: `${brainLabel(seat.brain)} — ${seat.model ?? "its default model"}${sessionModels[seat.brain] ? " (not available on this machine)" : ""}`,
+        });
       }
       return options;
     }
@@ -143,7 +166,9 @@
     const [brain, model] = select.value.split("|");
     testing = { ...testing, [seat.name]: true };
     try {
-      const result = await brainProbe(brain, model || null);
+      // A conversation brain's model names are its session's, not its command line's, so its test run uses its default model;
+      // the engine moves the session to the chosen model, and stays on the default if the account lacks it.
+      const result = await brainProbe(brain, isConversation(seat) ? null : model || null);
       lastTest = { ...lastTest, [seat.name]: result };
       if (result.ok) {
         await apply(seat, { setting: "brain", brain, model: model || null });
@@ -181,6 +206,7 @@
 
   const FIRES_HINT = "When this seat is meant to be used: the point in your work at which an agent is sent to it.";
   const BRAIN_HINT = "Typed as a command, a seat runs on your own agent; this is the brain a HIRE of it starts: the agent program, and the model, — logged in with your account on this machine. Choosing one first runs a one-word test through it (Claude Code: under a cent, measured) and is saved only if it answers. The list is read from the programs installed here.";
+  const CONVERSATION_BRAIN_HINT = "The brain and model a new conversation with this seat starts on. The models listed are the ones that brain's own session offers; the chat can change the model of a running conversation. Choosing one first runs a one-word test through the brain and is saved only if it answers.";
   const RESET_HINT = "Discards your changes to this seat and takes the version this studio ships. Your changed file is kept beside it as a backup.";
   const CLIENTS_HINT = "Which of your agents get this seat's command.";
 
@@ -300,8 +326,8 @@
               <dl class="seat-facts">
                 <dt title={FIRES_HINT}>When</dt>
                 <dd title={FIRES_HINT}>{seat.fires}</dd>
-                <dt title={BRAIN_HINT}>Brain</dt>
-                <dd title={BRAIN_HINT}>
+                <dt title={isConversation(seat) ? CONVERSATION_BRAIN_HINT : BRAIN_HINT}>Brain</dt>
+                <dd title={isConversation(seat) ? CONVERSATION_BRAIN_HINT : BRAIN_HINT}>
                   {#if brains.length === 0}
                     {brainsChecking ? "checking which brains this machine has…" : brainLabel(seat.brain)}
                   {:else}
@@ -312,7 +338,7 @@
                       disabled={disabled || busy || testing[seat.name]}
                       on:change={(e) => chooseBrain(seat, e.currentTarget)}
                     >
-                      {#each brainOptions(seat) as option (option.value)}
+                      {#each brainOptions(seat, sessionModels) as option (option.value)}
                         <option value={option.value}>{option.label}</option>
                       {/each}
                     </select>

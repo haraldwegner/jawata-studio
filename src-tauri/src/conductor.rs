@@ -1763,10 +1763,12 @@ mod tests {
     /// 28h S24 (D55), M15: a lead that hires is told that `hire` answers at once with the hire's name and
     /// that the result arrives later as a new turn. The three sentences below sit, word for word, in every
     /// seat that leads (main, the pm and the chief engineer), where the brain that has to stop waiting reads them.
-    const HIRE_PROTOCOL_SENTENCES: [&str; 3] = [
+    const HIRE_PROTOCOL_SENTENCES: [&str; 4] = [
         "A HIRE RETURNS AT ONCE WITH ITS NAME, AND ITS RESULT ARRIVES LATER AS A NEW TURN (28h S24, D55).",
         "THE FAILURE SHAPE TO REFUSE: reading the at-once answer of a hire as its result, or holding your turn open to wait for it.",
         "Name in `claims` the packages each hire works on: a hire whose packages overlap a running hire's is refused naming the holder, and you then wait for that hire's report or choose a different slice.",
+        // D56 (a): the review before sending is gone; each lead puts its hires' results into its reader's terms itself.
+        "PASS A HIRE'S RESULT UP IN YOUR READER'S TERMS (28h D56): say what was done or decided, what it means for whoever reads you, and what is still open; code detail goes below that or stays out, because nothing between you and the person rewrites your text.",
     ];
 
     #[test]

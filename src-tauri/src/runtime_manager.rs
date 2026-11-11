@@ -426,8 +426,8 @@ pub struct RuntimeReference {
     /// old runner had would never run on the new start path. `None` only for a reference built by hand
     /// (a test), never by `resolve_runtime_reference_with`.
     pub seats_dir: Option<String>,
-    /// 28h S15: the brains the engine's own agent starts (`jawata.agent.brain`, `jawata.agent.hireBrains`,
-    /// `jawata.agent.reviewer`), written from what is installed on this machine and put in the engine's
+    /// 28h S15: the brains the engine's own agent starts (`jawata.agent.brain`, `jawata.agent.hireBrains`),
+    /// written from what is installed on this machine and put in the engine's
     /// environment beside [`SEATS_DIR_ENV`]. Empty when nothing is installed, and then the engine answers
     /// its no-brain sentence.
     pub agent_brain: crate::agent_brain_settings::AgentBrainSettings,
@@ -2183,7 +2183,7 @@ mod tests {
         let names: Vec<&str> = spec.env.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(
             names,
-            vec!["JAWATA_AGENT_SEATS_DIR", "JAWATA_AGENT_SKILLS_DIR", "JAWATA_AGENT_BRAIN", "JAWATA_AGENT_HIRE_BRAINS", "JAWATA_AGENT_REVIEWER"]
+            vec!["JAWATA_AGENT_SEATS_DIR", "JAWATA_AGENT_SKILLS_DIR", "JAWATA_AGENT_BRAIN", "JAWATA_AGENT_HIRE_BRAINS"]
         );
         let old_text = old_program.to_string_lossy().replace('\\', "\\\\");
         assert!(spec.env[2].1.contains(&old_text), "{} in {}", old_text, spec.env[2].1);
@@ -2192,7 +2192,7 @@ mod tests {
         let (new_path, new_program) = fake_agent_path("new");
         request.reference.agent_brain = crate::agent_brain_settings::detect(Some(&new_path));
         let spec = manager.command_spec_for(&request);
-        assert_eq!(spec.env.len(), 5, "{:?}", spec.env);
+        assert_eq!(spec.env.len(), 4, "{:?}", spec.env);
         let new_text = new_program.to_string_lossy().replace('\\', "\\\\");
         assert!(spec.env[2].1.contains(&new_text) && !spec.env[2].1.contains(&old_text), "{}", spec.env[2].1);
         for program in [old_program, new_program] {
