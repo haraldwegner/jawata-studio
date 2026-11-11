@@ -638,6 +638,10 @@ pub fn manifests_of(extensions_dir: &Path, installed: &[Installed]) -> std::coll
 
 /// `target` and every installed extension that needs it, followed through, in the order they can be uninstalled: each before
 /// anything it needs, so `target` comes last. Among those that may go next, the smaller id goes first.
+///
+/// DELIBERATE DUPLICATE: jawata Java (jawata-chat `packages/vscode-java/src/extension.ts`, `installedOf`) answers the same question inside the
+/// editor for an install made after a deploy. The two run in different programs and repositories; both read `extensionDependencies` and
+/// `extensionPack`, and each is held to "what needs it goes first" by its own tests (28h C25, architect finding 1).
 pub fn removal_order(target: &str, needs: &std::collections::BTreeMap<String, Manifest>) -> Vec<String> {
     use std::collections::BTreeSet;
     let mut set: BTreeSet<String> = BTreeSet::from([target.to_string()]);

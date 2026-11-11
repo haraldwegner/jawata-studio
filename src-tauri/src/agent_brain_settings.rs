@@ -138,12 +138,31 @@ pub fn npm_folders(home: &std::path::Path) -> Vec<PathBuf> {
     nvm.into_iter().chain(others.into_iter().filter(|d| d.is_dir())).collect()
 }
 
-/// `path_var` followed by those of [`npm_folders`] it does not already hold: where the studio looks for an agent program.
+/// The folder npm itself names for global commands (`npm prefix -g`, then `bin`; on Windows the prefix itself), asked of the first `npm` on
+/// `dirs` and started with `dirs` as its PATH, because npm is a script that starts `node` beside it. None when there is no npm there, it does
+/// not answer, or the folder does not exist. It covers a custom prefix and version managers [`npm_folders`] does not know.
+fn npm_global_bin(dirs: &[PathBuf]) -> Option<PathBuf> {
+    let joined = std::env::join_paths(dirs).ok()?;
+    let npm = crate::brains::program_on_path("npm", Some(&joined))?;
+    let out = std::process::Command::new(npm).args(["prefix", "-g"]).env("PATH", &joined)
+        .stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
+    let prefix = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    let bin = if cfg!(windows) { prefix } else { prefix.join("bin") };
+    (out.status.success() && bin.is_dir()).then_some(bin)
+}
+
+/// `path_var` followed by those of [`npm_folders`] it does not already hold, and the folder npm names for its global commands: where the
+/// studio looks for an agent program.
 pub fn search_path(path_var: Option<&OsStr>, home: Option<&std::path::Path>) -> Option<std::ffi::OsString> {
     let mut dirs: Vec<PathBuf> = path_var.map(|p| std::env::split_paths(p).collect()).unwrap_or_default();
     for folder in home.map(npm_folders).unwrap_or_default() {
         if !dirs.contains(&folder) {
             dirs.push(folder);
+        }
+    }
+    if let Some(bin) = npm_global_bin(&dirs) {
+        if !dirs.contains(&bin) {
+            dirs.push(bin);
         }
     }
     if dirs.is_empty() {
@@ -213,7 +232,10 @@ pub fn acp_brains(settings: &AgentBrainSettings) -> Vec<String> {
 /// the names the engine matches a seat's `model:` against when it moves the principal's session, so the Seats page offers exactly what will
 /// be accepted; Cursor's command-line model list does not match them (measured 2026-11-11: 12 of 47 names differ). Err when the program
 /// does not answer within `timeout` or offers no model option.
-pub fn session_models(command: &[String], env: &[(String, String)], timeout: std::time::Duration) -> Result<Vec<String>, String> {
+///
+/// Each model comes with the value the brain's option takes and the name a person reads, so the caller tells the brain's own default by its
+/// value (`default[]` for Cursor's Auto, `default` for Claude's) rather than by a vendor's wording.
+pub fn session_models(command: &[String], env: &[(String, String)], timeout: std::time::Duration) -> Result<Vec<SessionModel>, String> {
     use std::io::{BufRead, Write};
     let (program, args) = command.split_first().ok_or("no command")?;
     let folder = std::env::temp_dir().join(format!("jawata-models-{}-{}", std::process::id(), std::time::SystemTime::now()
@@ -260,10 +282,19 @@ pub fn session_models(command: &[String], env: &[(String, String)], timeout: std
         let option = opened["configOptions"].as_array().into_iter().flatten()
             .find(|o| o["category"] == "model" || o["id"] == "model")
             .ok_or("the brain's session offers no model option")?;
-        Ok(option["options"].as_array().into_iter().flatten().filter_map(|o| o["name"].as_str().map(str::to_string)).collect())
+        Ok(option["options"].as_array().into_iter().flatten()
+            .filter_map(|o| Some(SessionModel { value: o["value"].as_str()?.to_string(), name: o["name"].as_str()?.to_string() }))
+            .collect())
     })();
     let _ = std::fs::remove_dir_all(&folder);
     result
+}
+
+/// One model a brain's own session offers: the value its model option takes, and the name a person reads.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SessionModel {
+    pub value: String,
+    pub name: String,
 }
 
 /// The program the registry of `settings` names for `brain`, as a command line and its added environment.
@@ -586,7 +617,8 @@ mod tests {
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         let names = session_models(&[program.to_string_lossy().into_owned()], &[], std::time::Duration::from_secs(10));
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(names, Ok(vec!["Auto".to_string(), "grok-4.7".to_string(), "composer-2.5".to_string()]));
+        let model = |value: &str, name: &str| SessionModel { value: value.to_string(), name: name.to_string() };
+        assert_eq!(names, Ok(vec![model("default[]", "Auto"), model("grok-4.7[fast=true]", "grok-4.7"), model("composer-2.5[fast=true]", "composer-2.5")]));
     }
 
     /// Control: a program that never answers is an error within the time given, never an empty list that reads as "offers no models".
@@ -597,5 +629,26 @@ mod tests {
         let answer = session_models(&["sleep".to_string(), "30".to_string()], &[], std::time::Duration::from_secs(2));
         assert!(answer.is_err(), "{answer:?}");
         assert!(started.elapsed() < std::time::Duration::from_secs(10), "it waited {:?}", started.elapsed());
+    }
+
+    /// Architect finding 5 at 28h C25: a global folder npm itself names (a custom prefix, a version manager the studio does not know) is
+    /// searched too, by asking the npm found on the search path.
+    #[cfg(unix)]
+    #[test]
+    fn the_folder_npm_names_for_global_commands_is_searched_too() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("jw-npm-prefix-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let own = root.join("own");
+        let prefix = root.join("custom-prefix");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+        let npm = own.join("npm");
+        std::fs::write(&npm, format!("#!/bin/sh\n[ \"$1 $2\" = \"prefix -g\" ] && echo '{}'\n", prefix.display())).unwrap();
+        std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = search_path(Some(own.as_os_str()), Some(&root.join("no-home"))).unwrap();
+        let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(dirs, vec![own.clone(), prefix.join("bin")]);
     }
 }

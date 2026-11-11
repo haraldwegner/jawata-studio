@@ -935,7 +935,14 @@ export function brainProbe(brain: string, model: string | null): Promise<ProbeRe
 }
 
 /** The model names a conversation brain's own session offers (D56 (f)): opens one session of that brain, so it takes seconds. */
-export function conversationModels(brain: string): Promise<string[]> {
+export interface SessionModel {
+  /** The value the brain's own model option takes; its default is `default…` (Cursor's Auto, Claude's Default). */
+  value: string;
+  /** The name a person reads, and the one written into the seat file. */
+  name: string;
+}
+
+export function conversationModels(brain: string): Promise<SessionModel[]> {
   return invoke("conversation_models", { brain });
 }
 

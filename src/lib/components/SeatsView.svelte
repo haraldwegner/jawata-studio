@@ -79,9 +79,9 @@
     for (const brain of current.acpBrains ?? []) {
       if (sessionModels[brain]) continue;
       try {
-        const names = await conversationModels(brain);
-        // "Auto" (Cursor) and "Default (recommended)" (Claude) are the brain's own default, which the first entry already offers.
-        sessionModels = { ...sessionModels, [brain]: names.filter((n) => !/^(auto|default\b)/i.test(n.trim())) };
+        const models = await conversationModels(brain);
+        // The brain's own default (Cursor's Auto, Claude's Default) is the option whose value is `default…`; the first entry offers it.
+        sessionModels = { ...sessionModels, [brain]: models.filter((m) => !m.value.toLowerCase().startsWith("default")).map((m) => m.name) };
       } catch {
         // A brain whose session could not be opened offers its default only; the row says nothing more.
       }

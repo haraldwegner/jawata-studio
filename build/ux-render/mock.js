@@ -146,7 +146,7 @@ const H = {
   eclipse_workspaces: () => dashboard.eclipseWorkspaces, resolution_status: () => [], workspace_readability: () => ws.map((w) => ({ workspace: w, readable: true })),
   knowledge_status: () => (scenario === "slowmemory" ? new Promise(() => {}) : knowledge), experience_verb: () => ({ ok: true }),
   seats_view: () => ({ seats, clients: [{ id: "claude", label: "Claude Code" }, { id: "cursor", label: "Cursor" }], errors: [], acpBrains: ["claude"], missingAdapters: [] }),
-  conversation_models: () => ["Default (recommended)", "Opus 5.5", "Sonnet 5.5", "Haiku 5.5"],
+  conversation_models: () => [{ value: "default", name: "Default (recommended)" }, { value: "opus-5-5", name: "Opus 5.5" }, { value: "sonnet-5-5", name: "Sonnet 5.5" }, { value: "haiku-5-5", name: "Haiku 5.5" }],
   workflow_view: () => ({ rows: [
     { name: "pm", command: null, parent: "main", role: "lead", escalatesTo: null, signed: { parent: "main", role: "lead", escalatesTo: null }, placed: false, noPlaceReason: null, noFile: false },
     { name: "architect", command: null, parent: "main", role: "reviewer", escalatesTo: null, signed: { parent: "main", role: "reviewer", escalatesTo: null }, placed: false, noPlaceReason: null, noFile: false },
