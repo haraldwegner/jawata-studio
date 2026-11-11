@@ -20160,6 +20160,8 @@ mod vscode_bundle_tests {
                 format!("--install-extension {} --force", vsix.join("jawata-chat-0.2.0.vsix").display()),
                 format!("--install-extension {} --force", vsix.join("jawata-java-0.1.0.vsix").display()),
                 "--uninstall-extension redhat.java".to_string(),
+                // 28h C25: listed again, so that what the editor removed along with an extension pack is named too.
+                "--list-extensions --show-versions".to_string(),
             ]
         );
     }

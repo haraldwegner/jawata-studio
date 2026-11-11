@@ -823,6 +823,24 @@ fn deploy_group(group: &[&EditorBuild], files: &Vsixes, env: &EditorEnv, changed
             (false, true) => {}
         }
     }
+    // Uninstalling an extension pack takes the extensions it brought with it, which need not need Red Hat's (on a real VS Code on
+    // 2026-11-11 Extension Pack for Java took Debugger, Maven and Gradle for Java with it). Everything that left is named, never only what
+    // was asked for (28h C25).
+    if !gone.is_empty() {
+        if let Ok(now) = listed(build, env) {
+            let mut with_a_pack: Vec<String> = before
+                .iter()
+                .filter(|e| !now.iter().any(|n| n.id.eq_ignore_ascii_case(&e.id)))
+                .filter(|e| !gone.iter().any(|g| g.eq_ignore_ascii_case(&e.id)))
+                .map(|e| name_of(&e.id, &manifests))
+                .collect();
+            with_a_pack.sort();
+            if !with_a_pack.is_empty() {
+                changed.push(format!("`{}`: removed {}", build.name, and_list(&with_a_pack)));
+                result.done.push(format!("the editor removed {} with the extension pack they came in", and_list(&with_a_pack)));
+            }
+        }
+    }
     result
 }
 
@@ -1235,10 +1253,18 @@ mod tests {
             step_timeout: Duration::from_secs(120),
         };
         let s = Scratch::new("realcode");
-        let report = deploy_extensions(&env, &s.0);
-        assert_eq!(report.outcome, Outcome::Success, "{}", report.message);
         let build = &find_editors(env.path_var.as_deref(), env.home.as_deref()).builds[0];
+        let before = listed(build, &env).unwrap();
+        let before_names = manifests_of(build.extensions_dir.as_ref().expect("the folder is known"), &before);
+        let report = deploy_extensions(&env, &s.0);
+        eprintln!("DEPLOY RESULT: {}", report.message);
+        assert_eq!(report.outcome, Outcome::Success, "{}", report.message);
         let after = listed(build, &env).unwrap();
+        // 28h C25: every extension that left is named in the result, not only those the deploy asked to remove.
+        for went in before.iter().filter(|e| !after.iter().any(|a| a.id == e.id)) {
+            let name = name_of(&went.id, &before_names);
+            assert!(report.message.contains(&name), "{name} left without being named: {}", report.message);
+        }
         for id in [CHAT_EXTENSION_ID, JAVA_EXTENSION_ID] {
             assert!(after.iter().any(|e| e.id == id), "{id} is not installed: {after:?}");
         }
@@ -1277,6 +1303,8 @@ mod tests {
                 format!("--install-extension {} --force", vsix.join("jawata-chat-0.2.0.vsix").display()),
                 format!("--install-extension {} --force", vsix.join("jawata-java-0.1.0.vsix").display()),
                 "--uninstall-extension redhat.java".to_string(),
+                // 28h C25: listed again, so that what the editor removed along with an extension pack is named too.
+                "--list-extensions --show-versions".to_string(),
             ]
         );
         assert!(report.message.contains("removed Language Support for Java by Red Hat"), "named, not by its id: {}", report.message);
