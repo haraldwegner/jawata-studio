@@ -60,18 +60,9 @@ fn staged_hook(scratch: &Path, role_binary: &str) -> PathBuf {
 }
 
 fn built_binary() -> PathBuf {
-    // `current_exe()` is the test binary: <target>/<profile>/deps/<test>.
-    let mut p = std::env::current_exe().expect("test exe");
-    p.pop(); // deps
-    p.pop(); // profile
-    let exe = if cfg!(windows) { "jawata-hook.exe" } else { "jawata-hook" };
-    let candidate = p.join(exe);
-    assert!(
-        candidate.exists(),
-        "the hook binary must be built alongside the tests; looked for {}",
-        candidate.display()
-    );
-    candidate
+    // Cargo's own answer to where it built the binary for this test run. Reading it off the test's own path broke with Rust 1.100, which
+    // put test binaries under <target>/<profile>/build/<crate>/<hash>/ (the 4.6.4 release build, 2026-11-16).
+    PathBuf::from(env!("CARGO_BIN_EXE_jawata-hook"))
 }
 
 fn scratch(name: &str) -> PathBuf {
