@@ -171,9 +171,12 @@ pub fn search_path(path_var: Option<&OsStr>, home: Option<&std::path::Path>) -> 
     std::env::join_paths(dirs).ok()
 }
 
-/// [`search_path`] for this studio: its own `PATH` and this user's npm folders.
+/// [`search_path`] for this studio: its own `PATH` and this user's npm folders. Worked out once per run of the studio: it starts npm, which
+/// takes about a second, and it is asked for every project the dashboard loads (4.6.3 asked it each time, and a dashboard of many projects
+/// no longer answered within its 60 seconds). An agent installed while the studio runs is found after the next start.
 pub fn this_machines_path() -> Option<std::ffi::OsString> {
-    search_path(std::env::var_os("PATH").as_deref(), dirs::home_dir().as_deref())
+    static PATH: std::sync::OnceLock<Option<std::ffi::OsString>> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| search_path(std::env::var_os("PATH").as_deref(), dirs::home_dir().as_deref())).clone()
 }
 
 /// The settings for this machine, read from `path_var` (the `PATH` value), when the studio has deployed no server of its own.
