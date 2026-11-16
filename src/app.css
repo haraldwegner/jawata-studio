@@ -1072,6 +1072,17 @@ button:disabled {
   max-width: none;
 }
 
+/* Before a deploy: what it removes from VS Code (his word, 2026-11-16). */
+.deploy-warning {
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+  border-left: 3px solid var(--warn);
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--warn);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
 .deploy-target-grid {
   display: flex;
   flex-wrap: wrap;

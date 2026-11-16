@@ -1102,6 +1102,14 @@
           </label>
         {/each}
       </div>
+      {#if pendingDeployMode === "deploy" && deployTargetsDraft.vscode}
+        <!-- His word, 2026-11-16: the person is told BEFORE the deploy that VS Code's Java support changes hands; the other
+             agents only get jawata's server entry, which changes nothing they see. -->
+        <p class="deploy-warning" title="jawata Java brings the Java language support, the Testing view and the debugger itself, so Red Hat's extension would do the same job twice. Remove does not install Red Hat's back.">
+          VS Code: jawata Java takes over Java support. Red Hat's Java extension is removed, with the Extension Pack for Java and the
+          extensions that need it (the Java debugger, Maven and Gradle for Java). Untick VS Code to keep them.
+        </p>
+      {/if}
       <div class="actions compact">
         <button disabled={disabled || deployBusy} on:click={closeDeployTargetPicker} type="button">Cancel</button>
         <button

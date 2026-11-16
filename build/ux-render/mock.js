@@ -8,6 +8,7 @@
 //   scenario held = a newer engine was tried and not switched to (the Settings sentence)
 //   scenario slowmemory = the store read never answers (the Memory wait text)
 //   scenario deployed = the dashboard after a deploy, with the result his deploy of 2026-11-16 showed
+//   scenario predeploy = the deploy panel open, before Deploy to selected is pressed
 const q = new URLSearchParams(location.search);
 const scenario = q.get("scenario") ?? "healthy";
 const ws = ["javata-dev", "orb-strategy", "patterns"];
@@ -196,11 +197,12 @@ window.addEventListener("load", () => {
     if (tab) [...document.querySelectorAll("nav .tab")].find((b) => b.textContent.trim() === tab)?.click();
     setTimeout(() => {
       const click = (label) => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === label)?.click();
-      if (scenario === "deployed") { click("Deploy to agents"); setTimeout(() => click("Deploy to selected"), 200); }
+      if (scenario === "deployed" || scenario === "predeploy") click("Deploy to agents");
+      if (scenario === "deployed") setTimeout(() => click("Deploy to selected"), 200);
       setTimeout(() => {
         if (q.get("open") === "1") document.querySelectorAll("details").forEach((d) => (d.open = true));
         document.title = "ready";
-      }, scenario === "deployed" ? 900 : 0);
+      }, scenario === "deployed" || scenario === "predeploy" ? 900 : 0);
     }, 700);
   }, 700);
 });
