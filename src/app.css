@@ -1072,6 +1072,12 @@ button:disabled {
   max-width: none;
 }
 
+/* The two lines of the deploy panel: the agents, and the editor that hosts the chat. */
+.deploy-line-title {
+  margin: 0.2rem 0 0;
+  font-weight: 600;
+}
+
 /* Before a deploy: what it removes from VS Code (his word, 2026-11-16). */
 .deploy-warning {
   margin: 0;

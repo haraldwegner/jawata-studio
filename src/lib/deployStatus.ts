@@ -30,35 +30,40 @@ function andList(items: string[]): string {
   return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 }
 
-/** What the editor extensions step did, in the run's own direction: installed, removed, skipped or failed. */
-function editorOutcome(status: string, remove: boolean): string {
-  if (status === "success") return remove ? "removed" : "installed";
-  if (status === "skipped") return "were skipped";
-  return "failed";
+/**
+ * The rows that belong to VS Code, the host of the jawata chat, and the other hosts an agent of jawata is registered in; everything else
+ * is an agent (his word, 2026-11-16: the agents and VS Code are two jobs).
+ */
+const HOST_ROWS = new Set([EXTENSIONS_ROW, "vscode", "jawata-chat", "vscode-settings", "zed", "intellij-acp"]);
+const VSCODE_ROWS = new Set([EXTENSIONS_ROW, "vscode", "jawata-chat", "vscode-settings"]);
+
+/** What happened in VS Code, in a few words: the extensions in or out, skipped, or a step that failed. Empty when VS Code was not in the run. */
+function vscodeOutcome(result: DeployToAgentsResult, remove: boolean): string {
+  const rows = result.clients.filter((entry) => VSCODE_ROWS.has(entry.client));
+  if (!rows.length) return "";
+  if (rows.some((entry) => entry.status === "failed")) return " VS Code: a step failed, see Details.";
+  const editor = rows.find((entry) => entry.client === EXTENSIONS_ROW);
+  if (!editor) return "";
+  if (editor.status === "skipped") return " VS Code: the extensions were skipped.";
+  return ` VS Code: jawata chat and jawata Java ${remove ? "removed" : "installed"}.`;
 }
 
 /**
  * The last run in one sentence for the dashboard (his word, 2026-11-16: "Who is going to read this?"): for how many agents jawata is set
- * up, whether the editor extensions went in, and by name only what was skipped or failed. What each step did in full is `lines`, the
- * details under it.
+ * up, by name only what was skipped or failed, and then what happened in VS Code. What each step did in full is `lines`, the details
+ * under it.
  */
 function summaryOf(result: DeployToAgentsResult): string {
   const remove = result.mode === "delete";
-  const editor = result.clients.find((entry) => entry.client === EXTENSIONS_ROW);
-  const agents = result.clients.filter((entry) => entry.client !== EXTENSIONS_ROW);
+  const agents = result.clients.filter((entry) => !HOST_ROWS.has(entry.client));
   const named = (status: string) => agents.filter((entry) => entry.status === status).map((entry) => agentName(entry.client));
   const done = agents.filter((entry) => entry.status === "success").length;
-  let sentence = `${remove ? "Last remove" : "Last deploy"}: jawata is ${remove ? "taken out of" : "set up for"} ${done} of ${agents.length} agents`;
-  if (editor) {
-    const outcome = editorOutcome(editor.status, remove);
-    sentence += `, and the editor extensions ${outcome.startsWith("were") || outcome === "failed" ? outcome : "are " + outcome}`;
-  }
-  sentence += ".";
-  const failed = named("failed");
+  let sentence = `${remove ? "Last remove" : "Last deploy"}: jawata is ${remove ? "taken out of" : "set up for"} ${done} of ${agents.length} agents.`;
+  const failed = [...named("failed"), ...result.clients.filter((entry) => HOST_ROWS.has(entry.client) && !VSCODE_ROWS.has(entry.client) && entry.status === "failed").map((entry) => agentName(entry.client))];
   const skipped = named("skipped");
   if (failed.length) sentence += ` Failed: ${andList(failed)}.`;
   if (skipped.length) sentence += ` Skipped: ${andList(skipped)}.`;
-  return sentence;
+  return sentence + vscodeOutcome(result, remove);
 }
 
 /**

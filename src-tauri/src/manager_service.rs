@@ -1375,15 +1375,26 @@ impl ManagerService {
             // exists to prevent, arriving through the conditional.
             let inherits_seat_commands = inherits_seat_commands_now(&clients, target);
 
-            let result = self.deploy_to_client(
+            // His ruling, 2026-11-16: VS Code is the host of the jawata chat, not an agent. Its built-in Copilot is switched
+            // off and is given no jawata tools, so a deploy takes jawata's entry OUT of VS Code's own MCP file (an earlier
+            // deploy wrote one there); Copilot reaches jawata only as Copilot CLI, the agents line.
+            let copilot_left_out = target.id == "vscode" && matches!(input.mode, DeployMode::Deploy | DeployMode::Regenerate);
+            let mode = if copilot_left_out { DeployMode::Delete } else { input.mode.clone() };
+            let mut result = self.deploy_to_client(
                 target.id,
                 target.target_path.clone(),
                 &client_servers,
                 &settings.mcp_merge_mode,
                 settings.mcp_backup_before_write,
-                &input.mode,
+                &mode,
                 inherits_seat_commands,
             );
+            let removes_from_vscode = target.id == "vscode" && matches!(mode, DeployMode::Delete);
+            if removes_from_vscode && matches!(result.status, DeployClientStatus::Skipped) {
+                // Nothing to take out is the state the deploy wants, not a step it skipped.
+                result.status = DeployClientStatus::Success;
+                result.message = "VS Code's own Copilot is given no jawata tools; there was no entry to take out.".into();
+            }
             results.push(result);
         }
 
@@ -20111,19 +20122,29 @@ mod vscode_bundle_tests {
     }
 
     #[test]
-    fn the_one_vscode_entry_writes_the_mcp_entry_the_settings_and_installs_the_extensions() {
+    fn the_one_vscode_entry_writes_the_settings_and_installs_the_extensions_and_gives_vs_codes_copilot_no_jawata_entry() {
         let m = machine("vsb-deploy", &["redhat.java", "ms-python.python"]);
+        // An earlier deploy gave VS Code's built-in Copilot jawata's tools, beside a server of the person's own.
+        fs::create_dir_all(m.mcp.parent().unwrap()).unwrap();
+        fs::write(
+            &m.mcp,
+            r#"{ "servers": { "jawata-old-ws": { "type": "http", "url": "http://127.0.0.1:8800/mcp" }, "users-own-tool": { "type": "stdio", "command": "npx" } }, "inputs": [] }"#,
+        )
+        .unwrap();
 
         let result = deploy(&m, DeployMode::Deploy, &["vscode"]);
 
-        // the existing VS Code MCP entry
+        // His ruling, 2026-11-16: VS Code is the host of the jawata chat; its own Copilot is switched off and gets no jawata
+        // tools, so the deploy takes jawata's entry out of VS Code's MCP file and leaves the person's own servers.
         assert!(
             matches!(row(&result, "vscode").status, DeployClientStatus::Success),
             "{} {:?}",
             row(&result, "vscode").message,
             row(&result, "vscode").validation_errors
         );
-        assert!(fs::read_to_string(&m.mcp).unwrap().contains("jawata"), "the MCP entry is written");
+        let mcp = fs::read_to_string(&m.mcp).unwrap();
+        assert!(!mcp.contains("jawata"), "no jawata entry is left for VS Code's Copilot:\n{mcp}");
+        assert!(mcp.contains("users-own-tool"), "the person's own server stays:\n{mcp}");
         // the chat's agent setting, which has no entry of its own in the picker
         assert!(matches!(row(&result, "jawata-chat").status, DeployClientStatus::Success), "{}", row(&result, "jawata-chat").message);
         // the editor settings

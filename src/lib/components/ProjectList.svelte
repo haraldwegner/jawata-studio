@@ -108,8 +108,9 @@
       id: "vscode",
       label: "VS Code",
       covers:
-        "The jawata server entry, plus: installs the editor extensions jawata chat and jawata Java through each editor command on PATH " +
-        "(`code`, `codium`, `code-oss`), writes their settings and turns off VS Code's built-in AI features, Copilot among them. " +
+        "VS Code is the host of the jawata chat, not an agent: installs the editor extensions jawata chat and jawata Java through each " +
+        "editor command on PATH (`code`, `codium`, `code-oss`), writes their settings and turns off VS Code's built-in Copilot, which is " +
+        "given no jawata tools (an entry an earlier deploy gave it is taken out). " +
         "Removes Language Support for Java by Red Hat and the extensions that need it, because jawata Java brings its own Testing view " +
         "and debugger. Remove takes out the two jawata extensions and the settings; it does not install Red Hat's back."
     },
@@ -1089,9 +1090,12 @@
 
   {#if showDeployTargetPicker}
     <div class="deploy-target-picker">
-      <p class="hint"><strong>{pendingDeployMode === "delete" ? "Remove from which agents?" : "Deploy to which agents?"}</strong></p>
+      <p class="hint"><strong>{pendingDeployMode === "delete" ? "Remove from which agents and editor?" : "Deploy to which agents and editor?"}</strong></p>
+      <!-- His word, 2026-11-16: the agents get jawata's tools and can be hired as brains; VS Code is the host of the jawata chat
+           and gets its extensions. Two jobs, so two lines. -->
+      <p class="hint deploy-line-title" title="Each agent gets jawata's tool server, for when you use it yourself. jawata hires it as a brain without that entry.">Agents</p>
       <div class="deploy-target-grid">
-        {#each deployTargetOptions.filter((option) => deployTargetDefaults[option.key]) as option}
+        {#each deployTargetOptions.filter((option) => deployTargetDefaults[option.key] && option.key !== "vscode") as option}
           <label class="checkbox-row compact">
             <input
               bind:checked={deployTargetsDraft[option.key]}
@@ -1102,6 +1106,20 @@
           </label>
         {/each}
       </div>
+      {#each deployTargetOptions.filter((option) => deployTargetDefaults[option.key] && option.key === "vscode") as option}
+        <p class="hint deploy-line-title" title="The editor the jawata chat runs in. It gets the two jawata extensions; its own Copilot is switched off.">Editor</p>
+        <div class="deploy-target-grid">
+          <label class="checkbox-row compact">
+            <input
+              bind:checked={deployTargetsDraft[option.key]}
+              disabled={disabled || deployBusy}
+              type="checkbox"
+            />
+            <span title={option.covers}>{option.label}</span>
+          </label>
+          <span class="hint">installs jawata chat and jawata Java; its own Copilot is switched off</span>
+        </div>
+      {/each}
       {#if pendingDeployMode === "deploy" && deployTargetsDraft.vscode}
         <!-- His word, 2026-11-16: the person is told BEFORE the deploy that VS Code's Java support changes hands; the other
              agents only get jawata's server entry, which changes nothing they see. -->
