@@ -1,5 +1,5 @@
 {
-  "engineVersion": "4.6.5",
+  "engineVersion": "4.6.6",
   "live": [
     {"name": "analyze", "changesCode": false},
     {"name": "apply_cleanup", "changesCode": true},
