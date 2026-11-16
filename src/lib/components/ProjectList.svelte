@@ -1121,12 +1121,17 @@
   {:else if deployStatus}
     <!-- Sprint 28a 2b (Harald's ruling): the status STAYS — it is informative
          (is it deployed or not). No dismiss, no line per agent; failures are
-         named inline. D56 (b): two lines, the editor extensions installed or
-         removed and the jawata servers set up per agent. Staleness is handled
-         at the source: starting a new run clears the previous result. -->
-    {#each deployStatus.lines as line}
-      <p class={deployStatus.failed ? "project-error" : "hint"}>{line}</p>
-    {/each}
+         named inline. One sentence (his word, 2026-11-16: "Who is going to
+         read this?"); D56 (b)'s two lines, what each step did in full, are
+         its details. Staleness is handled at the source: starting a new run
+         clears the previous result. -->
+    <p class={deployStatus.failed ? "project-error" : "hint"}>{deployStatus.summary}</p>
+    <details class="fold deploy-details">
+      <summary title="What each step of the last run did: which editor extensions were installed or removed, and which agents got jawata's servers.">Details</summary>
+      {#each deployStatus.lines as line}
+        <p class="hint">{line}</p>
+      {/each}
+    </details>
   {/if}
 </section>
 </div>

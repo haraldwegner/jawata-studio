@@ -1,5 +1,6 @@
-// Run with `npm test`. D56 (b): the dashboard's "Last deploy" says, as two lines, which editor extensions were installed or removed
-// and which jawata servers were set up for which agents, by the names a person knows, not by ids.
+// Run with `npm test`. The dashboard's "Last deploy" is one short sentence: whether it worked, for how many agents, and by name what failed
+// or was skipped (his word, 2026-11-16, on the two long lines of D56 (b): "Who is going to read this?"). The two lines of D56 (b), which
+// editor extensions were installed or removed and which agents got jawata's servers, by the names a person knows, are the details under it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { deployStatusLines } from "./deployStatus.ts";
@@ -67,6 +68,44 @@ test("a remove says what was taken out, and none is said when nothing was", () =
     "Last remove: Editor extensions, removed through each editor's own command.",
     "jawata servers taken out of agents: none (0 of 1); skipped: VS Code.",
   ]);
+});
+
+const LONG_EDITOR =
+  "Editor extensions, installed through each editor's own command. With `code`: installed jawata chat and jawata Java; removed Language Support for Java(TM) by Red Hat, because jawata Java now brings the Java language support, the Testing view and the debugger, and with it Extension Pack for Java and Test Runner for Java, which need it.";
+
+test("the sentence on the dashboard says how many agents are set up and names only what was skipped", () => {
+  const status = deployStatusLines({
+    mode: "deploy",
+    ok: true,
+    detail: "",
+    durationMs: 1,
+    clients: [row("cursor", "success"), row("claude", "success"), row("zed", "skipped"), row("intellij-acp", "skipped"), row("vscode-extensions", "success", LONG_EDITOR)],
+  });
+  assert.equal(status.summary, "Last deploy: jawata is set up for 2 of 4 agents, and the editor extensions are installed. Skipped: Zed and IntelliJ's AI chat.");
+  assert.ok(!status.summary.includes("Red Hat"), "what was installed and removed is a detail, not the sentence");
+  assert.equal(status.lines[0], `Last deploy: ${LONG_EDITOR}`, "the details keep the studio's own sentence in full");
+});
+
+test("the sentence names what failed, the editor extensions included, and says nothing of extensions when the run had no editor step", () => {
+  const agentFailed = deployStatusLines({ mode: "deploy", ok: false, detail: "", durationMs: 1, clients: [row("claude_desktop", "failed"), row("copilot_cli", "success")] });
+  assert.equal(agentFailed.summary, "Last deploy: jawata is set up for 1 of 2 agents. Failed: Claude Desktop.");
+
+  const editorFailed = deployStatusLines({ mode: "deploy", ok: false, detail: "", durationMs: 1, clients: [row("vscode", "success"), row("vscode-extensions", "failed", "Not done: x.")] });
+  assert.equal(editorFailed.summary, "Last deploy: jawata is set up for 1 of 1 agents, and the editor extensions failed.");
+
+  const editorSkipped = deployStatusLines({ mode: "deploy", ok: true, detail: "", durationMs: 1, clients: [row("vscode", "success"), row("vscode-extensions", "skipped", "No editor.")] });
+  assert.equal(editorSkipped.summary, "Last deploy: jawata is set up for 1 of 1 agents, and the editor extensions were skipped.");
+});
+
+test("the sentence of a remove says what was taken out", () => {
+  const status = deployStatusLines({
+    mode: "delete",
+    ok: true,
+    detail: "",
+    durationMs: 1,
+    clients: [row("cursor", "success"), row("vscode", "skipped"), row("vscode-extensions", "success", "Editor extensions, removed through each editor's own command.")],
+  });
+  assert.equal(status.summary, "Last remove: jawata is taken out of 1 of 2 agents, and the editor extensions are removed. Skipped: VS Code.");
 });
 
 test("an id the studio has no name for is shown as it is, never dropped", () => {

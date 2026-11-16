@@ -7,6 +7,7 @@
 //   scenario eclipse = the workspace list with Eclipse workspaces (running, not running, newer jawata)
 //   scenario held = a newer engine was tried and not switched to (the Settings sentence)
 //   scenario slowmemory = the store read never answers (the Memory wait text)
+//   scenario deployed = the dashboard after a deploy, with the result his deploy of 2026-11-16 showed
 const q = new URLSearchParams(location.search);
 const scenario = q.get("scenario") ?? "healthy";
 const ws = ["javata-dev", "orb-strategy", "patterns"];
@@ -166,6 +167,14 @@ const H = {
   ], places: ["main", "pm", "chief-engineer", "test-manager"], refusals: [], errors: [] }),
   brains_status: () => brains, get_runtime_status: (a) => runtimeStatuses[a.projectId], get_services_inventory: () => dashboard.servicesInventory,
   probe_services: () => ({ ok: true, durationMs: 840, services: new Array(50).fill({ name: "x" }), detail: "" }),
+  deploy_to_agents: () => {
+    const row = (client, status, message = "") => ({ client, targetPath: "", status, message, changedSections: [], validationErrors: [] });
+    return { mode: "deploy", ok: true, detail: "", durationMs: 1, clients: [
+      ...["cursor", "claude", "codex", "copilot_cli", "vscode", "grok", "jawata-chat", "vscode-settings"].map((c) => row(c, "success")),
+      row("zed", "skipped"), row("intellij-acp", "skipped"),
+      row("vscode-extensions", "success", "Editor extensions, installed through each editor's own command. With `code`: installed jawata chat and jawata Java; removed Language Support for Java(TM) by Red Hat, because jawata Java now brings the Java language support, the Testing view and the debugger, and with it Extension Pack for Java and Test Runner for Java, which need it; the editor removed Debugger for Java, Gradle for Java and Maven for Java with the extension pack they came in. The files came from the release v0.2.3 of haraldwegner/jawata-chat."),
+    ] };
+  },
 };
 let cb = 1;
 window.__TAURI_INTERNALS__ = {
@@ -186,8 +195,12 @@ window.addEventListener("load", () => {
   setTimeout(() => {
     if (tab) [...document.querySelectorAll("nav .tab")].find((b) => b.textContent.trim() === tab)?.click();
     setTimeout(() => {
-      if (q.get("open") === "1") document.querySelectorAll("details").forEach((d) => (d.open = true));
-      document.title = "ready";
+      const click = (label) => [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === label)?.click();
+      if (scenario === "deployed") { click("Deploy to agents"); setTimeout(() => click("Deploy to selected"), 200); }
+      setTimeout(() => {
+        if (q.get("open") === "1") document.querySelectorAll("details").forEach((d) => (d.open = true));
+        document.title = "ready";
+      }, scenario === "deployed" ? 900 : 0);
     }, 700);
   }, 700);
 });

@@ -53,6 +53,8 @@ shoot "dashboard-eclipse" "tab=Dashboard&scenario=eclipse"
 shoot "reporting-attention" "tab=Reporting&scenario=attention"
 shoot "memory-reading" "tab=Memory&scenario=slowmemory"
 shoot "settings-held" "tab=Settings&scenario=held"
+shoot "dashboard-deployed" "tab=Dashboard&scenario=deployed"
+shoot "dashboard-deployed-open" "tab=Dashboard&scenario=deployed&open=1"
 # What a shot SHOWS, as a browser joins it: tags and comments removed with no space put in their place,
 # whitespace runs collapsed. A space lost at the edge of a template block shows up here and nowhere else
 # (S19-24: "189of 11622 rows· 13 cures", "describedin", "answering(62 ms)"). The mock's own figures are fixed,
