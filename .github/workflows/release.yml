@@ -45,8 +45,13 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      # PINNED, 2026-11-16. Rust 1.100 (9 November) builds under <target>/<profile>/build/<crate>/<hash>/, and tauri-build 2.5.6 works out
+      # the target folder from the old depth: it then tries to remove the folder build/jawata-hook as if it were the hook program and stops
+      # (4.6.5's build, Linux and macOS). 1.99.1 built 4.6.3. Move this on together with a tauri-build that knows the new layout.
+      - name: Install Rust 1.99.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
 
       # Sprint 28 Stage 7 (D-SHIM c): the hook binary as a Tauri SIDECAR.
       # tauri.conf.json declares externalBin: ["binaries/jawata-hook"], and
