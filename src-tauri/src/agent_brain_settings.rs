@@ -231,85 +231,6 @@ pub fn acp_brains(settings: &AgentBrainSettings) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The model names a brain's own ACP session offers, read by opening one session in an empty folder and closing it (D56 (f)). These are
-/// the names the engine matches a seat's `model:` against when it moves the principal's session, so the Seats page offers exactly what will
-/// be accepted; Cursor's command-line model list does not match them (measured 2026-11-11: 12 of 47 names differ). Err when the program
-/// does not answer within `timeout` or offers no model option.
-///
-/// Each model comes with the value the brain's option takes and the name a person reads, so the caller tells the brain's own default by its
-/// value (`default[]` for Cursor's Auto, `default` for Claude's) rather than by a vendor's wording.
-pub fn session_models(command: &[String], env: &[(String, String)], timeout: std::time::Duration) -> Result<Vec<SessionModel>, String> {
-    use std::io::{BufRead, Write};
-    let (program, args) = command.split_first().ok_or("no command")?;
-    let folder = std::env::temp_dir().join(format!("jawata-models-{}-{}", std::process::id(), std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
-    std::fs::create_dir_all(&folder).map_err(|e| format!("no scratch folder: {e}"))?;
-    let result = (|| {
-        let mut child = std::process::Command::new(program)
-            .args(args)
-            .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-            .current_dir(&folder)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| format!("{program} did not start: {e}"))?;
-        let stdout = child.stdout.take().ok_or("no output")?;
-        let (lines, received) = std::sync::mpsc::channel::<String>();
-        std::thread::spawn(move || {
-            for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
-                if lines.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-        let mut stdin = child.stdin.take().ok_or("no input")?;
-        let until = std::time::Instant::now() + timeout;
-        let mut ask = |id: u64, method: &str, params: serde_json::Value| -> Result<serde_json::Value, String> {
-            let request = serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
-            writeln!(stdin, "{request}").and_then(|_| stdin.flush()).map_err(|e| format!("{method}: {e}"))?;
-            loop {
-                let left = until.saturating_duration_since(std::time::Instant::now());
-                let line = received.recv_timeout(left).map_err(|_| format!("no answer to {method} within {} s", timeout.as_secs()))?;
-                let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
-                if message.get("id").and_then(|v| v.as_u64()) == Some(id) && message.get("method").is_none() {
-                    return message.get("result").cloned().ok_or_else(|| format!("{method} was refused: {message}"));
-                }
-            }
-        };
-        let answer = ask(1, "initialize", serde_json::json!({ "protocolVersion": 1, "clientCapabilities": {} }))
-            .and_then(|_| ask(2, "session/new", serde_json::json!({ "cwd": folder.to_string_lossy(), "mcpServers": [] })));
-        let _ = child.kill();
-        let _ = child.wait();
-        let opened = answer?;
-        let option = opened["configOptions"].as_array().into_iter().flatten()
-            .find(|o| o["category"] == "model" || o["id"] == "model")
-            .ok_or("the brain's session offers no model option")?;
-        Ok(option["options"].as_array().into_iter().flatten()
-            .filter_map(|o| Some(SessionModel { value: o["value"].as_str()?.to_string(), name: o["name"].as_str()?.to_string() }))
-            .collect())
-    })();
-    let _ = std::fs::remove_dir_all(&folder);
-    result
-}
-
-/// One model a brain's own session offers: the value its model option takes, and the name a person reads.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
-pub struct SessionModel {
-    pub value: String,
-    pub name: String,
-}
-
-/// The program the registry of `settings` names for `brain`, as a command line and its added environment.
-pub fn program_of(settings: &AgentBrainSettings, brain: &str) -> Option<(Vec<String>, Vec<(String, String)>)> {
-    let (_, registry) = settings.env.iter().find(|(name, _)| name == HIRE_BRAINS_ENV)?;
-    let programs: serde_json::Value = serde_json::from_str(registry).ok()?;
-    let entry = programs.get(brain)?;
-    let command: Vec<String> = entry["command"].as_array()?.iter().filter_map(|w| w.as_str().map(str::to_string)).collect();
-    let env = entry["env"].as_object().map(|m| m.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string()))).collect()).unwrap_or_default();
-    (!command.is_empty()).then_some((command, env))
-}
-
 /// `base` with the agent settings set: an entry of the same name already in `base` is replaced, never
 /// kept beside the new one, so a changed program path rewrites the value and a repeat adds nothing.
 pub fn applied_to(base: Vec<(String, String)>, settings: &AgentBrainSettings) -> Vec<(String, String)> {
@@ -604,34 +525,6 @@ mod tests {
         let started_with = registry["claude-code"]["env"]["PATH"].as_str().expect("a PATH for the adapter").to_string();
         assert_eq!(std::env::split_paths(&started_with).next(), Some(bin.clone()), "its own folder first: {started_with}");
         assert_eq!(registry["cursor"]["env"], serde_json::json!({}), "Cursor's agent is started as before");
-    }
-
-    /// D56 (f): the Seats page offers the main seat's default model from the names the brain's own session offers. A stand-in ACP program
-    /// answers `initialize` and `session/new` with a model option; its names come back in order, the other option is not read as models.
-    #[cfg(unix)]
-    #[test]
-    fn the_model_names_are_read_from_the_brains_own_session() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("jw-acp-models-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let program = dir.join("fake-acp");
-        std::fs::write(&program, "#!/bin/sh\nread a\necho '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1}}'\nread b\necho '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{}}'\necho '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s\",\"configOptions\":[{\"id\":\"mode\",\"options\":[{\"value\":\"ask\",\"name\":\"Ask\"}]},{\"id\":\"model\",\"category\":\"model\",\"options\":[{\"value\":\"default[]\",\"name\":\"Auto\"},{\"value\":\"grok-4.7[fast=true]\",\"name\":\"grok-4.7\"},{\"value\":\"composer-2.5[fast=true]\",\"name\":\"composer-2.5\"}]}]}}'\nread c\n").unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let names = session_models(&[program.to_string_lossy().into_owned()], &[], std::time::Duration::from_secs(10));
-        let _ = std::fs::remove_dir_all(&dir);
-        let model = |value: &str, name: &str| SessionModel { value: value.to_string(), name: name.to_string() };
-        assert_eq!(names, Ok(vec![model("default[]", "Auto"), model("grok-4.7[fast=true]", "grok-4.7"), model("composer-2.5[fast=true]", "composer-2.5")]));
-    }
-
-    /// Control: a program that never answers is an error within the time given, never an empty list that reads as "offers no models".
-    #[cfg(unix)]
-    #[test]
-    fn a_brain_that_does_not_answer_is_an_error_not_an_empty_list() {
-        let started = std::time::Instant::now();
-        let answer = session_models(&["sleep".to_string(), "30".to_string()], &[], std::time::Duration::from_secs(2));
-        assert!(answer.is_err(), "{answer:?}");
-        assert!(started.elapsed() < std::time::Duration::from_secs(10), "it waited {:?}", started.elapsed());
     }
 
     /// Architect finding 5 at 28h C25: a global folder npm itself names (a custom prefix, a version manager the studio does not know) is

@@ -79,9 +79,8 @@
     for (const brain of current.acpBrains ?? []) {
       if (sessionModels[brain]) continue;
       try {
-        const models = await conversationModels(brain);
-        // The brain's own default (Cursor's Auto, Claude's Default) is the option whose value is `default…`; the first entry offers it.
-        sessionModels = { ...sessionModels, [brain]: models.filter((m) => !m.value.toLowerCase().startsWith("default")).map((m) => m.name) };
+        // The engine leaves out the brain's own default (Cursor's Auto, Claude's Default); the first entry offers it.
+        sessionModels = { ...sessionModels, [brain]: await conversationModels(brain) };
       } catch {
         // A brain whose session could not be opened offers its default only; the row says nothing more.
       }
@@ -145,7 +144,10 @@
         label: `${b.label} — ${b.takesModel ? "its default model" : "chooses its own model"}${note}`,
       });
       if (b.takesModel) {
-        for (const m of b.models ?? []) options.push({ value: `${b.id}|${m}`, label: `${b.label} — ${m}${note}` });
+        // 28h D57 (c): a brain the chat also runs on is offered the engine's one catalogue, what its own session offers, so every seat
+        // is offered the list main is; only a brain with no session of its own falls back to the models its check read.
+        const models = view?.acpBrains.includes(b.id) ? sessionModels[b.id] : b.models;
+        for (const m of models ?? []) options.push({ value: `${b.id}|${m}`, label: `${b.label} — ${m}${note}` });
       }
     }
     // The saved choice is always shown, even when this machine cannot start it right now.

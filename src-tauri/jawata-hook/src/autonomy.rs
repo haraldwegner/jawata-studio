@@ -215,6 +215,21 @@ pub fn note_prompt(base: &Path, session: &str, prompt: &str, machine: bool) -> b
     }
 }
 
+/// The variable the engine names its autocontinue state file in, for a brain it started as a chat's
+/// principal (jawata-mcp `AutonomyFile.VARIABLE`).
+pub const ENGINE_STATE_VARIABLE: &str = "JAWATA_AUTONOMY_FILE";
+
+/// The grant as the engine's state file says it: `Granted` for `on`, `NotGranted` for `off`, and `None`
+/// where no file is named or it cannot be read, which leaves the decision to this hook's own grant.
+fn engine_state(file: Option<&Path>) -> Option<Autonomy> {
+    let text = std::fs::read_to_string(file?).ok()?;
+    match text.trim() {
+        "on" => Some(Autonomy::Granted),
+        "off" => Some(Autonomy::NotGranted),
+        _ => None,
+    }
+}
+
 /// What the Stop gate should be told about this session.
 ///
 /// `NotGranted` and `Unknown` are deliberately different answers even though
@@ -222,6 +237,18 @@ pub fn note_prompt(base: &Path, session: &str, prompt: &str, machine: bool) -> b
 /// and the honest report is that we could not observe it, while an absent file
 /// for a real session means we looked and he had not granted it.
 pub fn state(base: &Path, session: &str) -> Autonomy {
+    state_with(base, session, std::env::var_os(ENGINE_STATE_VARIABLE).map(std::path::PathBuf::from).as_deref())
+}
+
+/// [`state`] with the engine's state file given rather than read from this process's environment, so a
+/// test run inside a jawata chat is not decided by that chat's own switch.
+fn state_with(base: &Path, session: &str, engine_file: Option<&Path>) -> Autonomy {
+    // D57 (m): inside the jawata chat the engine holds the one autocontinue state — the button and his
+    // typed /autocontinue and /autocontinue-off switch it — and names a file holding it to the brain's
+    // process. Where that file is named, it is the answer, so the button reaches this gate too.
+    if let Some(answer) = engine_state(engine_file) {
+        return answer;
+    }
     if session.is_empty() {
         return Autonomy::Unknown;
     }
@@ -406,6 +433,30 @@ pub fn note_turn(base: &Path, session: &str, did_work: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tests below judge this hook's own grant; the engine's file, which a test run inside a jawata chat
+    /// would inherit, is kept out of them.
+    fn state(base: &Path, session: &str) -> Autonomy {
+        state_with(base, session, None)
+    }
+
+    /// D57 (m): the engine's state file decides the grant inside the jawata chat, so the button reaches the
+    /// stop gate; with no file named, or one that cannot be read, the hook's own grant decides as before.
+    #[test]
+    fn the_engines_state_file_decides_the_grant_where_it_is_named() {
+        let d = tmp();
+        let f = d.join("autonomy.state");
+        std::fs::write(&f, "on").unwrap();
+        assert_eq!(Some(Autonomy::Granted), engine_state(Some(&f)), "the button switched it on");
+        std::fs::write(&f, "off\n").unwrap();
+        assert_eq!(Some(Autonomy::NotGranted), engine_state(Some(&f)), "the button switched it off");
+        assert_eq!(None, engine_state(Some(&d.join("missing.state"))), "an unreadable file decides nothing");
+        assert_eq!(None, engine_state(None), "outside the chat the hook's own grant decides");
+        // The whole decision: a granted file wins over a hook that was never armed.
+        std::fs::write(&f, "on").unwrap();
+        assert_eq!(Autonomy::Granted, state_with(&d, "s", Some(&f)), "the button's on reaches the stop gate");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     /// A scratch dir unique per CALL, not per clock tick.
     ///

@@ -136,7 +136,7 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
         // The guard decides locally and never asks: it must answer while the
         // resident is down, and a guard that asked and failed open would leak
         // exactly the calls it exists to deny.
-        Role::Guard => guard(client, payload, Some(config)),
+        Role::Guard => guard(client, payload),
         // Sprint 28g S21 — a session that starts AFTER A COMPACTION also gets the discussion back:
         // every window the transcript still holds is stored, and the last things he said ride on
         // top of the primer. Any other start asks the engine nothing extra.
@@ -358,21 +358,19 @@ fn answering_then_working(payload: &str) -> Option<String> {
     ))
 }
 
-/// The guard, framed by the observer (Sprint 28g S23). The call is recorded first, so the window
-/// counts every call the guard was asked about; the first tier may halt it, then a hired
-/// observer's waiting verdict may, then the guard's own rules decide; and WHAT WAS DECIDED is
-/// recorded against the call afterwards, so a window can show the judge which calls were refused.
-fn guard(client: Client, payload: &str, config: Option<&HookConfig>) -> Outcome {
+/// The guard, framed by the observer's rule tier (Sprint 28g S23). The call is recorded first, so
+/// the window counts every call the guard was asked about; the rule tier may halt it, then the
+/// guard's own rules decide; and WHAT WAS DECIDED is recorded against the call afterwards. No
+/// model is hired for the person's own conversation (28h D57 (d)): watching hired workers is the
+/// engine's, against the instructions each was given.
+fn guard(client: Client, payload: &str) -> Outcome {
     let watched = watch_begin(payload);
     let outcome = match watched.as_ref().and_then(|w| w.halt.as_ref()) {
         Some(finding) => {
             emit_observer_signal("observer-halt", finding.class.name());
             emit_permission(client, false, finding.correction.clone())
         }
-        None => match watched.as_ref().and_then(|w| tier_two(client, payload, config, w, &crate::judge::spawn_judge)) {
-            Some(halted) => halted,
-            None => guard_rules(client, payload),
-        },
+        None => guard_rules(client, payload),
     };
     if let Some(w) = &watched {
         crate::watch::end(&w.ticket, is_denial(&outcome));
@@ -613,8 +611,6 @@ fn emit_observer_signal(signal: &str, detail: &str) {
 struct Watched {
     ticket: crate::watch::Ticket,
     halt: Option<crate::watch::Finding>,
-    home: std::path::PathBuf,
-    session: String,
 }
 
 /// Tier 1 of the observer on one call: record it, judge it, and say whether it halts.
@@ -638,68 +634,7 @@ fn watch_begin(payload: &str) -> Option<Watched> {
         crate::watch::Watched::Halt(finding) => Some(finding),
         crate::watch::Watched::Pass => None,
     };
-    Some(Watched { ticket, halt, home, session })
-}
-
-/// Sprint 28g S23 O2 — the hired observer, from the call's side. Two jobs and neither waits:
-/// deliver the halt a judge left for this session (once, and leave the rule as the reminder for the
-/// call after), and, once enough calls have passed, hand the judge a new window and start it
-/// detached. A call that finds nothing to deliver and nothing due costs one small read.
-fn tier_two(
-    client: Client,
-    payload: &str,
-    config: Option<&HookConfig>,
-    watched: &Watched,
-    spawn: &dyn Fn(&str) -> bool,
-) -> Option<Outcome> {
-    let (home, session) = (watched.home.as_path(), watched.session.as_str());
-    if client != Client::ClaudeCode || session.is_empty() {
-        return None;
-    }
-    if let Some((shape, correction)) = crate::judge::take_halt(home, session) {
-        emit_observer_signal("observer-judged-halt", &shape.to_string());
-        crate::watch::set_reminder(home, session, crate::judge::shape_reminder(shape));
-        return Some(emit_permission(
-            client,
-            false,
-            format!(
-                "THE OBSERVER, JUDGING YOUR LAST CALLS: {correction}\n\nThis refuses one call. \
-                 Take it up in your next step and carry on."
-            ),
-        ));
-    }
-    let seat = config?.seats_dir.as_deref().map(|d| std::path::Path::new(d).join("observer.md"))?;
-    // A seat that is absent, or switched off in the Seats view, is not hired.
-    if std::fs::read_to_string(&seat).map(|t| crate::judge::seat_is_off(&t)).unwrap_or(true) {
-        return None;
-    }
-    let window = crate::watch::load(home, session);
-    if crate::judge::due(home, session, &window) {
-        let brief = crate::judge::brief(&window, &recent_human_messages(payload));
-        crate::judge::start(home, session, window.number, &brief, spawn);
-    }
-    None
-}
-
-/// What he last typed, oldest first, from the transcript the payload names. Empty when there is
-/// none or it cannot be read: the seat is told so and judges only the calls.
-fn recent_human_messages(payload: &str) -> Vec<String> {
-    let Some(path) = parse_payload(payload)
-        .ok()
-        .and_then(|v| v.get("transcript_path").and_then(|p| p.as_str().map(str::to_string)))
-    else {
-        return Vec::new();
-    };
-    let Some(turn) = read_tail(&path, TRANSCRIPT_TAIL_BYTES)
-        .ok()
-        .and_then(|text| crate::stop::read_turn(&text).ok())
-    else {
-        return Vec::new();
-    };
-    let mut all: Vec<String> = turn.closed.iter().map(|w| w.his.clone()).collect();
-    all.push(turn.capture.his.clone());
-    let kept: Vec<String> = all.into_iter().filter(|h| !h.trim().is_empty()).collect();
-    kept[kept.len().saturating_sub(crate::judge::HIS_MESSAGES)..].to_vec()
+    Some(Watched { ticket, halt })
 }
 
 /// Render one permission decision. Shared by the edit half and the shell half
@@ -3732,92 +3667,48 @@ mod tests {
         }
     }
 
-    /// Sprint 28g S23 O2 — the hired observer from the call's side, driven through `tier_two`:
-    /// a halt the judge left is delivered once and leaves its rule as the reminder; once eight
-    /// calls have passed the window is handed over — never awaited, here a recorder; one judge at
-    /// a time; a seat switched off, or absent, is not hired. And the same delivery through `run`.
+    /// 28h D57 (d) — "No observer on the main chat": the hook hires no observer for the person's own
+    /// conversation, whatever the Seats view says. Twenty calls of one main-chat turn, with the
+    /// observer seat present and switched ON: no window is handed over (no brief, no in-flight
+    /// marker) and nothing reaches the resident, where a hire would be made. Watching hired workers
+    /// is the engine's, and the rule checks that need no model still refuse.
     #[test]
-    fn a_judged_halt_is_delivered_once_with_a_reminder_and_a_window_is_handed_over_every_eighth_call() {
-        let session = format!("o2-wire-{}-{}", std::process::id(), line!());
+    fn a_long_main_chat_turn_starts_no_observer_hire() {
+        let session = format!("d57d-main-{}-{}", std::process::id(), line!());
         let home = home_dir().expect("a home directory");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let seats = std::env::temp_dir().join(format!("d57d-seats-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&seats).unwrap();
+        std::fs::write(seats.join("observer.md"), "---\nname: observer\n---\nbody").unwrap();
+        let mut cfg = config("claude-code");
+        cfg.url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        cfg.seats_dir = Some(seats.to_string_lossy().into_owned());
         let payload = |command: &str| {
             serde_json::json!({ "session_id": session, "tool_name": "Bash", "tool_input": { "command": command } })
                 .to_string()
         };
 
-        let signals = std::env::temp_dir().join(format!("o2-signals-{}-{}", std::process::id(), line!()));
-        let _ = std::fs::remove_dir_all(&signals);
-        TEST_SIGNAL_DIR.with(|d| *d.borrow_mut() = Some(signals.clone()));
-        // 1. THE DELIVERY, through the real arm.
-        crate::judge::write_verdict(
-            &home,
-            &session,
-            &crate::judge::Verdict::Halt { shape: 1, correction: "You left his question open at #4.".into() },
-        );
-        let first = run(Role::Guard, &config("claude-code"), &payload("echo hi"), &Stub(Ok(Answer::Nothing)));
-        let reason = denial_reason(&first).unwrap_or_else(|| panic!("the judge's halt refuses the next call: {first:?}"));
-        assert!(reason.contains("left his question open at #4"), "{reason}");
-        let second = run(Role::Guard, &config("claude-code"), &payload("echo hi"), &Stub(Ok(Answer::Nothing)));
-        assert_eq!(None, denial_reason(&second), "delivered once");
-        assert_eq!(
-            crate::watch::take_reminder(&home, &session).as_deref(),
-            Some(crate::judge::shape_reminder(1)),
-            "the call after a hired halt carries the rule it broke"
-        );
-        // And the count: a hired halt reaches the signal log, by shape, where the report reads it.
-        let log = std::fs::read_to_string(signals.join("outcomes.log")).expect("the hook wrote its signal");
-        assert_eq!(crate::watch::read_kpi(&log, None).hired.get("1"), Some(&1), "one hired halt, shape 1: {log}");
-        TEST_SIGNAL_DIR.with(|d| *d.borrow_mut() = None);
-        let _ = std::fs::remove_dir_all(&signals);
+        let refused = run(Role::Guard, &cfg, &payload("gh run watch 1"), &Stub(Ok(Answer::Nothing)));
+        for _ in 0..20 {
+            run(Role::Guard, &cfg, &payload("echo more"), &Stub(Ok(Answer::Nothing)));
+        }
 
-        // 2. THE HAND-OVER: seven more calls are on the window; the eighth is due.
-        let seats = std::env::temp_dir().join(format!("o2-seats-{}-{}", std::process::id(), line!()));
-        std::fs::create_dir_all(&seats).unwrap();
-        std::fs::write(seats.join("observer.md"), "---\nname: observer\n---\nbody").unwrap();
-        let mut with_seats = config("claude-code");
-        with_seats.seats_dir = Some(seats.to_string_lossy().into_owned());
-        let started = std::cell::RefCell::new(Vec::<String>::new());
-        let record = |s: &str| {
-            started.borrow_mut().push(s.to_string());
-            true
-        };
-        let look = |cfg: &HookConfig| {
-            // One more call on the ledger, then what the guard would do about the hired observer.
-            let (ticket, _) = crate::watch::begin(&home, &session, crate::watch::CallView::new("Bash", "echo more", false));
-            crate::watch::end(&ticket, false);
-            let watched = Watched { ticket, halt: None, home: home.clone(), session: session.clone() };
-            tier_two(Client::ClaudeCode, &payload("x"), Some(cfg), &watched, &record)
-        };
-        while crate::watch::load(&home, &session).number < 7 {
-            assert!(look(&with_seats).is_none());
-        }
-        assert!(started.borrow().is_empty(), "seven calls hand nothing over");
-        assert!(look(&with_seats).is_none());
-        assert_eq!(started.borrow().len(), 1, "the eighth call hands the window over");
-        let brief_path = home.join(".claude").join("jawata-studio").join("watch").join(format!("{}.brief", sanitize_session(&session)));
-        let brief = std::fs::read_to_string(&brief_path).unwrap();
-        assert!(brief.contains("#8 Bash echo more"), "the brief carries the window as counted: {brief}");
-        assert!(brief.contains("#1 Bash [REFUSED]"), "and shows which call the guard refused: {brief}");
-        assert_eq!(crate::watch::load(&home, &session).judged_at, 8);
-        // One judge at a time, and not again until eight more have passed.
-        for _ in 0..8 {
-            assert!(look(&with_seats).is_none());
-        }
-        assert_eq!(started.borrow().len(), 1, "the marker holds the next hand-over back");
-        // A seat switched off in the Seats view, or no seats directory, is not hired.
-        crate::oneshot::discard(&home, &session, "observer-judging");
-        std::fs::write(seats.join("observer.md"), "---\nname: observer\nenabled: false\n---\nbody").unwrap();
-        for _ in 0..8 {
-            assert!(look(&with_seats).is_none());
-        }
-        assert_eq!(started.borrow().len(), 1, "a switched-off seat is not hired");
-        for _ in 0..8 {
-            assert!(look(&config("claude-code")).is_none());
-        }
-        assert_eq!(started.borrow().len(), 1, "without a seats directory the first tier stands alone");
-
+        let studio = home.join(".claude").join("jawata-studio");
+        let key = sanitize_session(&session);
+        let brief = studio.join("watch").join(format!("{key}.brief"));
+        let marker = studio.join("editgate").join(format!("{key}.observer-judging"));
+        let (brief_written, marker_written) = (brief.exists(), marker.exists());
+        let reached = listener.accept();
         forget_observer_session(&session);
         let _ = std::fs::remove_dir_all(&seats);
+        assert!(denial_reason(&refused).is_some(), "the rule checks still refuse: {refused:?}");
+        assert!(!brief_written, "a window was handed to an observer for the main chat");
+        assert!(!marker_written, "an observer judge was started for the main chat");
+        match reached {
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            other => panic!("the main chat's calls reached the resident, where an observer would be hired: {other:?}"),
+        }
     }
 
     /// Same sweep, same hole: every existing test passed `Role::UserPrompt`,

@@ -13,7 +13,8 @@
 //! `find_pattern_usages`, `find_string_literals`, `go_to_definition`, `hierarchy`, `refresh_workspace`,
 //! `validate_syntax`. [`THE_ELEVEN`] is that list. `find_tests`, `get_at_position` and `health_check` are
 //! not in it: the first two were added as drivers by this slice because a seat's job needs them, and
-//! `health_check` is named by a quoted string in the stop judge. They are additions, not the contract.
+//! `health_check` is named by a quoted string in the studio's resident probe (the hook's observer judge,
+//! which named it too, was deleted in 28h D57 (d)). They are additions, not the contract.
 //!
 //! ## What "driven" means here: the same strict reading, for every tool
 //!
@@ -70,11 +71,19 @@ pub struct Row {
 }
 
 /// Tools driven by a product step rather than a seat.
-pub const ROWS: &[Row] = &[Row {
-    tool: "health_check",
-    file: "jawata-hook/src/judge.rs",
-    evidence: r#""steps": [{ "tool": "health_check", "arguments": {} }]"#,
-}];
+pub const ROWS: &[Row] = &[
+    Row {
+        tool: "health_check",
+        file: "src/runtime_manager.rs",
+        evidence: r#""params": { "name": "health_check", "arguments": {} }"#,
+    },
+    // 28h D57 (c), C26: the Seats page's model lists, brain check and test run, and the discovery after a deploy, are the engine's
+    Row {
+        tool: "brains",
+        file: "src/manager_service.rs",
+        evidence: r#"call_tool_json(&server.url, &server.token, "brains", arguments.clone(), timeout_secs)"#,
+    },
+];
 
 /// Tools no seat drives, by decision, and why. The test pins this set so it cannot grow quietly.
 pub const ACCEPTED_UNDRIVEN: &[(&str, &str)] = &[(
@@ -140,7 +149,8 @@ fn embedded() -> Vec<(&'static str, &'static str)> {
 /// The text of a file a [`Row`] cites.
 fn text_of(file: &str) -> &'static str {
     match file {
-        "jawata-hook/src/judge.rs" => include_str!("../jawata-hook/src/judge.rs"),
+        "src/runtime_manager.rs" => include_str!("runtime_manager.rs"),
+        "src/manager_service.rs" => include_str!("manager_service.rs"),
         _ => "",
     }
 }

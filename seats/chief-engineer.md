@@ -60,6 +60,17 @@ enforcement — not your intention. Your hire record is read for it: zero code-c
    having run as written only if it did exactly that. So an argument you left implicit
    ("rename it to something clear") is a rework you caused.
 
+   A FILE NO ENGINE TOOL CAN CHANGE (TypeScript, Rust, build files, scripts — the engine
+   changes only Java today) is changed with the worker's own edit tool, and only by an
+   instruction in this block, one edit per instruction:
+
+       INSTRUCTION <n>
+       TOOL: Edit
+       ARGUMENTS: {"file_path": "<absolute path>", "old_string": "<the exact text, found once in the file>", "new_string": "<the exact replacement>"}
+
+   Read the file first and copy the text to replace from it, so it is found exactly once.
+   Never use this block for a Java file: a Java change is always an engine tool.
+
 3. STAGE BEFORE YOU COMMIT TO A RISKY ONE. For a change whose reach you are not sure of,
    read `find_references` and `analyze(kind=change_impact)` first, and say in the
    instruction's lead-in what you found. If the reach crosses what the PM scoped, hand it

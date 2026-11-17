@@ -412,12 +412,24 @@ pub async fn deploy_to_agents(
     app: tauri::AppHandle,
     input: DeployToAgentsInput,
 ) -> Result<DeployToAgentsResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<AppState>();
-        state.manager_service.deploy_to_agents(input)
+    let result = tauri::async_runtime::spawn_blocking({
+        let app = app.clone();
+        move || {
+            let state = app.state::<AppState>();
+            state.manager_service.deploy_to_agents(input)
+        }
     })
     .await
-    .map_err(|e| format!("the deploy stopped unexpectedly: {e}"))?
+    .map_err(|e| format!("the deploy stopped unexpectedly: {e}"))?;
+    if result.is_ok() {
+        // 28h D57 (c): a deploy is where a brain's adapter arrives, so the engine is asked once for every chat brain's models; its catalogue
+        // keeps them, and the Seats page then starts nothing. The answer is not shown: a brain that could not be opened is asked again there.
+        let servers = app.state::<AppState>().manager_service.knowledge_servers();
+        std::thread::spawn(move || {
+            let _ = crate::manager_service::engine_models(&servers, None, 180);
+        });
+    }
+    result
 }
 
 /// The seat part of a deploy only (C11-4) — what the Seats view runs after a change, so a toggle
@@ -568,34 +580,40 @@ pub fn workflow_view(state: State<'_, AppState>) -> Result<crate::workflow::Work
     Ok(state.manager_service.workflow_view())
 }
 
-/// Which of the named brains this machine has — installed, logged in, and the models the program
-/// lists where it can — asked of each agent program itself. Off the main thread: a status check
-/// can take seconds, and a sync command would freeze the whole window while it runs.
+/// Which of the named brains this machine has (installed, logged in, the models it lists), as the engine's check reads them (28h, the C26
+/// review): the studio asks no program itself. Off the main thread: the engine starts a short program per brain.
 #[tauri::command]
-pub async fn brains_status(ids: Vec<String>) -> Result<Vec<crate::brains::BrainStatus>, String> {
-    tauri::async_runtime::spawn_blocking(move || crate::brains::brains_status(&ids))
-        .await
-        .map_err(|e| format!("brain check failed: {e}"))
-}
-
-/// One test run through a brain — it answers one word, in an empty folder — so a brain or model
-/// is chosen only once it answered. Off the main thread: a run takes seconds.
-#[tauri::command]
-pub async fn brain_probe(brain: String, model: Option<String>) -> Result<crate::brains::ProbeResult, String> {
-    tauri::async_runtime::spawn_blocking(move || crate::brains::probe(&brain, model.as_deref()))
-        .await
-        .map_err(|e| format!("test run failed: {e}"))?
-}
-
-/// D56 (f): the model names a conversation brain's own session offers, so the main seat's default model is chosen from what the engine will
-/// accept. Off the main thread: it opens one session of that brain, which takes seconds.
-#[tauri::command]
-pub async fn conversation_models(brain: String) -> Result<Vec<crate::agent_brain_settings::SessionModel>, String> {
+pub async fn brains_status(app: tauri::AppHandle, ids: Vec<String>) -> Result<Vec<crate::brains::BrainStatus>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let settings = crate::agent_brain_settings::detect(crate::agent_brain_settings::this_machines_path().as_deref());
-        let (command, env) = crate::agent_brain_settings::program_of(&settings, &brain)
-            .ok_or_else(|| format!("{brain} cannot run a conversation on this machine"))?;
-        crate::agent_brain_settings::session_models(&command, &env, std::time::Duration::from_secs(30))
+        let servers = app.state::<AppState>().manager_service.knowledge_servers();
+        crate::manager_service::engine_brain_status(&servers, &ids)
+    })
+    .await
+    .map_err(|e| format!("brain check failed: {e}"))?
+}
+
+/// One test run through a brain, as the engine runs it (it answers one word, in an empty folder), so a brain or model is chosen only once it
+/// answered. The model is named as a Brain list shows it; the engine gives the program's command line what it takes. Off the main thread: a
+/// run takes seconds.
+#[tauri::command]
+pub async fn brain_probe(app: tauri::AppHandle, brain: String, model: Option<String>) -> Result<crate::brains::ProbeResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let servers = app.state::<AppState>().manager_service.knowledge_servers();
+        crate::manager_service::engine_brain_probe(&servers, &brain, model.as_deref())
+    })
+    .await
+    .map_err(|e| format!("test run failed: {e}"))?
+}
+
+/// D56 (f), 28h D57 (c): the model names a conversation brain's own session offers, less its own default, read from the engine's one
+/// catalogue, so every seat is offered the names main is and the engine accepts. Off the main thread: the engine's first ask of a brain
+/// opens one session of it, which takes seconds.
+#[tauri::command]
+pub async fn conversation_models(app: tauri::AppHandle, brain: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let servers = app.state::<AppState>().manager_service.knowledge_servers();
+        let answer = crate::manager_service::engine_models(&servers, Some(&brain), 60)?;
+        Ok(answer.into_iter().find(|(id, _)| *id == brain).map(|(_, models)| models).unwrap_or_default())
     })
     .await
     .map_err(|e| format!("model list failed: {e}"))?

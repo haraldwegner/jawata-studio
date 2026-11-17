@@ -8099,6 +8099,118 @@ fn canary_probe(workspace: &str, url: &str, token: &str) -> crate::field_view::C
     .with_workspace_readable(workspace_readable)
 }
 
+/// 28h D57 (c) and the architect's watch of C26: what the studio knows about the agent programs is the engine's answer, through its `brains`
+/// tool: each chat brain's models from the engine's one catalogue, which programs this machine has, and the one-word test run before a seat
+/// keeps a brain and model. The studio checks no program itself, so a rule about a brain (how it reports its login, what its command line
+/// takes for a model) lives in the engine alone. The first resident that answers is the answer: every resident is started with the same
+/// brain registry. Err when no resident answers, never an empty list that reads as "nothing here".
+fn ask_engine_brains(servers: &[ManagedDeployServer], arguments: serde_json::Value, timeout_secs: u64) -> Result<serde_json::Value, String> {
+    let mut last = "no jawata engine is running to ask; start the jawata studio's engine, then open this page again".to_string();
+    for server in servers.iter().filter(|s| !s.url.is_empty() && !s.token.is_empty()) {
+        match call_tool_json(&server.url, &server.token, "brains", arguments.clone(), timeout_secs) {
+            Ok(body) => return answered(body),
+            Err(error) => last = error,
+        }
+    }
+    Err(last)
+}
+
+/// The tool's data, or its refusal in its own words.
+fn answered(body: serde_json::Value) -> Result<serde_json::Value, String> {
+    if body.get("success").and_then(serde_json::Value::as_bool) != Some(true) {
+        let error = body.get("error").cloned().unwrap_or(serde_json::Value::Null);
+        return Err(error.get("message").and_then(serde_json::Value::as_str).map(str::to_string).unwrap_or_else(|| error.to_string()));
+    }
+    Ok(body.get("data").cloned().unwrap_or(serde_json::Value::Null))
+}
+
+/// The models of one chat brain (`brain`), or of every ready chat brain (`None`, the discovery a deploy runs), as (brain, models) pairs; a
+/// brain the engine could not open is left out.
+pub(crate) fn engine_models(servers: &[ManagedDeployServer], brain: Option<&str>, timeout_secs: u64) -> Result<Vec<(String, Vec<String>)>, String> {
+    let mut arguments = serde_json::json!({ "action": "models" });
+    if let Some(id) = brain {
+        arguments["brain"] = serde_json::Value::String(id.to_string());
+    }
+    Ok(fold_models(&ask_engine_brains(servers, arguments, timeout_secs)?))
+}
+
+fn fold_models(data: &serde_json::Value) -> Vec<(String, Vec<String>)> {
+    data.pointer("/brains")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            let brain = row.get("brain")?.as_str()?.to_string();
+            let models = row.get("models")?.as_array()?.iter().filter_map(|m| m.as_str().map(str::to_string)).collect();
+            Some((brain, models))
+        })
+        .collect()
+}
+
+/// Every agent program this machine has, as the engine's check reads it; `ids` empty for all of them, as the Seats page asks.
+pub(crate) fn engine_brain_status(servers: &[ManagedDeployServer], ids: &[String]) -> Result<Vec<crate::brains::BrainStatus>, String> {
+    let data = ask_engine_brains(servers, serde_json::json!({ "action": "status" }), 120)?;
+    let all: Vec<crate::brains::BrainStatus> = serde_json::from_value(data.get("brains").cloned().unwrap_or_default())
+        .map_err(|error| format!("the engine's brain check could not be read: {error}"))?;
+    Ok(all.into_iter().filter(|b| ids.is_empty() || ids.contains(&b.id)).collect())
+}
+
+/// The one-word test run through `brain` on `model` (as a Brain list shows it; the engine gives the program's command line what it takes).
+pub(crate) fn engine_brain_probe(servers: &[ManagedDeployServer], brain: &str, model: Option<&str>) -> Result<crate::brains::ProbeResult, String> {
+    let mut arguments = serde_json::json!({ "action": "probe", "brain": brain });
+    if let Some(chosen) = model {
+        arguments["model"] = serde_json::Value::String(chosen.to_string());
+    }
+    let data = ask_engine_brains(servers, arguments, 180)?;
+    let mut result: crate::brains::ProbeResult =
+        serde_json::from_value(data).map_err(|error| format!("the engine's test run could not be read: {error}"))?;
+    result.model = model.map(str::to_string);
+    Ok(result)
+}
+
+#[cfg(test)]
+mod engine_brains_tests {
+    use super::*;
+
+    /// The catalogue is read as the engine says it, one brain's models per row; a brain it could not open is left out.
+    #[test]
+    fn the_engines_catalogue_is_read_brain_by_brain() {
+        let data = serde_json::json!({ "brains": [
+            { "brain": "claude-code", "label": "Claude Code", "models": ["Opus 5.5", "Haiku 5.5"] },
+            { "brain": "cursor", "label": "Cursor", "error": "could not be started" }
+        ] });
+        assert_eq!(fold_models(&data), vec![("claude-code".to_string(), vec!["Opus 5.5".to_string(), "Haiku 5.5".to_string()])]);
+    }
+
+    /// The engine's check and test run read into the studio's own shapes, so the Seats page draws them as before.
+    #[test]
+    fn the_engines_check_and_test_run_read_into_the_studios_shapes() {
+        let status: Vec<crate::brains::BrainStatus> = serde_json::from_value(serde_json::json!([{ "id": "claude-code", "label": "Claude Code",
+            "installed": true, "login": "loggedIn", "reason": null, "loginCommand": "claude", "models": null, "hirable": true, "takesModel": true,
+            "writesHeldByInstruction": false }])).unwrap();
+        assert_eq!(status[0].login, crate::brains::Login::LoggedIn);
+        assert_eq!(status[0].models, None, "no models of its own is None, not an empty list");
+        let run: crate::brains::ProbeResult = serde_json::from_value(serde_json::json!({ "brain": "claude-code", "ok": true, "answer": "OK",
+            "modelsUsed": ["claude-haiku-5-5"], "costUsd": 0.0006, "seconds": 1.5, "error": null, "loginCommand": "claude" })).unwrap();
+        assert!(run.ok);
+        assert_eq!(run.models_used, vec!["claude-haiku-5-5".to_string()]);
+    }
+
+    /// Control: a refusal is its own message, never an empty answer.
+    #[test]
+    fn a_refusal_is_an_error_not_an_empty_answer() {
+        let body = serde_json::json!({ "success": false, "error": { "code": "INVALID_PARAMETER", "message": "The brain registry names no program for nobody." } });
+        assert_eq!(answered(body), Err("The brain registry names no program for nobody.".to_string()));
+    }
+
+    /// Control: with no resident to ask, the answer says so and what to do.
+    #[test]
+    fn no_resident_is_an_error() {
+        assert!(engine_models(&[], Some("claude-code"), 1).unwrap_err().contains("no jawata engine"));
+        assert!(engine_brain_status(&[], &[]).unwrap_err().contains("no jawata engine"));
+    }
+}
+
 /// Can the resident READ its own workspace? Its own `workspace.healthy`.
 ///
 /// ONE implementation, asked by two cadences — the deep canary every five

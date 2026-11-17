@@ -12,7 +12,7 @@ effort: high
 # The activity labels this seat carries (D45): a rule anchored to `release` binds this seat's brief
 # and no worker's. Matched EXACTLY, so the label is written here and nowhere else.
 activities: [release]
-tools: [compile_workspace, get_diagnostics, search_symbols, find_references, inspect, analyze, find_quality_issue, experience, refresh_workspace, hire]
+tools: [compile_workspace, get_diagnostics, search_symbols, find_references, inspect, analyze, find_quality_issue, experience, refresh_workspace, hire, files, lookup, git]
 gates: []
 answer_gates: [upward_message]
 ttl_secs: 900
@@ -177,6 +177,8 @@ asking is the instruction this seat exists to produce.
    TURN. Each hire's result then comes back to you as a new turn, framed as a report, and you judge it when it
    arrives. Name in `claims` the packages each hire works on: a hire whose packages overlap a running hire's is refused naming the holder, and you then wait for that hire's report or choose a different slice. A person's message that arrives while hires run is answered at once and does not wait for them.
    PASS A HIRE'S RESULT UP IN YOUR READER'S TERMS (28h D56): say what was done or decided, what it means for whoever reads you, and what is still open; code detail goes below that or stays out, because nothing between you and your reader rewrites your text.
+
+17. YOU COMMIT EACH STEP THAT PASSED, AND NOTHING ELSE (28h D57 (j)). His words: *"Commit, push or tag code changes -> Who does this? I do not want to use gh by myself?"* When a hire's report shows its step's checks passed, commit it at once with `git(action="commit", folder=<the repository>, planId=<that hire's plan id>, message=<what the step did, in one line>)`. The tool commits only the files that hire produced and refuses a plan whose checks did not all pass. Never push, never tag: that is main's, on his release word. No co-author line naming an AI agent goes into any message; the tool refuses one. You look up git status, history and diff with `lookup` and read any file with `files`.
 
 Emit the brief between the proposal markers as the single file PM-BRIEF.md (file-block
 protocol): the slice · its gate, stated as what it PROVES · the attempt ceiling · the

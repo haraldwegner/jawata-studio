@@ -22,18 +22,6 @@ fn main() {
         std::process::exit(jawata_hook::bracket::main(&all_args[2..]));
     }
 
-    // Sprint 28g S23 O2: the observer's detached judge. Started by a call and never awaited by
-    // one; it has its own clock (the seat's), so it is answered before the hook watchdog is armed.
-    if jawata_hook::judge::is_judge_call(&all_args) {
-        let code = match jawata_hook::config::load() {
-            Ok(config) => jawata_hook::judge::main(&all_args[2..], &|brief| {
-                jawata_hook::judge::hire_as_child(&config, brief)
-            }),
-            Err(_) => 0,
-        };
-        std::process::exit(code);
-    }
-
     // Sprint 28g S23 O3: the observer's counts are a report too — no stdin, no store, no deadline.
     if jawata_hook::watch::is_kpi_call(&all_args) {
         std::process::exit(jawata_hook::watch::kpi_main(&all_args[2..]));
