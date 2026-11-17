@@ -20,6 +20,7 @@
   // the seat commands, not every client's MCP configuration).
   import { createEventDispatcher, onMount } from "svelte";
   import { adapterNotice } from "../adapterNotice";
+  import { selectedValue } from "../seatBrainChoice";
   import {
     brainProbe,
     brainsStatus,
@@ -118,6 +119,12 @@
   const CONVERSATION = ["main", "btw"];
   const isConversation = (seat: SeatRow) => CONVERSATION.includes(seat.name);
 
+  /** The model names the Brain list holds for a seat's saved brain; `_models` is passed so a select is drawn again when the names arrive. */
+  function modelsOf(seat: SeatRow, _models: Record<string, string[]> = sessionModels): string[] | undefined {
+    if (isConversation(seat) || view?.acpBrains.includes(seat.brain)) return sessionModels[seat.brain];
+    return brains.find((b) => b.id === seat.brain)?.models ?? undefined;
+  }
+
   // `_models` is passed so the list is drawn again when a brain's model names arrive.
   function brainOptions(seat: SeatRow, _models: Record<string, string[]> = sessionModels): BrainOption[] {
     const options: BrainOption[] = [];
@@ -126,11 +133,12 @@
         options.push({ value: `${b.id}|`, label: `${b.label} — its default model${loginNote(b)}` });
         for (const m of sessionModels[b.id] ?? []) options.push({ value: `${b.id}|${m}`, label: `${b.label} — ${m}${loginNote(b)}` });
       }
-      const chosen = `${seat.brain}|${seat.model ?? ""}`;
-      if (!options.some((o) => o.value === chosen)) {
+      // The select picks the listed model the saved one stands for (selectedValue); a line saying the choice is not available is added only
+      // when this machine offers nothing of the brain at all (his words, 2026-11-17).
+      if (!options.some((o) => o.value.startsWith(`${seat.brain}|`))) {
         options.unshift({
-          value: chosen,
-          label: `${brainLabel(seat.brain)} — ${seat.model ?? "its default model"}${sessionModels[seat.brain] ? " (not available on this machine)" : ""}`,
+          value: `${seat.brain}|${seat.model ?? ""}`,
+          label: `${brainLabel(seat.brain)} — ${seat.model ?? "its default model"} (not available on this machine)`,
         });
       }
       return options;
@@ -150,12 +158,12 @@
         for (const m of models ?? []) options.push({ value: `${b.id}|${m}`, label: `${b.label} — ${m}${note}` });
       }
     }
-    // The saved choice is always shown, even when this machine cannot start it right now.
-    const current = `${seat.brain}|${seat.model ?? ""}`;
-    if (!options.some((o) => o.value === current)) {
+    // The select picks the listed model the saved one stands for (selectedValue). The saved brain is shown with a note only when this machine
+    // offers nothing of it at all, because it is not installed or cannot be hired.
+    if (!options.some((o) => o.value.startsWith(`${seat.brain}|`))) {
       const b = brains.find((x) => x.id === seat.brain);
       options.unshift({
-        value: current,
+        value: `${seat.brain}|${seat.model ?? ""}`,
         label: `${b?.label ?? seat.brain} — ${seat.model ?? "its default model"} (not available on this machine)`,
       });
     }
@@ -336,7 +344,7 @@
                     {@const status = brains.find((b) => b.id === seat.brain)}
                     <select
                       class="seat-brain"
-                      value={`${seat.brain}|${seat.model ?? ""}`}
+                      value={selectedValue(seat.brain, seat.model, modelsOf(seat, sessionModels))}
                       disabled={disabled || busy || testing[seat.name]}
                       on:change={(e) => chooseBrain(seat, e.currentTarget)}
                     >
