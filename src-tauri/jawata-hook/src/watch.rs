@@ -236,13 +236,12 @@ fn ledger_path(home: &Path, session: &str) -> PathBuf {
         .join(format!("{}.ledger", crate::pipeline::sanitize_session(session)))
 }
 
-/// What a ledger folds to: the running call number, the last halt per class, the call number the
-/// judge was last handed a window at, and the last calls with their outcomes.
+/// What a ledger folds to: the running call number, the last halt per class, and the last calls with
+/// their outcomes.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Window {
     pub number: u64,
     pub halted: Vec<(String, u64)>,
-    pub judged_at: u64,
     pub calls: Vec<CallView>,
 }
 
@@ -286,7 +285,6 @@ impl Window {
                     w.halted.retain(|(name, _)| name != class);
                     w.halted.push(((*class).to_string(), n));
                 }
-                ["j", n] => w.judged_at = w.judged_at.max(n.parse().unwrap_or(0)),
                 _ => {}
             }
         }
@@ -417,11 +415,6 @@ pub fn end(ticket: &Ticket, refused: bool) {
     append(&ticket.home, &ticket.session, &format!("o\t{}\t{}\n", ticket.number, if refused { "deny" } else { "allow" }));
 }
 
-/// Record that the judge was handed the window as it stood at call `number`.
-pub fn mark_judged(home: &Path, session: &str, number: u64) {
-    append(home, session, &format!("j\t{number}\n"));
-}
-
 /// Leave a reminder for the next call to carry. One use, and it expires with the one-use records.
 pub fn set_reminder(home: &Path, session: &str, text: &str) {
     if !session.is_empty() {
@@ -453,9 +446,9 @@ pub const LABEL_SUBCOMMAND: &str = "observer-label";
 pub struct Kpi {
     /// First-tier halts by rule class.
     pub first_tier: std::collections::BTreeMap<String, u32>,
-    /// Hired-observer halts by shape number.
+    /// Halts of the hook's own hired observer, retired 2026-11-17 (28h D57 (d)): the engine now watches hired workers. Counted only from the history in the log.
     pub hired: std::collections::BTreeMap<String, u32>,
-    /// Judge runs that ended without a readable verdict.
+    /// Runs of that retired observer that ended without a readable verdict (history only).
     pub no_verdict: u32,
     /// Halts labelled a catch.
     pub catches: u32,
@@ -504,8 +497,8 @@ impl Kpi {
         };
         let labelled = self.catches + self.false_refusals;
         format!(
-            "observer halts, first tier, by rule: {}\nobserver halts, hired seat, by shape: {}\n\
-             hired-seat runs with no readable verdict: {}\n\
+            "observer halts, first tier, by rule: {}\nobserver halts, hook's retired hired observer (history), by shape: {}\n\
+             its runs with no readable verdict (history): {}\n\
              halts labelled by him: {} catches, {} false refusals; {} not yet labelled\n",
             list(&self.first_tier),
             list(&self.hired),
@@ -738,15 +731,14 @@ mod tests {
     }
 
     #[test]
-    fn the_ledger_folds_back_to_the_window_with_numbers_outcomes_and_judge_marks() {
+    fn the_ledger_folds_back_to_the_window_with_numbers_and_outcomes() {
         let home = home();
         let (first, _) = begin(&home, "s1", bash("echo a\tb\nc"));
         end(&first, false);
         let (second, _) = begin(&home, "s1", CallView::new("Edit", "/x/y.rs", false));
         end(&second, true);
-        mark_judged(&home, "s1", 2);
         let w = load(&home, "s1");
-        assert_eq!((w.number, w.judged_at), (2, 2));
+        assert_eq!(w.number, 2);
         assert_eq!(w.calls[0].text, "echo a\tb\nc");
         assert_eq!((w.calls[0].n, w.calls[0].refused), (1, false));
         assert_eq!((w.calls[1].n, w.calls[1].tool.as_str(), w.calls[1].refused), (2, "Edit", true));
