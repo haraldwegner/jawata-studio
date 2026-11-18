@@ -295,6 +295,9 @@ pub trait EditorHost {
     fn scan_folder(&self, folder: &str) -> Result<Vec<WorkspaceProjectCandidate>, String>;
     /// Registers projects in a workspace (made on the first); the projects that could not go in are named in the answer.
     fn add_projects(&self, workspace: &str, projects: &[WorkspaceProjectCandidate]) -> Result<Vec<String>, String>;
+    /// Records the editor's folders for the workspace, so its next start tells the engine what the editor holds (28h Stage 27 (p)).
+    /// A host that keeps no record does nothing.
+    fn remember_folders(&self, _workspace: &str, _folders: &[String]) {}
     /// Starts a workspace by the start path the studio already has.
     fn start(&self, workspace: &str) -> Result<(), String>;
     /// Whether the studio is set to run a managed engine that is not installed (yet): the one condition under which a
@@ -435,6 +438,7 @@ fn settle_start(host: &dyn EditorHost, ui: &dyn EditorUi, folders: &[String], wo
 
 /// Starts `workspace` unless it already answers, waits until it does, and only then writes `ready`.
 fn serve(host: &dyn EditorHost, ui: &dyn EditorUi, folders: &[String], workspace: &str, pacing: Pacing) {
+    host.remember_folders(workspace, folders);
     let first = request_start_once(host, workspace);
     if settle_start(host, ui, folders, workspace, pacing, first) {
         wait_until_ready(host, ui, folders, workspace, pacing);
@@ -574,6 +578,7 @@ pub fn run_editor_launch(host: &dyn EditorHost, ui: &dyn EditorUi, book: &Prompt
                         crate::studio_log::say(&format!("editor launch: not registered in {name}: {line}"));
                     }
                     ui.workspaces_changed();
+                    host.remember_folders(&name, folders);
                     let first = request_start_once(host, &name);
                     drop(create_guard);
                     if settle_start(host, ui, folders, &name, pacing, first) {
@@ -668,6 +673,9 @@ impl EditorHost for crate::manager_service::ManagerService {
     }
     fn add_projects(&self, workspace: &str, projects: &[WorkspaceProjectCandidate]) -> Result<Vec<String>, String> {
         self.editor_add_projects(workspace, projects)
+    }
+    fn remember_folders(&self, workspace: &str, folders: &[String]) {
+        self.editor_remember_folders(workspace, folders);
     }
     fn start(&self, workspace: &str) -> Result<(), String> {
         self.editor_start_workspace(workspace)

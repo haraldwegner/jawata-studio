@@ -2635,6 +2635,15 @@ impl ManagerService {
         Ok(skipped)
     }
 
+    /// Records the editor's folders in the workspace's folder (28h Stage 27 (p)); a failure is logged and the launch goes on, since the
+    /// workspace then simply keeps what it held before.
+    pub(crate) fn editor_remember_folders(&self, workspace: &str, folders: &[String]) {
+        let dir = self.config_store.get_settings().workspace_root().join(workspace);
+        if let Err(error) = crate::runtime_manager::remember_editor_folders(&dir, folders) {
+            crate::studio_log::say(&format!("editor launch: the folders of {workspace} could not be recorded: {error}"));
+        }
+    }
+
     /// Starts one workspace by the start path the restore at launch uses; a workspace that already runs is joined.
     pub(crate) fn editor_start_workspace(&self, workspace: &str) -> Result<(), String> {
         self.start_specific_workspaces(&HashSet::from([workspace.to_string()]))
