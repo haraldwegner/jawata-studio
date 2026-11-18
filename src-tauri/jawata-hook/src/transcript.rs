@@ -105,6 +105,23 @@ fn client_name(client: Client) -> &'static str {
     }
 }
 
+/// The environment variable the engine sets for every brain it starts (a hired seat, the principal's own): a session there is machine-made.
+pub const MACHINE_SESSION_VARIABLE: &str = "JAWATA_MACHINE_SESSION";
+
+/// The client name a capture is written under: the client's own name, with "-machine" after it for a session the engine started, so the
+/// engine's History leaves it out without reading what was said in it (his ruling 2026-11-18).
+fn client_label(client: Client, machine: bool) -> String {
+    if machine { format!("{}-machine", client_name(client)) } else { client_name(client).to_string() }
+}
+
+/// Whether this process was started by the engine as a brain: the variable is set to anything but nothing, "0" or "false".
+fn machine_session() -> bool {
+    match std::env::var(MACHINE_SESSION_VARIABLE) {
+        Ok(v) => !(v.is_empty() || v == "0" || v.eq_ignore_ascii_case("false")),
+        Err(_) => false,
+    }
+}
+
 /// The session and the tail of its transcript, from a hook payload.
 fn transcript_of(payload: &str) -> Option<(String, String)> {
     let v: Value = serde_json::from_str(payload).ok()?;
@@ -168,7 +185,7 @@ fn append_window(
         "kind": "transcript_append",
         "session": session,
         "key": key,
-        "client": client_name(client),
+        "client": client_label(client, machine_session()),
         "capture": kind,
         "his": window.his,
         "agent": window.agent_text(),
@@ -590,7 +607,7 @@ fn story_list_missing(
         "kind": "transcript_append",
         "session": session,
         "key": format!("stories-{:016x}", fnv1a(list.trim())),
-        "client": client_name(client),
+        "client": client_label(client, machine_session()),
         "capture": "compaction",
         "his": "",
         "agent": format!("STORY LIST before a compaction:\n{}", list.trim()),
@@ -767,6 +784,17 @@ mod tests {
     use super::*;
     use crate::query::{Answer, QueryError};
     use std::cell::RefCell;
+
+    /// His ruling 2026-11-18: History lists the person's conversations from every client and leaves out the machine-made ones. A session the
+    /// engine started for a brain (a hired seat, the principal's own) is written under the client's name with "-machine" after it, so the
+    /// engine's listing can tell it from the person's own session without reading what was said in it.
+    #[test]
+    fn a_session_the_engine_started_is_written_under_a_machine_client_name() {
+        assert_eq!(client_label(Client::ClaudeCode, false), "claude-code");
+        assert_eq!(client_label(Client::ClaudeCode, true), "claude-code-machine");
+        assert_eq!(client_label(Client::Cursor, false), "cursor");
+        assert_eq!(client_label(Client::Cursor, true), "cursor-machine");
+    }
 
     /// A store that records what it is asked and answers from a script.
     struct Stub {
