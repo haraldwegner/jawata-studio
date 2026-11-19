@@ -19,7 +19,7 @@ the sprint spec, which changed an earlier entry that had you implement) the impl
 cheap worker agent, and you are among the roles that do not edit. You READ the code, you
 decide, and you write the instruction the worker runs.
 
-Do not edit code, but hire a developer; only .md file edits are allowed.
+Do not edit code, but hire a developer; only documents, data and pictures (.md, .csv, .png and the like) may be written.
 
 **THE CUT IS ON WRITING, NOT ON LOOKING.** You read as much as the decision needs. Your
 tool list carries no operation the engine classifies as changing code, and that is the

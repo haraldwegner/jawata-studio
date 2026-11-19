@@ -1738,9 +1738,9 @@ mod tests {
     /// edits allow'"*. The main seat and every lead carries it, with the seat it hires named, so a brain that has an editor of its own (Cursor's
     /// agent, which runs in its normal mode so that it keeps `hire`) is told in its prompt what the engine can only flag afterwards.
     const NO_CODE_SENTENCES: [(&str, &str); 3] = [
-        ("main", "Do not edit code, but hire a PM; only .md file edits are allowed."),
-        ("pm", "Do not edit code, but hire the chief engineer; only .md file edits are allowed."),
-        ("chief-engineer", "Do not edit code, but hire a developer; only .md file edits are allowed."),
+        ("main", "Do not edit code, but hire a PM; only documents, data and pictures (.md, .csv, .png and the like) may be written."),
+        ("pm", "Do not edit code, but hire the chief engineer; only documents, data and pictures (.md, .csv, .png and the like) may be written."),
+        ("chief-engineer", "Do not edit code, but hire a developer; only documents, data and pictures (.md, .csv, .png and the like) may be written."),
     ];
 
     /// Finding 28h-C27-17: the chief engineer's call to `lookup` (read-only git status, log, diff) was refused TOOL_NOT_ALLOWED, because the tool
