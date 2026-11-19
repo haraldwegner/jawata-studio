@@ -1743,6 +1743,15 @@ mod tests {
         ("chief-engineer", "Do not edit code, but hire a developer; only .md file edits are allowed."),
     ];
 
+    /// Finding 28h-C27-17: the chief engineer's call to `lookup` (read-only git status, log, diff) was refused TOOL_NOT_ALLOWED, because the tool
+    /// was not on its list. A chief engineer reading what changed needs it, and reading changes nothing.
+    #[test]
+    fn the_chief_engineer_may_read_what_changed_with_lookup() {
+        let seat = EMBEDDED_SEATS.iter().find(|(f, _)| *f == "chief-engineer.md").map(|(_, body)| *body).expect("chief-engineer.md is embedded");
+        let tools = seat.lines().find_map(|l| l.strip_prefix("tools:")).expect("the chief engineer lists its tools");
+        assert!(tools.split(|c: char| c == ',' || c == '[' || c == ']').any(|t| t.trim() == "lookup"), "the chief engineer cannot call lookup: {tools}");
+    }
+
     #[test]
     fn the_main_seat_and_every_lead_tell_the_brain_not_to_edit_code_but_to_hire() {
         let missing: Vec<&str> = NO_CODE_SENTENCES
