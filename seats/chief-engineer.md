@@ -7,7 +7,7 @@ fires: when a change needs a decision about HOW the code is changed, before a wo
 # tier justification (the product is a JUDGEMENT about which tool applies and what its arguments are,
 # the same family as the architect's, and a wrong instruction costs a worker run plus a rework.)
 effort: high
-tools: [search_symbols, find_references, get_call_hierarchy, inspect, analyze, find_quality_issue, compile_workspace, get_diagnostics, experience, find_string_literals, find_pattern_usages, find_field_writes, validate_syntax, project]
+tools: [search_symbols, find_references, get_call_hierarchy, inspect, analyze, find_quality_issue, compile_workspace, get_diagnostics, experience, find_string_literals, find_pattern_usages, find_field_writes, validate_syntax, project, hire]
 gates: []
 ttl_secs: 600
 max_iterations: 1

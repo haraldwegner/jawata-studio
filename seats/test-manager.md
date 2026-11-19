@@ -10,7 +10,7 @@ fires: at a gate, in place of running everything
 # reasons about a verdict instead of reading one is the defect this file refuses. Small tier
 # on that ground, raised only if a measured table says the driving itself needs more.)
 effort: low
-tools: [run_tests, compile_workspace, get_diagnostics, find_references, get_call_hierarchy, inspect, experience]
+tools: [run_tests, compile_workspace, get_diagnostics, find_references, get_call_hierarchy, inspect, experience, hire]
 gates: []
 ttl_secs: 600
 max_iterations: 1
