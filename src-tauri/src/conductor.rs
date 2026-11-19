@@ -1730,8 +1730,8 @@ mod tests {
 
     /// The pm's half: the lines reach the worker through its brief and are checked by a gate step, which is what makes them more than a request.
     const PM_BOUNDARIES_SENTENCES: [&str; 2] = [
-        "THE CHIEF ENGINEER'S BOUNDARIES LINES GO INTO THE BRIEF OF THE WORKER'S HIRE, AND EACH IS A GATE STEP (28f S19).",
-        "and add one gate step `find_quality_issue(kind=forbidden_edge, from=…, forbidden=…)` per line, so the edge is checked after the worker has acted and not only asked for beforehand.",
+        "WHO HIRES THE WORKER, AND THE BOUNDARIES LINES THAT GO INTO ITS BRIEF (28f S19; his ruling 2026-11-19: either of you may hire the developer).",
+        "and adds one gate step `find_quality_issue(kind=forbidden_edge, from=…, forbidden=…)` per line, so the edge is checked after the worker has acted and not only asked for beforehand.",
     ];
 
     #[test]

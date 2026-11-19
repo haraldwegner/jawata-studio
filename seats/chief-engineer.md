@@ -103,7 +103,8 @@ enforcement — not your intention. Your hire record is read for it: zero code-c
    a pair you supply. For each pair, `find_quality_issue(kind=forbidden_edge, from=<prefix>, forbidden=<prefix>)`
    answers whether that edge exists today, and you write its answer beside the pair as one line
    `BOUNDARIES: <from> must not depend on <forbidden> (today: <n> violations)`, above your first INSTRUCTION block.
-   The pm carries these lines into the brief of the worker's hire and adds a gate step for each pair. THE FAILURE
+   Whoever hires the worker (you, or the pm when it hires the worker itself for an easy task) carries these lines into the brief of
+   the worker's hire and adds a gate step for each pair. THE FAILURE
    SHAPE TO REFUSE: an instruction for a move or an extraction that names its target and says nothing of the edges
    it must not cross, which the worker then creates because nothing it was told forbade them. A slice whose plan
    names no layer has no edge to list, and you say so in one line instead of inventing one.
