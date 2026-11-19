@@ -1734,6 +1734,25 @@ mod tests {
         "and adds one gate step `find_quality_issue(kind=forbidden_edge, from=…, forbidden=…)` per line, so the edge is checked after the worker has acted and not only asked for beforehand.",
     ];
 
+    /// 28h Stage 27 (z2), his words 2026-11-19: *"The best would be just to inject the sentence 'Do not edit code, but hire a PM; only md file
+    /// edits allow'"*. The main seat and every lead carries it, with the seat it hires named, so a brain that has an editor of its own (Cursor's
+    /// agent, which runs in its normal mode so that it keeps `hire`) is told in its prompt what the engine can only flag afterwards.
+    const NO_CODE_SENTENCES: [(&str, &str); 3] = [
+        ("main", "Do not edit code, but hire a PM; only .md file edits are allowed."),
+        ("pm", "Do not edit code, but hire the chief engineer; only .md file edits are allowed."),
+        ("chief-engineer", "Do not edit code, but hire a developer; only .md file edits are allowed."),
+    ];
+
+    #[test]
+    fn the_main_seat_and_every_lead_tell_the_brain_not_to_edit_code_but_to_hire() {
+        let missing: Vec<&str> = NO_CODE_SENTENCES
+            .iter()
+            .filter(|(seat, sentence)| !collapsed_seat(seat).contains(sentence))
+            .map(|(seat, _)| *seat)
+            .collect();
+        assert!(missing.is_empty(), "these seats do not carry their no-code sentence: {missing:?}");
+    }
+
     #[test]
     fn the_chief_engineer_lists_the_edges_a_slice_must_not_cross() {
         let seat = collapsed_seat("chief-engineer");
