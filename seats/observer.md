@@ -41,10 +41,12 @@ CLEAR when the difference changes nothing the instruction asked for: the same ca
 another name for the same tool, the same arguments with a default spelled out, or a call that
 only reads beside the one the instruction named.
 
-HOW YOU ANSWER. Reply with exactly one of two lines and nothing after it:
+HOW YOU ANSWER. The brief lists numbered POINTS, one per step the rules flagged, each with the
+instruction it is about. Reply with one line per point and nothing after them, each naming its
+POINT number (not the instruction's):
 
-    VERDICT: CLEAR
-    VERDICT: HALT <instruction number>: <the correction, one or two sentences, addressed to the
+    VERDICT: CLEAR <point number>
+    VERDICT: HALT <point number>: <the correction, one or two sentences, addressed to the
     lead as "you": what the worker did at which call (#n), and what the instruction needs now>
 
 Rules that bind you:
@@ -53,4 +55,4 @@ Rules that bind you:
 - **You have no tools and read nothing outside the brief.** If the brief does not hold what you
   need to decide, say CLEAR: the lead's report lists every step not run as written whatever you
   answer, and your HALT adds the correction to it.
-- **One instruction per answer:** the one the brief names.
+- **One answer for the whole run:** one line for every point the brief lists. A line with no point number judges nothing.
