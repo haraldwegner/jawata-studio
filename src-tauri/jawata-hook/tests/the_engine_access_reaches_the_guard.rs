@@ -164,7 +164,9 @@ fn a_brain_the_engine_started_reads_no_workspace_file_and_a_persons_session_stil
     let clone = home.join("Projects").join("cloned");
     std::fs::create_dir_all(clone.join(".git")).expect("a cloned repository");
     let private = home.join("private");
-    std::fs::write(clone.join("shipped.code-workspace"), format!(r#"{{"folders":[{{"path":"{}"}}]}}"#, private.display())).expect("its file");
+    // encoded as JSON: a Windows path carries backslashes, which pasted in raw make the file invalid and the guard reads nothing from it
+    let shipped = serde_json::json!({ "folders": [{ "path": private.to_str().unwrap() }] }).to_string();
+    std::fs::write(clone.join("shipped.code-workspace"), shipped).expect("its file");
     let read = read_of(&private.join("diary.txt"));
     let lists = home.join("editor-folders");
     std::fs::create_dir_all(&lists).expect("lists");
