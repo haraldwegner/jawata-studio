@@ -154,6 +154,10 @@ pub fn workspace_roots() -> Vec<PathBuf> {
             }
         }
     }
+    // The folders the engine handed a brain it started (28h-C27-31, his word 2026-11-20: "the workspace of VSCode has to be included"):
+    // the Java projects' folders and the editor window's folders, the same the engine's own access allows, so a hired brain is not refused
+    // here what the engine lets it do. Only the engine sets the variable; a person's own session has none and keeps the rule above.
+    roots.extend(engine_access_from(|key| std::env::var_os(key)));
     // Never brick: an unparseable manifest confines to the launch project
     // rather than opening the whole home directory.
     if roots.is_empty() {
@@ -197,6 +201,15 @@ pub fn workspace_roots() -> Vec<PathBuf> {
     }
     roots.push(manifest);
     roots
+}
+
+/// The name of the variable the engine starts every brain with, naming the folders that brain may work in (jawata-mcp `AcpBrainSession`).
+pub const ENGINE_ACCESS_FOLDERS: &str = "JAWATA_ACCESS_FOLDERS";
+
+/// The folders the engine named in [`ENGINE_ACCESS_FOLDERS`], a path list of the platform; none when it is unset or blank. Over a lookup the
+/// caller supplies, so a test needs no process-wide environment.
+fn engine_access_from(get: impl Fn(&str) -> Option<std::ffi::OsString>) -> Vec<PathBuf> {
+    get(ENGINE_ACCESS_FOLDERS).map(|list| std::env::split_paths(&list).filter(|p| !p.as_os_str().is_empty()).collect()).unwrap_or_default()
 }
 
 /// Is `path` inside one of the roots?
