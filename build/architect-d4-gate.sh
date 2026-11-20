@@ -11,15 +11,18 @@
 # prove the consultation was run before the design, or that its selection was right; a report
 # written afterwards says so in its own text (the ones added on 2026-10-11 do).
 #
-# Usage:  build/architect-d4-gate.sh [dir ...]      (default: the repo root, plus a sibling
-#                                                   jawata-mcp checkout when one exists)
+# Usage:  build/architect-d4-gate.sh [dir ...]      (default: every folder of the planning repository,
+#                                                   $JAWATA_PLANS or a sibling jawata-plans checkout;
+#                                                   the architect reports live there since 28h Stage 27 (z6))
 # Exit:   0 = every report carries the section · 1 = one or more do not · 2 = nothing to check
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIRS=("$@")
 if [ "${#DIRS[@]}" -eq 0 ]; then
-    DIRS=("$ROOT")
-    [ -d "$ROOT/../jawata-mcp" ] && DIRS+=("$ROOT/../jawata-mcp")
+    PLANS="${JAWATA_PLANS:-$ROOT/../jawata-plans}"
+    if [ -d "$PLANS" ]; then
+        while IFS= read -r d; do DIRS+=("$d"); done < <(find "$PLANS" -type d -not -path '*/.git' -not -path '*/.git/*' | sort)
+    fi
 fi
 checked=0
 missing=()
@@ -33,7 +36,7 @@ for d in "${DIRS[@]}"; do
     done
 done
 if [ "$checked" -eq 0 ]; then
-    echo "D4 gate: no ARCHITECT-REPORT-C*.md found in: ${DIRS[*]} — nothing was checked (exit 2)."
+    echo "D4 gate: no ARCHITECT-REPORT-C*.md found (looked in the planning repository: set JAWATA_PLANS to its folder, or name folders as arguments) — nothing was checked (exit 2)."
     exit 2
 fi
 if [ "${#missing[@]}" -gt 0 ]; then

@@ -4,7 +4,7 @@
 WHY THIS EXISTS. The studio kept a hand-written copy of the engine's tool names in nine places (the rule
 block, the guard script, the recall scripts, help.md, three match lists in the hook crate) and each was
 repaired alone when a failure showed it: studio 4.4.2, 4.4.3, and the engine's 4.4.7 and 4.4.8 were four
-patches on one defect (docs/sprints/jawata-mcp/ARCHITECT-REPORT-tool-name-drift.md in jawata-enterprise).
+patches on one defect (ARCHITECT-REPORT-tool-name-drift.md in the private jawata-plans repository, folder unassigned/).
 The cure is one file that says what the engine publishes, taken FROM the engine and checked against it.
 
 THE FILE is src-tauri/engine-surface.json:
