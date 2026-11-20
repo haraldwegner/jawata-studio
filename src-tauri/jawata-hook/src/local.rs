@@ -139,8 +139,13 @@ pub fn workspace_roots() -> Vec<PathBuf> {
     let home = home();
     let manifest = manifest_path();
     let mut roots: Vec<PathBuf> = Vec::new();
+    // A brain the engine started takes the engine's access and nothing else (second audit 2026-11-20, finding 9): the engine never reads a
+    // workspace file that lies inside a repository, since one that came with a clone may list anything, so this guard does not read one
+    // either. A person's own session has none of the engine's variables and keeps the rule below.
+    let engine_started = started_by_engine(|key| std::env::var_os(key));
 
-    if let Ok(text) = std::fs::read_to_string(&manifest) {
+    if engine_started {
+    } else if let Ok(text) = std::fs::read_to_string(&manifest) {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
             if let Some(folders) = value.get("folders").and_then(|f| f.as_array()) {
                 let base = manifest.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -154,9 +159,9 @@ pub fn workspace_roots() -> Vec<PathBuf> {
             }
         }
     }
-    // The folders the engine handed a brain it started (28h-C27-31, his word 2026-11-20: "the workspace of VSCode has to be included"):
-    // the Java projects' folders and the editor window's folders, the same the engine's own access allows, so a hired brain is not refused
-    // here what the engine lets it do. Only the engine sets the variable; a person's own session has none and keeps the rule above.
+    // The loaded Java projects' folders the engine allows a brain it started (28h-C27-31, his word 2026-11-20: "the workspace of VSCode has
+    // to be included"), read on every call from the file the engine keeps, so a project loaded or unloaded while the brain runs is followed.
+    // Only the engine sets the variables; a person's own session has none and keeps the rule above.
     roots.extend(engine_access_from(|key| std::env::var_os(key)));
     // And the editor windows' own lists, read on every call (audit 2026-11-20, bug E): the folders above are a picture of the brain's
     // start, so a folder a window opens later is reached at once and one it closes is not.
@@ -202,16 +207,33 @@ pub fn workspace_roots() -> Vec<PathBuf> {
         roots.push(home.join(".claude"));
         roots.push(home.join(".nvm"));
     }
-    roots.push(manifest);
+    if !engine_started {
+        roots.push(manifest);
+    }
     roots
+}
+
+/// Whether the engine started this brain: it names where its access is read.
+fn started_by_engine(get: impl Fn(&str) -> Option<std::ffi::OsString>) -> bool {
+    [ENGINE_ACCESS_FOLDERS_FILE, ENGINE_ACCESS_FOLDERS, EDITOR_FOLDERS_DIR].iter().any(|key| get(key).is_some_and(|v| !v.is_empty()))
 }
 
 /// The name of the variable the engine starts every brain with, naming the folders that brain may work in (jawata-mcp `AcpBrainSession`).
 pub const ENGINE_ACCESS_FOLDERS: &str = "JAWATA_ACCESS_FOLDERS";
 
-/// The folders the engine named in [`ENGINE_ACCESS_FOLDERS`], a path list of the platform; none when it is unset or blank. Over a lookup the
-/// caller supplies, so a test needs no process-wide environment.
+/// The name of the variable naming the file the engine keeps the loaded projects' folders in, one to a line, rewritten when they change
+/// (jawata-mcp `BrainAccess`).
+pub const ENGINE_ACCESS_FOLDERS_FILE: &str = "JAWATA_ACCESS_FOLDERS_FILE";
+
+/// The folders the engine allows: read now from the file [`ENGINE_ACCESS_FOLDERS_FILE`] names, or, from an engine with no place for that
+/// file, the path list in [`ENGINE_ACCESS_FOLDERS`]; none when neither is set. A file that cannot be read names none, which fails closed.
+/// Over a lookup the caller supplies, so a test needs no process-wide environment.
 fn engine_access_from(get: impl Fn(&str) -> Option<std::ffi::OsString>) -> Vec<PathBuf> {
+    if let Some(file) = get(ENGINE_ACCESS_FOLDERS_FILE).filter(|f| !f.is_empty()) {
+        return std::fs::read_to_string(PathBuf::from(file))
+            .map(|text| text.lines().map(str::trim).filter(|l| !l.is_empty()).map(PathBuf::from).collect())
+            .unwrap_or_default();
+    }
     get(ENGINE_ACCESS_FOLDERS).map(|list| std::env::split_paths(&list).filter(|p| !p.as_os_str().is_empty()).collect()).unwrap_or_default()
 }
 

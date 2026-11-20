@@ -23,6 +23,18 @@ fn guard_says(payload: &str, home: &Path, access: Option<&str>) -> String {
 }
 
 fn guard_with(payload: &str, home: &Path, access: Option<&str>, lists: Option<&Path>) -> String {
+    let mut env: Vec<(&str, String)> = Vec::new();
+    if let Some(folders) = access {
+        env.push(("JAWATA_ACCESS_FOLDERS", folders.to_string()));
+    }
+    if let Some(dir) = lists {
+        env.push(("JAWATA_EDITOR_FOLDERS_DIR", dir.display().to_string()));
+    }
+    guard_env(payload, home, &env)
+}
+
+/// The guard run with exactly these of the engine's variables (and `CLAUDE_PROJECT_DIR`), every other one removed.
+fn guard_env(payload: &str, home: &Path, env: &[(&str, String)]) -> String {
     let dir = home.join("bin");
     std::fs::create_dir_all(&dir).expect("scratch bin");
     let exe = dir.join(if cfg!(windows) { "jawata-hook-guard.exe" } else { "jawata-hook-guard" });
@@ -36,12 +48,9 @@ fn guard_with(payload: &str, home: &Path, access: Option<&str>, lists: Option<&P
     let mut child = loop {
         let mut command = Command::new(&exe);
         command.env("HOME", home).env("USERPROFILE", home).env_remove("CLAUDE_PROJECT_DIR").env_remove("JAWATA_ACCESS_FOLDERS")
-            .env_remove("JAWATA_EDITOR_FOLDERS_DIR");
-        if let Some(folders) = access {
-            command.env("JAWATA_ACCESS_FOLDERS", folders);
-        }
-        if let Some(dir) = lists {
-            command.env("JAWATA_EDITOR_FOLDERS_DIR", dir);
+            .env_remove("JAWATA_ACCESS_FOLDERS_FILE").env_remove("JAWATA_EDITOR_FOLDERS_DIR");
+        for (key, value) in env {
+            command.env(key, value);
         }
         match command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
             Ok(c) => break c,
@@ -120,4 +129,50 @@ fn a_folder_an_editor_window_opens_after_the_brain_started_is_inside_at_once() {
     assert!(before.contains(REFUSED), "CONTROL: a folder no window holds was not refused: {before}");
     assert!(!opened.contains(REFUSED), "a folder a window opened was refused: {opened}");
     assert!(closed.contains(REFUSED), "a folder of a closed window was still let through: {closed}");
+}
+
+#[test]
+fn the_projects_folders_are_read_from_the_engines_file_on_every_call() {
+    // Second audit 2026-11-20 (finding 1): the engine keeps the loaded projects' folders in a file it rewrites when they change; a picture
+    // taken at the brain's start kept a closed folder allowed and refused a project loaded later.
+    let home = scratch_home("file");
+    let file = home.join("engine-access.txt");
+    let trading = home.join("Projects");
+    let read = read_of(&trading.join("jats2").join("Order.java"));
+    let env = [("JAWATA_ACCESS_FOLDERS_FILE", file.display().to_string())];
+
+    let before = guard_env(&read, &home, &env);
+    std::fs::write(&file, format!("{}\n", trading.display())).expect("a project is loaded");
+    let loaded = guard_env(&read, &home, &env);
+    std::fs::write(&file, "").expect("the project is unloaded");
+    let unloaded = guard_env(&read, &home, &env);
+    let stale = [("JAWATA_ACCESS_FOLDERS_FILE", file.display().to_string()), ("JAWATA_ACCESS_FOLDERS", trading.display().to_string())];
+    let file_wins = guard_env(&read, &home, &stale);
+
+    let _ = std::fs::remove_dir_all(&home);
+    assert!(before.contains(REFUSED), "CONTROL: a folder the file does not name yet was not refused: {before}");
+    assert!(!loaded.contains(REFUSED), "a project the engine loaded after the brain started was refused: {loaded}");
+    assert!(unloaded.contains(REFUSED), "a project the engine no longer holds was still let through: {unloaded}");
+    assert!(file_wins.contains(REFUSED), "a list fixed at the brain's start was read beside the engine's file: {file_wins}");
+}
+
+#[test]
+fn a_brain_the_engine_started_reads_no_workspace_file_and_a_persons_session_still_does() {
+    // Second audit 2026-11-20 (finding 9): a workspace file that came with a cloned repository may list any folder; the engine never reads
+    // one inside a repository, so the guard of a brain it started reads none, while a person's own session keeps its workspace file.
+    let home = scratch_home("clone");
+    let clone = home.join("Projects").join("cloned");
+    std::fs::create_dir_all(clone.join(".git")).expect("a cloned repository");
+    let private = home.join("private");
+    std::fs::write(clone.join("shipped.code-workspace"), format!(r#"{{"folders":[{{"path":"{}"}}]}}"#, private.display())).expect("its file");
+    let read = read_of(&private.join("diary.txt"));
+    let lists = home.join("editor-folders");
+    std::fs::create_dir_all(&lists).expect("lists");
+
+    let person = guard_env(&read, &home, &[("CLAUDE_PROJECT_DIR", clone.display().to_string())]);
+    let brain = guard_env(&read, &home, &[("CLAUDE_PROJECT_DIR", clone.display().to_string()), ("JAWATA_EDITOR_FOLDERS_DIR", lists.display().to_string())]);
+
+    let _ = std::fs::remove_dir_all(&home);
+    assert!(!person.contains(REFUSED), "CONTROL: a person's session no longer reads its workspace file: {person}");
+    assert!(brain.contains(REFUSED), "a brain the engine started was let into a folder a cloned repository's workspace file listed: {brain}");
 }
