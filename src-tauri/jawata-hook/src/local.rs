@@ -216,7 +216,23 @@ pub fn workspace_roots() -> Vec<PathBuf> {
 
 /// Whether the engine started this brain: it names where its access is read.
 fn started_by_engine(get: impl Fn(&str) -> Option<std::ffi::OsString>) -> bool {
-    [ENGINE_ACCESS_FOLDERS_FILE, ENGINE_ACCESS_FOLDERS, EDITOR_FOLDERS_DIR].iter().any(|key| get(key).is_some_and(|v| !v.is_empty()))
+    [ENGINE_ACCESS_FROM_ENGINE, ENGINE_ACCESS_FOLDERS_FILE, ENGINE_ACCESS_FOLDERS, EDITOR_FOLDERS_DIR].iter().any(|key| get(key).is_some_and(|v| !v.is_empty()))
+}
+
+/// The variable the engine marks every brain it starts with whenever it decides that brain's access, also when it allows nothing (jawata-mcp
+/// `BrainAccess.FROM_ENGINE`; sign-off audit 2026-11-20, note 5).
+pub const ENGINE_ACCESS_FROM_ENGINE: &str = "JAWATA_ACCESS_FROM_ENGINE";
+
+#[cfg(test)]
+mod started_by_engine_tests {
+    use super::*;
+
+    #[test]
+    fn the_engines_mark_alone_says_the_engine_started_the_brain() {
+        let marked = |key: &str| (key == ENGINE_ACCESS_FROM_ENGINE).then(|| std::ffi::OsString::from("1"));
+        assert!(started_by_engine(marked), "a brain the engine marked, with no folder at all, was taken for a person's session");
+        assert!(!started_by_engine(|_: &str| None), "CONTROL: a session with none of the engine's variables was taken for the engine's");
+    }
 }
 
 /// The name of the variable the engine starts every brain with, naming the folders that brain may work in (jawata-mcp `AcpBrainSession`).

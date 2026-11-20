@@ -859,7 +859,9 @@ pub fn handle_editor_launch<R: Runtime>(app: &AppHandle<R>, argv: &[String]) -> 
     let named = window.unwrap_or_default();
     // numbered here, in the order the window's launches arrive, before the thread that scans (second audit 2026-11-20, finding 5)
     let launch = take_launch(&app.state::<AppState>().manager_service, &named, editor_seq(argv));
-    if let (false, Some(pid)) = (named.is_empty(), editor_pid(argv)) {
+    // a launch older than the window's latest notes no process either: after a restart of the window's extensions it would write back the
+    // ended process (sign-off audit 2026-11-20, note 2)
+    if let (false, true, Some(pid)) = (named.is_empty(), launch != 0, editor_pid(argv)) {
         with_launch_table(|| app.state::<AppState>().manager_service.editor_note_window_process(&named, pid));
     }
     let app = app.clone();

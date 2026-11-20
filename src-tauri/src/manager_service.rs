@@ -2659,8 +2659,8 @@ impl ManagerService {
 
     /// Keeps the process of a window's extensions, so the window's lists can be dropped once it has ended (second audit 2026-11-20).
     pub(crate) fn editor_note_window_process(&self, window: &str, pid: u32) {
-        let started = crate::eclipse_notes::process_start_millis(pid);
-        if let Err(error) = crate::runtime_manager::note_editor_window_process(&self.editor_windows_dir(), window, pid, started) {
+        let identity = crate::runtime_manager::process_identity(pid);
+        if let Err(error) = crate::runtime_manager::note_editor_window_process(&self.editor_windows_dir(), window, pid, identity.as_deref()) {
             crate::studio_log::say(&format!("editor launch: the process of window {window} could not be kept: {error}"));
         }
     }
@@ -2671,7 +2671,7 @@ impl ManagerService {
         // under the launch table's lock, so a launch noting a window's new process cannot fall between the sweep's reading and its removing
         // (third audit 2026-11-20, finding D)
         let ended = crate::editor_launch::with_launch_table(|| {
-            crate::runtime_manager::sweep_ended_editor_windows(&self.editor_windows_dir(), &root, crate::eclipse_notes::os_liveness)
+            crate::runtime_manager::sweep_ended_editor_windows(&self.editor_windows_dir(), &root, crate::runtime_manager::window_process_lives)
         });
         for window in ended {
             crate::studio_log::say(&format!("editor launch: window {window} ended without saying so; its folders are no longer reached"));

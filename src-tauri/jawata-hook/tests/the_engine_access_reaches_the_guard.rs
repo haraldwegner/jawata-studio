@@ -48,7 +48,7 @@ fn guard_env(payload: &str, home: &Path, env: &[(&str, String)]) -> String {
     let mut child = loop {
         let mut command = Command::new(&exe);
         command.env("HOME", home).env("USERPROFILE", home).env_remove("CLAUDE_PROJECT_DIR").env_remove("JAWATA_ACCESS_FOLDERS")
-            .env_remove("JAWATA_ACCESS_FOLDERS_FILE").env_remove("JAWATA_EDITOR_FOLDERS_DIR");
+            .env_remove("JAWATA_ACCESS_FOLDERS_FILE").env_remove("JAWATA_EDITOR_FOLDERS_DIR").env_remove("JAWATA_ACCESS_FROM_ENGINE");
         for (key, value) in env {
             command.env(key, value);
         }

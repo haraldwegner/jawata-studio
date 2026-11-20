@@ -339,7 +339,7 @@ fn proc_start_millis(pid: u32) -> Option<i64> {
 /// The 22nd field of a `/proc/<pid>/stat` line: the process's start, in clock ticks after boot. The command name
 /// (field 2) may hold spaces and parentheses, so the fields are counted from the LAST closing parenthesis.
 #[cfg(unix)]
-fn proc_stat_start_ticks(line: &str) -> Option<u64> {
+pub(crate) fn proc_stat_start_ticks(line: &str) -> Option<u64> {
     let after_command = &line[line.rfind(')')? + 1..];
     after_command.split_whitespace().nth(19)?.parse().ok()
 }
