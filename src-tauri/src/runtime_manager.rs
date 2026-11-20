@@ -487,10 +487,15 @@ fn window_process_file(windows_dir: &std::path::Path, window: &str) -> std::path
 }
 
 /// Keeps the process of an editor window's extensions, which lives as long as the window, so a window that ends without saying so (a
-/// crash, a kill, a shutdown) can be told from one that is open (second audit 2026-11-20, finding 2).
-pub fn note_editor_window_process(windows_dir: &std::path::Path, window: &str, pid: u32) -> std::io::Result<()> {
+/// crash, a kill, a shutdown) can be told from one that is open (second audit 2026-11-20, finding 2), with its start time where the system
+/// reports one, so another process given the same number later (after a reboot) is not taken for the window (third audit, finding C).
+pub fn note_editor_window_process(windows_dir: &std::path::Path, window: &str, pid: u32, started: Option<i64>) -> std::io::Result<()> {
     std::fs::create_dir_all(windows_dir)?;
-    std::fs::write(window_process_file(windows_dir, window), pid.to_string())
+    let noted = match started {
+        Some(started) => format!("{pid} {started}"),
+        None => pid.to_string(),
+    };
+    std::fs::write(window_process_file(windows_dir, window), noted)
 }
 
 /// Removes the kept process of a window that said it closed.
@@ -498,10 +503,10 @@ pub fn forget_editor_window_process(windows_dir: &std::path::Path, window: &str)
     let _ = std::fs::remove_file(window_process_file(windows_dir, window));
 }
 
-/// Forgets, in every workspace under `workspace_root`, the lists of the windows whose kept process `alive` says has ended, and the kept
-/// process with them; answers the windows forgotten. A window whose process was never kept (an older extension) is left as it is, since
-/// nothing says it ended.
-pub fn sweep_ended_editor_windows(windows_dir: &std::path::Path, workspace_root: &std::path::Path, alive: impl Fn(u32) -> bool) -> Vec<String> {
+/// Forgets, in every workspace under `workspace_root`, the lists of the windows whose kept process `alive` says has ended (asked with the
+/// process number and the start time kept with it), and the kept process with them; answers the windows forgotten. A window whose process
+/// was never kept (an older extension) is left as it is, since nothing says it ended.
+pub fn sweep_ended_editor_windows(windows_dir: &std::path::Path, workspace_root: &std::path::Path, alive: impl Fn(u32, Option<i64>) -> bool) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(windows_dir) else {
         return Vec::new();
     };
@@ -514,8 +519,11 @@ pub fn sweep_ended_editor_windows(windows_dir: &std::path::Path, workspace_root:
         let Some(window) = path.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
             continue;
         };
-        let pid = std::fs::read_to_string(&path).ok().and_then(|text| text.trim().parse::<u32>().ok());
-        if pid.is_some_and(&alive) {
+        let noted = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut parts = noted.split_whitespace();
+        let pid = parts.next().and_then(|p| p.parse::<u32>().ok());
+        let started = parts.next().and_then(|s| s.parse::<i64>().ok());
+        if pid.is_some_and(|pid| alive(pid, started)) {
             continue;
         }
         if forget_editor_window(workspace_root, &window).is_ok() {
@@ -2375,17 +2383,42 @@ mod tests {
         remember_editor_folders(&wa, "crashed", &["/secret".to_string()]).unwrap();
         remember_editor_folders(&wb, "open", &["/work".to_string()]).unwrap();
         remember_editor_folders(&wb, "older-extension", &["/kept".to_string()]).unwrap();
-        note_editor_window_process(&windows, "crashed", 7).unwrap();
-        note_editor_window_process(&windows, "open", 8).unwrap();
+        note_editor_window_process(&windows, "crashed", 7, None).unwrap();
+        note_editor_window_process(&windows, "open", 8, None).unwrap();
 
-        let ended = sweep_ended_editor_windows(&windows, &workspaces, |pid| pid == 8);
+        let ended = sweep_ended_editor_windows(&windows, &workspaces, |pid, _| pid == 8);
 
         assert_eq!(ended, vec!["crashed".to_string()]);
         assert_eq!(list(&wa, "crashed"), None, "the list of a window whose process ended is still read");
         assert!(!windows.join("crashed.pid").exists(), "the ended window's process is still kept");
         assert_eq!(list(&wb, "open").as_deref(), Some("/work"), "CONTROL: an open window's list was dropped");
         assert_eq!(list(&wb, "older-extension").as_deref(), Some("/kept"), "CONTROL: a window whose process was never kept was dropped");
-        assert!(sweep_ended_editor_windows(&windows, &workspaces, |pid| pid == 8).is_empty(), "a second sweep found the same window again");
+        assert!(sweep_ended_editor_windows(&windows, &workspaces, |pid, _| pid == 8).is_empty(), "a second sweep found the same window again");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Third audit 2026-11-20, finding C: after a reboot another process can be given an ended window's number; the start time kept with it
+    /// tells them apart, so the window's lists are dropped, while an open window whose start time matches is kept.
+    #[test]
+    fn a_window_whose_process_number_was_given_to_another_process_is_dropped() {
+        let root = std::env::temp_dir().join(format!("jawata-editor-reused-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (workspaces, windows) = (root.join("workspaces"), root.join("windows"));
+        let wa = workspaces.join("wa");
+        std::fs::create_dir_all(&wa).unwrap();
+        let list = |window: &str| std::fs::read_to_string(wa.join(EDITOR_FOLDERS_DIR).join(format!("{window}.txt"))).ok();
+        remember_editor_folders(&wa, "before-reboot", &["/secret".to_string()]).unwrap();
+        remember_editor_folders(&wa, "open", &["/work".to_string()]).unwrap();
+        note_editor_window_process(&windows, "before-reboot", 7, Some(1_000)).unwrap();
+        note_editor_window_process(&windows, "open", 8, Some(2_000)).unwrap();
+        // the system now says process 7 started at 5000 (another process) and process 8 still at 2000
+        let now_started = |pid: u32| if pid == 7 { 5_000 } else { 2_000 };
+
+        let ended = sweep_ended_editor_windows(&windows, &workspaces, |pid, started| started.is_none_or(|s| s == now_started(pid)));
+
+        assert_eq!(ended, vec!["before-reboot".to_string()], "a window whose number another process now holds was taken for open");
+        assert_eq!(list("before-reboot"), None);
+        assert_eq!(list("open").as_deref(), Some("/work"), "CONTROL: an open window whose start time matches was dropped");
         let _ = std::fs::remove_dir_all(&root);
     }
 

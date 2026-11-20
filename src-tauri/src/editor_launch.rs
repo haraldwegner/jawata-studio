@@ -454,6 +454,13 @@ fn latest_launches() -> &'static Mutex<std::collections::HashMap<String, u64>> {
     LATEST.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
+/// Runs `work` while no launch can be numbered and no window's list written or cleared: the sweep of ended windows reads a window's process
+/// and then removes its files, and a launch noting a new process in between would lose them (third audit 2026-11-20, finding D).
+pub fn with_launch_table<T>(work: impl FnOnce() -> T) -> T {
+    let _held = latest_launches().lock().unwrap_or_else(|p| p.into_inner());
+    work()
+}
+
 /// A window as the table of latest launches knows it: the studio's handoff folder and the window's name.
 fn launch_key(host: &dyn EditorHost, window: &str) -> String {
     format!("{}\n{window}", host.handoff_dir().display())
@@ -853,7 +860,7 @@ pub fn handle_editor_launch<R: Runtime>(app: &AppHandle<R>, argv: &[String]) -> 
     // numbered here, in the order the window's launches arrive, before the thread that scans (second audit 2026-11-20, finding 5)
     let launch = take_launch(&app.state::<AppState>().manager_service, &named, editor_seq(argv));
     if let (false, Some(pid)) = (named.is_empty(), editor_pid(argv)) {
-        app.state::<AppState>().manager_service.editor_note_window_process(&named, pid);
+        with_launch_table(|| app.state::<AppState>().manager_service.editor_note_window_process(&named, pid));
     }
     let app = app.clone();
     let spawned = std::thread::Builder::new().name("editor-launch".into()).spawn(move || {
@@ -1516,6 +1523,28 @@ mod tests {
         assert_eq!(host.remembered.borrow().clone(), vec!["shop w /p".to_string()], "the launch the window sent first, arriving last, wrote its folders");
         assert!(host.forgotten.borrow().is_empty(), "a close the window sent before its latest launch cleared that launch's list");
         assert_eq!(editor_seq(["jawata-studio", "--editor-seq", "1732000000000"]), Some(1732000000000));
+    }
+
+    /// Third audit 2026-11-20, finding D: what runs inside the launch table holds it, so a sweep and a launch noting a window's process run one
+    /// after the other and never interleave.
+    #[test]
+    fn work_inside_the_launch_table_holds_it_against_other_work() {
+        let started = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let holder = {
+            let started = started.clone();
+            std::thread::spawn(move || {
+                with_launch_table(|| {
+                    started.wait();
+                    std::thread::sleep(Duration::from_millis(300));
+                })
+            })
+        };
+        started.wait();
+        let asked = std::time::Instant::now();
+        with_launch_table(|| ());
+        let waited = asked.elapsed();
+        holder.join().unwrap();
+        assert!(waited >= Duration::from_millis(200), "work ran inside the launch table while other work held it ({waited:?})");
     }
 
     #[test]
