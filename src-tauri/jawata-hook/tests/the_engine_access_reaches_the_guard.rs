@@ -19,6 +19,10 @@ use std::process::{Command, Stdio};
 const HOOK: &str = env!("CARGO_BIN_EXE_jawata-hook");
 
 fn guard_says(payload: &str, home: &Path, access: Option<&str>) -> String {
+    guard_with(payload, home, access, None)
+}
+
+fn guard_with(payload: &str, home: &Path, access: Option<&str>, lists: Option<&Path>) -> String {
     let dir = home.join("bin");
     std::fs::create_dir_all(&dir).expect("scratch bin");
     let exe = dir.join(if cfg!(windows) { "jawata-hook-guard.exe" } else { "jawata-hook-guard" });
@@ -31,9 +35,13 @@ fn guard_says(payload: &str, home: &Path, access: Option<&str>) -> String {
     let mut attempt = 0;
     let mut child = loop {
         let mut command = Command::new(&exe);
-        command.env("HOME", home).env("USERPROFILE", home).env_remove("CLAUDE_PROJECT_DIR").env_remove("JAWATA_ACCESS_FOLDERS");
+        command.env("HOME", home).env("USERPROFILE", home).env_remove("CLAUDE_PROJECT_DIR").env_remove("JAWATA_ACCESS_FOLDERS")
+            .env_remove("JAWATA_EDITOR_FOLDERS_DIR");
         if let Some(folders) = access {
             command.env("JAWATA_ACCESS_FOLDERS", folders);
+        }
+        if let Some(dir) = lists {
+            command.env("JAWATA_EDITOR_FOLDERS_DIR", dir);
         }
         match command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() {
             Ok(c) => break c,
@@ -90,4 +98,26 @@ fn a_folder_the_engine_hands_its_brain_is_inside_the_guards_workspace_and_one_it
     assert!(without.contains(REFUSED), "CONTROL: with no folders from the engine the folder was not refused: {without}");
     assert!(!with.contains(REFUSED), "a folder the engine handed its brain was refused by the guard: {with}");
     assert!(private.contains(REFUSED), "a folder the engine did not hand was let through: {private}");
+}
+
+#[test]
+fn a_folder_an_editor_window_opens_after_the_brain_started_is_inside_at_once() {
+    // Audit 2026-11-20 (bug E): the folders a brain was started with are a picture of that moment; the windows' own lists are read on every
+    // call, so a folder the window opens later is reached at once and one it closes is not.
+    let home = scratch_home("lists");
+    let lists = home.join("editor-folders");
+    std::fs::create_dir_all(&lists).expect("lists");
+    let later = home.join("Projects");
+    let read = read_of(&later.join("jats2").join("Order.java"));
+
+    let before = guard_with(&read, &home, None, Some(&lists));
+    std::fs::write(lists.join("window-a.txt"), format!("{}\n", later.display())).expect("a window opens the folder");
+    let opened = guard_with(&read, &home, None, Some(&lists));
+    std::fs::remove_file(lists.join("window-a.txt")).expect("the window closes");
+    let closed = guard_with(&read, &home, None, Some(&lists));
+
+    let _ = std::fs::remove_dir_all(&home);
+    assert!(before.contains(REFUSED), "CONTROL: a folder no window holds was not refused: {before}");
+    assert!(!opened.contains(REFUSED), "a folder a window opened was refused: {opened}");
+    assert!(closed.contains(REFUSED), "a folder of a closed window was still let through: {closed}");
 }
