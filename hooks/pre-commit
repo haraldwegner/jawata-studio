@@ -11,7 +11,7 @@
 # Never bypass with --no-verify. If this hook is wrong, fix the hook.
 
 fail=0
-AGENT='claude|anthropic|cursoragent|copilot|aider|devin|windsurf|codeium|openai|chatgpt|\[bot\]'
+AGENT='claude|anthropic|cursoragent|copilot|aider|devin|windsurf|codeium|openai|chatgpt|gemini|codex|\[bot\]'
 
 # --- 1. identity: the commit is authored and committed by a person ------------
 for field in AUTHOR COMMITTER; do
