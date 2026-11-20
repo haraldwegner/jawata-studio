@@ -396,11 +396,29 @@ fn home_paths_in(text: &str, home: &str) -> Vec<String> {
     let mut rest = text;
     while let Some(at) = rest.find(&needle) {
         let tail = &rest[at..];
-        let end = tail.find(PATH_TERMINATORS).unwrap_or(tail.len());
+        // after the home itself: a drive letter's colon (`C:/Users/x`) is one of the terminators and would end the path at `C`
+        let end = tail[needle.len()..].find(PATH_TERMINATORS).map_or(tail.len(), |n| n + needle.len());
         out.push(tail[..end].to_string());
         rest = &tail[end.max(1)..];
     }
     out
+}
+
+/// The paths under `home` the text names, spelled as the platform spells them.
+///
+/// On Windows the home is `C:\Users\x`, a path in a shell command carries single backslashes, and a path in the JSON payload of a Read or
+/// Write carries doubled ones. Looking for `<home>/` with a forward slash found none of them, so the guard let every such path through (the
+/// studio 4.6.12 release failed on both Windows runners for this). A home that carries a backslash is read as a Windows home: its
+/// backslashes, and those of the text, become forward slashes before the scan, which the containment test then resolves on the real
+/// filesystem. Decided from the home's own spelling and not from the operating system, so the case is tested on any machine.
+fn home_paths_named(text: &str, home: &str) -> Vec<String> {
+    if home.contains('\\') {
+        let home = home.replace('\\', "/");
+        let text = text.replace("\\\\", "/").replace('\\', "/");
+        home_paths_in(&expand_home(&text, &home), &home)
+    } else {
+        home_paths_in(&expand_home(text, home), home)
+    }
 }
 
 /// Git introspection that routinely exposes a credential.
@@ -465,8 +483,7 @@ pub fn judge_payload(text: &str) -> Verdict {
         return Verdict::Allow;
     };
     let roots = workspace_roots();
-    let scan = expand_home(text, home_str);
-    for path in home_paths_in(&scan, home_str) {
+    for path in home_paths_named(text, home_str) {
         if !inside(&path, &roots) {
             return Verdict::Deny {
                 reason: format!(
@@ -857,6 +874,34 @@ mod tests {
     fn a_path_scan_stops_at_a_shell_delimiter() {
         let found = home_paths_in("/h/u/a/one.txt; cat /h/u/b", "/h/u");
         assert_eq!(vec!["/h/u/a/one.txt".to_string(), "/h/u/b".to_string()], found);
+    }
+
+    #[test]
+    fn a_windows_home_finds_the_backslash_paths_a_json_payload_carries() {
+        // The defect (the studio 4.6.12 release failed on both Windows runners): the scan looked for `<home>/` with a forward slash, so
+        // on Windows, where home is `C:\Users\x` and a JSON payload spells a path `C:\\Users\\x\\private\\diary.txt`, it found nothing and
+        // the guard let every such path through. The drive letter's own colon also ended the path at `C`.
+        let payload = r#"{"tool_input":{"file_path":"C:\\Users\\x\\private\\diary.txt"}}"#;
+        let found = home_paths_named(payload, r"C:\Users\x");
+        assert_eq!(vec!["C:/Users/x/private/diary.txt".to_string()], found, "a Windows path under the home was not found");
+    }
+
+    #[test]
+    fn a_windows_home_finds_a_path_a_shell_command_writes_with_single_backslashes() {
+        let found = home_paths_named(r"type C:\Users\x\notes.txt && dir C:\Users\x\Projects", r"C:\Users\x");
+        assert_eq!(vec!["C:/Users/x/notes.txt".to_string(), "C:/Users/x/Projects".to_string()], found);
+    }
+
+    #[test]
+    fn a_windows_home_expands_the_tilde_spelling_too() {
+        let found = home_paths_named("type ~/private/diary.txt", r"C:\Users\x");
+        assert_eq!(vec!["C:/Users/x/private/diary.txt".to_string()], found);
+    }
+
+    #[test]
+    fn a_unix_home_is_scanned_as_before() {
+        let found = home_paths_named("cat ~/.ssh/id_rsa; ls /h/u/b", "/h/u");
+        assert_eq!(vec!["/h/u/.ssh/id_rsa".to_string(), "/h/u/b".to_string()], found);
     }
 
     #[test]
