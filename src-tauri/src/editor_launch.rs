@@ -43,6 +43,20 @@ pub const EDITOR_FOLDER_ARG: &str = "--editor-folder";
 /// The argument an extension names its window with, so each window keeps a list of its own (audit 2026-11-20).
 pub const EDITOR_WINDOW_ARG: &str = "--editor-window";
 
+/// The argument an extension passes its own process with, which lives as long as its window, so a window that ended without saying so can
+/// be told from an open one (second audit 2026-11-20, finding 2).
+pub const EDITOR_PID_ARG: &str = "--editor-pid";
+
+/// The process a launch names with `--editor-pid`, or none.
+pub fn editor_pid<I, S>(args: I) -> Option<u32>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let args: Vec<String> = args.into_iter().skip(1).map(|a| a.as_ref().to_string()).collect();
+    args.iter().position(|a| a == EDITOR_PID_ARG).and_then(|at| args.get(at + 1)).and_then(|v| v.parse().ok())
+}
+
 /// The window a launch names with `--editor-window`, or none; a value that is empty or another flag names none.
 pub fn editor_window<I, S>(args: I) -> Option<String>
 where
@@ -363,6 +377,8 @@ pub struct Pending {
     candidates: Vec<WorkspaceProjectCandidate>,
     /// The window that asked, whose folders are recorded under its own name.
     window: String,
+    /// The number of the launch that asked, so an answer given after a later launch of the window does not write the window's list back.
+    launch: u64,
 }
 
 /// The questions that are open. One per editor workspace (by id); a repeated launch replaces its own.
@@ -416,6 +432,53 @@ fn end_without_resident(ui: &dyn EditorUi, dir: &Path, folders: &[String], works
 /// decision, the registration and the request to start; never while waiting for a resident.
 static CREATE_LOCK: Mutex<()> = Mutex::new(());
 
+/// The latest launch each named window sent, numbered in the order the launches reached the studio. A launch scans its folders on a
+/// thread of its own, so two launches of one window can finish in either order; only the window's latest may write or clear its list
+/// (second audit 2026-11-20, finding 5).
+fn latest_launches() -> &'static Mutex<std::collections::HashMap<String, u64>> {
+    static LATEST: OnceLock<Mutex<std::collections::HashMap<String, u64>>> = OnceLock::new();
+    LATEST.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+/// A window as the table of latest launches knows it: the studio's handoff folder and the window's name.
+fn launch_key(host: &dyn EditorHost, window: &str) -> String {
+    format!("{}\n{window}", host.handoff_dir().display())
+}
+
+/// Takes the number of a launch of `window`, which becomes the window's latest. Taken where the launch is received, before its thread.
+pub fn take_launch(host: &dyn EditorHost, window: &str) -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let launch = NEXT.fetch_add(1, Ordering::SeqCst);
+    if !window.is_empty() {
+        latest_launches().lock().unwrap_or_else(|p| p.into_inner()).insert(launch_key(host, window), launch);
+    }
+    launch
+}
+
+/// Records the window's folders for `workspace` unless a later launch of the window, or its close, reached the studio since; the check and
+/// the write are one step. A window with no name (an older extension) is not numbered and always writes.
+fn record_folders(host: &dyn EditorHost, window: &str, launch: u64, workspace: &str, folders: &[String]) {
+    let latest = latest_launches().lock().unwrap_or_else(|p| p.into_inner());
+    if window.is_empty() || latest.get(&launch_key(host, window)) == Some(&launch) {
+        host.remember_folders(workspace, window, folders);
+    }
+}
+
+/// Clears the window's lists in every workspace unless a later launch of the window reached the studio since: a window whose folders now
+/// hold no Java project, or whose workspace could not be made, keeps no folder it held before (second audit 2026-11-20, finding 4).
+fn clear_folders(host: &dyn EditorHost, window: &str, launch: u64) {
+    let latest = latest_launches().lock().unwrap_or_else(|p| p.into_inner());
+    if !window.is_empty() && latest.get(&launch_key(host, window)) == Some(&launch) {
+        host.forget_window(window);
+    }
+}
+
+/// Forgets a window that said it closed, at once and in every workspace; a launch of it still scanning cannot write its list back.
+pub fn forget_window_now(host: &dyn EditorHost, window: &str) {
+    let launch = take_launch(host, window);
+    clear_folders(host, window, launch);
+}
+
 /// The first request to start `workspace`: nothing when it already answers. Writes nothing; [`settle_start`] judges it.
 fn request_start_once(host: &dyn EditorHost, workspace: &str) -> Result<(), String> {
     if host.readiness(workspace) != Readiness::Ready {
@@ -457,8 +520,8 @@ fn settle_start(host: &dyn EditorHost, ui: &dyn EditorUi, folders: &[String], wo
 }
 
 /// Starts `workspace` unless it already answers, waits until it does, and only then writes `ready`.
-fn serve(host: &dyn EditorHost, ui: &dyn EditorUi, window: &str, folders: &[String], workspace: &str, pacing: Pacing) {
-    host.remember_folders(workspace, window, folders);
+fn serve(host: &dyn EditorHost, ui: &dyn EditorUi, window: &str, launch: u64, folders: &[String], workspace: &str, pacing: Pacing) {
+    record_folders(host, window, launch, workspace, folders);
     let first = request_start_once(host, workspace);
     if settle_start(host, ui, folders, workspace, pacing, first) {
         wait_until_ready(host, ui, folders, workspace, pacing);
@@ -547,7 +610,14 @@ fn folder_standing_in(folder: &str) -> WorkspaceProjectCandidate {
 
 /// One editor launch, from the folders to the file the extension reads. Runs on a thread of its own: it waits for a
 /// resident. Raises a window only by asking [`EditorUi::ask`], and asks only for a partly matching workspace.
+#[cfg(test)]
 pub fn run_editor_launch(host: &dyn EditorHost, ui: &dyn EditorUi, book: &PromptBook, window: &str, folders: &[String], pacing: Pacing) {
+    let launch = take_launch(host, window);
+    run_numbered_launch(host, ui, book, window, launch, folders, pacing);
+}
+
+/// [`run_editor_launch`] for a launch whose number was taken where it was received.
+pub fn run_numbered_launch(host: &dyn EditorHost, ui: &dyn EditorUi, book: &PromptBook, window: &str, launch: u64, folders: &[String], pacing: Pacing) {
     let dir = host.handoff_dir();
     // A file left by an earlier launch must not be taken for this launch's answer while it is still being decided.
     let _ = std::fs::remove_file(handoff_path(&dir, &handoff_id(folders)));
@@ -572,6 +642,7 @@ pub fn run_editor_launch(host: &dyn EditorHost, ui: &dyn EditorUi, book: &Prompt
     match match_workspaces(&editor, &sets) {
         Match::NoneJava => {
             drop(create_guard);
+            clear_folders(host, window, launch);
             let message = if problems.is_empty() {
                 "The editor's folders hold no Java project, so no jawata workspace was started.".to_string()
             } else {
@@ -581,7 +652,7 @@ pub fn run_editor_launch(host: &dyn EditorHost, ui: &dyn EditorUi, book: &Prompt
         }
         Match::Enclosing { workspace } => {
             drop(create_guard);
-            serve(host, ui, window, folders, &workspace, pacing);
+            serve(host, ui, window, launch, folders, &workspace, pacing);
             ui.workspaces_changed();
         }
         Match::Create => {
@@ -591,6 +662,7 @@ pub fn run_editor_launch(host: &dyn EditorHost, ui: &dyn EditorUi, book: &Prompt
             match host.add_projects(&name, &projects) {
                 Err(error) => {
                     drop(create_guard);
+                    clear_folders(host, window, launch);
                     end_without_resident(ui, &dir, folders, &name, HandoffState::Failed, &format!("Workspace {name} could not be created: {error}"));
                 }
                 Ok(skipped) => {
@@ -598,7 +670,7 @@ pub fn run_editor_launch(host: &dyn EditorHost, ui: &dyn EditorUi, book: &Prompt
                         crate::studio_log::say(&format!("editor launch: not registered in {name}: {line}"));
                     }
                     ui.workspaces_changed();
-                    host.remember_folders(&name, window, folders);
+                    record_folders(host, window, launch, &name, folders);
                     let first = request_start_once(host, &name);
                     drop(create_guard);
                     if settle_start(host, ui, folders, &name, pacing, first) {
@@ -629,7 +701,7 @@ pub fn run_editor_launch(host: &dyn EditorHost, ui: &dyn EditorUi, book: &Prompt
                     "editor launch: workspace {workspace} holds what can be had of the editor's projects; {} belong to other workspaces and were left there",
                     elsewhere.len()
                 ));
-                serve(host, ui, window, folders, &workspace, pacing);
+                serve(host, ui, window, launch, folders, &workspace, pacing);
                 ui.workspaces_changed();
                 return;
             }
@@ -643,7 +715,7 @@ pub fn run_editor_launch(host: &dyn EditorHost, ui: &dyn EditorUi, book: &Prompt
             };
             // The window's folders are its agents' access whatever the answer about the Java projects will be (audit 2026-11-20): they are
             // recorded before the person is asked, and a no does not take them back.
-            host.remember_folders(&workspace, window, folders);
+            record_folders(host, window, launch, &workspace, folders);
             write_state(
                 &dir,
                 folders,
@@ -651,7 +723,7 @@ pub fn run_editor_launch(host: &dyn EditorHost, ui: &dyn EditorUi, book: &Prompt
                 HandoffState::Asking,
                 &format!("The studio is asking whether to add {} project(s) to workspace {workspace}; nothing has changed yet.", free.len()),
             );
-            book.put(Pending { prompt: prompt.clone(), candidates: free, window: window.to_string() });
+            book.put(Pending { prompt: prompt.clone(), candidates: free, window: window.to_string(), launch });
             ui.ask(&prompt);
             ui.prompts_changed();
         }
@@ -662,7 +734,7 @@ pub fn run_editor_launch(host: &dyn EditorHost, ui: &dyn EditorUi, book: &Prompt
 /// `ready`; otherwise `declined` is written and nothing else happens.
 pub fn answer_update(host: &dyn EditorHost, ui: &dyn EditorUi, pending: Pending, update: bool, pacing: Pacing) {
     let dir = host.handoff_dir();
-    let Pending { prompt, candidates, window } = pending;
+    let Pending { prompt, candidates, window, launch } = pending;
     ui.prompts_changed();
     if !update {
         end_without_resident(ui, &dir, &prompt.folders, &prompt.workspace, HandoffState::Declined, &format!("Workspace {} was not updated; the person chose not to.", prompt.workspace));
@@ -677,7 +749,7 @@ pub fn answer_update(host: &dyn EditorHost, ui: &dyn EditorUi, pending: Pending,
                 crate::studio_log::say(&format!("editor launch: not registered in {}: {line}", prompt.workspace));
             }
             ui.workspaces_changed();
-            serve(host, ui, &window, &prompt.folders, &prompt.workspace, pacing);
+            serve(host, ui, &window, launch, &prompt.folders, &prompt.workspace, pacing);
         }
     }
 }
@@ -750,14 +822,20 @@ pub fn handle_editor_launch<R: Runtime>(app: &AppHandle<R>, argv: &[String]) -> 
         // a window that names itself and hands no folder closed, or holds none: its agents stop reaching what it held (audit 2026-11-20)
         if let Some(window) = window {
             let state = app.state::<AppState>();
-            state.manager_service.editor_forget_window(&window);
+            forget_window_now(&state.manager_service, &window);
         }
         return false;
+    }
+    let named = window.unwrap_or_default();
+    // numbered here, in the order the window's launches arrive, before the thread that scans (second audit 2026-11-20, finding 5)
+    let launch = take_launch(&app.state::<AppState>().manager_service, &named);
+    if let (false, Some(pid)) = (named.is_empty(), editor_pid(argv)) {
+        app.state::<AppState>().manager_service.editor_note_window_process(&named, pid);
     }
     let app = app.clone();
     let spawned = std::thread::Builder::new().name("editor-launch".into()).spawn(move || {
         let state = app.state::<AppState>();
-        run_editor_launch(&state.manager_service, &AppUi { app: app.clone() }, book(), window.as_deref().unwrap_or(""), &folders, Pacing::production());
+        run_numbered_launch(&state.manager_service, &AppUi { app: app.clone() }, book(), &named, launch, &folders, Pacing::production());
     });
     if let Err(error) = spawned {
         crate::studio_log::say(&format!("editor launch: could not start its thread: {error}"));
@@ -1110,6 +1188,8 @@ mod tests {
         looks: std::cell::Cell<usize>,
         /// Every window's folders recorded for a workspace, as `workspace window folder,folder`.
         remembered: RefCell<Vec<String>>,
+        /// Every window whose lists were cleared in every workspace.
+        forgotten: RefCell<Vec<String>>,
     }
 
     impl FakeHost {
@@ -1173,6 +1253,9 @@ mod tests {
         }
         fn remember_folders(&self, workspace: &str, window: &str, folders: &[String]) {
             self.remembered.borrow_mut().push(format!("{workspace} {window} {}", folders.join(",")));
+        }
+        fn forget_window(&self, window: &str) {
+            self.forgotten.borrow_mut().push(window.to_string());
         }
         fn engine_missing(&self) -> bool {
             self.looks.set(self.looks.get() + 1);
@@ -1346,6 +1429,57 @@ mod tests {
         assert_eq!(ui.asked.borrow().len(), 1, "CONTROL: the question was asked");
         assert_eq!(while_asking, vec!["shop window-test /p".to_string()], "the window's folders were not recorded while the person was asked");
         assert_eq!(host.remembered.borrow().clone(), vec!["shop window-test /p".to_string()], "a no took the window's folders back, or recorded them again");
+    }
+
+    /// Second audit 2026-11-20, finding 5: a launch scans on a thread of its own, so a window's launches can finish out of order; only the
+    /// window's latest writes its list, and a close while a launch still scans is not undone by that launch. A window with no name (an older
+    /// extension) is not numbered and still writes.
+    #[test]
+    fn a_launch_overtaken_by_a_later_one_of_its_window_or_by_its_close_writes_nothing() {
+        let s = Scratch::new("launch-order");
+        let host = FakeHost::new(&s.0).with_workspace("shop", &["/p/a"]).with_scan("/p", &["/p/a"]);
+        let (ui, book) = (FakeUi::default(), PromptBook::default());
+
+        let older = take_launch(&host, "w");
+        let newer = take_launch(&host, "w");
+        run_numbered_launch(&host, &ui, &book, "w", newer, &strings(&["/p"]), QUICK);
+        run_numbered_launch(&host, &ui, &book, "w", older, &strings(&["/p"]), QUICK);
+        assert_eq!(host.remembered.borrow().clone(), vec!["shop w /p".to_string()], "the launch a later one overtook wrote the window's list too");
+
+        let scanning = take_launch(&host, "closing");
+        forget_window_now(&host, "closing");
+        run_numbered_launch(&host, &ui, &book, "closing", scanning, &strings(&["/p"]), QUICK);
+        assert_eq!(host.forgotten.borrow().clone(), vec!["closing".to_string()], "CONTROL: the close was not acted on");
+        assert!(!host.remembered.borrow().iter().any(|r| r.contains(" closing ")), "a launch still scanning wrote back the list of a window that closed");
+
+        let unnamed = take_launch(&host, "");
+        run_numbered_launch(&host, &ui, &book, "", unnamed, &strings(&["/p"]), QUICK);
+        assert_eq!(host.remembered.borrow().len(), 2, "CONTROL: a window with no name did not write");
+    }
+
+    /// Second audit 2026-11-20, finding 4: a window whose folders now hold no Java project keeps no list from before; one whose launch was
+    /// overtaken clears nothing.
+    #[test]
+    fn a_window_whose_folders_hold_no_java_project_keeps_no_list() {
+        let s = Scratch::new("none-java");
+        let host = FakeHost::new(&s.0).with_workspace("shop", &["/p/a"]).with_scan("/docs", &[]);
+        let (ui, book) = (FakeUi::default(), PromptBook::default());
+
+        run_editor_launch(&host, &ui, &book, "window-test", &strings(&["/docs"]), QUICK);
+        assert_eq!(host.forgotten.borrow().clone(), vec!["window-test".to_string()], "a window that now holds no Java project kept its earlier list");
+        assert!(host.remembered.borrow().is_empty(), "CONTROL: a window with no Java project was recorded for a workspace");
+
+        let overtaken = take_launch(&host, "window-test");
+        let _later = take_launch(&host, "window-test");
+        run_numbered_launch(&host, &ui, &book, "window-test", overtaken, &strings(&["/docs"]), QUICK);
+        assert_eq!(host.forgotten.borrow().len(), 1, "an overtaken launch cleared the window's lists");
+    }
+
+    #[test]
+    fn a_window_passes_its_process_with_its_own_argument() {
+        assert_eq!(editor_pid(["jawata-studio", "--editor-window", "w", "--editor-pid", "4242"]), Some(4242));
+        assert_eq!(editor_pid(["jawata-studio", "--editor-window", "w"]), None, "a launch that passes no process");
+        assert_eq!(editor_pid(["jawata-studio", "--editor-pid", "--background"]), None, "a flag is not a process");
     }
 
     #[test]

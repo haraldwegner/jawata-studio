@@ -738,12 +738,18 @@ pub fn run() {
             // catches external state changes (e.g. a workspace's jawata
             // process killed from a shell) so the bullet next to each
             // workspace stays current.
+            // The same tick drops the folder lists of editor windows that ended without saying so (a crash, a kill, a shutdown), once at
+            // the start so a list from before a reboot is not read, then on every tick (second audit 2026-11-20, finding 2).
             let refresh_handle = app.handle().clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_secs(
-                    TRAY_REFRESH_INTERVAL_SECS,
-                ));
-                refresh_tray_menu(&refresh_handle);
+            std::thread::spawn(move || {
+                refresh_handle.state::<AppState>().manager_service.editor_sweep_ended_windows();
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(
+                        TRAY_REFRESH_INTERVAL_SECS,
+                    ));
+                    refresh_tray_menu(&refresh_handle);
+                    refresh_handle.state::<AppState>().manager_service.editor_sweep_ended_windows();
+                }
             });
 
             // Sprint 28b (D6): the canary. Every resident is asked ONE real

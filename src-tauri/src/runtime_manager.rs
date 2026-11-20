@@ -454,8 +454,9 @@ fn window_file(window: &str) -> String {
 }
 
 /// Records the folders one editor window holds for the workspace whose folder is `workspace_dir`, replacing what that window recorded
-/// before and leaving every other window's list as it is: blanks and repeats are dropped, order is kept. A window that holds no folder
-/// has no list. The shared list of the earlier form is removed.
+/// before, in this workspace and in every other one beside it (a window whose folders moved to another workspace keeps no list in the old
+/// one, second audit 2026-11-20), and leaving every other window's list as it is: blanks and repeats are dropped, order is kept. A window
+/// that holds no folder has no list. The shared list of the earlier form is removed.
 pub fn remember_editor_folders(workspace_dir: &std::path::Path, window: &str, folders: &[String]) -> std::io::Result<()> {
     let mut kept: Vec<&str> = Vec::new();
     for folder in folders.iter().map(|f| f.trim()).filter(|f| !f.is_empty()) {
@@ -465,14 +466,64 @@ pub fn remember_editor_folders(workspace_dir: &std::path::Path, window: &str, fo
     }
     let lists = workspace_dir.join(EDITOR_FOLDERS_DIR);
     let _ = std::fs::remove_file(workspace_dir.join(EDITOR_FOLDERS_FILE));
-    if kept.is_empty() {
-        return match std::fs::remove_file(lists.join(window_file(window))) {
+    // a list another workspace keeps that cannot be cleared does not stop this one being written; it is reported after
+    let cleared = match workspace_dir.parent() {
+        Some(root) => forget_editor_window(root, window),
+        None => match std::fs::remove_file(lists.join(window_file(window))) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
-        };
+        },
+    };
+    if !kept.is_empty() {
+        std::fs::create_dir_all(&lists)?;
+        std::fs::write(lists.join(window_file(window)), kept.join("\n"))?;
     }
-    std::fs::create_dir_all(&lists)?;
-    std::fs::write(lists.join(window_file(window)), kept.join("\n"))
+    cleared
+}
+
+/// The file in `windows_dir` that keeps the process of an editor window's extensions, `<window>.pid`.
+fn window_process_file(windows_dir: &std::path::Path, window: &str) -> std::path::PathBuf {
+    windows_dir.join(window_file(window).replace(".txt", ".pid"))
+}
+
+/// Keeps the process of an editor window's extensions, which lives as long as the window, so a window that ends without saying so (a
+/// crash, a kill, a shutdown) can be told from one that is open (second audit 2026-11-20, finding 2).
+pub fn note_editor_window_process(windows_dir: &std::path::Path, window: &str, pid: u32) -> std::io::Result<()> {
+    std::fs::create_dir_all(windows_dir)?;
+    std::fs::write(window_process_file(windows_dir, window), pid.to_string())
+}
+
+/// Removes the kept process of a window that said it closed.
+pub fn forget_editor_window_process(windows_dir: &std::path::Path, window: &str) {
+    let _ = std::fs::remove_file(window_process_file(windows_dir, window));
+}
+
+/// Forgets, in every workspace under `workspace_root`, the lists of the windows whose kept process `alive` says has ended, and the kept
+/// process with them; answers the windows forgotten. A window whose process was never kept (an older extension) is left as it is, since
+/// nothing says it ended.
+pub fn sweep_ended_editor_windows(windows_dir: &std::path::Path, workspace_root: &std::path::Path, alive: impl Fn(u32) -> bool) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(windows_dir) else {
+        return Vec::new();
+    };
+    let mut ended = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("pid") {
+            continue;
+        }
+        let Some(window) = path.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
+            continue;
+        };
+        let pid = std::fs::read_to_string(&path).ok().and_then(|text| text.trim().parse::<u32>().ok());
+        if pid.is_some_and(&alive) {
+            continue;
+        }
+        if forget_editor_window(workspace_root, &window).is_ok() {
+            let _ = std::fs::remove_file(&path);
+            ended.push(window);
+        }
+    }
+    ended
 }
 
 /// Removes a closed window's list from every workspace under `workspace_root`, since a window does not say which workspace it used.
@@ -480,14 +531,22 @@ pub fn forget_editor_window(workspace_root: &std::path::Path, window: &str) -> s
     let Ok(workspaces) = std::fs::read_dir(workspace_root) else {
         return Ok(());
     };
+    let mut first_failure: Option<std::io::Error> = None;
     for workspace in workspaces.flatten() {
+        // a file beside the workspaces' folders is no workspace and holds no list
+        if !workspace.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
         let list = workspace.path().join(EDITOR_FOLDERS_DIR).join(window_file(window));
         match std::fs::remove_file(&list) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            // one list that cannot be removed does not keep the window's other lists: each is tried, the first failure is reported
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                first_failure.get_or_insert(e);
+            }
             _ => {}
         }
     }
-    Ok(())
+    first_failure.map_or(Ok(()), Err)
 }
 
 /// The environment entry that tells the engine where the windows' lists are kept.
@@ -2235,7 +2294,8 @@ mod tests {
     fn an_engine_is_told_where_the_editor_windows_folders_are_kept_and_given_no_fixed_list() {
         let manager = RuntimeManager::new(fake_paths());
         let mut request = fake_launch_request();
-        let dir = std::env::temp_dir().join(format!("jawata-editor-folders-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("jawata-editor-folders-{}", std::process::id()));
+        let dir = root.join("ws");
         std::fs::create_dir_all(&dir).unwrap();
         request.reference.workspace_dir = dir.to_string_lossy().into_owned();
         remember_editor_folders(&dir, "window-a", &["/work/studio".to_string()]).unwrap();
@@ -2246,7 +2306,7 @@ mod tests {
         assert_eq!(named, Some(dir.join(EDITOR_FOLDERS_DIR).to_string_lossy().into_owned()), "the engine is not told where the windows' folders are kept");
         assert_eq!(EDITOR_FOLDERS_DIR_ENV, "JAWATA_EDITOR_FOLDERS_DIR");
         assert!(spec.env.iter().all(|(k, _)| k != "JAWATA_WORKSPACE_FOLDERS"), "the engine was given a folder list fixed at its start: {:?}", spec.env);
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Audit 2026-11-20: one list per editor window, so two windows on one workspace do not overwrite each other; a window that hands no
@@ -2277,6 +2337,55 @@ mod tests {
         forget_editor_window(&root, "window-c").unwrap();
         assert_eq!(list(&other, "window-c"), None, "a closed window's list is kept in a workspace it was not looked for in");
         assert_eq!(list(&dir, "window-b").as_deref(), Some("/work/enterprise"), "CONTROL: forgetting one window removed another");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Second audit 2026-11-20, finding 3: a window keeps its list in one workspace only, so a window whose folders moved to another
+    /// workspace leaves none behind in the old one; another window's list there stays.
+    #[test]
+    fn a_window_whose_folders_move_to_another_workspace_keeps_no_list_in_the_old_one() {
+        let root = std::env::temp_dir().join(format!("jawata-editor-move-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (old, new) = (root.join("wa"), root.join("wb"));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        let list = |workspace: &std::path::Path, window: &str| std::fs::read_to_string(workspace.join(EDITOR_FOLDERS_DIR).join(format!("{window}.txt"))).ok();
+
+        remember_editor_folders(&old, "w", &["/a".to_string()]).unwrap();
+        remember_editor_folders(&old, "other", &["/c".to_string()]).unwrap();
+        remember_editor_folders(&new, "w", &["/b".to_string()]).unwrap();
+
+        assert_eq!(list(&new, "w").as_deref(), Some("/b"), "CONTROL: the window's new folders were not written");
+        assert_eq!(list(&old, "w"), None, "the window's list stayed in the workspace its folders left");
+        assert_eq!(list(&old, "other").as_deref(), Some("/c"), "CONTROL: another window's list in the old workspace went too");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Second audit 2026-11-20, finding 2: a window that ended without saying so (a crash, a kill, a reboot) has its lists dropped in every
+    /// workspace once its process is gone; an open window's lists stay, and so does the list of a window whose process was never kept.
+    #[test]
+    fn the_lists_of_a_window_whose_process_ended_are_dropped_and_an_open_one_is_kept() {
+        let root = std::env::temp_dir().join(format!("jawata-editor-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (workspaces, windows) = (root.join("workspaces"), root.join("windows"));
+        let (wa, wb) = (workspaces.join("wa"), workspaces.join("wb"));
+        std::fs::create_dir_all(&wa).unwrap();
+        std::fs::create_dir_all(&wb).unwrap();
+        let list = |workspace: &std::path::Path, window: &str| std::fs::read_to_string(workspace.join(EDITOR_FOLDERS_DIR).join(format!("{window}.txt"))).ok();
+        remember_editor_folders(&wa, "crashed", &["/secret".to_string()]).unwrap();
+        remember_editor_folders(&wb, "open", &["/work".to_string()]).unwrap();
+        remember_editor_folders(&wb, "older-extension", &["/kept".to_string()]).unwrap();
+        note_editor_window_process(&windows, "crashed", 7).unwrap();
+        note_editor_window_process(&windows, "open", 8).unwrap();
+
+        let ended = sweep_ended_editor_windows(&windows, &workspaces, |pid| pid == 8);
+
+        assert_eq!(ended, vec!["crashed".to_string()]);
+        assert_eq!(list(&wa, "crashed"), None, "the list of a window whose process ended is still read");
+        assert!(!windows.join("crashed.pid").exists(), "the ended window's process is still kept");
+        assert_eq!(list(&wb, "open").as_deref(), Some("/work"), "CONTROL: an open window's list was dropped");
+        assert_eq!(list(&wb, "older-extension").as_deref(), Some("/kept"), "CONTROL: a window whose process was never kept was dropped");
+        assert!(sweep_ended_editor_windows(&windows, &workspaces, |pid| pid == 8).is_empty(), "a second sweep found the same window again");
         let _ = std::fs::remove_dir_all(&root);
     }
 

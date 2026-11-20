@@ -2644,10 +2644,31 @@ impl ManagerService {
         }
     }
 
-    /// Forgets a closed editor window's folders in every workspace, so its agents stop reaching them.
+    /// Forgets a closed editor window's folders in every workspace, so its agents stop reaching them, and the process kept for it.
     pub(crate) fn editor_forget_window(&self, window: &str) {
         if let Err(error) = crate::runtime_manager::forget_editor_window(&self.config_store.get_settings().workspace_root(), window) {
             crate::studio_log::say(&format!("editor launch: the folders of a closed window could not be forgotten: {error}"));
+        }
+        crate::runtime_manager::forget_editor_window_process(&self.editor_windows_dir(), window);
+    }
+
+    /// Where the process of each editor window's extensions is kept: beside the handoff files, outside every workspace folder.
+    fn editor_windows_dir(&self) -> std::path::PathBuf {
+        crate::editor_launch::handoff_dir(&self.studio_config_dir()).join("windows")
+    }
+
+    /// Keeps the process of a window's extensions, so the window's lists can be dropped once it has ended (second audit 2026-11-20).
+    pub(crate) fn editor_note_window_process(&self, window: &str, pid: u32) {
+        if let Err(error) = crate::runtime_manager::note_editor_window_process(&self.editor_windows_dir(), window, pid) {
+            crate::studio_log::say(&format!("editor launch: the process of window {window} could not be kept: {error}"));
+        }
+    }
+
+    /// Forgets the lists of every editor window whose process has ended without the window saying so: a crash, a kill, a shutdown.
+    pub(crate) fn editor_sweep_ended_windows(&self) {
+        let root = self.config_store.get_settings().workspace_root();
+        for window in crate::runtime_manager::sweep_ended_editor_windows(&self.editor_windows_dir(), &root, crate::runtime_manager::process_alive) {
+            crate::studio_log::say(&format!("editor launch: window {window} ended without saying so; its folders are no longer reached"));
         }
     }
 
