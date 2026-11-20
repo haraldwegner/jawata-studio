@@ -20,6 +20,12 @@ use crate::safety::{Outcome, SilenceReason};
 pub trait Store {
     fn ask(&self, arguments: serde_json::Value) -> Result<Answer, QueryError>;
 
+    /// How many hires of the engine are running right now (28h z20). A store that cannot be asked counts none, which is
+    /// the old behaviour and the safe direction: a stop is held, not let through, on a number that could not be read.
+    fn hires_running(&self) -> usize {
+        0
+    }
+
     /// The STRUCTURED answer, for the one caller that needs more than the
     /// rendered line: the recall gate reads `entries[].symbol` to tell a record
     /// anchored at the member from one anchored at its package, and the text
@@ -58,6 +64,14 @@ pub trait Store {
 pub struct LiveStore(pub Endpoint);
 
 impl Store for LiveStore {
+    fn hires_running(&self) -> usize {
+        let mut endpoint = self.0.clone();
+        endpoint.timeout = endpoint.timeout.min(std::time::Duration::from_millis(800));
+        query::call_tool(&endpoint, "plan_steps", serde_json::json!({}))
+            .map(|answer| hires_running_in(&answer))
+            .unwrap_or(0)
+    }
+
     fn ask(&self, mut arguments: serde_json::Value) -> Result<Answer, QueryError> {
         with_budget(&mut arguments, self.0.timeout);
         query::ask(&self.0, arguments)
@@ -89,6 +103,16 @@ impl Store for LiveStore {
         with_budget(&mut arguments, endpoint.timeout);
         query::ask_value(&endpoint, arguments)
     }
+}
+
+/// How many hires of the engine are running, read from the answer of `plan_steps` (28h z20): each plan listed with
+/// `inFlight: true` has a hire working on it right now, and that hire's report will come back as a new turn.
+pub fn hires_running_in(answer: &serde_json::Value) -> usize {
+    answer
+        .get("pending")
+        .and_then(|p| p.as_array())
+        .map(|plans| plans.iter().filter(|p| p.get("inFlight").and_then(|v| v.as_bool()) == Some(true)).count())
+        .unwrap_or(0)
 }
 
 /// Margin for the round trip itself — request, JSON, response — so the store's
@@ -2074,6 +2098,16 @@ fn stop_gate(
         turn.refusals_emitted = effective;
     }
 
+    // What only the engine and the hook's own files can say (z20): the hires running, where the autonomy was read
+    // from, and the state the last Rule B block was made on. Asked only under a grant, where Rule B can speak.
+    let engine = match (studio_dir(), autonomy) {
+        (Some(dir), stop::Autonomy::Granted) => stop::EngineWatch {
+            hires_running: store.hires_running(),
+            autonomy_source: crate::autonomy::source(&dir, &session).to_string(),
+            last_rule_b_fingerprint: crate::autonomy::last_rule_b_block(&dir, &session),
+        },
+        _ => stop::EngineWatch::default(),
+    };
     let facts = StopFacts {
         already_bounced,
         turn,
@@ -2085,10 +2119,24 @@ fn stop_gate(
         reseed_bounces,
         jobs_missing,
         job_bounces,
+        engine,
     };
     let owed_a_reseed = facts.owes_a_reseed();
     let owed_a_job = facts.jobs_missing.as_ref().is_some_and(|m| !m.is_empty());
     let verdict = stop::judge(&facts);
+
+    // THE STATE A RULE B BLOCK WAS MADE ON is remembered, so the same block is not served twice on it (z20). Any other
+    // verdict forgets it: only two stops in a row on one unchanged state are the loop.
+    let repeated_rule_b = facts.autonomy == stop::Autonomy::Granted
+        && verdict == StopVerdict::Allow
+        && facts.repeats_the_last_rule_b_block();
+    if let (Some(dir), stop::Autonomy::Granted) = (studio_dir(), facts.autonomy) {
+        let fingerprint = match &verdict {
+            StopVerdict::Block { reason } if stop::is_rule_b_block(reason) => Some(facts.rule_b_fingerprint()),
+            _ => None,
+        };
+        crate::autonomy::note_rule_b_block(&dir, &session, fingerprint.as_deref());
+    }
 
     // EVERY VERDICT IS RECORDED, and this is the auditor's non-optional finding of
     // 2026-08-30 rather than a nicety.
@@ -2107,6 +2155,9 @@ fn stop_gate(
     // rule names is introduced here that could drift from the rules themselves.
     if let Some(dir) = studio_dir() {
         let head = match &verdict {
+            StopVerdict::Allow if repeated_rule_b => {
+                "allow (the same RULE B block, on a state that did not move, is not served twice)".to_string()
+            }
             StopVerdict::Allow => "allow".to_string(),
             StopVerdict::Block { reason } => {
                 let first = reason.lines().next().unwrap_or_default();
@@ -2676,6 +2727,19 @@ mod tests {
             // fixture nobody wrote.
             Err(QueryError::ShapeChanged("this stub answers only the text path".into()))
         }
+    }
+
+    /// 28h z20: a plan listed as `inFlight` has a hire working on it; a plan merely waiting for its gate has none.
+    #[test]
+    fn running_hires_are_the_plans_listed_in_flight() {
+        let answer = serde_json::json!({"pending": [
+            {"planId": "a", "passedStep": 0, "inFlight": true,  "step": {"index": 1, "tool": "compile_workspace", "arguments": {}}},
+            {"planId": "b", "passedStep": 1, "inFlight": false, "step": {"index": 2, "tool": "run_tests", "arguments": {}}},
+            {"planId": "c", "passedStep": 0, "inFlight": true,  "step": {"index": 1, "tool": "compile_workspace", "arguments": {}}}
+        ]});
+        assert_eq!(2, hires_running_in(&answer));
+        assert_eq!(0, hires_running_in(&serde_json::json!({"pending": []})), "nothing waiting, nothing running");
+        assert_eq!(0, hires_running_in(&serde_json::json!({"unexpected": true})), "an answer of another shape counts none");
     }
 
     fn config(client: &str) -> HookConfig {
@@ -3413,7 +3477,7 @@ mod tests {
             turn: Turn { final_text: "summary".into(), launches: vec![], carried: vec![], instruction_open: false, refusals_emitted: 0, judge_verdict: None, judge_call_ids: vec![], human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, changed_java_files: vec![], java_edits: vec![], worked_since_push: false, answered_substantially: false, capture: Default::default(), closed: vec![] },
             autonomy: Autonomy::Granted,
             substrate: None,
-            reseed_bounces: 0, jobs_missing: None, job_bounces: 0,
+            reseed_bounces: 0, jobs_missing: None, job_bounces: 0, engine: crate::stop::EngineWatch::default(),
         };
         let StopVerdict::Block { reason } = crate::stop::judge(&facts) else {
             panic!("must block");

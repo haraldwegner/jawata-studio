@@ -994,6 +994,22 @@ pub struct StopFacts {
     /// turn that spent its budget on another rule must still be held for members it left
     /// unexplained.
     pub job_bounces: u32,
+    /// What only the engine and the hook's own state files can say about this stop (z20).
+    pub engine: EngineWatch,
+}
+
+/// The facts about the engine side of a stop that Rule B decides from (28h z20). Gathered by the pipeline,
+/// like `bounces`, so `judge` stays pure.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EngineWatch {
+    /// How many hires of the engine are running right now: each one ends with a report that arrives as a new turn of
+    /// this session, so while one runs, something WILL wake the session and the stop is a wait, not a sleep.
+    pub hires_running: usize,
+    /// Where the autonomy this stop was judged under was read from: the engine's state file (the jawata chat's
+    /// button) or this hook's own grant file. Empty where it could not be told.
+    pub autonomy_source: String,
+    /// The fingerprint of the state the last Rule B block of this session was made on, if the last verdict was one.
+    pub last_rule_b_fingerprint: Option<String>,
 }
 
 impl StopFacts {
@@ -1005,6 +1021,24 @@ impl StopFacts {
     /// hold every turn forever.
     pub fn owes_a_reseed(&self) -> bool {
         self.turn.wrote_markdown && self.substrate.as_ref().is_some_and(|s| s.count > 0)
+    }
+
+    /// The state Rule B blocks on, as one line: the autonomy and where it was read from, what is pending, how many
+    /// hires run, and how many tool calls this window holds. Two stops with the same line are the same stop.
+    pub fn rule_b_fingerprint(&self) -> String {
+        format!(
+            "{:?}|{}|pending={}|hires={}|calls={}",
+            self.autonomy,
+            self.engine.autonomy_source,
+            self.turn.pending().count(),
+            self.engine.hires_running,
+            self.turn.launches.len()
+        )
+    }
+
+    /// Is this stop the same one Rule B blocked last, on a state that has not changed since?
+    pub fn repeats_the_last_rule_b_block(&self) -> bool {
+        self.engine.last_rule_b_fingerprint.as_deref() == Some(self.rule_b_fingerprint().as_str())
     }
 }
 
@@ -1370,6 +1404,12 @@ of in front of it?",
         if !rule_b_engaged(facts) {
             return StopVerdict::Allow;
         }
+        // NEVER TWICE ON THE SAME UNCHANGED STATE (z20). A block served again on a state that did not move asks for
+        // something the session did not do, or cannot do, and serving it a third time changes nothing: the second
+        // identical stop passes, and the pipeline writes it to the outcomes log as such.
+        if facts.repeats_the_last_rule_b_block() {
+            return StopVerdict::Allow;
+        }
         // THE REVIEW CEILING IS GONE FROM HERE (v4.1.0), and so is the early
         // `Reserved` return that used to sit above it.
         //
@@ -1421,6 +1461,11 @@ of in front of it?",
         // no reason to remember what the judge can see — with ONE exception
         // that decides no stop: `Turn::instruction_open`, which keeps the idle
         // valve shut while an instruction is unresolved.
+        let read_from = if facts.engine.autonomy_source.is_empty() {
+            String::new()
+        } else {
+            format!(" (read from {})", facts.engine.autonomy_source)
+        };
         match facts.turn.live_verdict() {
             Some(JudgeVerdict::Reserved) => return StopVerdict::Allow,
             Some(JudgeVerdict::Resolvable(next)) => {
@@ -1452,14 +1497,16 @@ say what stopped it from answering."
             None => {
                 return StopVerdict::Block {
                     reason: format!(
-                        "RULE B: autonomy is granted and this turn armed no background \
-work — nothing you launched is still pending — so ending here sleeps until he returns. \
+                        "RULE B: autonomy is granted{read_from} and this turn armed no background \
+work — nothing you launched is still pending and no hire of yours is running — so ending here sleeps until he returns. \
 Whether that is his call is not yours to decide — spawn the `{JUDGE_SEAT}` subagent and \
 give it ONE line, the transcript this session is writing:\n\n    TRANSCRIPT: <this \
 session's transcript path>\n\nRun it in the foreground so its answer lands in this turn (a \
 background run also works: its answer wakes you and is read then). It reads the plan and \
 the facts itself; do not summarise them for it, and do not argue your case. Its verdict \
-decides: RESERVED lets this stop through, RESOLVABLE names what you do next."
+decides: RESERVED lets this stop through, RESOLVABLE names what you do next.\n\nIf this \
+session cannot start that subagent (it has no tool for it), say so plainly in your reply and stop: \
+a second stop on the same unchanged state is let through."
                     ),
                 }
             }
@@ -1703,6 +1750,14 @@ fn verdict_in(text: &str) -> Option<JudgeVerdict> {
     found
 }
 
+/// Is this block reason one of Rule B's three: the plain ask, the re-served instruction, the judge that answered nothing?
+/// The pipeline remembers the state a block of these was made on, so the same block is not served twice on it.
+pub fn is_rule_b_block(reason: &str) -> bool {
+    reason.starts_with("RULE B")
+        || reason.starts_with("THE JUDGE SAYS THIS IS YOURS TO RESOLVE")
+        || reason.starts_with(&format!("THE {JUDGE_SEAT} SEAT RAN AND RETURNED NO VERDICT"))
+}
+
 /// Is Rule B live for this turn — granted, nothing armed, not interrupted, and
 /// the wedge ceiling not yet reached?
 ///
@@ -1715,6 +1770,9 @@ fn rule_b_engaged(facts: &StopFacts) -> bool {
     facts.autonomy == Autonomy::Granted
         && !facts.turn.armed_anything()
         && !facts.turn.interrupted
+        // A hire of the engine that is running will report back as a new turn of this session: the session is waiting,
+        // and a wait is not the sleep Rule B exists to prevent (z20).
+        && facts.engine.hires_running == 0
         // The idle valve — UNLESS the agent is sitting on an instruction it
         // has not acted on. See `Turn::holds_an_unspent_fix`: an agent that
         // has been told what to do and does nothing is not wedged, and the
@@ -3251,7 +3309,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
             turn: Turn { final_text: "done".into(), worked_since_push: !launches.is_empty(), launches, carried: vec![], instruction_open: false, refusals_emitted: 0, judge_verdict: None, judge_call_ids: vec![], human_window: false, sidechain: false, signoff_emitted: false, interrupted: false, narration: String::new(), degraded_consumed: 0, seats_invoked: vec![], gate_ran: true, changed_code: false, wrote_markdown: false, changed_java_files: vec![], java_edits: vec![], answered_substantially: false, capture: WindowCapture::default(), closed: vec![] },
             autonomy,
             substrate: None,
-            reseed_bounces: 0, jobs_missing: None, job_bounces: 0,
+            reseed_bounces: 0, jobs_missing: None, job_bounces: 0, engine: EngineWatch::default(),
         }
     }
 
@@ -3974,7 +4032,7 @@ otherwise hold — this is the v4.0.0 defect, measured against the shipped binar
             turn,
             autonomy: Autonomy::Granted,
             substrate: None,
-            reseed_bounces: 0, jobs_missing: None, job_bounces: 0,
+            reseed_bounces: 0, jobs_missing: None, job_bounces: 0, engine: EngineWatch::default(),
         };
         match judge(&f) {
             StopVerdict::Block { reason } => assert!(
@@ -4011,7 +4069,7 @@ reviewer — but it is still HELD, which is this test's whole subject: {reason}"
             turn,
             autonomy: Autonomy::Granted,
             substrate: None,
-            reseed_bounces: 0, jobs_missing: None, job_bounces: 0,
+            reseed_bounces: 0, jobs_missing: None, job_bounces: 0, engine: EngineWatch::default(),
         };
         match judge(&f) {
             StopVerdict::Block { reason } => {
@@ -4895,6 +4953,67 @@ message while you were working:\n<agent-message from=\"a14a4ae2f3b5ee48b\">\nVER
         f.empty_turns = MAX_EMPTY_TURNS;
         assert_eq!(StopVerdict::Allow, judge(&f), "with the instruction closed, the valve releases as before");
     }
+    // -----------------------------------------------------------------
+    // 28h z20 — THE STOP THAT BLOCKED A SESSION WAITING ON ITS OWN HIRES
+    // -----------------------------------------------------------------
+
+    /// A running hire of the engine will wake the session with its report, so a stop beside it is a wait. Counting only
+    /// the host's own background launches made a pm lead that had hired two developers be told to spawn a judge it
+    /// could not spawn, over and over (2026-11-21).
+    #[test]
+    fn a_running_engine_hire_is_a_wait_and_not_a_sleep() {
+        let mut f = facts(Autonomy::Granted, vec![]);
+        match judge(&f) {
+            StopVerdict::Block { reason } => assert!(reason.contains("RULE B"), "{reason}"),
+            StopVerdict::Allow => panic!("CONTROL: with no hire running and nothing armed, an idle turn is held"),
+        }
+        f.engine.hires_running = 2;
+        assert_eq!(StopVerdict::Allow, judge(&f), "two hires will each report back: the session is waiting, not asleep");
+    }
+
+    /// The same unchanged state is never blocked twice: the second identical stop passes, and a changed state is held again.
+    #[test]
+    fn rule_b_never_blocks_twice_on_the_same_unchanged_state() {
+        let mut f = facts(Autonomy::Granted, vec![]);
+        assert!(matches!(judge(&f), StopVerdict::Block { .. }), "the first stop on this state is held");
+        f.engine.last_rule_b_fingerprint = Some(f.rule_b_fingerprint());
+        assert!(f.repeats_the_last_rule_b_block());
+        assert_eq!(StopVerdict::Allow, judge(&f), "the second stop on the same unchanged state is let through");
+
+        // CONTROL: a state that moved since the block (the session did a tool call) is held again.
+        let mut g = facts(Autonomy::Granted, vec![tool("Read")]);
+        g.engine.last_rule_b_fingerprint = Some(f.rule_b_fingerprint());
+        assert!(!g.repeats_the_last_rule_b_block(), "one more tool call is a different state");
+    }
+
+    /// The block says which autonomy it read and from where, and asks only for what a session can do.
+    #[test]
+    fn the_rule_b_block_says_what_it_read_and_asks_only_what_a_session_can_do() {
+        let mut f = facts(Autonomy::Granted, vec![]);
+        f.engine.autonomy_source = "the engine's state file".into();
+        match judge(&f) {
+            StopVerdict::Block { reason } => {
+                assert!(reason.contains("granted"), "it must state the autonomy it read: {reason}");
+                assert!(reason.contains("the engine's state file"), "and where it read it: {reason}");
+                assert!(reason.contains("cannot start") && reason.contains("say so"),
+                    "a session without the subagent tool is told what to do instead: {reason}");
+            }
+            StopVerdict::Allow => panic!("an idle turn under the grant is held the first time"),
+        }
+    }
+
+    /// 28h z20: the three blocks the repeat check covers are told apart from every other rule's block by their opening.
+    #[test]
+    fn the_three_rule_b_blocks_are_recognised_and_no_other() {
+        let mut f = facts(Autonomy::Granted, vec![]);
+        let StopVerdict::Block { reason } = judge(&f) else { panic!("held") };
+        assert!(is_rule_b_block(&reason), "the plain ask: {reason}");
+        f.turn.judge_verdict = Some(JudgeVerdict::Resolvable("fix it".into()));
+        let StopVerdict::Block { reason } = judge(&f) else { panic!("held") };
+        assert!(is_rule_b_block(&reason), "the re-served instruction: {reason}");
+        assert!(!is_rule_b_block("UNJUDGED MESSAGE: run the reviewer"), "another rule's block is not Rule B's");
+    }
+
     /// PORTED RULE 1, and it fires WITHOUT autonomy — which is the whole point.
     /// The parity contract listed this as script-only; cutting a client over to
     /// the binary before it existed would have stripped a working protection.
@@ -5041,7 +5160,7 @@ message while you were working:\n<agent-message from=\"a14a4ae2f3b5ee48b\">\nVER
             turn,
             autonomy: Autonomy::Unknown,
             substrate: None,
-            reseed_bounces: 0, jobs_missing: None, job_bounces: 0,
+            reseed_bounces: 0, jobs_missing: None, job_bounces: 0, engine: EngineWatch::default(),
         });
         assert_eq!(
             StopVerdict::Allow,
@@ -5069,7 +5188,7 @@ message while you were working:\n<agent-message from=\"a14a4ae2f3b5ee48b\">\nVER
             StopVerdict::Allow,
             judge(&StopFacts { empty_turns: 0, review_rounds: 0, already_bounced: false,
                 bounces: 0, turn: turn.clone(), autonomy: Autonomy::Unknown, substrate: None,
-                reseed_bounces: 0, jobs_missing: None, job_bounces: 0 }),
+                reseed_bounces: 0, jobs_missing: None, job_bounces: 0, engine: EngineWatch::default() }),
             "with no grant in force, an ask is just a message"
         );
         // ...and WITH the grant it is held, by Rule B, until the judge speaks.
@@ -5078,7 +5197,7 @@ message while you were working:\n<agent-message from=\"a14a4ae2f3b5ee48b\">\nVER
             matches!(
                 judge(&StopFacts { empty_turns: 0, review_rounds: 0, already_bounced: false,
                     bounces: 0, turn, autonomy: Autonomy::Granted, substrate: None,
-                    reseed_bounces: 0, jobs_missing: None, job_bounces: 0 }),
+                    reseed_bounces: 0, jobs_missing: None, job_bounces: 0, engine: EngineWatch::default() }),
                 StopVerdict::Block { .. }
             ),
             "under a grant, a self-initiated ask must reach the judge"

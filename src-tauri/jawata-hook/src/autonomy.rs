@@ -277,6 +277,51 @@ fn state_with(base: &Path, session: &str, engine_file: Option<&Path>) -> Autonom
     }
 }
 
+/// Where the autonomy [`state`] answers was read from, in words a stop block can quote (28h z20): the engine's state
+/// file where the engine names one, this hook's own grant file otherwise, and nothing where it could not be told.
+pub fn source(base: &Path, session: &str) -> &'static str {
+    source_with(base, session, std::env::var_os(ENGINE_STATE_VARIABLE).map(std::path::PathBuf::from).as_deref())
+}
+
+fn source_with(base: &Path, session: &str, engine_file: Option<&Path>) -> &'static str {
+    if engine_state(engine_file).is_some() {
+        "the engine's state file"
+    } else if !session.is_empty() && file(base, session).exists() {
+        "this hook's grant file"
+    } else {
+        ""
+    }
+}
+
+fn ruleb_file(base: &Path, session: &str) -> PathBuf {
+    dir(base).join(format!("{}.ruleb", crate::pipeline::sanitize_session(session)))
+}
+
+/// The state fingerprint the last Rule B block of this session was made on, if its last verdict was one.
+pub fn last_rule_b_block(base: &Path, session: &str) -> Option<String> {
+    if session.is_empty() {
+        return None;
+    }
+    std::fs::read_to_string(ruleb_file(base, session)).ok().filter(|t| !t.trim().is_empty())
+}
+
+/// Remember the fingerprint of a Rule B block just made, or forget it (`None`) when the last verdict was not one.
+pub fn note_rule_b_block(base: &Path, session: &str, fingerprint: Option<&str>) {
+    if session.is_empty() {
+        return;
+    }
+    let f = ruleb_file(base, session);
+    match fingerprint {
+        Some(text) => {
+            let _ = std::fs::create_dir_all(dir(base));
+            let _ = std::fs::write(&f, text);
+        }
+        None => {
+            let _ = std::fs::remove_file(&f);
+        }
+    }
+}
+
 /// Whether the prompt hook has been through this session at all.
 fn seen_file(base: &Path, session: &str) -> PathBuf {
     dir(base).join(format!("{}.seen", crate::pipeline::sanitize_session(session)))
@@ -455,6 +500,34 @@ mod tests {
         // The whole decision: a granted file wins over a hook that was never armed.
         std::fs::write(&f, "on").unwrap();
         assert_eq!(Autonomy::Granted, state_with(&d, "s", Some(&f)), "the button's on reaches the stop gate");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 28h z20: the block names where it read the autonomy, so a person (and the agent) can tell the chat's button from
+    /// the hook's own grant.
+    #[test]
+    fn the_source_of_the_autonomy_is_named() {
+        let d = tmp();
+        let f = d.join("autonomy.state");
+        std::fs::write(&f, "on").unwrap();
+        assert_eq!("the engine's state file", source_with(&d, "s", Some(&f)));
+        assert_eq!("", source_with(&d, "s", None), "no file named and no grant: nothing to say");
+        std::fs::create_dir_all(dir(&d)).unwrap();
+        std::fs::write(file(&d, "s"), "0").unwrap();
+        assert_eq!("this hook's grant file", source_with(&d, "s", None));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 28h z20: the fingerprint of the last Rule B block is remembered and forgotten per session.
+    #[test]
+    fn the_last_rule_b_block_is_remembered_and_forgotten() {
+        let d = tmp();
+        assert_eq!(None, last_rule_b_block(&d, "s"));
+        note_rule_b_block(&d, "s", Some("Granted|x|pending=0|hires=0|calls=3"));
+        assert_eq!(Some("Granted|x|pending=0|hires=0|calls=3".to_string()), last_rule_b_block(&d, "s"));
+        assert_eq!(None, last_rule_b_block(&d, "other"), "per session");
+        note_rule_b_block(&d, "s", None);
+        assert_eq!(None, last_rule_b_block(&d, "s"), "a verdict that was not a Rule B block forgets it");
         let _ = std::fs::remove_dir_all(&d);
     }
 
