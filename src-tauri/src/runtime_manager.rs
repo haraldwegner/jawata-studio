@@ -487,8 +487,7 @@ fn window_process_file(windows_dir: &std::path::Path, window: &str) -> std::path
 }
 
 /// What tells one running process from another given the same number later, and that no clock step moves: on Linux the boot's own id and
-/// the process's start count since boot; on macOS and the other Unixes the start time `ps` reports; none on Windows, where the process
-/// number alone decides. A start time computed from the wall clock
+/// the process's start count since boot; on macOS the start time `ps` reports; none elsewhere, where the process number alone decides. A start time computed from the wall clock
 /// moved when the clock was stepped and dropped an open window (sign-off audit 2026-11-20, the repair of finding C).
 pub(crate) fn process_identity(pid: u32) -> Option<String> {
     #[cfg(target_os = "linux")]
@@ -497,10 +496,10 @@ pub(crate) fn process_identity(pid: u32) -> Option<String> {
         let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
         return Some(format!("{}:{ticks}", boot.trim()));
     }
-    // macOS and the other Unixes: the start time `ps` reports, which the kernel fixed when the process began, so a later clock step does not
-    // move it and another process given the number after a reboot shows another start (scoped audit 2026-11-20: dropping it on macOS brought
-    // back a reused number keeping an ended window's folders)
-    #[cfg(all(unix, not(target_os = "linux")))]
+    // macOS: the start time `ps` reports, which the kernel fixed when the process began, so a later clock step does not move it and another
+    // process given the number after a reboot shows another start (scoped audit 2026-11-20: dropping it on macOS brought back a reused number
+    // keeping an ended window's folders). Not the BSDs, whose start time follows a stepped clock (sign-off audit, note 1).
+    #[cfg(target_os = "macos")]
     {
         return crate::eclipse_notes::process_start_millis(pid).map(|started| format!("started:{started}"));
     }
@@ -2141,7 +2140,7 @@ mod tests {
             assert!(window_process_lives(me, Some(&identity)), "a live process was not taken for itself");
             assert!(!window_process_lives(me, Some("another-boot:1")), "a process of another boot was taken for this one");
         }
-        if cfg!(all(unix, not(target_os = "linux"))) {
+        if cfg!(target_os = "macos") {
             // scoped audit 2026-11-20: macOS keeps its start time, so a number another process holds after a reboot is not taken for the window
             let identity = first.clone().expect("macOS gives a process identity from its start time");
             assert!(identity.starts_with("started:"), "the identity is not the process's start time: {identity}");
