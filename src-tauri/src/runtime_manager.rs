@@ -438,33 +438,61 @@ pub struct RuntimeReference {
 pub const SEATS_DIR_ENV: &str = "JAWATA_AGENT_SEATS_DIR";
 /// The engine's environment name for the folder of the typed skills, beside the seats folder (D53 (d)).
 pub const SKILLS_DIR_ENV: &str = "JAWATA_AGENT_SKILLS_DIR";
-/// The engine's environment name for the folders of the editor's workspace (jawata-mcp `DefaultEngineSettings`:
-/// `jawata.workspace.folders`), a path list. With the engine's own projects they are the workspace a hired seat sees (28h Stage 27 (p)).
-pub const WORKSPACE_FOLDERS_ENV: &str = "JAWATA_WORKSPACE_FOLDERS";
-/// The file in a workspace's folder that holds what the editor handed the studio when it started the workspace, one folder to a line.
+/// The single list of the earlier form, which held the last window's folders for the whole workspace. It is removed when a window's own
+/// list is written, so nothing reads it as current.
 pub const EDITOR_FOLDERS_FILE: &str = "editor-folders.txt";
+/// The folder in a workspace's folder that holds one list per editor window, `<window>.txt`, one folder to a line.
+pub const EDITOR_FOLDERS_DIR: &str = "editor-folders";
+/// The engine's environment name for that folder (jawata-mcp `DefaultEngineSettings`: `jawata.editor.folders.dir`). The engine reads the
+/// lists in it on every access question, so a window's change is seen without a restart (his word 2026-11-20).
+pub const EDITOR_FOLDERS_DIR_ENV: &str = "JAWATA_EDITOR_FOLDERS_DIR";
 
-/// Records the editor's folders for the workspace whose folder is `workspace_dir`, replacing what was recorded: blanks and repeats are
-/// dropped, order is kept. The next start of the workspace puts them in the engine's environment.
-pub fn remember_editor_folders(workspace_dir: &std::path::Path, folders: &[String]) -> std::io::Result<()> {
+/// A window's name as a file name: only letters, digits, `-` and `_` are kept, so no name can reach outside the folder.
+fn window_file(window: &str) -> String {
+    let kept: String = window.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+    format!("{}.txt", if kept.is_empty() { "window" } else { &kept })
+}
+
+/// Records the folders one editor window holds for the workspace whose folder is `workspace_dir`, replacing what that window recorded
+/// before and leaving every other window's list as it is: blanks and repeats are dropped, order is kept. A window that holds no folder
+/// has no list. The shared list of the earlier form is removed.
+pub fn remember_editor_folders(workspace_dir: &std::path::Path, window: &str, folders: &[String]) -> std::io::Result<()> {
     let mut kept: Vec<&str> = Vec::new();
     for folder in folders.iter().map(|f| f.trim()).filter(|f| !f.is_empty()) {
         if !kept.contains(&folder) {
             kept.push(folder);
         }
     }
-    std::fs::create_dir_all(workspace_dir)?;
-    std::fs::write(workspace_dir.join(EDITOR_FOLDERS_FILE), kept.join("\n"))
+    let lists = workspace_dir.join(EDITOR_FOLDERS_DIR);
+    let _ = std::fs::remove_file(workspace_dir.join(EDITOR_FOLDERS_FILE));
+    if kept.is_empty() {
+        return match std::fs::remove_file(lists.join(window_file(window))) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        };
+    }
+    std::fs::create_dir_all(&lists)?;
+    std::fs::write(lists.join(window_file(window)), kept.join("\n"))
 }
 
-/// The environment entry that names the editor's folders to the engine; none when the editor never started this workspace.
-fn editor_folders_environment(workspace_dir: &str) -> Option<(String, String)> {
-    let text = std::fs::read_to_string(std::path::Path::new(workspace_dir).join(EDITOR_FOLDERS_FILE)).ok()?;
-    let folders: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
-    if folders.is_empty() {
-        return None;
+/// Removes a closed window's list from every workspace under `workspace_root`, since a window does not say which workspace it used.
+pub fn forget_editor_window(workspace_root: &std::path::Path, window: &str) -> std::io::Result<()> {
+    let Ok(workspaces) = std::fs::read_dir(workspace_root) else {
+        return Ok(());
+    };
+    for workspace in workspaces.flatten() {
+        let list = workspace.path().join(EDITOR_FOLDERS_DIR).join(window_file(window));
+        match std::fs::remove_file(&list) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
     }
-    Some((WORKSPACE_FOLDERS_ENV.to_string(), folders.join(if cfg!(windows) { ";" } else { ":" })))
+    Ok(())
+}
+
+/// The environment entry that tells the engine where the windows' lists are kept.
+fn editor_folders_environment(workspace_dir: &str) -> (String, String) {
+    (EDITOR_FOLDERS_DIR_ENV.to_string(), std::path::Path::new(workspace_dir).join(EDITOR_FOLDERS_DIR).to_string_lossy().into_owned())
 }
 
 /// Launch request for one jawata spawn. Manager_service has already
@@ -1389,8 +1417,8 @@ impl RuntimeManager {
             .collect();
         // 28h S15: and the brains the engine's own agent starts, from what this machine has installed.
         let mut env = crate::agent_brain_settings::applied_to(seats, &reference.agent_brain);
-        // 28h Stage 27 (p): and the folders the editor holds, which are not all Java projects.
-        env.extend(editor_folders_environment(&reference.workspace_dir));
+        // His word 2026-11-20: and where the editor windows' folders are kept, read live (a list fixed here would outlive a closed folder).
+        env.push(editor_folders_environment(&reference.workspace_dir));
 
         CommandSpec {
             command: "java".into(),
@@ -2189,43 +2217,67 @@ mod tests {
             vec![
                 ("JAWATA_AGENT_SEATS_DIR".to_string(), "/cfg/jawata/seats".to_string()),
                 ("JAWATA_AGENT_SKILLS_DIR".to_string(), "/cfg/jawata/skills".to_string()),
+                ("JAWATA_EDITOR_FOLDERS_DIR".to_string(), "/cache/jawata/test-ws/editor-folders".to_string()),
             ],
             "the engine gets the seats folder and the skills folder beside it in its environment"
         );
         assert_eq!(SEATS_DIR_ENV, "JAWATA_AGENT_SEATS_DIR");
 
-        // Control: a reference that names no folder adds nothing to the environment.
+        // Control: a reference that names no folder adds no seats or skills folder to the environment.
         let spec = manager.command_spec_for(&fake_launch_request());
-        assert!(spec.env.is_empty(), "no folder named, nothing written: {:?}", spec.env);
+        assert!(spec.env.iter().all(|(k, _)| k != SEATS_DIR_ENV && k != SKILLS_DIR_ENV), "no folder named, nothing written: {:?}", spec.env);
     }
 
-    /// 28h Stage 27 (p), his ruling 2026-11-18: a hired seat sees the whole workspace, the union of the editor's folders and the
-    /// engine's projects. The engine learns the editor's folders from `jawata.workspace.folders` (`JAWATA_WORKSPACE_FOLDERS`, spelled out
-    /// here on purpose), and the studio writes them from what the editor handed it when it started the workspace.
+    /// His word 2026-11-20 (the workspace of VS Code is included) and the audit of the same day: the engine reads the editor windows'
+    /// folders LIVE from one folder the studio names to it (`JAWATA_EDITOR_FOLDERS_DIR`), and is no longer given a list fixed at its start,
+    /// which kept a folder a window had closed reachable until the engine restarted.
     #[test]
-    fn an_engine_is_started_with_the_folders_the_editor_holds() {
+    fn an_engine_is_told_where_the_editor_windows_folders_are_kept_and_given_no_fixed_list() {
         let manager = RuntimeManager::new(fake_paths());
         let mut request = fake_launch_request();
         let dir = std::env::temp_dir().join(format!("jawata-editor-folders-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         request.reference.workspace_dir = dir.to_string_lossy().into_owned();
+        remember_editor_folders(&dir, "window-a", &["/work/studio".to_string()]).unwrap();
 
-        // Control: a workspace the editor never started names no folders, so the engine gets none.
         let spec = manager.command_spec_for(&request);
-        assert!(spec.env.iter().all(|(k, _)| k != "JAWATA_WORKSPACE_FOLDERS"), "no folders recorded, none written: {:?}", spec.env);
 
-        remember_editor_folders(&dir, &["/work/studio".to_string(), "/work/chat".to_string(), "/work/studio".to_string(), " ".to_string()]).unwrap();
-        let spec = manager.command_spec_for(&request);
-        let separator = if cfg!(windows) { ";" } else { ":" };
-        let value = spec.env.iter().find(|(k, _)| k == "JAWATA_WORKSPACE_FOLDERS").map(|(_, v)| v.clone());
-        assert_eq!(value, Some(format!("/work/studio{separator}/work/chat")), "the folders the editor handed over, once each, as a path list");
-        assert_eq!(WORKSPACE_FOLDERS_ENV, "JAWATA_WORKSPACE_FOLDERS");
-
-        // A later launch with other folders replaces the record, it does not add to it.
-        remember_editor_folders(&dir, &["/work/enterprise".to_string()]).unwrap();
-        let spec = manager.command_spec_for(&request);
-        assert_eq!(spec.env.iter().find(|(k, _)| k == "JAWATA_WORKSPACE_FOLDERS").map(|(_, v)| v.as_str()), Some("/work/enterprise"));
+        let named = spec.env.iter().find(|(k, _)| k == EDITOR_FOLDERS_DIR_ENV).map(|(_, v)| v.clone());
+        assert_eq!(named, Some(dir.join(EDITOR_FOLDERS_DIR).to_string_lossy().into_owned()), "the engine is not told where the windows' folders are kept");
+        assert_eq!(EDITOR_FOLDERS_DIR_ENV, "JAWATA_EDITOR_FOLDERS_DIR");
+        assert!(spec.env.iter().all(|(k, _)| k != "JAWATA_WORKSPACE_FOLDERS"), "the engine was given a folder list fixed at its start: {:?}", spec.env);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Audit 2026-11-20: one list per editor window, so two windows on one workspace do not overwrite each other; a window that hands no
+    /// folder (it closed, or holds none) has no list; a list is written once per folder; the one shared file of the earlier form goes.
+    #[test]
+    fn each_editor_window_keeps_a_list_of_its_own_and_a_window_that_holds_none_keeps_none() {
+        let root = std::env::temp_dir().join(format!("jawata-editor-windows-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("javata-dev");
+        let other = root.join("orb");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(dir.join("editor-folders.txt"), "/stale").unwrap();
+        let list = |workspace: &std::path::Path, window: &str| std::fs::read_to_string(workspace.join(EDITOR_FOLDERS_DIR).join(format!("{window}.txt"))).ok();
+
+        remember_editor_folders(&dir, "window-a", &["/work/studio".to_string(), "/work/chat".to_string(), "/work/studio".to_string(), " ".to_string()]).unwrap();
+        remember_editor_folders(&dir, "window-b", &["/work/enterprise".to_string()]).unwrap();
+        remember_editor_folders(&other, "window-c", &["/home/h/Projects".to_string()]).unwrap();
+
+        assert_eq!(list(&dir, "window-a").as_deref(), Some("/work/studio\n/work/chat"), "a window's folders, once each, in order");
+        assert_eq!(list(&dir, "window-b").as_deref(), Some("/work/enterprise"), "a second window overwrote the first, or was not kept");
+        assert!(!dir.join("editor-folders.txt").exists(), "the shared list of the earlier form was left, and would be read as current");
+
+        remember_editor_folders(&dir, "window-a", &[]).unwrap();
+        assert_eq!(list(&dir, "window-a"), None, "a window that holds no folder still has a list");
+        assert_eq!(list(&dir, "window-b").as_deref(), Some("/work/enterprise"), "CONTROL: another window's list went with it");
+
+        forget_editor_window(&root, "window-c").unwrap();
+        assert_eq!(list(&other, "window-c"), None, "a closed window's list is kept in a workspace it was not looked for in");
+        assert_eq!(list(&dir, "window-b").as_deref(), Some("/work/enterprise"), "CONTROL: forgetting one window removed another");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 28h S15: the brains the studio found installed reach the engine's environment under the names the
@@ -2242,7 +2294,7 @@ mod tests {
         let names: Vec<&str> = spec.env.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(
             names,
-            vec!["JAWATA_AGENT_SEATS_DIR", "JAWATA_AGENT_SKILLS_DIR", "JAWATA_AGENT_BRAIN", "JAWATA_AGENT_HIRE_BRAINS"]
+            vec!["JAWATA_AGENT_SEATS_DIR", "JAWATA_AGENT_SKILLS_DIR", "JAWATA_AGENT_BRAIN", "JAWATA_AGENT_HIRE_BRAINS", "JAWATA_EDITOR_FOLDERS_DIR"]
         );
         let old_text = old_program.to_string_lossy().replace('\\', "\\\\");
         assert!(spec.env[2].1.contains(&old_text), "{} in {}", old_text, spec.env[2].1);
@@ -2251,7 +2303,7 @@ mod tests {
         let (new_path, new_program) = fake_agent_path("new");
         request.reference.agent_brain = crate::agent_brain_settings::detect(Some(&new_path));
         let spec = manager.command_spec_for(&request);
-        assert_eq!(spec.env.len(), 4, "{:?}", spec.env);
+        assert_eq!(spec.env.len(), 5, "{:?}", spec.env);
         let new_text = new_program.to_string_lossy().replace('\\', "\\\\");
         assert!(spec.env[2].1.contains(&new_text) && !spec.env[2].1.contains(&old_text), "{}", spec.env[2].1);
         for program in [old_program, new_program] {
@@ -2329,8 +2381,8 @@ mod tests {
             ]
         );
         // Sprint 10 v0.10.4: no JAVA_PROJECT_PATH — workspace.json drives
-        // project loading inside jawata.
-        assert!(spec.env.is_empty());
+        // project loading inside jawata. The one entry is where the editor windows' folders are kept (his word 2026-11-20).
+        assert_eq!(spec.env.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), vec![EDITOR_FOLDERS_DIR_ENV]);
         assert!(spec.log_path.ends_with("test-ws.log"));
     }
 

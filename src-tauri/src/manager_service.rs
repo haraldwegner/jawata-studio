@@ -2635,12 +2635,19 @@ impl ManagerService {
         Ok(skipped)
     }
 
-    /// Records the editor's folders in the workspace's folder (28h Stage 27 (p)); a failure is logged and the launch goes on, since the
-    /// workspace then simply keeps what it held before.
-    pub(crate) fn editor_remember_folders(&self, workspace: &str, folders: &[String]) {
+    /// Records the folders one editor window holds in the workspace's folder, where the engine reads them on every access question (his
+    /// word 2026-11-20); a failure is logged and the launch goes on, since the workspace then simply keeps what it held before.
+    pub(crate) fn editor_remember_folders(&self, workspace: &str, window: &str, folders: &[String]) {
         let dir = self.config_store.get_settings().workspace_root().join(workspace);
-        if let Err(error) = crate::runtime_manager::remember_editor_folders(&dir, folders) {
+        if let Err(error) = crate::runtime_manager::remember_editor_folders(&dir, window, folders) {
             crate::studio_log::say(&format!("editor launch: the folders of {workspace} could not be recorded: {error}"));
+        }
+    }
+
+    /// Forgets a closed editor window's folders in every workspace, so its agents stop reaching them.
+    pub(crate) fn editor_forget_window(&self, window: &str) {
+        if let Err(error) = crate::runtime_manager::forget_editor_window(&self.config_store.get_settings().workspace_root(), window) {
+            crate::studio_log::say(&format!("editor launch: the folders of a closed window could not be forgotten: {error}"));
         }
     }
 
@@ -20713,7 +20720,7 @@ mod editor_launch_service_tests {
         assert!(skipped.is_empty(), "{skipped:?}");
         let (ui, book) = (CountingUi::default(), PromptBook::default());
 
-        run_editor_launch(service, &ui, &book, &folders, QUICK);
+        run_editor_launch(service, &ui, &book, "window-test", &folders, QUICK);
 
         // nothing was added or started; the question is open; the file says so, in the studio's own folder
         let still: Vec<String> = EditorHost::workspaces(service).into_iter().find(|(n, _)| n == "work").unwrap().1;
@@ -20766,7 +20773,7 @@ mod editor_launch_service_tests {
         let (ui, book) = (CountingUi::default(), PromptBook::default());
         let before = EditorHost::workspaces(service);
 
-        run_editor_launch(service, &ui, &book, &folders, QUICK);
+        run_editor_launch(service, &ui, &book, "window-test", &folders, QUICK);
 
         let file_path = handoff_dir(&service.studio_config_dir()).join(format!("{}.json", handoff_id(&folders)));
         let file: Handoff = serde_json::from_str(&fs::read_to_string(file_path).unwrap()).unwrap();
