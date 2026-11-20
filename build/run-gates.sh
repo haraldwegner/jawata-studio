@@ -146,6 +146,17 @@ if [ "$SURFACE" -ne 0 ]; then
     exit "$SURFACE"
 fi
 
+echo
+echo "=== gate: the commit-msg hook refuses every agent the pre-commit hook names ==="
+# 28h Stage 27 (the C27 audit, finding 2): the two hooks and the engine's GitTool keep separate lists of agent names; this
+# proves the commit-msg hook can fail and that every name in the pre-commit hook's own list is refused here too.
+"$ROOT/build/commit-msg-hook-selftest.sh"
+HOOKSELF=$?
+if [ "$HOOKSELF" -ne 0 ]; then
+    echo "FAILED: the commit-msg hook self-test (exit $HOOKSELF). The two hooks disagree about who an AI agent is."
+    exit "$HOOKSELF"
+fi
+
 # NOT RUN HERE, AND EACH FOR ITS OWN STATED REASON rather than by omission:
 #
 #   build/seam-gate.sh   — drives the REAL hook binary against the REAL published
