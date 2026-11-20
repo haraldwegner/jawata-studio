@@ -10,6 +10,7 @@ mod gateway;
 mod intellij;
 mod jsonc_edit;
 mod lombok;
+mod login_env;
 mod conductor;
 mod eclipse_notes;
 mod editor_launch;
@@ -570,6 +571,10 @@ pub fn run() {
             std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
         }
     }
+
+    // 28h z21: a studio started from the desktop has the desktop session's PATH, not the person's shell's, so the engines it starts, the
+    // brains those start and a hire's shell never found Maven. Taken once, before anything is started from it.
+    login_env::adopt_login_path();
 
     let config_store = ConfigStore::new().expect("failed to initialize config store");
     let release_manager = ReleaseManager::new().expect("failed to initialize release manager");
@@ -2638,5 +2643,19 @@ mod canary_duty_tests {
 
         assert!(!fixture.skill_written(), "no engine is pending, so the round writes no seat");
         assert_eq!(fixture.deployed_against(), None);
+    }
+}
+
+/// 28h z21: the studio takes the person's login-shell PATH before it starts anything, so the engines, the brains they start and a hire's shell
+/// find the build tools the person's terminal finds.
+#[cfg(test)]
+mod login_path_wiring_tests {
+    #[test]
+    fn run_adopts_the_login_path_before_it_builds_the_manager_that_starts_the_engines() {
+        let source = include_str!("lib.rs");
+        let run = &source[source.find("pub fn run() {").unwrap()..source.find("tauri::Builder::default()").unwrap()];
+        let adopt = run.find("login_env::adopt_login_path()").expect("run() must adopt the login shell's PATH");
+        let manager = run.find("ManagerService::new(").expect("run() builds the manager");
+        assert!(adopt < manager, "the PATH is taken before anything is started from it");
     }
 }
