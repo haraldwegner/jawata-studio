@@ -1312,11 +1312,13 @@ mod tests {
             "the /sprint step names no consumed marker, so every pass re-offers every \
              capture and the disposition cannot be checked"
         );
-        // D54 (k): one folder per sprint, the plan in it, and the raw committed before it is deleted.
+        // D54 (k), as 28h Stage 27 (z9) amended it: one folder per sprint in the workspace's planning folder, the plan in it, never in a
+        // code repository or under ~/.claude/plans, and the raw committed before it is deleted.
         for clause in [
             "One folder per sprint",
-            "docs/sprints/<product>/<sprint>/",
-            "never under\n`~/.claude/plans/`",
+            "`<planning folder>/<sprint>/`",
+            "never a code repository",
+            "never under `~/.claude/plans/`",
             "The raw is COMMITTED before\nit is deleted at sign-off",
         ] {
             assert!(sprint.contains(clause), "the /sprint skill lost the folder rule clause {clause:?}");

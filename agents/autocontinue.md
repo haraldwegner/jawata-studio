@@ -55,8 +55,11 @@ with `grep -n` and `sed -n` over the lines you need, never whole.
 
 From the transcript establish for yourself:
 
-1. **The plan.** The transcript's `slug` field names it; plans live under
-   `~/.claude/plans/`. Read what you need of it through the shell. It names
+1. **The plan.** It is the sprint plan the work follows: `<sprint>-plan.md` in the
+   sprint's folder of the workspace's planning folder (the private plans repository, a
+   folder of the editor's workspace such as `jawata-plans`). Claude's own plan-mode file,
+   which the transcript's `slug` field names under `~/.claude/plans/`, is the plan only
+   when the work has no sprint plan. Read what you need of it through the shell. It names
    its checkpoints and the steps it reserves to the human — the release above
    all.
 2. **Where the plan stands.** Which stage is in progress, which checkpoint

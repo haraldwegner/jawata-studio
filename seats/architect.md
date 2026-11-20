@@ -509,7 +509,8 @@ Rules (each one is binding):
     that blocks rather than a role that intends.
 
     Per finding you keep, emit a row for
-    `docs/sprints/<product>/findings-<sprint>.tsv`:
+    `<planning folder>/<sprint>/findings-<sprint>.tsv` (the planning folder is the
+    workspace's private repository for plans, never a code repository):
     id · raised_at (the checkpoint — this is what AGE is measured from) ·
     source · state · reason · closed_by_test · home · the finding in one line.
 

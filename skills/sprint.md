@@ -36,13 +36,16 @@ while dropping the doc's goal).
 
 ## One folder per sprint (Harald, 2026-11-09: *"Maybe we should make a folder per sprint in the docs folder"* · *"Yes, we should do so."*)
 
-Everything a sprint produces lives in ONE folder, `docs/sprints/<product>/<sprint>/`, in git:
+Everything a sprint produces lives in ONE folder, `<planning folder>/<sprint>/`, in git:
 the spec, the raw while it exists, the plan, the architecture file, the checkpoint and audit
-reports, and the evidence. The plan is written into that folder and never under
-`~/.claude/plans/`, which a reader of the repository cannot open. The raw is COMMITTED before
+reports, and the evidence. The folder is named by the sprint, not by a product: one sprint often
+touches several products, and its spec lists them. The planning folder is the workspace's own
+private repository for plans (for the jawata workspace, `jawata-plans`): never a code repository,
+because a code repository may be public, and never under `~/.claude/plans/`, which a reader of
+the repository cannot open and which a brain other than Claude does not read. The raw is COMMITTED before
 it is deleted at sign-off, so what the sprint started from stays in the history. A sprint that
-already exists in the old flat layout is moved by whoever owns that sprint, with every
-reference to its files updated; it is not moved while another branch is editing it.
+already exists in an older layout is moved by whoever owns that sprint, with every reference to
+its files updated; it is not moved while another branch is editing it.
 
 ## The reader split (binding on content and language)
 
