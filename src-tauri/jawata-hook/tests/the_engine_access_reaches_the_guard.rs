@@ -176,3 +176,21 @@ fn a_brain_the_engine_started_reads_no_workspace_file_and_a_persons_session_stil
     assert!(!person.contains(REFUSED), "CONTROL: a person's session no longer reads its workspace file: {person}");
     assert!(brain.contains(REFUSED), "a brain the engine started was let into a folder a cloned repository's workspace file listed: {brain}");
 }
+
+#[test]
+fn a_brain_the_engine_started_with_nothing_allowed_is_not_given_its_working_folder() {
+    // Third audit 2026-11-20 (finding F): with no workspace file read, a brain the engine started can have no folder at all; the old fallback
+    // then allowed its working folder, which the engine does not allow. A person's own session keeps that fallback.
+    let home = scratch_home("nothing");
+    let project = home.join("Projects");
+    let lists = home.join("editor-folders");
+    std::fs::create_dir_all(&lists).expect("lists");
+    let read = read_of(&project.join("notes.txt"));
+
+    let person = guard_env(&read, &home, &[("CLAUDE_PROJECT_DIR", project.display().to_string())]);
+    let brain = guard_env(&read, &home, &[("CLAUDE_PROJECT_DIR", project.display().to_string()), ("JAWATA_EDITOR_FOLDERS_DIR", lists.display().to_string())]);
+
+    let _ = std::fs::remove_dir_all(&home);
+    assert!(!person.contains(REFUSED), "CONTROL: a person's session lost the fallback to its own folder: {person}");
+    assert!(brain.contains(REFUSED), "a brain the engine allows nothing was given its working folder: {brain}");
+}

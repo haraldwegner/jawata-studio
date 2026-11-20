@@ -47,6 +47,20 @@ pub const EDITOR_WINDOW_ARG: &str = "--editor-window";
 /// be told from an open one (second audit 2026-11-20, finding 2).
 pub const EDITOR_PID_ARG: &str = "--editor-pid";
 
+/// The argument an extension numbers a launch of its window with: a number that only rises in that window, so the studio keeps what the
+/// window sent last even when two launches arrive swapped (third audit 2026-11-20, finding E).
+pub const EDITOR_SEQ_ARG: &str = "--editor-seq";
+
+/// The number a launch carries with `--editor-seq`, or none.
+pub fn editor_seq<I, S>(args: I) -> Option<u64>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let args: Vec<String> = args.into_iter().skip(1).map(|a| a.as_ref().to_string()).collect();
+    args.iter().position(|a| a == EDITOR_SEQ_ARG).and_then(|at| args.get(at + 1)).and_then(|v| v.parse().ok())
+}
+
 /// The process a launch names with `--editor-pid`, or none.
 pub fn editor_pid<I, S>(args: I) -> Option<u32>
 where
@@ -445,12 +459,20 @@ fn launch_key(host: &dyn EditorHost, window: &str) -> String {
     format!("{}\n{window}", host.handoff_dir().display())
 }
 
-/// Takes the number of a launch of `window`, which becomes the window's latest. Taken where the launch is received, before its thread.
-pub fn take_launch(host: &dyn EditorHost, window: &str) -> u64 {
+/// Takes the number of a launch of `window`, which becomes the window's latest. Taken where the launch is received, before its thread. A
+/// launch the window numbered itself (`sent`) keeps that number, and one numbered lower than the window's latest arrived after a later one:
+/// it is answered 0, which is never the latest, so it records and clears nothing (third audit 2026-11-20, finding E).
+pub fn take_launch(host: &dyn EditorHost, window: &str, sent: Option<u64>) -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
-    let launch = NEXT.fetch_add(1, Ordering::SeqCst);
+    let mut latest = latest_launches().lock().unwrap_or_else(|p| p.into_inner());
+    let key = launch_key(host, window);
+    let launch = match sent {
+        Some(number) if latest.get(&key).is_some_and(|known| *known >= number) => return 0,
+        Some(number) => number,
+        None => NEXT.fetch_add(1, Ordering::SeqCst),
+    };
     if !window.is_empty() {
-        latest_launches().lock().unwrap_or_else(|p| p.into_inner()).insert(launch_key(host, window), launch);
+        latest.insert(key, launch);
     }
     launch
 }
@@ -473,9 +495,10 @@ fn clear_folders(host: &dyn EditorHost, window: &str, launch: u64) {
     }
 }
 
-/// Forgets a window that said it closed, at once and in every workspace; a launch of it still scanning cannot write its list back.
-pub fn forget_window_now(host: &dyn EditorHost, window: &str) {
-    let launch = take_launch(host, window);
+/// Forgets a window that said it closed, at once and in every workspace; a launch of it still scanning cannot write its list back. A close
+/// the window numbered lower than a launch already received is older than it and forgets nothing.
+pub fn forget_window_now(host: &dyn EditorHost, window: &str, sent: Option<u64>) {
+    let launch = take_launch(host, window, sent);
     clear_folders(host, window, launch);
 }
 
@@ -612,7 +635,7 @@ fn folder_standing_in(folder: &str) -> WorkspaceProjectCandidate {
 /// resident. Raises a window only by asking [`EditorUi::ask`], and asks only for a partly matching workspace.
 #[cfg(test)]
 pub fn run_editor_launch(host: &dyn EditorHost, ui: &dyn EditorUi, book: &PromptBook, window: &str, folders: &[String], pacing: Pacing) {
-    let launch = take_launch(host, window);
+    let launch = take_launch(host, window, None);
     run_numbered_launch(host, ui, book, window, launch, folders, pacing);
 }
 
@@ -822,13 +845,13 @@ pub fn handle_editor_launch<R: Runtime>(app: &AppHandle<R>, argv: &[String]) -> 
         // a window that names itself and hands no folder closed, or holds none: its agents stop reaching what it held (audit 2026-11-20)
         if let Some(window) = window {
             let state = app.state::<AppState>();
-            forget_window_now(&state.manager_service, &window);
+            forget_window_now(&state.manager_service, &window, editor_seq(argv));
         }
         return false;
     }
     let named = window.unwrap_or_default();
     // numbered here, in the order the window's launches arrive, before the thread that scans (second audit 2026-11-20, finding 5)
-    let launch = take_launch(&app.state::<AppState>().manager_service, &named);
+    let launch = take_launch(&app.state::<AppState>().manager_service, &named, editor_seq(argv));
     if let (false, Some(pid)) = (named.is_empty(), editor_pid(argv)) {
         app.state::<AppState>().manager_service.editor_note_window_process(&named, pid);
     }
@@ -1440,19 +1463,19 @@ mod tests {
         let host = FakeHost::new(&s.0).with_workspace("shop", &["/p/a"]).with_scan("/p", &["/p/a"]);
         let (ui, book) = (FakeUi::default(), PromptBook::default());
 
-        let older = take_launch(&host, "w");
-        let newer = take_launch(&host, "w");
+        let older = take_launch(&host, "w", None);
+        let newer = take_launch(&host, "w", None);
         run_numbered_launch(&host, &ui, &book, "w", newer, &strings(&["/p"]), QUICK);
         run_numbered_launch(&host, &ui, &book, "w", older, &strings(&["/p"]), QUICK);
         assert_eq!(host.remembered.borrow().clone(), vec!["shop w /p".to_string()], "the launch a later one overtook wrote the window's list too");
 
-        let scanning = take_launch(&host, "closing");
-        forget_window_now(&host, "closing");
+        let scanning = take_launch(&host, "closing", None);
+        forget_window_now(&host, "closing", None);
         run_numbered_launch(&host, &ui, &book, "closing", scanning, &strings(&["/p"]), QUICK);
         assert_eq!(host.forgotten.borrow().clone(), vec!["closing".to_string()], "CONTROL: the close was not acted on");
         assert!(!host.remembered.borrow().iter().any(|r| r.contains(" closing ")), "a launch still scanning wrote back the list of a window that closed");
 
-        let unnamed = take_launch(&host, "");
+        let unnamed = take_launch(&host, "", None);
         run_numbered_launch(&host, &ui, &book, "", unnamed, &strings(&["/p"]), QUICK);
         assert_eq!(host.remembered.borrow().len(), 2, "CONTROL: a window with no name did not write");
     }
@@ -1469,10 +1492,30 @@ mod tests {
         assert_eq!(host.forgotten.borrow().clone(), vec!["window-test".to_string()], "a window that now holds no Java project kept its earlier list");
         assert!(host.remembered.borrow().is_empty(), "CONTROL: a window with no Java project was recorded for a workspace");
 
-        let overtaken = take_launch(&host, "window-test");
-        let _later = take_launch(&host, "window-test");
+        let overtaken = take_launch(&host, "window-test", None);
+        let _later = take_launch(&host, "window-test", None);
         run_numbered_launch(&host, &ui, &book, "window-test", overtaken, &strings(&["/docs"]), QUICK);
         assert_eq!(host.forgotten.borrow().len(), 1, "an overtaken launch cleared the window's lists");
+    }
+
+    /// Third audit 2026-11-20, finding E: each launch is a studio process of its own, so two launches of one window can arrive swapped; the
+    /// window numbers them, and one numbered lower than a launch already received records nothing, nor does an older close clear anything.
+    #[test]
+    fn a_launch_the_window_numbered_lower_than_one_already_received_records_nothing() {
+        let s = Scratch::new("launch-sent-order");
+        let host = FakeHost::new(&s.0).with_workspace("shop", &["/p/a"]).with_scan("/p", &["/p/a"]).with_scan("/q", &["/p/a"]);
+        let (ui, book) = (FakeUi::default(), PromptBook::default());
+
+        let sent_last = take_launch(&host, "w", Some(20));
+        let sent_first = take_launch(&host, "w", Some(10));
+        run_numbered_launch(&host, &ui, &book, "w", sent_last, &strings(&["/p"]), QUICK);
+        run_numbered_launch(&host, &ui, &book, "w", sent_first, &strings(&["/q"]), QUICK);
+        forget_window_now(&host, "w", Some(15));
+
+        assert_eq!(sent_first, 0, "a launch numbered lower than one already received was taken as the window's latest");
+        assert_eq!(host.remembered.borrow().clone(), vec!["shop w /p".to_string()], "the launch the window sent first, arriving last, wrote its folders");
+        assert!(host.forgotten.borrow().is_empty(), "a close the window sent before its latest launch cleared that launch's list");
+        assert_eq!(editor_seq(["jawata-studio", "--editor-seq", "1732000000000"]), Some(1732000000000));
     }
 
     #[test]

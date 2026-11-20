@@ -167,8 +167,9 @@ pub fn workspace_roots() -> Vec<PathBuf> {
     // start, so a folder a window opens later is reached at once and one it closes is not.
     roots.extend(editor_window_folders_from(|key| std::env::var_os(key)));
     // Never brick: an unparseable manifest confines to the launch project
-    // rather than opening the whole home directory.
-    if roots.is_empty() {
+    // rather than opening the whole home directory. Not for a brain the engine started: the engine allows it nothing there, and its guard
+    // must not allow more than the engine (third audit 2026-11-20, finding F).
+    if roots.is_empty() && !engine_started {
         if let Ok(project) = std::env::var("CLAUDE_PROJECT_DIR") {
             roots.push(PathBuf::from(project));
         }
