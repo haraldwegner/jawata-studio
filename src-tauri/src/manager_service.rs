@@ -12040,15 +12040,18 @@ mod tests {
         // 28h z30: a client that runs jawata without the jawata chat is the principal of its
         // hires and nothing can push a report into its turn, so the deployed rules say how to
         // collect it, in every client (hooks are an extra where a client has them).
-        let block = build_rule_block("cursor", &[url_server("jawata-ws-a", 8800, "tok", false)]);
-        assert!(
-            block.contains("hire_wait") && block.contains("hireId") && block.contains("waitSeconds"),
-            "the section names hire_wait, the hireId it is called with and how long it waits"
-        );
-        assert!(
-            block.contains("report") && block.contains("answers at once"),
-            "it says why: the hire answers at once and the report does not come back by itself"
-        );
+        let servers = [url_server("jawata-ws-a", 8800, "tok", false)];
+        for client in ["claude", "cursor", "antigravity", "claude_desktop", "intellij"] {
+            let block = build_rule_block(client, &servers);
+            assert!(
+                block.contains("hire_wait") && block.contains("hireId") && block.contains("waitSeconds"),
+                "{client}: the section names hire_wait, the hireId it is called with and how long it waits"
+            );
+            assert!(
+                block.contains("report") && block.contains("answers at once"),
+                "{client}: it says why: the hire answers at once and the report does not come back by itself"
+            );
+        }
     }
 
     #[test]
