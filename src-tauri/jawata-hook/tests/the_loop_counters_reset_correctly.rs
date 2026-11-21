@@ -208,7 +208,23 @@ fn a_self_declared_decision_no_longer_ends_the_turn() {
     let push = run("stop", &home, &stop_payload("sess-ceil", &idle));
     assert!(push.contains("RULE B"), "precondition: the push fired: {push}");
 
-    let ask = window_transcript(&home, NOTICE, "DECISION: ship it? Say go and I run it.");
+    // A later turn has made a call since the push, so the state Rule B fingerprints has moved (z20): the same
+    // stop on an unmoved state is let through the second time, which is another test's subject.
+    let ask = home.join("transcript-ask.jsonl");
+    std::fs::write(
+        &ask,
+        format!(
+            "{}\n{}\n{}\n{}\n",
+            serde_json::json!({"type":"user","message":{"role":"user","content":NOTICE}}),
+            serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[
+                {"type":"tool_use","id":"toolu_ask","name":"Read","input":{"file_path":"/tmp/x"}}]}}),
+            serde_json::json!({"type":"user","message":{"role":"user","content":[
+                {"type":"tool_result","tool_use_id":"toolu_ask","content":"ok"}]}}),
+            serde_json::json!({"type":"assistant","message":{"role":"assistant",
+                "content":[{"type":"text","text":"DECISION: ship it? Say go and I run it."}]}}),
+        ),
+    )
+    .unwrap();
     let out = run("stop", &home, &stop_payload("sess-ceil", &ask));
     assert!(
         out.contains("RULE B") && out.contains("autocontinue"),
