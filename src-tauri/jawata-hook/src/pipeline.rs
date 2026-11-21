@@ -2765,6 +2765,32 @@ mod tests {
         assert!(!matches!(one_running, Outcome::Emitted(_)), "a hire the engine has running did not make the stop a wait: {one_running:?}");
     }
 
+    /// 28h z20, THROUGH THE GATE, the repeat check (the C27 audit: deleting the `note_rule_b_block` calls left every earlier test green). One
+    /// transcript and one session: the first bare stop under a grant is blocked by RULE B; the same stop again on a state that did not move is
+    /// let through; and once the state has moved (the transcript gained a call) it is blocked again, so the let-through is not simply a gate
+    /// that stopped blocking.
+    #[test]
+    fn the_stop_gate_lets_the_same_rule_b_block_through_the_second_time_on_an_unmoved_state() {
+        let d = std::env::temp_dir().join(format!("jawata-repeat-gate-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        let p = d.join("t.jsonl");
+        let line = |text: &str| format!("{}\n", serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}));
+        std::fs::write(&p, line("done")).unwrap();
+        let session = format!("z20-repeat-{}", std::process::id());
+        let payload = serde_json::json!({"transcript_path": p, "session_id": session, "stop_hook_active": false}).to_string();
+        let ask = || stop_gate(Client::ClaudeCode, &payload, crate::stop::Autonomy::Granted, &HiresRunning(0));
+
+        let first = ask();
+        let again = ask();
+        let call = serde_json::json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "/tmp/x"}}]}});
+        std::fs::write(&p, format!("{}{}{}", line("done"), format!("{call}\n"), line("done again"))).unwrap();
+        let after_a_move = ask();
+
+        assert!(matches!(first, Outcome::Emitted(_)), "the first bare stop under a grant was not blocked: {first:?}");
+        assert!(!matches!(again, Outcome::Emitted(_)), "the same block on an unmoved state was served twice: {again:?}");
+        assert!(matches!(after_a_move, Outcome::Emitted(_)), "CONTROL: a state that moved was not blocked again: {after_a_move:?}");
+    }
+
     /// 28h z20: a plan listed as `inFlight` has a hire working on it; a plan merely waiting for its gate has none.
     #[test]
     fn running_hires_are_the_plans_listed_in_flight() {
