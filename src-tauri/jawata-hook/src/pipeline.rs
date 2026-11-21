@@ -67,7 +67,8 @@ impl Store for LiveStore {
     fn hires_running(&self) -> usize {
         let mut endpoint = self.0.clone();
         endpoint.timeout = endpoint.timeout.min(std::time::Duration::from_millis(800));
-        query::call_tool(&endpoint, "plan_steps", serde_json::json!({}))
+        // The hook sends no session id, so as itself it would be told only of plans nobody owns: it asks for every session's (z20).
+        query::call_tool(&endpoint, "plan_steps", serde_json::json!({"all": true}))
             .map(|answer| hires_running_in(&answer))
             .unwrap_or(0)
     }
