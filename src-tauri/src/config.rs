@@ -258,6 +258,11 @@ pub struct ManagerSettings {
     /// `-Djawata.experience.store`.
     #[serde(default = "default_experience_store_mode")]
     pub experience_store_mode: String,
+    /// 28h z13': the ONE place the plans repository is named, for the whole machine and not per workspace (his words: "The config is just the
+    /// jawata general config in studio. We do not need a different workflow config for each workspace."). The studio passes it to the engines it
+    /// starts as `-Djawata.plans.dir`; what reads plans reads it from here. None means the default, a `jawata-plans` folder beside the repositories.
+    #[serde(default)]
+    pub plans_folder: Option<String>,
     /// Sprint 21a (item F): extra memory roots for `experience(kind=load|reseed)` —
     /// passed as `-Djawata.memory.roots` (platform path-separator list).
     #[serde(default)]
@@ -465,6 +470,7 @@ impl ManagerSettings {
             auto_seed_on_deploy: default_auto_seed_on_deploy(),
             field_reminders_silenced: false,
             experience_store_mode: default_experience_store_mode(),
+            plans_folder: None,
             memory_roots: Vec::new(),
             backup_retention: default_backup_retention(),
             // None = the resident's own StoreBackups.DEFAULT_DEPTH. Studio keeps no
@@ -597,6 +603,9 @@ pub struct UpdateSettingsInput {
     /// caps are resident-side backstops); a frontend still sending them is ignored.
     #[serde(default)]
     pub experience_store_mode: Option<String>,
+    /// 28h z13': the plans repository folder; an empty text clears it back to the default.
+    #[serde(default)]
+    pub plans_folder: Option<String>,
     #[serde(default)]
     pub memory_roots: Option<Vec<String>>,
     #[serde(default)]
@@ -1337,6 +1346,10 @@ impl ConfigStore {
             if !trimmed.is_empty() {
                 settings.experience_store_mode = trimmed.to_string();
             }
+        }
+        if let Some(folder) = input.plans_folder {
+            let trimmed = folder.trim();
+            settings.plans_folder = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
         }
         if let Some(roots) = input.memory_roots {
             settings.memory_roots = roots

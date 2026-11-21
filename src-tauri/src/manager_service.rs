@@ -8020,6 +8020,10 @@ fn knowledge_jvm_properties(settings: &ManagerSettings) -> Vec<String> {
         "-Djawata.experience.store={}",
         settings.experience_store_mode
     )];
+    // 28h z13': the one entry that names the plans repository goes to every engine the studio starts, so nothing keeps a copy of it.
+    if let Some(folder) = settings.plans_folder.as_deref().filter(|folder| !folder.trim().is_empty()) {
+        props.push(format!("-Djawata.plans.dir={folder}"));
+    }
     if !settings.memory_roots.is_empty() {
         let separator = if cfg!(windows) { ";" } else { ":" };
         props.push(format!(
@@ -14955,6 +14959,32 @@ judge was never told to give"
         let on = auto_seed_targets(true, &servers);
         assert_eq!(on.len(), 2, "credential-less servers are skipped");
         assert_eq!(on[0], ("http://127.0.0.1:8801/mcp".into(), "tok-a".into()));
+    }
+
+    #[test]
+    fn the_plans_folder_is_passed_to_the_engines_it_starts_and_only_when_it_is_set() {
+        // 28h z13': one entry in the studio's general settings names the plans repository, and the studio is what carries it to what it starts.
+        let paths = crate::config::AppPaths {
+            config_dir: std::path::PathBuf::from("/tmp/config"),
+            state_dir: std::path::PathBuf::from("/tmp/state"),
+            cache_dir: std::path::PathBuf::from("/tmp/cache"),
+            projects_file: std::path::PathBuf::from("/tmp/config/projects.json"),
+            settings_file: std::path::PathBuf::from("/tmp/config/settings.json"),
+            runtime_state_file: std::path::PathBuf::from("/tmp/state/runtime-state.json"),
+            default_data_root: std::path::PathBuf::from("/tmp/cache/jawata-studio"),
+            log_dir: std::path::PathBuf::from("/tmp/state/logs"),
+        };
+        let mut settings = ManagerSettings::default_for_paths(&paths);
+        assert!(
+            knowledge_jvm_properties(&settings).iter().all(|p| !p.contains("jawata.plans.dir")),
+            "CONTROL: with no plans folder set, no property is sent"
+        );
+        settings.plans_folder = Some("/home/x/jawata-plans".into());
+        let props = knowledge_jvm_properties(&settings);
+        assert!(
+            props.iter().any(|p| p == "-Djawata.plans.dir=/home/x/jawata-plans"),
+            "the folder the settings name is passed to the engine: {props:?}"
+        );
     }
 
     #[test]
