@@ -64,6 +64,24 @@ fn scratch_home(tag: &str) -> std::path::PathBuf {
     d
 }
 
+/// Like [`transcript`], but the turn made `calls` plain tool calls (each answered) before its prose. A real turn has made calls since the
+/// last one, so the state Rule B fingerprints has moved; a transcript with none is the SAME stop again, which z20 lets through the second time.
+fn transcript_after_calls(dir: &std::path::Path, user: &str, assistant: &str, calls: usize) -> std::path::PathBuf {
+    let p = dir.join(format!("transcript-{calls}.jsonl"));
+    let mut lines = vec![serde_json::json!({"type":"user","message":{"role":"user","content":user}}).to_string()];
+    for i in 0..calls {
+        let id = format!("toolu_{calls}_{i}");
+        lines.push(serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[
+            {"type":"tool_use","id":id,"name":"Read","input":{"file_path":"/tmp/x"}}]}}).to_string());
+        lines.push(serde_json::json!({"type":"user","message":{"role":"user","content":[
+            {"type":"tool_result","tool_use_id":id,"content":"ok"}]}}).to_string());
+    }
+    lines.push(serde_json::json!({"type":"assistant","message":{"role":"assistant",
+        "content":[{"type":"text","text":assistant}]}}).to_string());
+    std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+    p
+}
+
 /// A transcript whose last assistant turn is PROSE with no tool calls — the
 /// exact shape of "answered his question and stopped", which is the behaviour
 /// Rule B exists to push past.
@@ -315,11 +333,11 @@ fn only_the_off_command_ends_the_grant_and_his_question_does_not() {
     );
 }
 
-/// The wedge, and the shape of the bound. Two consecutive turns that produce
-/// NOTHING is a stuck session, and the gate lets go. A ceiling on BLOCKS would
-/// have released a working session just as fast.
+/// The wedge, and the shape of the bound. z20: the SAME stop on a state that has not moved is let through the second
+/// time, so a session that produces nothing is released at its second stop and not held until the empty-turn counter
+/// runs out. (That a state which HAS moved is pushed again is shown by the ask test below.)
 #[test]
-fn two_empty_turns_release_the_session_rather_than_wedging_it() {
+fn an_unmoved_state_is_released_at_the_second_stop() {
     let home = scratch_home("wedge");
     let t = transcript(&home, "carry on", "I have nothing further here.");
     run("userprompt", &home, &prompt_payload("sess-c", "/autocontinue"));
@@ -327,13 +345,9 @@ fn two_empty_turns_release_the_session_rather_than_wedging_it() {
     let first = run("stop", &home, &stop_payload("sess-c", &t));
     assert!(first.contains("RULE B"), "first push: {first}");
     let second = run("stop", &home, &stop_payload("sess-c", &t));
-    assert!(second.contains("RULE B"), "second push: {second}");
-    let third = run("stop", &home, &stop_payload("sess-c", &t));
     assert!(
-        !third.contains("RULE B"),
-        "a session that produced nothing twice must be RELEASED, not held — an \
-         unbounded hold is the Cursor incident, counter at 11 and still \
-         climbing. got: {third}"
+        !second.contains("RULE B"),
+        "the same stop on a state that has not moved must be let through, not served twice: {second}"
     );
 }
 
@@ -357,10 +371,11 @@ fn a_message_that_needs_his_answer_reaches_the_judge_and_the_verdict_ends_it() {
     // itself; two stops on 2026-09-03 were exactly this shape, correctly
     // worded, and neither carried a decision — a release the plan schedules
     // five stages later, and a refused review the agent had already fixed.
-    let asking = transcript(
+    let asking = transcript_after_calls(
         &home,
         "carry on",
         "Both are ready. Do you want v3.13.0 released tonight, or held for M5?",
+        1,
     );
     let at_the_ask = run("stop", &home, &stop_payload("sess-e", &asking));
     assert!(

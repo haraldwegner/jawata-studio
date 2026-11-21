@@ -2131,9 +2131,11 @@ fn stop_gate(
     let repeated_rule_b = facts.autonomy == stop::Autonomy::Granted
         && verdict == StopVerdict::Allow
         && facts.repeats_the_last_rule_b_block();
-    if let (Some(dir), stop::Autonomy::Granted) = (studio_dir(), facts.autonomy) {
-        let fingerprint = match &verdict {
-            StopVerdict::Block { reason } if stop::is_rule_b_block(reason) => Some(facts.rule_b_fingerprint()),
+    // A stop that is not under a grant forgets it too: after /autocontinue-off and /autocontinue the next block is a new
+    // run of the loop and must be served, not mistaken for a repeat of the one made before the grant ended.
+    if let Some(dir) = studio_dir() {
+        let fingerprint = match (facts.autonomy, &verdict) {
+            (stop::Autonomy::Granted, StopVerdict::Block { reason }) if stop::is_rule_b_block(reason) => Some(facts.rule_b_fingerprint()),
             _ => None,
         };
         crate::autonomy::note_rule_b_block(&dir, &session, fingerprint.as_deref());
