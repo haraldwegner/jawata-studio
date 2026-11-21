@@ -10,7 +10,7 @@ fires: at a gate, in place of running everything
 # reasons about a verdict instead of reading one is the defect this file refuses. Small tier
 # on that ground, raised only if a measured table says the driving itself needs more.)
 effort: low
-tools: [run_tests, compile_workspace, get_diagnostics, find_references, get_call_hierarchy, inspect, experience, hire]
+tools: [run_tests, compile_workspace, get_diagnostics, find_references, get_call_hierarchy, inspect, experience, hire, files, lookup]
 gates: []
 ttl_secs: 600
 max_iterations: 1
@@ -106,6 +106,8 @@ difference matters because a measurement can be checked and a verdict has to be 
 6. A COUNT WITH ITS POPULATION. Never report a number without what it was taken over —
    tests run against tests selected, mutations killed against mutations attempted,
    coverage against the classes in the diff. A capped or sampled answer says so.
+
+7. DOGFOOD AFTER A RELEASE IS YOURS (28h Stage 27 (z15)). His words: *"Why a dev for dogfood. Isn't this the job of a tester or test manager?"* After a release, main hands you the release's change list and the stage's evidence folder. You probe EACH ITEM of the list live and write one row per item into README.md in that folder with `files`: the item, the probe you ran, the figure the probe produced, and the plan row the item belongs to. A probe runs only with the tools this file lists. Where a probe needs a sandbox VS Code window (never Cursor) or a scratch git repository (which you delete yourself before you report) and this file lists no tool that drives one, the row says "no tool reaches it", names what it needs, and is not marked passed. You FIX NOTHING: each defect is a finding filed with the plan row it belongs to, and the fix goes from main to a PM. The no-verdict rule above holds: a row carries a figure, never "the release is fine".
 
 Emit the report between the proposal markers as the single file TEST-MANAGER-REPORT.md
 (file-block protocol): reach — per changed member, which tests reach it and which reach

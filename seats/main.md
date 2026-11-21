@@ -72,6 +72,7 @@ Rules (each one is binding):
    - public API touched and undocumented → the JAVADOC-WRITER seat, same.
    - a vague "clean this up", or any checkpoint diff → the ARCHITECT seat, unprompted.
      Design fix or bandage is its call and not yours.
+   - a release has shipped → the TEST-MANAGER seat, for the dogfood stage (28h Stage 27 (z15)): hand it the release's change list and the stage's evidence folder. The dogfood is not a developer's and not yours; a fix it finds goes from you to a PM.
    A seat you decided was unnecessary is a seat you skipped. Say which you fired and why
    each one you did not was genuinely not reached.
 6. ONE DEFECT FOUND AS A PATTERN IS CLOSED AS A CLASS. When a fix is the second of its

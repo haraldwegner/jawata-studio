@@ -18354,6 +18354,52 @@ judge was never told to give"
         );
     }
 
+    /// 28h Stage 27 (z15): the dogfood after a release is the test manager's, not a developer's, and the seat
+    /// that owns it fixes nothing. A pin on the seat text, because the text is the enforcement for a hired seat.
+    #[test]
+    fn dogfood_test_manager_seat_owns_it_and_fixes_nothing() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let tm = std::fs::read_to_string(root.join("seats/test-manager.md")).expect("seats/test-manager.md");
+        assert!(
+            tm.contains("DOGFOOD AFTER A RELEASE IS YOURS") && tm.contains("You FIX NOTHING"),
+            "the test manager's seat must own the dogfood after a release and fix nothing"
+        );
+    }
+
+    /// 28h Stage 27 (z15): a probe the seat's tools cannot run is a row that says so, never a pass.
+    #[test]
+    fn dogfood_probe_no_tool_reaches_is_a_row_not_a_pass() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let tm = std::fs::read_to_string(root.join("seats/test-manager.md")).expect("seats/test-manager.md");
+        assert!(
+            tm.contains("no tool reaches it"),
+            "the test manager's seat must say a probe no tool reaches is a row, not a pass"
+        );
+    }
+
+    /// 28h Stage 27 (z15): the dogfood rows are written with `files` and probed with `lookup`, so the seat lists both.
+    #[test]
+    fn dogfood_test_manager_carries_files_and_lookup() {
+        let (_, body) = crate::conductor::EMBEDDED_SEATS
+            .iter()
+            .find(|(file, _)| file.trim_end_matches(".md") == "test-manager")
+            .expect("test-manager is an embedded seat");
+        let tools = crate::seat_file::parse_seat_definition(body).expect("parses").tools;
+        assert!(tools.iter().any(|t| t == "files"), "the test manager lacks files: {tools:?}");
+        assert!(tools.iter().any(|t| t == "lookup"), "the test manager lacks lookup: {tools:?}");
+    }
+
+    /// 28h Stage 27 (z15): main names the test manager at the dogfood point.
+    #[test]
+    fn dogfood_main_names_the_test_manager_at_the_dogfood_point() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let main = std::fs::read_to_string(root.join("seats/main.md")).expect("seats/main.md");
+        assert!(
+            main.contains("the TEST-MANAGER seat, for the dogfood stage"),
+            "main's seat must name the test manager for the dogfood stage"
+        );
+    }
+
     /// D13 and the worker (the 2026-10-11 amendment of the sprint spec, S10-8): the PM, the architect, the UX seat,
     /// the chief engineer and the test manager perform no operation the engine classifies as changing code, and the
     /// worker is the seat that does. Judged from the seat files' own tool lists against the engine's flag in the
