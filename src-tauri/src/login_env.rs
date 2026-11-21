@@ -126,6 +126,19 @@ mod tests {
         file
     }
 
+    /// A script written a moment ago can be refused with "text file busy" while another test's fork still holds the file open for
+    /// writing, which reads as a shell that answered nothing. A shell that is meant to answer is asked until it does.
+    #[cfg(unix)]
+    fn login_path_of_a_shell_that_answers(shell: &std::path::Path) -> Option<OsString> {
+        for _ in 0..40 {
+            if let Some(path) = login_shell_path(shell.as_os_str()) {
+                return Some(path);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        None
+    }
+
     #[cfg(unix)]
     fn scratch(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("jawata-login-env-{name}-{}", std::process::id()));
@@ -140,7 +153,7 @@ mod tests {
     fn the_path_is_read_between_the_marks_and_not_from_the_noise_around_it() {
         let d = scratch("noise");
         let shell = fake_shell(&d, "noisy-shell", "echo 'Welcome back'; echo \"__JAWATA_LOGIN_PATH__/opt/apache-maven/bin:/usr/bin__JAWATA_LOGIN_PATH__\"; echo 'bye'");
-        assert_eq!("/opt/apache-maven/bin:/usr/bin", text(login_shell_path(shell.as_os_str())));
+        assert_eq!("/opt/apache-maven/bin:/usr/bin", text(login_path_of_a_shell_that_answers(&shell)));
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -175,6 +188,7 @@ mod tests {
         std::fs::set_permissions(&mvn, std::fs::Permissions::from_mode(0o755)).unwrap();
         let shell = fake_shell(&d, "login-shell", &format!("echo \"__JAWATA_LOGIN_PATH__{}:/usr/bin__JAWATA_LOGIN_PATH__\"", maven.display()));
 
+        assert!(login_path_of_a_shell_that_answers(&shell).is_some(), "CONTROL: the login shell did not answer");
         let own = OsStr::new("/usr/bin:/bin");
         assert_eq!(None, crate::brains::program_on_path("jawata-fake-mvn", Some(own)), "CONTROL: the studio's own PATH has no such program");
         let children = children_path(Some(own), Some(shell.as_os_str()));
