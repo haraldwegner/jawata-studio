@@ -5987,6 +5987,18 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
         "4. Green → keep going. Red → `refactoring(action=undo)` and rethink. One step at a time."
             .to_string(),
         String::new(),
+        // 28h z30: a client that runs jawata WITHOUT the jawata chat is the principal of its
+        // hires; nothing can push a hire's report into its turn, so it collects it. Identical
+        // text everywhere (a hook, where a client has one, is an extra on top of this).
+        "## Hires — collect the report with `hire_wait`".to_string(),
+        String::new(),
+        "`hire` answers at once with a `hireId` and the hire goes on working; its report does \
+         not come back into your turn by itself unless you are the jawata chat. Call \
+         `hire_wait(hireId=..., waitSeconds=50)` until it says `finished`, then read its \
+         `report`. It answers `running` while the hire works: call it again, and answer the \
+         person in between. A report you took is marked read, so the chat does not repeat it."
+            .to_string(),
+        String::new(),
         // v2.5.1 (Cursor parity, interim): the experience store is the CROSS-CLIENT
         // memory, but only Claude Code has push hooks (primer/recall). Every other
         // client must PULL — this section is the textual substitute until its hook
@@ -12021,6 +12033,22 @@ mod tests {
             "the enforced decision-test rule"
         );
         assert!(block.contains("folded"), "tech-detail-folded rule");
+    }
+
+    #[test]
+    fn rule_block_tells_a_client_without_the_chat_to_collect_its_hires() {
+        // 28h z30: a client that runs jawata without the jawata chat is the principal of its
+        // hires and nothing can push a report into its turn, so the deployed rules say how to
+        // collect it, in every client (hooks are an extra where a client has them).
+        let block = build_rule_block("cursor", &[url_server("jawata-ws-a", 8800, "tok", false)]);
+        assert!(
+            block.contains("hire_wait") && block.contains("hireId") && block.contains("waitSeconds"),
+            "the section names hire_wait, the hireId it is called with and how long it waits"
+        );
+        assert!(
+            block.contains("report") && block.contains("answers at once"),
+            "it says why: the hire answers at once and the report does not come back by itself"
+        );
     }
 
     #[test]
