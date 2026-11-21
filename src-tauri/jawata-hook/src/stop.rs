@@ -1012,6 +1012,15 @@ pub struct EngineWatch {
     pub last_rule_b_fingerprint: Option<String>,
 }
 
+impl EngineWatch {
+    /// Whether a hire's report reaches this session as a new turn (28h z30). Only where jawata is the principal, the chat, which reads the
+    /// engine's state file; a plain client whose grant is this hook's own file is its own principal and nothing pushes the report into its turn,
+    /// so it collects the report with `hire_wait`. Where the source could not be told the chat is assumed, as before.
+    pub fn hire_reports_arrive_as_turns(&self) -> bool {
+        self.autonomy_source != "this hook's grant file"
+    }
+}
+
 impl StopFacts {
     /// Did this turn write a story and leave it outside the store?
     ///
@@ -1494,6 +1503,19 @@ say what stopped it from answering."
                     ),
                 }
             }
+            None if facts.engine.hires_running > 0 && !facts.engine.hire_reports_arrive_as_turns() => {
+                // A plain client is its own principal: the report of its running hire will not arrive as a turn, so a stop here is a sleep.
+                return StopVerdict::Block {
+                    reason: format!(
+                        "RULE B: autonomy is granted{read_from} and {n} hire(s) of the engine are running, but in this client a hire's \
+report does not arrive as a new turn, so ending here sleeps until he returns. Collect the report: call \
+`hire_wait` with the hireId the hire answered with (waitSeconds up to 50) and call it again while it says \
+`running`; end your turn only when it says `finished` and you have read the report, or `stalled` and you \
+have said so.",
+                        n = facts.engine.hires_running
+                    ),
+                }
+            }
             None => {
                 return StopVerdict::Block {
                     reason: format!(
@@ -1772,7 +1794,7 @@ fn rule_b_engaged(facts: &StopFacts) -> bool {
         && !facts.turn.interrupted
         // A hire of the engine that is running will report back as a new turn of this session: the session is waiting,
         // and a wait is not the sleep Rule B exists to prevent (z20).
-        && facts.engine.hires_running == 0
+        && (facts.engine.hires_running == 0 || !facts.engine.hire_reports_arrive_as_turns())
         // The idle valve — UNLESS the agent is sitting on an instruction it
         // has not acted on. See `Turn::holds_an_unspent_fix`: an agent that
         // has been told what to do and does nothing is not wedged, and the
@@ -4969,6 +4991,36 @@ message while you were working:\n<agent-message from=\"a14a4ae2f3b5ee48b\">\nVER
         }
         f.engine.hires_running = 2;
         assert_eq!(StopVerdict::Allow, judge(&f), "two hires will each report back: the session is waiting, not asleep");
+    }
+
+    /// 28h z30: a hire's report arrives as a new turn only where jawata is the principal (the chat, which reads the engine's state file).
+    /// A plain client (Claude Code, whose grant is this hook's own file) never gets the report pushed, so a stop beside a running hire
+    /// there is a sleep, and the block tells it to collect the report with `hire_wait` and does not tell it to spawn a judge.
+    #[test]
+    fn a_hire_in_a_client_without_the_chat_is_collected_with_hire_wait() {
+        let mut guest = facts(Autonomy::Granted, vec![]);
+        guest.engine.autonomy_source = "this hook's grant file".into();
+        guest.engine.hires_running = 2;
+        match judge(&guest) {
+            StopVerdict::Block { reason } => {
+                assert!(is_rule_b_block(&reason), "it is a Rule B block, so the repeat check covers it: {reason}");
+                assert!(reason.contains("hire_wait"), "it names the tool that collects the report: {reason}");
+                assert!(!reason.contains("TRANSCRIPT:"), "it does not ask for a judge: {reason}");
+            }
+            StopVerdict::Allow => panic!("a hire whose report will not arrive as a turn was let sleep"),
+        }
+
+        let mut chat = facts(Autonomy::Granted, vec![]);
+        chat.engine.autonomy_source = "the engine's state file".into();
+        chat.engine.hires_running = 2;
+        assert_eq!(StopVerdict::Allow, judge(&chat), "CONTROL: in the chat the report arrives as a turn, so the stop is a wait");
+
+        let mut none = facts(Autonomy::Granted, vec![]);
+        none.engine.autonomy_source = "this hook's grant file".into();
+        match judge(&none) {
+            StopVerdict::Block { reason } => assert!(reason.contains("TRANSCRIPT:") && !reason.contains("hire_wait"), "CONTROL: with no hire running the old block stands: {reason}"),
+            StopVerdict::Allow => panic!("CONTROL: an idle guest turn with no hire is held"),
+        }
     }
 
     /// The same unchanged state is never blocked twice: the second identical stop passes, and a changed state is held again.
