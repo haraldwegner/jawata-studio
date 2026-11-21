@@ -1232,6 +1232,26 @@ mod tests {
         assert_eq!(text.len() + code.len(), EMBEDDED_SEATS.len(), "every seat classified");
     }
 
+    /// 28h z13': the plans repository is one private folder every sprint gets a folder in, and the seats that write into it need the engine's
+    /// document tool (`files`, which writes text documents and never code). His words: "the main/principal needs to write there, the pm, the
+    /// architect and maybe the test manager for a test concept as well." The architect did not carry it, so it could not write the
+    /// ARCHITECTURE-<scope>.md its own seat file says it produces.
+    #[test]
+    fn the_seats_that_write_into_the_plans_repository_carry_the_document_tool() {
+        let mut without = Vec::new();
+        for wanted in ["main", "pm", "architect", "test-manager"] {
+            let seat = EMBEDDED_SEATS
+                .iter()
+                .filter_map(|(_, body)| crate::seat_file::parse_seat_definition(body).ok())
+                .find(|seat| seat.name == wanted)
+                .unwrap_or_else(|| panic!("no shipped seat is named {wanted}"));
+            if !seat.tools.iter().any(|tool| tool == "files") {
+                without.push(wanted);
+            }
+        }
+        assert!(without.is_empty(), "these seats write into the plans repository and do not list files: {without:?}");
+    }
+
     /// D54 (h): `/setup` can start a project, and it starts one only in an empty folder, with no new seat.
     /// His words: "How is starting a new project, some setup seat?". Each clause below is one a later edit
     /// could drop without any other test noticing: the empty-folder guard (a new-project mode that may

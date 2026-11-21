@@ -10,7 +10,9 @@ schedule: "0 6 * * *"
 # D13 (the 2026-10-11 amendment): the architect performs no operation the engine classifies as changing code. `refactoring` is flagged,
 # because its apply and undo actions change code, so it is not declared here; the architect NAMES the plan kind and target and the
 # chief engineer turns that into an instruction. Found by the test that reads this list against the engine's own flag (S10-8).
-tools: [find_quality_issue, find_references, inspect, analyze, compile_workspace, experience, find_duplicate_code, find_modernization]
+# 28h z13': `files` writes text documents (and never code, so it is not a code-changing tool), which is how the architect writes the
+# ARCHITECTURE-<scope>.md it produces into the plans repository.
+tools: [find_quality_issue, find_references, inspect, analyze, compile_workspace, experience, find_duplicate_code, find_modernization, files]
 gates: []
 ttl_secs: 600
 max_iterations: 1
