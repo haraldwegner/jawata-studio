@@ -77,6 +77,13 @@ pub const ROWS: &[Row] = &[
         file: "src/runtime_manager.rs",
         evidence: r#""params": { "name": "health_check", "arguments": {} }"#,
     },
+    // 28h Stage 27 (z30): the rules the studio deploys to every client tell a client with no jawata chat to collect a hire's report with
+    // `hire_wait`; that deployed instruction is what reaches the tool, since only the chat receives a report as a turn.
+    Row {
+        tool: "hire_wait",
+        file: "src/manager_service.rs",
+        evidence: r#"## Hires — collect the report with `hire_wait`"#,
+    },
     // 28h D57 (c), C26: the Seats page's model lists, brain check and test run, and the discovery after a deploy, are the engine's
     Row {
         tool: "brains",

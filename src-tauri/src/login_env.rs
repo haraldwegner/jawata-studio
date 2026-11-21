@@ -170,15 +170,15 @@ mod tests {
         let d = scratch("mvn");
         let maven = d.join("apache-maven").join("bin");
         std::fs::create_dir_all(&maven).unwrap();
-        let mvn = maven.join("mvn");
+        let mvn = maven.join("jawata-fake-mvn");
         std::fs::write(&mvn, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&mvn, std::fs::Permissions::from_mode(0o755)).unwrap();
         let shell = fake_shell(&d, "login-shell", &format!("echo \"__JAWATA_LOGIN_PATH__{}:/usr/bin__JAWATA_LOGIN_PATH__\"", maven.display()));
 
         let own = OsStr::new("/usr/bin:/bin");
-        assert_eq!(None, crate::brains::program_on_path("mvn", Some(own)), "CONTROL: the studio's own PATH has no mvn");
+        assert_eq!(None, crate::brains::program_on_path("jawata-fake-mvn", Some(own)), "CONTROL: the studio's own PATH has no such program");
         let children = children_path(Some(own), Some(shell.as_os_str()));
-        assert_eq!(Some(mvn), crate::brains::program_on_path("mvn", children.as_deref()), "the children's PATH resolves mvn");
+        assert_eq!(Some(mvn), crate::brains::program_on_path("jawata-fake-mvn", children.as_deref()), "the children's PATH resolves it");
         let _ = std::fs::remove_dir_all(&d);
     }
 }
