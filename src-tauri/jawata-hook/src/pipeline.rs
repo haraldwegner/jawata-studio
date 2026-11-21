@@ -2729,6 +2729,42 @@ mod tests {
         }
     }
 
+    /// A store whose answer to "how many hires run" is the number given, and that answers nothing else.
+    struct HiresRunning(usize);
+    impl Store for HiresRunning {
+        fn ask(&self, _: serde_json::Value) -> Result<Answer, QueryError> {
+            Err(QueryError::Status(503))
+        }
+        fn hires_running(&self) -> usize {
+            self.0
+        }
+        fn ask_value(&self, _: serde_json::Value) -> Result<serde_json::Value, QueryError> {
+            Err(QueryError::ShapeChanged("this stub answers only how many hires run".into()))
+        }
+    }
+
+    /// 28h z20, THROUGH THE GATE (the C27 audit: every earlier test of this row stopped at `judge` or a helper, so replacing the
+    /// store's count by 0 left them green). A turn that ends with nothing armed is held under a grant; the same turn with a hire of the
+    /// engine running is a wait and is let through. The two differ only in what the store says about running hires.
+    #[test]
+    fn the_stop_gate_waits_for_a_hire_the_engine_has_running() {
+        let d = std::env::temp_dir().join(format!("jawata-hires-gate-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        let p = d.join("t.jsonl");
+        std::fs::write(
+            &p,
+            format!("{}\n", serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "done"}]}})),
+        )
+        .unwrap();
+        let payload = serde_json::json!({"transcript_path": p, "stop_hook_active": false}).to_string();
+
+        let nothing_running = stop_gate(Client::ClaudeCode, &payload, crate::stop::Autonomy::Granted, &HiresRunning(0));
+        let one_running = stop_gate(Client::ClaudeCode, &payload, crate::stop::Autonomy::Granted, &HiresRunning(1));
+
+        assert!(matches!(nothing_running, Outcome::Emitted(_)), "CONTROL: with no hire running the bare stop is held: {nothing_running:?}");
+        assert!(!matches!(one_running, Outcome::Emitted(_)), "a hire the engine has running did not make the stop a wait: {one_running:?}");
+    }
+
     /// 28h z20: a plan listed as `inFlight` has a hire working on it; a plan merely waiting for its gate has none.
     #[test]
     fn running_hires_are_the_plans_listed_in_flight() {
