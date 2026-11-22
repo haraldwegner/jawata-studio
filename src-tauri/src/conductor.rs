@@ -1568,7 +1568,7 @@ mod tests {
         );
     }
 
-    /// The instruction block exactly as `pm.md` words it, three lines. THE OTHER SIDE of this coupling is
+    /// The instruction block as the engine's `InstructionBlocks` test words it, three lines; `pm.md` no longer carries it (z40), and `chief-engineer.md` words the third line more fully. THE OTHER SIDE of this coupling is
     /// `PM_BLOCK` in jawata-mcp's `org.jawata.mcp.tests/.../execution/InstructionBlocksTest.java`, which holds
     /// the same three lines and parses them to a number, a tool and arguments. Change a word of the block in a
     /// seat file and this test goes red; change it here and the Java literal no longer matches what the seat
@@ -1599,7 +1599,13 @@ mod tests {
                 .map(|(_, body)| *body)
                 .unwrap_or_else(|| panic!("{name}.md is not embedded"))
         };
-        assert_eq!(PM_BLOCK, lead_block_in(seat("pm")), "pm.md words the instruction block differently from the literal");
+        // z40: pm.md no longer carries the block (his ruling 2026-11-22: the pm does not slice a code change or hire the
+        // developer; the chief engineer does), so the literal is held against chief-engineer.md only and the pm is pinned
+        // to NOT prescribe one.
+        assert!(
+            !seat("pm").lines().any(|l| l.trim() == "INSTRUCTION <n>"),
+            "pm.md prescribes an INSTRUCTION <n> block again: the pm does not slice a code change, the chief engineer does"
+        );
         let chief = lead_block_in(seat("chief-engineer"));
         let expected = format!("{}\n{}", PM_BLOCK.rsplit_once('\n').expect("three lines").0, CHIEF_ENGINEER_ARGUMENTS);
         assert_eq!(expected, chief, "chief-engineer.md words the instruction block differently from the literal");
@@ -1752,7 +1758,7 @@ mod tests {
 
     /// The pm's half: the lines reach the worker through its brief and are checked by a gate step, which is what makes them more than a request.
     const PM_BOUNDARIES_SENTENCES: [&str; 2] = [
-        "WHO HIRES THE WORKER, AND THE BOUNDARIES LINES THAT GO INTO ITS BRIEF (28f S19; his ruling 2026-11-19: either of you may hire the developer).",
+        "WHO HIRES THE WORKER, AND THE BOUNDARIES LINES THAT GO INTO ITS BRIEF (28f S19; his ruling of 2026-11-22: the pm does not hire the developer).",
         "and adds one gate step `find_quality_issue(kind=forbidden_edge, from=…, forbidden=…)` per line, so the edge is checked after the worker has acted and not only asked for beforehand.",
     ];
 
