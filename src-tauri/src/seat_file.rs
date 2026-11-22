@@ -880,14 +880,16 @@ mod tests {
 
     /// Harald, 2026-10-12: *"No fake model names!"* The shipped seats named `claude-sonnet-5` and
     /// `claude-haiku-4-5`, which no program on the machine vouched for. Until a name is read off
-    /// a brain itself, no shipped seat names one. The one exception is his own word of 2026-11-08 (D53 (j)), *"rottenmeier -> gets
-    /// Claude sonnet as default"*, written as the alias `sonnet`, which the Claude program itself resolves.
+    /// a brain itself, no shipped seat names one.
+    /// Old assertion: rottenmeier.md's model was "sonnet" (his word of 2026-11-08, D53 (j)).
+    /// That line moved into the stored choice the studio writes when the store file is first created.
+    /// The seat file is not a source of brain or model.
     #[test]
     fn no_shipped_seat_names_a_model_nobody_verified() {
         for (file, body) in crate::conductor::EMBEDDED_SEATS.iter() {
             let seat = parse_seat_definition(body).unwrap_or_else(|e| panic!("{file}: {e}"));
-            let expected = if *file == "rottenmeier.md" { "sonnet" } else { "" };
-            assert_eq!(seat.model, expected, "{file} names model '{}'", seat.model);
+            assert_eq!(seat.model, "", "{file} names model '{}'", seat.model);
+            assert!(seat.brain.is_none(), "{file} still names a brain in the seat file");
         }
     }
 

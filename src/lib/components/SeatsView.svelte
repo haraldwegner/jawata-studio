@@ -128,6 +128,7 @@
   // `_models` is passed so the list is drawn again when a brain's model names arrive.
   function brainOptions(seat: SeatRow, _models: Record<string, string[]> = sessionModels): BrainOption[] {
     const options: BrainOption[] = [];
+    if (!seat.brain) options.push({ value: "|", label: "not set" });
     if (isConversation(seat)) {
       for (const b of brains.filter((x) => view?.acpBrains.includes(x.id))) {
         options.push({ value: `${b.id}|`, label: `${b.label} — its default model${loginNote(b)}` });
@@ -234,7 +235,21 @@
     apply(seat, { setting: "clients", value: next });
   }
 
-  onMount(load);
+  onMount(() => {
+    void load();
+    // A choice made in the chat or in Agent Control is the same entry. The page reads it again without being asked.
+    const timer = setInterval(() => { void refreshChoices(); }, 1000);
+    return () => clearInterval(timer);
+  });
+
+  async function refreshChoices() {
+    try {
+      const next = await seatsView();
+      view = view ? { ...view, seats: next.seats, errors: next.errors } : next;
+    } catch {
+      // The last reading stays. The next pass says why, if the page is opened again.
+    }
+  }
 
   /** The first sentence of a seat's purpose: the whole of it sits in the folded row. */
   function firstSentence(text: string): string {
@@ -339,7 +354,7 @@
                 <dt title={isConversation(seat) ? CONVERSATION_BRAIN_HINT : BRAIN_HINT}>Brain</dt>
                 <dd title={isConversation(seat) ? CONVERSATION_BRAIN_HINT : BRAIN_HINT}>
                   {#if brains.length === 0}
-                    {brainsChecking ? "checking which brains this machine has…" : brainLabel(seat.brain)}
+                    {brainsChecking ? "checking which brains this machine has…" : (seat.brain ? brainLabel(seat.brain) : "not set")}
                   {:else}
                     {@const status = brains.find((b) => b.id === seat.brain)}
                     <select

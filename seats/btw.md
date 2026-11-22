@@ -2,7 +2,6 @@
 name: btw
 kind: text
 typed: false
-brain: cursor
 accepts_uncontained_writes: true
 purpose: The agent of the side discussion, the btw panel on the right. It answers a question beside the work in a conversation of its own, and the main conversation is not told.
 fires: when you open the btw panel with /btw, the Side question button or Ctrl+Alt+S

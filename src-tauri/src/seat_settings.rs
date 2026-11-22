@@ -394,8 +394,8 @@ pub struct SeatRow {
     pub pipeline: bool,
     pub purpose: String,
     pub fires: String,
-    /// The agent program a HIRE of this seat starts — the seat file's `brain:` (which carries the
-    /// user's tested choice), or `claude-code`, the engine's default for a seat that names none.
+    /// The agent program a HIRE of this seat starts — the engine's stored choice. Empty means nothing
+    /// is stored. A seat file is not a choice, and a blank is not Claude.
     /// The view asks that program whether it is installed and logged in rather than trusting
     /// this string. Harald, 2026-10-12: *"No fake model names!"*
     pub brain: String,
@@ -481,7 +481,8 @@ pub fn seats_view(seats_dir: &Path, clients: Vec<ClientChoice>) -> SeatsView {
             // SHIPPED seat's value rather than render a blank row.
             purpose: or_shipped(&seat.purpose, &seat.name, |s| &s.purpose),
             fires: or_shipped(&seat.fires, &seat.name, |s| &s.fires),
-            brain: seat.brain.clone().unwrap_or_else(|| "claude-code".to_string()),
+            // A seat file is not a choice, and a blank line is not Claude. The page fills this from the engine's store.
+            brain: seat.brain.clone().unwrap_or_default(),
             model: (!seat.model.is_empty()).then(|| seat.model.clone()),
             runs_in_agent: crate::conductor::command_for(&seat.name).is_some()
                 || crate::conductor::PIPELINE_SEATS.contains(&seat.name.as_str()),
@@ -575,8 +576,8 @@ pub fn change_seat(
             let mut settings = SeatSettings::load(seats_dir)?;
             settings.set_brain(seat_name, brain, model);
             settings.save(seats_dir)?;
-            // Write it into the seat file NOW: the file is what a hire reads, and a choice that
-            // waited for the next deploy would be shown as made while no hire could see it.
+            // The opt-in a cursor hire still checks lives in the seat file. The brain and model a hire
+            // starts on are the engine's stored choice, which the studio writes through the brains tool.
             crate::conductor::materialize_seats(seats_dir).map(|_| ())
         }
         SeatChange::Workflow { parent, role, escalates_to } => {
@@ -954,11 +955,11 @@ mod tests {
         assert!(!pm.pipeline);
 
         // A typed seat and a /sprint seat run on the caller's agent when called, a hired helper included now that
-        // it has a word; every seat, when HIRED, starts the engine's default brain until the user chooses another.
-        // No shipped seat names a model.
+        // it has a word. Old assertion: architect.brain and pm.brain were "claude-code", filled in because the
+        // file named none. A blank is not a choice, so the row says nothing until the engine's store has one.
         assert!(architect.runs_in_agent && auditor.runs_in_agent && pm.runs_in_agent);
-        assert_eq!(architect.brain, "claude-code");
-        assert_eq!(pm.brain, "claude-code");
+        assert_eq!(architect.brain, "");
+        assert_eq!(pm.brain, "");
         assert!(architect.model.is_none() && pm.model.is_none());
     }
 
