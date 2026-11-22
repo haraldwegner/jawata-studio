@@ -36,11 +36,11 @@ pub struct AgentBrainSettings {
 }
 
 /// The model the principal's Cursor session is moved to once it is open (D54 (a), (b)), named the way Cursor's own session names it: it offers
-/// 47 models in a `model` option, and this is the `name` of the one whose value is `grok-4.5[effort=high,fast=true]`. The engine matches it against
+/// 47 models in a `model` option, and this is the `name` of the one whose value is `grok-4.7[effort=high,fast=true]`. The engine matches it against
 /// what the session offers and, when the account has no such model, leaves the session on Cursor's own Auto. It is chosen because Auto names no
 /// model and a row that must say which model is answering cannot say it for Auto; speed does not choose it (not measured: a first comparison on
 /// 2026-11-09 passed the model as a command-line argument, which Cursor's ACP mode ignores, so every run it timed was on Auto).
-pub const PRINCIPAL_CURSOR_MODEL: &str = "grok-4.5";
+pub const PRINCIPAL_CURSOR_MODEL: &str = "grok-4.7";
 
 /// The settings for what [`crate::brains::installed_program_path`] found. Only the principal names a model: the registry's Cursor entry, which
 /// hires start from, keeps Cursor's own default, because a model chosen for a conversation is not the model a hired architect
