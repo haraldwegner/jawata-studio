@@ -275,8 +275,9 @@ pub fn seat_file_content(
         if in_frontmatter && trimmed.starts_with("name:") {
             if let Some((brain, model)) = brain {
                 out.push_str(&format!("brain: {brain}\n"));
-                // S16-37: the engine refuses a hire on a brain held only by an instruction unless
-                // the seat says it accepts that. Choosing the brain here is that word.
+                // S16-37: choosing the brain here is the word that the seat accepts a brain held only by an instruction.
+                // Since 28h z56 the engine takes the stored choice as that word on a hire; a brain picked per run in
+                // Agent Control still reads this line from the seat file, so it stays.
                 if crate::brains::HELD_BY_AN_INSTRUCTION.contains(&brain) {
                     out.push_str("accepts_uncontained_writes: true\n");
                 }
