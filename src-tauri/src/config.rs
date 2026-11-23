@@ -1805,8 +1805,10 @@ fn detect_default_mcp_client_paths() -> McpClientPaths {
         .filter_map(|parts| build_config(parts))
         .collect();
 
-    // Antigravity's command-line tool loads MCP servers from this one global file for every project (its official MCP page, read 2026-11-23),
-    // and `agy` was measured to register 51, 101 and 153 tools from servers written in it and to call tools past the 100th.
+    // Antigravity's command-line tool loads MCP servers from this one global file for every project (its official MCP page, read 2026-11-23;
+    // the global file itself was not exercised). Measured on agy 1.5.15 with the same entry format in a workspace's own `.agents/mcp_config.json`:
+    // 51, 101 and 153 tools registered from stdio servers and calls past the 100th reached the server; and an HTTP `serverUrl` entry with an
+    // `Authorization` header was reached, with the header on every request (initialize, tools/list and a tool call).
     let antigravity_candidates: Vec<PathBuf> = [[".gemini", "config", "mcp_config.json"].as_slice()]
         .iter()
         .filter_map(|parts| build(parts))
