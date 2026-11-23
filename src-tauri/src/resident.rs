@@ -80,6 +80,13 @@ pub struct WorkspaceState {
     /// workspace they are debugging, not a thing the product does for them.
     #[serde(default)]
     pub debug_port: Option<u16>,
+    /// This workspace's own planning folder, declared when the workspace is
+    /// set up and passed to its engine as `-Djawata.plans.dir`. `None` means
+    /// the workspace has none declared and its engine gets no such property;
+    /// `serde(default)` keeps every `projects.json` written before this field
+    /// loadable.
+    #[serde(default)]
+    pub plans_folder: Option<String>,
 }
 
 impl WorkspaceState {
@@ -90,6 +97,7 @@ impl WorkspaceState {
             resident_token,
             max_heap_mb: None,
             debug_port: None,
+            plans_folder: None,
         }
     }
 

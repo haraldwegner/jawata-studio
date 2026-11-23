@@ -1008,6 +1008,7 @@ pub fn run() {
             commands::rename_workspace,
             commands::delete_workspace,
             commands::set_workspace_max_heap,
+            commands::set_workspace_plans_folder_command,
             commands::set_workspace_debuggable,
             commands::rename_project,
             commands::delete_project,

@@ -82,6 +82,8 @@ pub struct WorkspaceRuntimeSetting {
     /// user can point a debugger at it without guessing, and `None` whenever
     /// `debuggable` is false, because the port IS the toggle.
     pub debug_port: Option<u16>,
+    /// z35: this workspace's own plans folder, `None` when none is declared.
+    pub plans_folder: Option<String>,
 }
 
 /// Represents a discovered project candidate in a workspace.
@@ -1243,6 +1245,31 @@ impl ManagerService {
         let path = crate::agent_brain_settings::this_machines_path();
         view.acp_brains = crate::agent_brain_settings::acp_brains(&crate::agent_brain_settings::detect(path.as_deref()));
         view.missing_adapters = crate::agent_brain_settings::missing_adapters(path.as_deref());
+        // The page shows the engine's stored choice. A seat with nothing stored is not set. The seat file is not a choice.
+        let servers = self.knowledge_servers();
+        match engine_seat_choices(&servers) {
+            Ok(choices) => {
+                for seat in &mut view.seats {
+                    match choices.get(&seat.name) {
+                        Some((brain, model)) => {
+                            seat.brain.clone_from(brain);
+                            seat.model.clone_from(model);
+                        }
+                        None => {
+                            seat.brain.clear();
+                            seat.model = None;
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                for seat in &mut view.seats {
+                    seat.brain.clear();
+                    seat.model = None;
+                }
+                view.errors.push(error);
+            }
+        }
         view
     }
 
@@ -1268,6 +1295,9 @@ impl ManagerService {
     ) -> Result<crate::seat_settings::SeatsView, String> {
         let valid: Vec<String> =
             Self::seat_command_clients().into_iter().map(|c| c.id).collect();
+        if let crate::seat_settings::SeatChange::Brain { brain, model } = &change {
+            engine_store_seat_choice(&self.knowledge_servers(), seat, brain, model.as_deref())?;
+        }
         crate::seat_settings::change_seat(&self.seats_dir(), &valid, seat, change)?;
         Ok(self.seats_view())
     }
@@ -2401,6 +2431,7 @@ impl ManagerService {
                 effective_max_heap_mb: w.effective_max_heap_mb(),
                 debuggable: w.is_debuggable(),
                 debug_port: w.debug_port,
+                plans_folder: w.plans_folder.clone(),
             })
             .collect();
         rows.sort_by(|a, b| a.workspace_name.cmp(&b.workspace_name));
@@ -2420,6 +2451,21 @@ impl ManagerService {
     ) -> Result<ManagerDashboard, String> {
         self.config_store
             .set_workspace_max_heap(workspace_name, max_heap_mb)?;
+        self.load_dashboard()
+    }
+
+    /// z35: set or clear (with `None` or a blank) one workspace's plans folder.
+    ///
+    /// The folder reaches the workspace's engine at its NEXT start, as
+    /// `-Djawata.plans.dir`. Nothing is restarted here — bouncing a resident out
+    /// from under a running agent is worse than a setting that waits.
+    pub fn set_workspace_plans_folder(
+        &self,
+        workspace_name: &str,
+        folder: Option<String>,
+    ) -> Result<ManagerDashboard, String> {
+        self.config_store
+            .set_workspace_plans_folder(workspace_name, folder)?;
         self.load_dashboard()
     }
 
@@ -2980,7 +3026,7 @@ impl ManagerService {
                     workspace_dir,
                     runtime_label: format!("Managed JAWATA {}", runtime.version),
                     resolved_jar_path: runtime.jar_path.clone(),
-                    jvm_properties: knowledge_jvm_properties(settings),
+                    jvm_properties: workspace_jvm_properties(settings, &workspace_state),
                     max_heap_mb,
                     debug_port,
                     resident_port: workspace_state.resident_port,
@@ -2998,7 +3044,7 @@ impl ManagerService {
                 workspace_dir,
                 runtime_label: "Local JAWATA JAR".into(),
                 resolved_jar_path: jar_path.clone(),
-                jvm_properties: knowledge_jvm_properties(settings),
+                jvm_properties: workspace_jvm_properties(settings, &workspace_state),
                 max_heap_mb,
                 debug_port,
                 resident_port: workspace_state.resident_port,
@@ -8015,15 +8061,40 @@ fn note_engine_came_up(config_dir: &Path, pending: &Mutex<Option<String>>, engin
     }
 }
 
+/// z35: the properties for the engine of ONE workspace: the machine-wide knowledge properties, plus that workspace's own plans folder when
+/// one is declared on it (a blank one is none). No other workspace's folder, and no machine-wide one, reaches it.
+/// The two brain lines that used to live in `btw.md` and `rottenmeier.md`, written once when the store file
+/// does not exist yet. A file that exists, including an empty one, is left as it is.
+fn seed_moved_seat_choices(file: &std::path::Path) -> Result<(), String> {
+    if file.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    std::fs::write(file, "btw=cursor;rottenmeier=claude-code/sonnet\n").map_err(|error| error.to_string())
+}
+
+fn seats_brains_file() -> std::path::PathBuf {
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    home.join(".local").join("share").join("jawata").join("seats-brains")
+}
+
+fn workspace_jvm_properties(settings: &ManagerSettings, workspace: &crate::resident::WorkspaceState) -> Vec<String> {
+    let choice = seats_brains_file();
+    let _ = seed_moved_seat_choices(&choice);
+    let mut props = knowledge_jvm_properties(settings);
+    if let Some(folder) = workspace.plans_folder.as_deref().filter(|folder| !folder.trim().is_empty()) {
+        props.push(format!("-Djawata.plans.dir={folder}"));
+    }
+    props
+}
+
 fn knowledge_jvm_properties(settings: &ManagerSettings) -> Vec<String> {
     let mut props = vec![format!(
         "-Djawata.experience.store={}",
         settings.experience_store_mode
     )];
-    // 28h z13': the one entry that names the plans repository goes to every engine the studio starts, so nothing keeps a copy of it.
-    if let Some(folder) = settings.plans_folder.as_deref().filter(|folder| !folder.trim().is_empty()) {
-        props.push(format!("-Djawata.plans.dir={folder}"));
-    }
     if !settings.memory_roots.is_empty() {
         let separator = if cfg!(windows) { ";" } else { ":" };
         props.push(format!(
@@ -8049,6 +8120,9 @@ fn knowledge_jvm_properties(settings: &ManagerSettings) -> Vec<String> {
     if let Some(dir) = &settings.experience_stories_dir {
         props.push(format!("-Djawata.stories.dir={dir}"));
     }
+    // The file the engine keeps each seat's brain and model in. The studio and the engine name the same file,
+    // so a choice written by either is the one a hire reads.
+    props.push(format!("-Djawata.seats.brains.file={}", seats_brains_file().display()));
     props
 }
 
@@ -8163,6 +8237,41 @@ fn canary_probe(workspace: &str, url: &str, token: &str) -> crate::field_view::C
 /// keeps a brain and model. The studio checks no program itself, so a rule about a brain (how it reports its login, what its command line
 /// takes for a model) lives in the engine alone. The first resident that answers is the answer: every resident is started with the same
 /// brain registry. Err when no resident answers, never an empty list that reads as "nothing here".
+/// The stored brain and model of every seat, from the engine. A seat that is absent has nothing stored.
+fn engine_seat_choices(
+    servers: &[ManagedDeployServer],
+) -> Result<std::collections::HashMap<String, (String, Option<String>)>, String> {
+    let data = ask_engine_brains(servers, serde_json::json!({ "action": "choices" }), 15)?;
+    let mut choices = std::collections::HashMap::new();
+    for row in data.get("seats").and_then(|value| value.as_array()).into_iter().flatten() {
+        let Some(seat) = row.get("seat").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let brain = row.get("brain").and_then(|value| value.as_str()).unwrap_or("").to_string();
+        let model = row
+            .get("model")
+            .and_then(|value| value.as_str())
+            .filter(|model| !model.is_empty())
+            .map(str::to_string);
+        choices.insert(seat.to_string(), (brain, model));
+    }
+    Ok(choices)
+}
+
+/// Writes one seat's choice through the engine. The answer is what was stored. A brain the registry does not offer is the engine's error.
+fn engine_store_seat_choice(
+    servers: &[ManagedDeployServer],
+    seat: &str,
+    brain: &str,
+    model: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let mut arguments = serde_json::json!({ "action": "set", "seat": seat, "brain": brain });
+    if let Some(model) = model {
+        arguments["model"] = serde_json::Value::String(model.to_string());
+    }
+    ask_engine_brains(servers, arguments, 20)
+}
+
 fn ask_engine_brains(servers: &[ManagedDeployServer], arguments: serde_json::Value, timeout_secs: u64) -> Result<serde_json::Value, String> {
     let mut last = "no jawata engine is running to ask; start the jawata studio's engine, then open this page again".to_string();
     for server in servers.iter().filter(|s| !s.url.is_empty() && !s.token.is_empty()) {
@@ -12045,7 +12154,7 @@ mod tests {
         // hires and nothing can push a report into its turn, so the deployed rules say how to
         // collect it, in every client (hooks are an extra where a client has them).
         let servers = [url_server("jawata-ws-a", 8800, "tok", false)];
-        for client in ["claude", "cursor", "antigravity", "claude_desktop", "intellij"] {
+        for client in known_deploy_client_ids() {
             let block = build_rule_block(client, &servers);
             assert!(
                 block.contains("hire_wait") && block.contains("hireId") && block.contains("waitSeconds"),
@@ -12227,7 +12336,7 @@ mod tests {
             out.join("\n")
         };
         let claude = build_rule_block("claude", &servers);
-        for client in ["cursor", "antigravity", "claude_desktop", "intellij"] {
+        for client in known_deploy_client_ids().into_iter().filter(|id| *id != "claude") {
             let other = build_rule_block(client, &servers);
             assert!(other.contains(&format!("jawata-studio:{client}:start")));
             assert_eq!(
@@ -14268,7 +14377,7 @@ judge was never told to give"
         // ≤60 IntelliJ incl. the phrase table). Growth past the budget is a
         // BUILD FAILURE, not a review note.
         let seats = crate::conductor::embedded_seat_definitions().unwrap();
-        for client in ["claude", "cursor", "antigravity", "claude_desktop"] {
+        for client in known_deploy_client_ids() {
             let n = crate::conductor::render_conductor_section(&seats, client).len();
             assert!(
                 n <= crate::conductor::CONDUCTOR_SECTION_BUDGET_UNIVERSAL,
@@ -14526,7 +14635,7 @@ judge was never told to give"
     #[test]
     fn non_claude_entries_omit_always_load() {
         let servers = vec![url_server("jawata-ws", 8800, "tok", false)];
-        for client in ["cursor", "antigravity", "intellij", "claude_desktop"] {
+        for client in known_deploy_client_ids().into_iter().filter(|id| *id != "claude") {
             let json = build_client_mcp_json(client, &servers);
             assert!(
                 json["mcpServers"]["jawata-ws"].get("alwaysLoad").is_none(),
@@ -14547,7 +14656,7 @@ judge was never told to give"
 
     #[test]
     fn global_rule_path_none_for_other_clients() {
-        for client in ["cursor", "antigravity", "intellij", "claude_desktop", "unknown"] {
+        for client in known_deploy_client_ids().into_iter().filter(|id| *id != "claude").chain(["unknown"]) {
             assert!(
                 derive_global_rule_path(client).is_none(),
                 "{client} must have no global rule path (sibling covers it / unconfirmed)"
@@ -14653,7 +14762,7 @@ judge was never told to give"
                 .unwrap_or(false),
             "claude gets ~/.claude/settings.json"
         );
-        for other in ["cursor", "antigravity", "claude_desktop", "intellij"] {
+        for other in known_deploy_client_ids().into_iter().filter(|id| *id != "claude") {
             assert!(
                 derive_hook_settings_path(other).is_none(),
                 "{other} keeps the rule block, no hook"
@@ -14962,29 +15071,107 @@ judge was never told to give"
     }
 
     #[test]
-    fn the_plans_folder_is_passed_to_the_engines_it_starts_and_only_when_it_is_set() {
-        // 28h z13': one entry in the studio's general settings names the plans repository, and the studio is what carries it to what it starts.
-        let paths = crate::config::AppPaths {
-            config_dir: std::path::PathBuf::from("/tmp/config"),
-            state_dir: std::path::PathBuf::from("/tmp/state"),
-            cache_dir: std::path::PathBuf::from("/tmp/cache"),
-            projects_file: std::path::PathBuf::from("/tmp/config/projects.json"),
-            settings_file: std::path::PathBuf::from("/tmp/config/settings.json"),
-            runtime_state_file: std::path::PathBuf::from("/tmp/state/runtime-state.json"),
-            default_data_root: std::path::PathBuf::from("/tmp/cache/jawata-studio"),
-            log_dir: std::path::PathBuf::from("/tmp/state/logs"),
+    fn each_workspace_is_started_with_its_own_plans_folder() {
+        // z35: the plans folder is one workspace's own, declared on that workspace; the studio carries each workspace's folder to the engine
+        // it starts for that workspace, and to no other.
+        let dir = unique_tempdir("plans-per-workspace");
+        let service = service_over(&dir);
+        let project_in = |workspace: &str| crate::config::ProjectRecord {
+            id: workspace.into(),
+            name: workspace.into(),
+            project_path: dir.join(workspace).to_string_lossy().into_owned(),
+            workspace_name: workspace.into(),
+            assigned_port: 0,
+            source_roots: Default::default(),
         };
-        let mut settings = ManagerSettings::default_for_paths(&paths);
-        assert!(
-            knowledge_jvm_properties(&settings).iter().all(|p| !p.contains("jawata.plans.dir")),
-            "CONTROL: with no plans folder set, no property is sent"
-        );
-        settings.plans_folder = Some("/home/x/jawata-plans".into());
-        let props = knowledge_jvm_properties(&settings);
-        assert!(
-            props.iter().any(|p| p == "-Djawata.plans.dir=/home/x/jawata-plans"),
-            "the folder the settings name is passed to the engine: {props:?}"
-        );
+        let project_a = project_in("ws-plans-a");
+        let project_b = project_in("ws-plans-b");
+        let project_c = project_in("ws-plans-c");
+        let runtime = ManagedRuntimeRecord {
+            version: "4.4.22".into(),
+            install_dir: "/tools/jawata".into(),
+            jar_path: "/tools/jawata/jawata.jar".into(),
+            asset_name: "jawata.jar".into(),
+            installed_at: "2026-11-01T00:00:00Z".into(),
+        };
+        for workspace in ["ws-plans-a", "ws-plans-b", "ws-plans-c"] {
+            service.config_store.get_or_allocate_workspace_state(workspace).expect("workspace state");
+        }
+        service.config_store.set_workspace_plans_folder("ws-plans-a", Some("/plans/a".into())).expect("a");
+        service.config_store.set_workspace_plans_folder("ws-plans-b", Some("/plans/b".into())).expect("b");
+
+        let mut settings = service.config_store.get_settings();
+        let plans_entries =|reference: &RuntimeReference| -> Vec<String> {
+            reference.jvm_properties.iter().filter(|p| p.starts_with("-Djawata.plans.dir")).cloned().collect()
+        };
+
+        let a = service.resolve_runtime_reference_with(&project_a, &settings, Some(&runtime)).expect("a resolves");
+        assert_eq!(plans_entries(&a), vec!["-Djawata.plans.dir=/plans/a".to_string()], "ws-plans-a gets its own folder: {:?}", a.jvm_properties);
+        let b = service.resolve_runtime_reference_with(&project_b, &settings, Some(&runtime)).expect("b resolves");
+        assert_eq!(plans_entries(&b), vec!["-Djawata.plans.dir=/plans/b".to_string()], "ws-plans-b gets its own folder: {:?}", b.jvm_properties);
+        let c = service.resolve_runtime_reference_with(&project_c, &settings, Some(&runtime)).expect("c resolves");
+        assert!(plans_entries(&c).is_empty(), "a workspace with none declared is not given another's folder: {:?}", c.jvm_properties);
+
+        // The hand-built jar arm is the same.
+        let mut local = settings.clone();
+        local.global_runtime_source = RuntimeSource::LocalJar { jar_path: "/tools/local/jawata.jar".into() };
+        let local_a = service.resolve_runtime_reference_with(&project_a, &local, None).expect("a local resolves");
+        assert_eq!(plans_entries(&local_a), vec!["-Djawata.plans.dir=/plans/a".to_string()], "a hand-built jar, ws-plans-a");
+        let local_c = service.resolve_runtime_reference_with(&project_c, &local, None).expect("c local resolves");
+        assert!(plans_entries(&local_c).is_empty(), "a hand-built jar, ws-plans-c: {:?}", local_c.jvm_properties);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_command_sets_one_workspaces_plans_folder_and_no_other() {
+        // z35: the service method the command delegates to sets the folder on the named workspace only.
+        let dir = unique_tempdir("plans-command");
+        let service = service_over(&dir);
+        for workspace in ["ws-cmd-one", "ws-cmd-two"] {
+            service.config_store.get_or_allocate_workspace_state(workspace).expect("workspace state");
+        }
+
+        service
+            .set_workspace_plans_folder("ws-cmd-one", Some("/plans/one".into()))
+            .expect("the folder is set");
+
+        let one = service.config_store.get_workspace_state("ws-cmd-one").expect("one exists");
+        let two = service.config_store.get_workspace_state("ws-cmd-two").expect("two exists");
+        assert_eq!(one.plans_folder, Some("/plans/one".to_string()), "the first workspace carries the folder");
+        assert_eq!(two.plans_folder, None, "the second workspace carries none");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_workspace_runtime_row_carries_that_workspaces_plans_folder() {
+        // z35: the row the setup screen reads shows each workspace's own plans folder and no other's.
+        let dir = unique_tempdir("plans-row");
+        let service = service_over(&dir);
+        for workspace in ["ws-row-one", "ws-row-two", "ws-row-three"] {
+            service.config_store.get_or_allocate_workspace_state(workspace).expect("workspace state");
+        }
+        let plans_folder_of = |service: &ManagerService, workspace: &str| -> Option<String> {
+            service
+                .workspace_runtime_settings()
+                .into_iter()
+                .find(|row| row.workspace_name == workspace)
+                .unwrap_or_else(|| panic!("{workspace} has a runtime row"))
+                .plans_folder
+        };
+
+        service
+            .set_workspace_plans_folder("ws-row-one", Some("/plans/one".into()))
+            .expect("the folder is set");
+
+        assert_eq!(plans_folder_of(&service, "ws-row-one"), Some("/plans/one".to_string()), "the first row carries its folder");
+        assert_eq!(plans_folder_of(&service, "ws-row-two"), None, "the second row carries none");
+        assert_eq!(plans_folder_of(&service, "ws-row-three"), None, "the third row carries none");
+
+        service
+            .set_workspace_plans_folder("ws-row-one", Some("  ".into()))
+            .expect("the folder is cleared");
+        assert_eq!(plans_folder_of(&service, "ws-row-one"), None, "a cleared folder shows as none again");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -15004,7 +15191,10 @@ judge was never told to give"
         let mut settings = ManagerSettings::default_for_paths(&paths);
         settings.memory_roots = vec!["/home/x/.claude".into()];
         let props = knowledge_jvm_properties(&settings);
-        assert_eq!(props.len(), 2, "store mode + roots, nothing else");
+        // Old assertion: props.len() was 2 (store mode + roots). The seat-choice file is sent as well,
+        // so the studio and the engine share one file.
+        assert_eq!(props.len(), 3, "store mode + roots + the seat-choice file");
+        assert!(props.iter().any(|p| p.starts_with("-Djawata.seats.brains.file=")), "{props:?}");
         assert!(props[0].starts_with("-Djawata.experience.store="));
         assert!(props[1].starts_with("-Djawata.memory.roots="));
         assert!(
@@ -15028,6 +15218,22 @@ judge was never told to give"
             "an UNSET stories folder sends nothing: an absent property is how the \
              resident's export stays off"
         );
+    }
+
+    #[test]
+    fn the_moved_brain_lines_are_written_only_when_the_store_file_is_missing() {
+        let dir = std::env::temp_dir().join(format!("seat-choice-seed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("seats-brains");
+        seed_moved_seat_choices(&file).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "btw=cursor;rottenmeier=claude-code/sonnet\n"
+        );
+        std::fs::write(&file, "pm=cursor/kept\n").unwrap();
+        seed_moved_seat_choices(&file).unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "pm=cursor/kept\n", "an existing store is not rewritten");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Sprint 28f Stage 5 — the store's backup depth reaches the resident, and only when
@@ -15239,7 +15445,7 @@ judge was never told to give"
                 .unwrap_or(false),
             "cursor gets ~/.cursor/hooks.json"
         );
-        for other in ["claude", "antigravity", "claude_desktop", "intellij"] {
+        for other in known_deploy_client_ids().into_iter().filter(|id| *id != "cursor") {
             assert!(derive_cursor_hooks_path(other).is_none(), "{other} has no cursor hooks");
         }
     }
@@ -18509,7 +18715,14 @@ judge was never told to give"
     #[test]
     fn the_instruction_block_the_pm_and_chief_engineer_prescribe_is_the_one_the_engine_parses() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        for seat in ["pm", "chief-engineer"] {
+        // z40: the pm no longer prescribes the block (his ruling 2026-11-22: only the chief engineer slices a code change
+        // and hires the developer), so only the chief engineer's file is held to the engine's labels.
+        let pm_text = std::fs::read_to_string(root.join("seats/pm.md")).expect("seats/pm.md");
+        assert!(
+            !pm_text.lines().any(|l| l.trim() == "INSTRUCTION <n>"),
+            "pm.md prescribes an INSTRUCTION <n> block again: the pm does not slice a code change"
+        );
+        for seat in ["chief-engineer"] {
             let text = std::fs::read_to_string(root.join(format!("seats/{seat}.md"))).expect("seat file");
             let lines: Vec<&str> = text.lines().map(str::trim).collect();
             let at = lines

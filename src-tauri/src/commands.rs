@@ -157,6 +157,20 @@ pub fn set_workspace_max_heap(
         .set_workspace_max_heap(&workspace_name, max_heap_mb)
 }
 
+/// z35: set (or clear, with `None`) a workspace's plans folder.
+///
+/// Applies at the workspace's next start; nothing is restarted.
+#[tauri::command]
+pub fn set_workspace_plans_folder_command(
+    state: State<'_, AppState>,
+    workspace_name: String,
+    folder: Option<String>,
+) -> Result<ManagerDashboard, String> {
+    state
+        .manager_service
+        .set_workspace_plans_folder(&workspace_name, folder)
+}
+
 #[tauri::command]
 pub fn delete_workspace(
     state: State<'_, AppState>,

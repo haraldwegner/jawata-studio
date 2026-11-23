@@ -108,16 +108,9 @@ impl Client {
 
 /// Every client the deploy knows, in display order.
 ///
-/// **IntelliJ is deliberately absent** (Harald, 2026-08-16). It is not
-/// unsupported the way Antigravity is — it is REDUNDANT. IntelliJ hosts Claude
-/// Code, Cursor, Codex and Copilot as agents that read their own config files,
-/// so deploying those four already covers it; measured live, with the Claude
-/// agent driving jawata inside IntelliJ through `~/.claude.json`. A dedicated
-/// target added only JetBrains' own Junie, which could not reach our tools
-/// across three explicit attempts while the Claude agent beside it could.
-///
-/// So IntelliJ's coverage is INHERITED, and the parity matrix must say that
-/// rather than claim it as a driven client.
+/// **IntelliJ is deliberately absent** (Harald, 2026-08-16, and again 2026-11-22). IntelliJ is an IDE, the same kind of program as VS Code, not a
+/// command-line client, and it has no row here. Claude Desktop is a macOS-era client and is not a client of this Linux machine, and Antigravity
+/// is absent because its product pages were never read.
 pub const CLIENTS: &[Client] = &[
     Client {
         id: "cursor",
@@ -355,7 +348,7 @@ pub fn dialect_for(client: &str) -> ClientDialect {
             toml_headers: None,
             toml_always_writes_enabled: false,
         },
-        // cursor, claude_desktop, intellij and anything else.
+        // cursor and anything else. IntelliJ is an IDE, like VS Code, and has no row in the roster; Claude Desktop is not a client of this Linux machine.
         _ => ClientDialect {
             format: ConfigFormat::Json {
                 root_key: "mcpServers",
@@ -437,20 +430,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_roster_names_no_claude_desktop_antigravity_or_intellij() {
+        let ids: Vec<&str> = CLIENTS.iter().map(|c| c.id).collect();
+        for absent in ["claude_desktop", "antigravity", "intellij"] {
+            assert!(
+                !ids.contains(&absent),
+                "the roster carries the id {absent}; the Linux deploy list must not carry it"
+            );
+        }
+    }
+
+    #[test]
     fn vscode_is_the_only_client_whose_root_key_is_not_mcpservers() {
         // The whole reason this module exists. `code --add-mcp` wrote
         // {"servers": …}; writing our entry under "mcpServers" would land in a
         // key VS Code never reads — a deploy that reports success and does
         // nothing, which is this project's recorded deepest bug class.
         assert_eq!(dialect_for("vscode").json_root_key(), Some("servers"));
-        for client in [
-            "cursor",
-            "claude",
-            "claude_desktop",
-            "antigravity",
-            "intellij",
-            "copilot_cli",
-        ] {
+        for client in CLIENTS.iter().map(|c| c.id).filter(|id| *id != "vscode" && !dialect_for(id).is_toml()) {
             assert_eq!(
                 dialect_for(client).json_root_key(),
                 Some("mcpServers"),
@@ -485,15 +482,7 @@ mod tests {
     #[test]
     fn always_load_is_claude_only() {
         assert!(dialect_for("claude").emits_always_load);
-        for client in [
-            "cursor",
-            "claude_desktop",
-            "antigravity",
-            "intellij",
-            "codex",
-            "vscode",
-            "copilot_cli",
-        ] {
+        for client in CLIENTS.iter().map(|c| c.id).filter(|id| *id != "claude") {
             assert!(
                 !dialect_for(client).emits_always_load,
                 "{client} has no alwaysLoad equivalent; emitting one writes a \
@@ -508,5 +497,32 @@ mod tests {
         for client in ["cursor", "claude", "codex", "vscode", "antigravity"] {
             assert!(!dialect_for(client).emits_tools_filter);
         }
+    }
+
+    #[test]
+    fn the_linux_deploy_list_has_no_claude_desktop() {
+        assert!(
+            !crate::manager_service::known_deploy_client_ids().contains(&"claude_desktop"),
+            "the deploy list carries claude_desktop, which is not a client of this Linux machine"
+        );
+        assert!(
+            CLIENTS.iter().all(|c| c.id != "claude_desktop"),
+            "a row of the roster has the id claude_desktop"
+        );
+    }
+
+    /// IntelliJ is an IDE like VS Code: its only place in the code is an IDE row,
+    /// not a command-line client.
+    #[test]
+    fn intellij_is_an_ide_and_not_a_cli_client() {
+        let row = crate::agent_registration::INTELLIJ_ROW;
+        assert!(
+            crate::agent_registration::ROW_IDS.contains(&row),
+            "{row} is not one of the IDE rows"
+        );
+        assert!(
+            CLIENTS.iter().all(|c| c.id != row),
+            "{row} is the id of a command-line client row"
+        );
     }
 }

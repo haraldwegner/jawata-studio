@@ -35,12 +35,12 @@ pub struct AgentBrainSettings {
     pub note: Option<String>,
 }
 
-/// The model the principal's Cursor session is moved to once it is open (D54 (a), (b)), named the way Cursor's own session names it: it offers
-/// 47 models in a `model` option, and this is the `name` of the one whose value is `grok-4.7[effort=high,fast=true]`. The engine matches it against
-/// what the session offers and, when the account has no such model, leaves the session on Cursor's own Auto. It is chosen because Auto names no
-/// model and a row that must say which model is answering cannot say it for Auto; speed does not choose it (not measured: a first comparison on
-/// 2026-11-09 passed the model as a command-line argument, which Cursor's ACP mode ignores, so every run it timed was on Auto).
-pub const PRINCIPAL_CURSOR_MODEL: &str = "grok-4.7";
+/// What the principal's Cursor session is asked for once it is open (D54 (a), (b)): the newest model of the family `grok`
+/// that the session offers in its `model` option, in the form `latest:<family>` that the engine reads.
+/// No version is written here: the engine reads the version numbers in the names the session offers
+/// and moves it to the highest, and when the session offers no Grok
+/// it leaves the session on Cursor's own default and says so.
+pub const PRINCIPAL_CURSOR_MODEL: &str = "latest:grok";
 
 /// The settings for what [`crate::brains::installed_program_path`] found. Only the principal names a model: the registry's Cursor entry, which
 /// hires start from, keeps Cursor's own default, because a model chosen for a conversation is not the model a hired architect
@@ -380,6 +380,18 @@ mod tests {
         let brain: Value = serde_json::from_str(value_of(&settings, BRAIN_ENV)).unwrap();
         assert_eq!(brain["model"], PRINCIPAL_CURSOR_MODEL);
         assert_eq!(brain["command"], serde_json::json!(["/home/me/.local/bin/agent", "acp"]), "no model argument: Cursor's ACP mode ignores it");
+        let registry: Value = serde_json::from_str(value_of(&settings, HIRE_BRAINS_ENV)).unwrap();
+        assert!(registry["cursor"].get("model").is_none(), "a hired Cursor keeps Cursor's default: {registry}");
+    }
+
+    #[test]
+    fn the_principal_asks_for_the_latest_of_a_family_and_names_no_version() {
+        let settings = settings_for(found("/home/me/.local/bin/agent"));
+
+        let brain: Value = serde_json::from_str(value_of(&settings, BRAIN_ENV)).unwrap();
+        assert_eq!(brain["model"], "latest:grok");
+        let model = brain["model"].as_str().unwrap();
+        assert!(!model.chars().any(|c| c.is_ascii_digit()), "a version cannot be what the session is moved to: {model}");
         let registry: Value = serde_json::from_str(value_of(&settings, HIRE_BRAINS_ENV)).unwrap();
         assert!(registry["cursor"].get("model").is_none(), "a hired Cursor keeps Cursor's default: {registry}");
     }

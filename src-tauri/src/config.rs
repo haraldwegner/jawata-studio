@@ -258,11 +258,6 @@ pub struct ManagerSettings {
     /// `-Djawata.experience.store`.
     #[serde(default = "default_experience_store_mode")]
     pub experience_store_mode: String,
-    /// 28h z13': the ONE place the plans repository is named, for the whole machine and not per workspace (his words: "The config is just the
-    /// jawata general config in studio. We do not need a different workflow config for each workspace."). The studio passes it to the engines it
-    /// starts as `-Djawata.plans.dir`; what reads plans reads it from here. None means the default, a `jawata-plans` folder beside the repositories.
-    #[serde(default)]
-    pub plans_folder: Option<String>,
     /// Sprint 21a (item F): extra memory roots for `experience(kind=load|reseed)` —
     /// passed as `-Djawata.memory.roots` (platform path-separator list).
     #[serde(default)]
@@ -470,7 +465,6 @@ impl ManagerSettings {
             auto_seed_on_deploy: default_auto_seed_on_deploy(),
             field_reminders_silenced: false,
             experience_store_mode: default_experience_store_mode(),
-            plans_folder: None,
             memory_roots: Vec::new(),
             backup_retention: default_backup_retention(),
             // None = the resident's own StoreBackups.DEFAULT_DEPTH. Studio keeps no
@@ -603,9 +597,6 @@ pub struct UpdateSettingsInput {
     /// caps are resident-side backstops); a frontend still sending them is ignored.
     #[serde(default)]
     pub experience_store_mode: Option<String>,
-    /// 28h z13': the plans repository folder; an empty text clears it back to the default.
-    #[serde(default)]
-    pub plans_folder: Option<String>,
     #[serde(default)]
     pub memory_roots: Option<Vec<String>>,
     #[serde(default)]
@@ -1309,6 +1300,30 @@ impl ConfigStore {
         Ok(updated)
     }
 
+    /// z35: set (or clear) a workspace's own plans folder. The text is trimmed;
+    /// a blank text or `None` clears it, meaning no folder is declared.
+    pub fn set_workspace_plans_folder(
+        &self,
+        workspace_name: &str,
+        folder: Option<String>,
+    ) -> Result<crate::resident::WorkspaceState, String> {
+        let folder = folder
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty());
+        let mut projects = self.projects.lock().expect("projects mutex poisoned");
+        let Some(state) = projects
+            .workspaces
+            .iter_mut()
+            .find(|w| w.workspace_name == workspace_name)
+        else {
+            return Err(format!("Unknown workspace '{workspace_name}'."));
+        };
+        state.plans_folder = folder;
+        let updated = state.clone();
+        write_json(&self.paths.projects_file, &*projects)?;
+        Ok(updated)
+    }
+
     pub fn get_settings(&self) -> ManagerSettings {
         self.settings
             .lock()
@@ -1346,10 +1361,6 @@ impl ConfigStore {
             if !trimmed.is_empty() {
                 settings.experience_store_mode = trimmed.to_string();
             }
-        }
-        if let Some(folder) = input.plans_folder {
-            let trimmed = folder.trim();
-            settings.plans_folder = if trimmed.is_empty() { None } else { Some(trimmed.to_string()) };
         }
         if let Some(roots) = input.memory_roots {
             settings.memory_roots = roots
@@ -2076,6 +2087,35 @@ mod tests {
         let parsed: ManagerSettings =
             serde_json::from_value(v).expect("stale v2.1.0 keys are ignored");
         assert_eq!(parsed.backup_retention, default_backup_retention());
+    }
+
+    #[test]
+    fn an_old_settings_file_with_plans_folder_still_loads() {
+        // z35: the plans folder left ManagerSettings (it is declared per workspace now); a settings file written before that still carries
+        // "plansFolder" — serde must ignore the key, not fail, and the value must not come back out.
+        let dir = unique_tempdir("old-plans-folder");
+        let paths = paths_in(&dir);
+        let mut v = serde_json::to_value(ManagerSettings::default_for_paths(&paths)).unwrap();
+        v["plansFolder"] = serde_json::json!("/home/x/jawata-plans");
+
+        let parsed: ManagerSettings =
+            serde_json::from_value(v.clone()).expect("the old plansFolder key is ignored");
+        assert_eq!(parsed.backup_retention, default_backup_retention());
+
+        write_json(&paths.settings_file, &v).expect("write the old-shaped settings file");
+        let settings = read_settings(&paths.settings_file, &paths)
+            .expect("an old settings file with plansFolder is read without error");
+        let serialised = serde_json::to_string(&settings).unwrap();
+        assert!(
+            !serialised.contains("plansFolder"),
+            "the old key does not come back on the read settings: {serialised}"
+        );
+        assert!(
+            !serialised.contains("/home/x/jawata-plans"),
+            "the old folder text does not come back on the read settings: {serialised}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2884,6 +2924,92 @@ mod tests {
             .set_workspace_max_heap("does-not-exist", Some(2048))
             .expect_err("an unknown workspace must not be silently accepted");
         assert!(err.contains("does-not-exist"), "got: {err}");
+    }
+
+    // ---- z35: the per-workspace plans folder ----
+
+    #[test]
+    fn set_workspace_plans_folder_is_kept_per_workspace() {
+        let dir = unique_tempdir("plans-per-ws");
+        let store = store_with_empty_state(&dir);
+        store.get_or_allocate_workspace_state("alpha").expect("alpha");
+        store.get_or_allocate_workspace_state("beta").expect("beta");
+
+        let set = store
+            .set_workspace_plans_folder("alpha", Some("/plans/alpha".to_string()))
+            .expect("set");
+        assert_eq!(set.plans_folder.as_deref(), Some("/plans/alpha"));
+        assert_eq!(
+            store.get_workspace_state("alpha").expect("alpha").plans_folder.as_deref(),
+            Some("/plans/alpha")
+        );
+        assert_eq!(
+            store.get_workspace_state("beta").expect("beta").plans_folder,
+            None,
+            "a folder declared for one workspace must not reach another"
+        );
+    }
+
+    #[test]
+    fn set_workspace_plans_folder_blank_clears_it() {
+        let dir = unique_tempdir("plans-blank");
+        let store = store_with_empty_state(&dir);
+        store.get_or_allocate_workspace_state("alpha").expect("alpha");
+        store
+            .set_workspace_plans_folder("alpha", Some("/plans/alpha".to_string()))
+            .expect("set");
+
+        let cleared = store
+            .set_workspace_plans_folder("alpha", Some("  ".to_string()))
+            .expect("clear");
+        assert_eq!(cleared.plans_folder, None);
+        assert_eq!(
+            store.get_workspace_state("alpha").expect("alpha").plans_folder,
+            None
+        );
+    }
+
+    #[test]
+    fn set_workspace_plans_folder_refuses_an_unknown_workspace() {
+        let dir = unique_tempdir("plans-unknown");
+        let store = store_with_empty_state(&dir);
+
+        let err = store
+            .set_workspace_plans_folder("does-not-exist", Some("/plans/x".to_string()))
+            .expect_err("an unknown workspace must not be silently accepted");
+        assert!(err.contains("does-not-exist"), "got: {err}");
+    }
+
+    #[test]
+    fn set_workspace_plans_folder_survives_a_reopen() {
+        let dir = unique_tempdir("plans-reopen");
+        {
+            let store = store_with_empty_state(&dir);
+            // The reader prunes workspace states that name no current project,
+            // so the fixture registers one in `alpha`.
+            store
+                .add_project(AddProjectInput {
+                    name: "Alpha Project".to_string(),
+                    project_path: "/projects/alpha".to_string(),
+                    workspace_name: "alpha".to_string(),
+                })
+                .expect("project in alpha");
+            store.get_or_allocate_workspace_state("alpha").expect("alpha");
+            store
+                .set_workspace_plans_folder("alpha", Some("/plans/alpha".to_string()))
+                .expect("set");
+        }
+
+        // `ConfigStore::over` starts empty and never reads the file, and `new()`
+        // reads the user's real config, so the reopen goes through the reader
+        // `new()` itself calls: `read_projects` on the same file.
+        let reopened = read_projects(&paths_in(&dir).projects_file).expect("reopen projects.json");
+        let alpha = reopened
+            .workspaces
+            .iter()
+            .find(|w| w.workspace_name == "alpha")
+            .expect("alpha is listed after a reopen");
+        assert_eq!(alpha.plans_folder.as_deref(), Some("/plans/alpha"));
     }
 
     #[test]
