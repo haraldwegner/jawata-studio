@@ -12,6 +12,7 @@
   import SeatsView from "./lib/components/SeatsView.svelte";
   import WorkflowView from "./lib/components/WorkflowView.svelte";
   import HelpView from "./lib/components/HelpView.svelte";
+  import EngineBar from "./lib/components/EngineBar.svelte";
   import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
   import EditorUpdatePrompt from "./lib/components/EditorUpdatePrompt.svelte";
   import { createAppStore } from "./lib/stores/app";
@@ -593,7 +594,7 @@
                 }
               }}
               knownWorkspaces={knownWorkspaces}
-              deployTargetDefaults={$appStore.settings?.deployTargets ?? { cursor: true, claude: true, codex: true, copilotCli: true, vscode: true, grok: true }}
+              deployTargetDefaults={$appStore.settings?.deployTargets ?? { antigravity: true, claude: true, codex: true, copilotCli: true, cursor: true, vscode: true }}
               deployBusy={$appStore.deployBusy ?? false}
               deployError={$appStore.deployError}
               lastDeployResult={$appStore.lastDeployResult}
@@ -698,6 +699,7 @@
       />
     </section>
   {/if}
+  <EngineBar installed={runtimeSource?.kind === "localJar" ? null : ($appStore.installedRuntime?.version ?? null)} />
 </main>
 
 <ConfirmDialog />

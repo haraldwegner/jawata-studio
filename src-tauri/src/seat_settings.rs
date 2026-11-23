@@ -412,6 +412,9 @@ pub struct SeatRow {
     /// `None` = every client this build writes seat commands for.
     pub clients: Option<Vec<String>>,
     pub customised: bool,
+    /// Whether this seat is allowed to change code (its file's `changes_code`). The view warns that a brain cannot be restricted from writing
+    /// only on a seat that is NOT allowed to (28h z56); on a seat that changes code, writing is its job and nothing is said.
+    pub changes_code: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -492,6 +495,7 @@ pub fn seats_view(seats_dir: &Path, clients: Vec<ClientChoice>) -> SeatsView {
             // An override OR a hand-edited stance: Reset exists for both, and a row that only
             // counted overrides left the edited stance with no way to reach it.
             customised: settings.is_customised(&seat.name) || stance_edited(seats_dir, &seat.name),
+            changes_code: seat.changes_code,
         })
         .collect();
     errors.sort();

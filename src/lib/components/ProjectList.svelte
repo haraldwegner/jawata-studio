@@ -63,12 +63,12 @@
   export let projectUnhealthy: Record<string, ProjectResolution> = {};
   export let onDeploy: (mode: DeployMode, targetClients?: string[]) => void;
   export let deployTargetDefaults: DeployTargetFlags = {
-    cursor: true,
+    antigravity: true,
     claude: true,
     codex: true,
     copilotCli: true,
-    vscode: true,
-    grok: true
+    cursor: true,
+    vscode: true
   };
   export let deployBusy = false;
   export let deployError: string | undefined;
@@ -84,7 +84,7 @@
    * run" for a box the user had ticked. Single-word clients hid the bug
    * because both spellings coincide. */
   const deployTargetOptions: Array<{ key: keyof DeployTargetFlags; id: string; label: string; covers?: string }> = [
-    { key: "cursor", id: "cursor", label: "Cursor" },
+    { key: "antigravity", id: "antigravity", label: "Antigravity" },
     { key: "claude", id: "claude", label: "Claude Code" },
     /* Sprint 28a (D1). This array is not a display convenience — it is the
        ONLY thing that reaches the backend. runDeployWithTargets always sends
@@ -98,6 +98,7 @@
        is never consulted to make true. */
     { key: "codex", id: "codex", label: "Codex" },
     { key: "copilotCli", id: "copilot_cli", label: "Copilot CLI" },
+    { key: "cursor", id: "cursor", label: "Cursor-Grok" },
     /* Sprint 28h Stage 21 (c): ONE entry for VS Code. The backend reads this id and also writes the chat's agent
        setting, jawata Java's server setting and the two settings that let an extension start the studio, installs
        the two extensions through every editor command on PATH (code, codium, code-oss) and turns off VS Code's AI features;
@@ -113,8 +114,7 @@
         "given no jawata tools (an entry an earlier deploy gave it is taken out). " +
         "Removes Language Support for Java by Red Hat and the extensions that need it, because jawata Java brings its own Testing view " +
         "and debugger. Remove takes out the two jawata extensions and the settings; it does not install Red Hat's back."
-    },
-    { key: "grok", id: "grok", label: "Grok" }
+    }
   ];
 
   let rowRefs: Record<string, HTMLElement> = {};

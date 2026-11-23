@@ -22,6 +22,7 @@
   import { adapterNotice } from "../adapterNotice";
   import { selectedValue } from "../seatBrainChoice";
   import {
+    brainConnect,
     brainProbe,
     brainsStatus,
     conversationModels,
@@ -74,6 +75,26 @@
     } finally {
       brainsChecking = false;
     }
+  }
+
+  /** Brains whose own login the person started from here; the note beside the choice then says what to do next. */
+  let connecting: Record<string, boolean> = {};
+
+  /** Starts the brain's own login: the program opens the browser, the person signs in and gives its permission there. The studio
+   * cannot do that step and does not see its result, so "Check again" asks the program whether it is logged in now. */
+  async function connect(brain: BrainStatus) {
+    actionError = "";
+    try {
+      await brainConnect(brain.id);
+      connecting = { ...connecting, [brain.id]: true };
+    } catch (error) {
+      actionError = `${brain.label}: ${String(error)}`;
+    }
+  }
+
+  async function checkAgain(brain: BrainStatus) {
+    connecting = { ...connecting, [brain.id]: false };
+    await checkBrains(view as SeatsView);
   }
 
   async function readSessionModels(current: SeatsView) {
@@ -145,9 +166,9 @@
       return options;
     }
     for (const b of brains.filter((x) => x.hirable && x.installed)) {
-      // Choosing a brain whose writes are held only by an instruction to the model is the seat's
-      // word that it may run that way (the engine refuses the hire otherwise), so say it here.
-      const note = loginNote(b) + (b.writesHeldByInstruction ? " (writes held only by an instruction)" : "");
+      // A brain whose writes no mechanism refuses (Cursor, Antigravity) cannot keep a seat that must not write from writing. The engine does
+      // not prevent the choice (28h z56): the person is told, and only on a seat that is not allowed to change code.
+      const note = loginNote(b) + (b.writesHeldByInstruction && !seat.changesCode ? ` (${b.label} cannot be restricted from writing)` : "");
       options.push({
         value: `${b.id}|`,
         label: `${b.label} — ${b.takesModel ? "its default model" : "chooses its own model"}${note}`,
@@ -380,8 +401,22 @@
                         <span class="seat-note">To log in, run <code>{t.loginCommand}</code> in a terminal, then choose it again. The previous choice is kept.</span>
                       {/if}
                     {:else if status && status.installed && status.login === "notLoggedIn"}
-                      <span class="project-error seat-note">{status.label} is not logged in: {status.reason}</span>
-                      <span class="seat-note">To log in, run <code>{status.loginCommand}</code> in a terminal, then open this tab again.</span>
+                      <span class="project-error seat-note">{status.label} is not connected: {status.reason}</span>
+                      {#if connecting[status.id]}
+                        <span class="seat-note">
+                          The login of {status.label} was started: finish it in your browser, then
+                          <button class="seat-connect" on:click={() => checkAgain(status)} title="Asks {status.label} whether it is logged in now.">Check again</button>
+                        </span>
+                      {:else}
+                        <span class="seat-note">
+                          <button
+                            class="seat-connect"
+                            disabled={disabled}
+                            on:click={() => connect(status)}
+                            title="Starts {status.label}'s own login ({status.loginCommand}). Your browser opens: sign in and give it permission there. Until then a seat set to {status.label} cannot be hired."
+                          >Connect {status.label}</button>
+                        </span>
+                      {/if}
                     {:else if status && !status.installed}
                       <span class="project-error seat-note">{status.reason}</span>
                     {/if}

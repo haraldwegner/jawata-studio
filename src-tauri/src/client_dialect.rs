@@ -109,16 +109,19 @@ impl Client {
 /// Every client the deploy knows, in display order.
 ///
 /// **IntelliJ is deliberately absent** (Harald, 2026-08-16, and again 2026-11-22). IntelliJ is an IDE, the same kind of program as VS Code, not a
-/// command-line client, and it has no row here. Claude Desktop is a macOS-era client and is not a client of this Linux machine, and Antigravity
-/// is absent because its product pages were never read.
+/// command-line client, and it has no row here. Claude Desktop is a macOS-era client and is not a client of this Linux machine. Grok has no row
+/// of its own since 2026-11-23 (his word: it is merged with Cursor), and Cursor is shown as "Cursor-Grok". Antigravity (`agy`) has a row since
+/// 2026-11-23: its command-line tool reads MCP servers from `~/.gemini/config/mcp_config.json`, measured with 51, 101 and 153 tools and calls
+/// past the 100th, which overturns the 28a decision that it had no way to connect jawata.
+///
+/// The agents are in alphabetical order by label, and the editor (VS Code) last.
 pub const CLIENTS: &[Client] = &[
     Client {
-        id: "cursor",
-        settings_key: "cursor",
-        label: "Cursor",
+        id: "antigravity",
+        settings_key: "antigravity",
+        label: "Antigravity",
         supported: true,
-        // Measured, and the reason is in the field's own doc.
-        seats_inherited_from: &["claude"],
+        seats_inherited_from: &[],
     },
     Client {
         id: "claude",
@@ -142,16 +145,17 @@ pub const CLIENTS: &[Client] = &[
         seats_inherited_from: &[],
     },
     Client {
+        id: "cursor",
+        settings_key: "cursor",
+        label: "Cursor-Grok",
+        supported: true,
+        // Measured, and the reason is in the field's own doc.
+        seats_inherited_from: &["claude"],
+    },
+    Client {
         id: "vscode",
         settings_key: "vscode",
         label: "VS Code",
-        supported: true,
-        seats_inherited_from: &[],
-    },
-    Client {
-        id: "grok",
-        settings_key: "grok",
-        label: "Grok",
         supported: true,
         seats_inherited_from: &[],
     },
@@ -276,30 +280,6 @@ pub fn dialect_for(client: &str) -> ClientDialect {
             toml_always_writes_enabled: false,
         },
 
-        // Grok Build: the SAME TOML family as Codex — `[mcp_servers.<id>]`,
-        // `url` — and different in exactly two ways, both measured on
-        // 2026-08-16 by running `grok mcp add --transport http … --header
-        // "Authorization: Bearer …"` in a sandboxed HOME and reading the file
-        // back: the headers are a SUB-TABLE keyed `headers`, and `enabled` is
-        // written even when true.
-        //
-        // Scope, decided by Harald: TOOLS ONLY. Grok's terms restrict sending
-        // it an automation prompt, which is a question about driving it and not
-        // about connecting it — a config a human then uses interactively is not
-        // automation. The GUARD is not claimed: this CLI exposes no hook
-        // mechanism in its help or its bundled manifest, and the hook target on
-        // record belongs to Grok's editor extension, a surface not checked yet.
-        "grok" => ClientDialect {
-            format: ConfigFormat::Toml {
-                table: "mcp_servers",
-            },
-            url_field: "url",
-            emits_type: false,
-            emits_always_load: false,
-            emits_tools_filter: false,
-            toml_headers: Some(TomlHeaders { key: "headers", inline: false }),
-            toml_always_writes_enabled: true,
-        },
         // VS Code: `servers`, NOT `mcpServers` — the one client that differs.
         "vscode" => ClientDialect {
             format: ConfigFormat::Json {
@@ -430,14 +410,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_roster_names_no_claude_desktop_antigravity_or_intellij() {
+    fn the_roster_names_no_claude_desktop_grok_or_intellij() {
         let ids: Vec<&str> = CLIENTS.iter().map(|c| c.id).collect();
-        for absent in ["claude_desktop", "antigravity", "intellij"] {
+        for absent in ["claude_desktop", "grok", "intellij"] {
             assert!(
                 !ids.contains(&absent),
                 "the roster carries the id {absent}; the Linux deploy list must not carry it"
             );
         }
+    }
+
+    #[test]
+    fn the_roster_lists_antigravity_and_names_cursor_with_grok_and_sorts_the_agents() {
+        let ag = client("antigravity").expect("Antigravity is a client");
+        assert_eq!(ag.label, "Antigravity");
+        assert!(ag.supported);
+        assert_eq!(client("cursor").expect("Cursor is a client").label, "Cursor-Grok");
+        let agents: Vec<&str> = CLIENTS.iter().filter(|c| c.id != "vscode").map(|c| c.label).collect();
+        let mut sorted = agents.clone();
+        sorted.sort_by_key(|label| label.to_lowercase());
+        assert_eq!(agents, sorted, "the agents are listed A to Z by label");
+        assert_eq!(CLIENTS.last().map(|c| c.id), Some("vscode"), "the editor comes after the agents");
     }
 
     #[test]

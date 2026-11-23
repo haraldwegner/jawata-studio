@@ -1047,6 +1047,8 @@ pub fn run() {
             commands::seat_change,
             commands::brains_status,
             commands::brain_probe,
+            commands::brain_connect,
+            commands::engine_versions,
             commands::conversation_models,
             commands::get_quit_prompt_context,
             commands::perform_quit_action,

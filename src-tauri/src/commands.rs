@@ -606,6 +606,34 @@ pub async fn brains_status(app: tauri::AppHandle, ids: Vec<String>) -> Result<Ve
     .map_err(|e| format!("brain check failed: {e}"))?
 }
 
+/// The version each workspace's engine REPORTS about itself (its own `health_check`), for the status bar: the installed version is a file on
+/// disk, the running one is what the process says. Off the main thread: one short HTTP call per workspace.
+#[tauri::command]
+pub async fn engine_versions(app: tauri::AppHandle) -> Result<Vec<crate::manager_service::EngineVersionRow>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let servers = app.state::<AppState>().manager_service.knowledge_servers();
+        crate::manager_service::engine_versions_for(&servers)
+    })
+    .await
+    .map_err(|e| format!("engine version check failed: {e}"))
+}
+
+/// Connects a brain that is not logged in: starts the login command the ENGINE names for it, which opens the browser. The studio does not
+/// pick the command itself (the roster is the engine's), and a brain the engine does not know is refused by name.
+#[tauri::command]
+pub async fn brain_connect(app: tauri::AppHandle, brain: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let servers = app.state::<AppState>().manager_service.knowledge_servers();
+        let status = crate::manager_service::engine_brain_status(&servers, std::slice::from_ref(&brain))?;
+        let Some(found) = status.into_iter().next() else {
+            return Err(format!("the engine does not know a brain called {brain}"));
+        };
+        crate::brains::connect(&found.login_command)
+    })
+    .await
+    .map_err(|e| format!("connect failed: {e}"))?
+}
+
 /// One test run through a brain, as the engine runs it (it answers one word, in an empty folder), so a brain or model is chosen only once it
 /// answered. The model is named as a Brain list shows it; the engine gives the program's command line what it takes. Off the main thread: a
 /// run takes seconds.

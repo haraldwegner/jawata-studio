@@ -59,19 +59,19 @@ static SPECS: [Spec; 5] = [
     Spec { id: "codex", program: "codex" },
     Spec { id: "cursor", program: "cursor-agent" },
     Spec { id: "copilot", program: "copilot" },
-    Spec { id: "grok", program: "grok" },
+    Spec { id: "antigravity", program: "agy" },
 ];
 /// The brains the engine's hire can start — jawata-mcp's `SeatHire.Brain`. Only these are offered
-/// as a seat's brain: offering one the hire cannot start (Grok, today) would be a choice that
-/// fails every hire.
-pub const HIRABLE: [&str; 4] = ["claude-code", "codex", "cursor", "copilot"];
+/// as a seat's brain: offering one the hire cannot start (Grok, which is merged with Cursor) would be
+/// a choice that fails every hire.
+pub const HIRABLE: [&str; 5] = ["claude-code", "codex", "cursor", "copilot", "antigravity"];
 
-/// The hirable brains whose WRITES are held only by an instruction to the model, not by a
-/// mechanism — jawata-mcp's `WriteContainment` answers INSTRUCTION for them (S16, the architect's
-/// F1). The engine refuses a hire on one unless the seat's file says `accepts_uncontained_writes:
-/// true`; choosing one in the Seats view is the user's word, so the view writes that line with the
-/// brain (`seat_settings::seat_file_content`) and says so beside the choice.
-pub const HELD_BY_AN_INSTRUCTION: [&str; 1] = ["cursor"];
+/// The hirable brains whose WRITES no mechanism refuses — Cursor's are held only by an instruction to
+/// the model, Antigravity's by nothing usable (measured 2026-11-23); jawata-mcp's `WriteContainment`
+/// answers INSTRUCTION or NONE for them. The engine does not refuse a hire on one (28h z56): the
+/// stored choice is the person's word. The Seats page warns, on a seat that is not allowed to
+/// change code, that the brain cannot be restricted from writing; nothing here prevents the choice.
+pub const HELD_BY_AN_INSTRUCTION: [&str; 2] = ["cursor", "antigravity"];
 
 
 /// What one test run through a brain showed.
@@ -165,6 +165,25 @@ fn is_executable_file(path: &std::path::Path) -> bool {
         true
     }
 }
+/// Starts the program's OWN login — the command the engine names in `loginCommand` — and leaves it running on its own, so the program opens
+/// the browser and waits for the person to sign in there. Harald, 2026-11-23: *"If an agent is disconnected your connect request opens the
+/// browser and you have to do the login and permission of the cli again"*, the same for every agent. The studio does not do the browser
+/// step and does not read the answer: it starts the command, and the next brain check says whether the login worked.
+pub fn connect(login_command: &str) -> Result<(), String> {
+    let mut words = login_command.split_whitespace();
+    let Some(program) = words.next() else {
+        return Err("the engine named no login command for this brain".to_string());
+    };
+    let mut command = std::process::Command::new(program);
+    command.args(words).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    command.spawn().map(|_| ()).map_err(|error| format!("`{login_command}` could not be started: {error}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,19 +192,26 @@ mod tests {
     fn the_brains_held_only_by_an_instruction_are_the_ones_the_engine_answers_for() {
         assert_eq!(
             HELD_BY_AN_INSTRUCTION,
-            ["cursor"],
+            ["cursor", "antigravity"],
             "jawata-mcp's TheBrainsHeldOnlyByAnInstructionAreTheOnesStudioListsTest pins the engine's side"
         );
         for brain in HELD_BY_AN_INSTRUCTION {
             assert!(HIRABLE.contains(&brain), "{brain} is listed as held by an instruction but cannot be hired");
         }
-        // The engine's side iterates exactly these four names; a fifth hirable brain, or a changed
+        // The engine's side iterates exactly these five names; a sixth hirable brain, or a changed
         // one, must reach that test's list too, or its answer is never asked for.
         assert_eq!(
             HIRABLE,
-            ["claude-code", "codex", "cursor", "copilot"],
-            "jawata-mcp's TheBrainsHeldOnlyByAnInstructionAreTheOnesStudioListsTest asks the engine about these four"
+            ["claude-code", "codex", "cursor", "copilot", "antigravity"],
+            "jawata-mcp's TheBrainsHeldOnlyByAnInstructionAreTheOnesStudioListsTest asks the engine about these five"
         );
+    }
+
+    #[test]
+    fn a_login_command_the_engine_did_not_name_is_refused_and_one_that_is_not_installed_says_so() {
+        assert!(connect("   ").unwrap_err().contains("no login command"));
+        let error = connect("jawata-no-such-program login").unwrap_err();
+        assert!(error.contains("jawata-no-such-program login") && error.contains("could not be started"), "{error}");
     }
 }
 

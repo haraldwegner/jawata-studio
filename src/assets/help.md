@@ -1,6 +1,6 @@
 # jawata-studio Help
 
-**jawata-studio** runs one JAWATA service per **workspace** (a named group of Java projects) and writes the connection into your AI agents (Cursor, Claude Code, Codex, GitHub Copilot CLI, VS Code, Grok), so they get compiler-accurate understanding of your code.
+**jawata-studio** runs one JAWATA service per **workspace** (a named group of Java projects) and writes the connection into your AI agents (Antigravity, Claude Code, Codex, GitHub Copilot CLI, Cursor-Grok, VS Code), so they get compiler-accurate understanding of your code.
 
 Every change an agent makes through jawata comes back with an undo handle: ask it to run `refactoring(action=undo, undoChangeId=…)` to put the code back.
 
@@ -62,7 +62,7 @@ Who hires whom, drawn as an org chart: each seat sits under the seat that hires 
 
 ## Settings
 
-**Engine**: whether the engine updates itself (**Update policy**), a link to the studio's releases, and **Test services**, which checks that the engine answers; **Advanced** holds where the engine is downloaded from or a local jar to use instead. A newer engine is looked for when the studio starts and after you stop or reload (at most every ten minutes); it is started once on its own and compared with the tool list this studio expects before it replaces the engine you use. If it differs, the old engine stays and Settings says how it differs; a new engine takes effect at the next start. **Agents**: which agents Deploy writes to, with each one's config file shown in the table (under **Advanced**: merge mode and a backup before each write). Grok receives jawata's tools but not its guard. Antigravity cannot connect jawata and is not supported. **This machine**: the data folder, tray, autostart, per-workspace memory limits, and cleanup.
+**Engine**: whether the engine updates itself (**Update policy**), a link to the studio's releases, and **Test services**, which checks that the engine answers; **Advanced** holds where the engine is downloaded from or a local jar to use instead. A newer engine is looked for when the studio starts and after you stop or reload (at most every ten minutes); it is started once on its own and compared with the tool list this studio expects before it replaces the engine you use. If it differs, the old engine stays and Settings says how it differs; a new engine takes effect at the next start. **Agents**: which agents Deploy writes to, with each one's config file shown in the table (under **Advanced**: merge mode and a backup before each write). Cursor-Grok and Antigravity receive jawata's tools but not its guard, and neither can be kept from writing files, so the Seats page warns for a seat that must not change code. **This machine**: the data folder, tray, autostart, per-workspace memory limits, and cleanup.
 
 ![Settings, Engine: update policy and the updates link](/help/09-settings-engine.png)
 

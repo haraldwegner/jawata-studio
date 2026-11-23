@@ -136,11 +136,11 @@ pub struct McpClientPaths {
     /// Its server map hangs under `servers`, not `mcpServers`.
     #[serde(default)]
     pub vscode: McpClientPathEntry,
-    /// Sprint 28a (D1): Grok Build — `~/.grok/config.toml`, named by
-    /// `grok mcp add --scope user`. TOML like Codex, and the same file that
-    /// already holds its `[cli]` / `[ui]` sections.
+    /// 28h z54: Antigravity (`agy`) — `~/.gemini/config/mcp_config.json`, the global file its command-line tool reads for every project (its
+    /// official MCP page). JSON like Cursor, under `mcpServers`, with `serverUrl` and no `type`. The file can hold the person's own servers,
+    /// which the writer keeps.
     #[serde(default)]
-    pub grok: McpClientPathEntry,
+    pub antigravity: McpClientPathEntry,
 }
 
 /// Flags indicating which MCP clients should receive deployments.
@@ -158,7 +158,7 @@ pub struct DeployTargetFlags {
     #[serde(default = "default_enabled_flag")]
     pub vscode: bool,
     #[serde(default = "default_enabled_flag")]
-    pub grok: bool,
+    pub antigravity: bool,
 }
 
 fn default_enabled_flag() -> bool {
@@ -173,7 +173,7 @@ impl Default for DeployTargetFlags {
             codex: true,
             copilot_cli: true,
             vscode: true,
-            grok: true,
+            antigravity: true,
         }
     }
 }
@@ -905,7 +905,7 @@ impl ConfigStore {
             codex: inside("client-codex.toml"),
             copilot_cli: inside("client-copilot.json"),
             vscode: inside("client-vscode.json"),
-            grok: inside("client-grok.toml"),
+            antigravity: inside("client-antigravity.json"),
         };
         settings.deploy_targets = DeployTargetFlags {
             cursor: false,
@@ -913,7 +913,7 @@ impl ConfigStore {
             codex: false,
             copilot_cli: false,
             vscode: false,
-            grok: false,
+            antigravity: false,
         };
         Self {
             settings: Mutex::new(settings),
@@ -1805,10 +1805,9 @@ fn detect_default_mcp_client_paths() -> McpClientPaths {
         .filter_map(|parts| build_config(parts))
         .collect();
 
-    // Grok keys off HOME, and `grok mcp add --scope user` names this file
-    // explicitly in its own --help. It is shared with Grok's other settings,
-    // which is why the writer must preserve what it does not own.
-    let grok_candidates: Vec<PathBuf> = [[".grok", "config.toml"].as_slice()]
+    // Antigravity's command-line tool loads MCP servers from this one global file for every project (its official MCP page, read 2026-11-23),
+    // and `agy` was measured to register 51, 101 and 153 tools from servers written in it and to call tools past the 100th.
+    let antigravity_candidates: Vec<PathBuf> = [[".gemini", "config", "mcp_config.json"].as_slice()]
         .iter()
         .filter_map(|parts| build(parts))
         .collect();
@@ -1825,7 +1824,7 @@ fn detect_default_mcp_client_paths() -> McpClientPaths {
         codex: make_entry(&codex_candidates),
         copilot_cli: make_entry(&copilot_cli_candidates),
         vscode: make_entry(&vscode_candidates),
-        grok: make_entry(&grok_candidates),
+        antigravity: make_entry(&antigravity_candidates),
     }
 }
 
@@ -1837,7 +1836,7 @@ fn merge_detected_mcp_paths(paths: McpClientPaths) -> McpClientPaths {
         codex: merge_mcp_path_entry(paths.codex, defaults.codex),
         copilot_cli: merge_mcp_path_entry(paths.copilot_cli, defaults.copilot_cli),
         vscode: merge_mcp_path_entry(paths.vscode, defaults.vscode),
-        grok: merge_mcp_path_entry(paths.grok, defaults.grok),
+        antigravity: merge_mcp_path_entry(paths.antigravity, defaults.antigravity),
     }
 }
 
@@ -2030,6 +2029,7 @@ mod deploy_resolves_here {
     fn every_roster_client_resolves_to_its_expected_shape() {
         let paths = detect_default_mcp_client_paths();
         let expected: [(&str, &McpClientPathEntry, &[&str]); 6] = [
+            ("antigravity", &paths.antigravity, &[".gemini", "config", "mcp_config.json"]),
             ("cursor", &paths.cursor, &[".cursor", "mcp.json"]),
             ("claude", &paths.claude, &[".claude.json"]),
             ("codex", &paths.codex, &[".codex", "config.toml"]),
@@ -2039,7 +2039,6 @@ mod deploy_resolves_here {
                 &[".copilot", "mcp-config.json"],
             ),
             ("vscode", &paths.vscode, &["Code", "User", "mcp.json"]),
-            ("grok", &paths.grok, &[".grok", "config.toml"]),
         ];
         assert_eq!(
             expected.len(),

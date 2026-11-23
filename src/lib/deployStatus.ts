@@ -5,13 +5,12 @@ export const EXTENSIONS_ROW = "vscode-extensions";
 
 /** The names a person knows the result rows by. An id without a name here is shown as it is, never dropped. */
 const AGENT_NAMES: Record<string, string> = {
-  cursor: "Cursor",
+  cursor: "Cursor-Grok",
   claude: "Claude Code",
   claude_desktop: "Claude Desktop",
   codex: "Codex",
   copilot_cli: "Copilot CLI",
   vscode: "VS Code",
-  grok: "Grok",
   antigravity: "Antigravity",
   intellij: "IntelliJ",
   zed: "Zed",

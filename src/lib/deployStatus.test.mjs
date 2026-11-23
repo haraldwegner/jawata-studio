@@ -22,14 +22,14 @@ test("a deploy is two lines: the editor extensions first, then the jawata server
       row("vscode", "success"),
       row("jawata-chat", "success"),
       row("vscode-settings", "success"),
-      row("grok", "skipped"),
+      row("antigravity", "skipped"),
       row("vscode-extensions", "success", EDITOR),
     ],
   });
   assert.equal(status.failed, false);
   assert.deepEqual(status.lines, [
     `Last deploy: ${EDITOR}`,
-    "jawata servers set up for agents: Cursor, Claude Code, VS Code, the jawata chat in VS Code and jawata Java in VS Code (5 of 6); skipped: Grok.",
+    "jawata servers set up for agents: Cursor-Grok, Claude Code, VS Code, the jawata chat in VS Code and jawata Java in VS Code (5 of 6); skipped: Antigravity.",
   ]);
 });
 
@@ -80,12 +80,12 @@ test("the sentence counts the agents only, and says what happened in VS Code, th
     detail: "",
     durationMs: 1,
     clients: [
-      row("cursor", "success"), row("claude", "success"), row("grok", "skipped"),
+      row("cursor", "success"), row("claude", "success"), row("antigravity", "skipped"),
       row("vscode", "success"), row("jawata-chat", "success"), row("vscode-settings", "success"),
       row("zed", "skipped"), row("intellij-acp", "skipped"), row("vscode-extensions", "success", LONG_EDITOR),
     ],
   });
-  assert.equal(status.summary, "Last deploy: jawata is set up for 2 of 3 agents. Skipped: Grok. VS Code: jawata chat and jawata Java installed.");
+  assert.equal(status.summary, "Last deploy: jawata is set up for 2 of 3 agents. Skipped: Antigravity. VS Code: jawata chat and jawata Java installed.");
   assert.ok(!status.summary.includes("Red Hat"), "what was installed and removed is a detail, not the sentence");
   assert.equal(status.lines[0], `Last deploy: ${LONG_EDITOR}`, "the details keep the studio's own sentence in full");
 });

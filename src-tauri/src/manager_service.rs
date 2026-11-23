@@ -4071,16 +4071,17 @@ impl ManagerService {
                             changed_sections.push(format!("{what}HeldByEngineFloor: {sentence}"));
                         }
                     }
-                    // Sprint 28a (D1): Antigravity is UNSUPPORTED — its
-                    // command-line tool has no mechanism to connect jawata at
-                    // all, so the workflow files we used to write for it steer
-                    // an agent toward tools it can never call. Stop writing
-                    // them, and REMOVE any a previous version left behind.
+                    // Sprint 28a (D1) held Antigravity back because its command-line
+                    // tool then had no way to connect jawata; 28h z54 measured that
+                    // it has one (its own MCP config file in its Gemini config
+                    // folder), so the roster row is supported again. The branch
+                    // below still serves any client whose row says unsupported, or
+                    // whose seats another client already provides.
                     //
-                    // `derive_seat_commands_dir` still answers for antigravity
-                    // on purpose: dropping the mapping would strand the
-                    // existing files forever, with nothing left that knows
-                    // where they are. Same shape as `remove_legacy_rule_sibling`.
+                    // `derive_seat_commands_dir` answers for antigravity on purpose:
+                    // dropping the mapping would strand files a deploy wrote, with
+                    // nothing left that knows where they are. Same shape as
+                    // `remove_legacy_rule_sibling`.
                     // studio#44: whichever branch follows, the files at the
                     // RETIRED location are stale — a deploy that writes the new
                     // ones and leaves the old ones is the duplicate-listing
@@ -5078,11 +5079,12 @@ fn deploy_targets_for_paths(
     flags: &DeployTargetFlags,
     paths: &crate::config::McpClientPaths,
 ) -> Vec<DeployClientTarget> {
+    // The agents A to Z by label, then the editor: the order the deploy list shows.
     vec![
         DeployClientTarget {
-            id: "cursor",
-            target_path: paths.cursor.effective_path.clone(),
-            enabled_by_settings: flags.cursor,
+            id: "antigravity",
+            target_path: paths.antigravity.effective_path.clone(),
+            enabled_by_settings: flags.antigravity,
         },
         DeployClientTarget {
             id: "claude",
@@ -5100,14 +5102,14 @@ fn deploy_targets_for_paths(
             enabled_by_settings: flags.copilot_cli,
         },
         DeployClientTarget {
+            id: "cursor",
+            target_path: paths.cursor.effective_path.clone(),
+            enabled_by_settings: flags.cursor,
+        },
+        DeployClientTarget {
             id: "vscode",
             target_path: paths.vscode.effective_path.clone(),
             enabled_by_settings: flags.vscode,
-        },
-        DeployClientTarget {
-            id: "grok",
-            target_path: paths.grok.effective_path.clone(),
-            enabled_by_settings: flags.grok,
         },
     ]
 }
@@ -5353,12 +5355,13 @@ fn derive_global_rule_path(client: &str) -> Option<String> {
 /// Sprint 28a (D1) — whether a deploy still WRITES seat/utility command files
 /// for this client, as opposed to only knowing where its old ones live.
 ///
-/// Antigravity is the one that answers `false`: it is unsupported (its
-/// command-line tool has no mechanism to connect jawata at all), so a workflow
-/// file steering an agent toward jawata's tools points at tools that client can
-/// never call. `derive_seat_commands_dir` keeps answering for it — dropping the
-/// mapping would strand the files a previous version wrote, with nothing left
-/// that knows where they are.
+/// A client whose roster row says unsupported answers `false`: a workflow file
+/// steering an agent toward jawata's tools would point at tools that client can
+/// never call. Antigravity was that client until 28h z54 measured that its
+/// command-line tool connects jawata through its own MCP config file.
+/// `derive_seat_commands_dir` answers for every client — dropping a mapping would
+/// strand the files a previous version wrote, with nothing left that knows where
+/// they are.
 fn client_still_receives_seat_commands(client: &str) -> bool {
     // Reads the roster rather than repeating its decision. The hollow-wiring
     // gate is what forced this: `supported` was a field only tests read, which
@@ -8377,6 +8380,38 @@ mod engine_brains_tests {
         assert!(engine_models(&[], Some("claude-code"), 1).unwrap_err().contains("no jawata engine"));
         assert!(engine_brain_status(&[], &[]).unwrap_err().contains("no jawata engine"));
     }
+}
+
+/// The version one workspace's engine REPORTS about itself, read from its own `health_check` (`version`, `startedAt`). Harald, 2026-11-23: a
+/// workspace ran 4.6.12 while the studio showed the installed 4.6.13, because the engine had been started before 4.6.12 was fully
+/// replaced. Each workspace is its own engine process, so each reports its own. A workspace whose engine does not answer has no row
+/// content: it is not running, and the bar says nothing about it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EngineVersionRow {
+    pub workspace: String,
+    pub version: Option<String>,
+    pub started_at: Option<String>,
+}
+
+/// What `health_check` says of the engine's version and start, from its body. Pure.
+fn read_engine_version(body: &serde_json::Value) -> (Option<String>, Option<String>) {
+    let text = |pointer: &str| body.pointer(pointer).and_then(serde_json::Value::as_str).filter(|v| !v.trim().is_empty()).map(str::to_string);
+    (text("/data/version"), text("/data/startedAt"))
+}
+
+/// One row per workspace the studio has an engine address for; `version` is `None` where the engine did not answer. Blocking: call off the
+/// main thread.
+pub(crate) fn engine_versions_for(servers: &[ManagedDeployServer]) -> Vec<EngineVersionRow> {
+    servers
+        .iter()
+        .map(|server| {
+            let (version, started_at) = call_tool_json(&server.url, &server.token, "health_check", serde_json::json!({}), 3)
+                .map(|body| read_engine_version(&body))
+                .unwrap_or((None, None));
+            EngineVersionRow { workspace: server.workspace_name.clone(), version, started_at }
+        })
+        .collect()
 }
 
 /// Can the resident READ its own workspace? Its own `workspace.healthy`.
@@ -14674,7 +14709,7 @@ judge was never told to give"
         let cfg = "/home/u/.client/config.json";
         assert!(derive_rule_path("cursor", cfg).is_some(), "cursor reads .mdc rules");
         assert!(derive_rule_path("claude", cfg).is_some(), "claude reads CLAUDE.md");
-        for client in ["codex", "copilot_cli", "vscode", "grok", "antigravity", "unknown"] {
+        for client in ["codex", "copilot_cli", "vscode", "antigravity", "unknown"] {
             assert!(
                 derive_rule_path(client, cfg).is_none(),
                 "{client} reads no config-sibling rule file — its steering is in-band \
@@ -18257,7 +18292,7 @@ judge was never told to give"
         // "missing a Bearer http_headers.Authorization" about a config Grok's
         // own doctor accepts. Writer and validator must read the SAME dialect;
         // this drives both, per TOML client, so the pair cannot drift again.
-        for client in ["codex", "grok"] {
+        for client in ["codex"] {
             let dialect = crate::client_dialect::dialect_for(client);
             let table = dialect.toml_table().expect("toml client");
             let dir = unique_tempdir(&format!("wv-pin-{client}"));
@@ -21130,5 +21165,24 @@ mod editor_launch_service_tests {
         assert_eq!(service.workspaces_to_auto_restore().len(), 0);
         service.restore_last_running_workspaces().expect("nothing to restore is not an error");
         assert!(ui.asked.borrow().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod engine_version_tests {
+    use super::*;
+
+    /// The engine's own words, as its `health_check` answers them (captured from a 4.6.13 engine).
+    #[test]
+    fn the_version_and_start_are_read_from_the_engines_own_health_check() {
+        let body = serde_json::json!({ "success": true, "data": { "status": "Ready", "version": "4.6.13", "startedAt": "2026-11-23T12:50:08.905964931Z" } });
+        assert_eq!(read_engine_version(&body), (Some("4.6.13".to_string()), Some("2026-11-23T12:50:08.905964931Z".to_string())));
+    }
+
+    /// An answer without a version (an old engine, an error body) reads as nothing, never as an invented version.
+    #[test]
+    fn an_answer_without_a_version_reads_as_none() {
+        assert_eq!(read_engine_version(&serde_json::json!({ "success": false })), (None, None));
+        assert_eq!(read_engine_version(&serde_json::json!({ "data": { "version": "  " } })), (None, None));
     }
 }

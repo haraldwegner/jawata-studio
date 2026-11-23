@@ -79,24 +79,24 @@ export interface McpClientPathEntry {
 
 /** Collection of paths for all supported MCP clients. */
 export interface McpClientPaths {
-  cursor: McpClientPathEntry;
+  antigravity: McpClientPathEntry;
   claude: McpClientPathEntry;
   /** Sprint 28a (D1). */
   codex: McpClientPathEntry;
   copilotCli: McpClientPathEntry;
+  cursor: McpClientPathEntry;
   vscode: McpClientPathEntry;
-  grok: McpClientPathEntry;
 }
 
 /** Flags indicating which MCP clients to deploy to. */
 export interface DeployTargetFlags {
-  cursor: boolean;
+  antigravity: boolean;
   claude: boolean;
   /** Sprint 28a (D1). */
   codex: boolean;
   copilotCli: boolean;
+  cursor: boolean;
   vscode: boolean;
-  grok: boolean;
 }
 
 /** Source configuration for the JAWATA runtime. */
@@ -888,6 +888,8 @@ export interface SeatRow {
   /** `null` means every client seat commands are written for. */
   clients: string[] | null;
   customised: boolean;
+  /** Whether the seat is allowed to change code. The view warns that a brain cannot be restricted from writing only where it is not. */
+  changesCode: boolean;
 }
 
 export interface SeatsView {
@@ -976,6 +978,17 @@ export interface BrainStatus {
  * and logged in. Free: no session. */
 export function brainsStatus(ids: string[]): Promise<BrainStatus[]> {
   return invoke("brains_status", { ids });
+}
+
+/** The version each workspace's engine reports about itself (its own `health_check`); `version` is null where the engine did not answer. */
+export function engineVersions(): Promise<import("../engineBar").EngineVersionRow[]> {
+  return invoke("engine_versions");
+}
+
+/** Starts the brain's own login (the command the engine names for it): the program opens the browser, the person signs in and gives its
+ * permission there, and the next brain check shows the result. Rejects with a message when the command cannot be started. */
+export function brainConnect(brain: string): Promise<void> {
+  return invoke("brain_connect", { brain });
 }
 
 /** Change ONE setting of ONE seat; returns the refreshed view. A refusal (no such seat, a

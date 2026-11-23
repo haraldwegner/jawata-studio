@@ -153,20 +153,20 @@
   let mcpMergeMode: McpMergeMode = "safeMerge";
   let mcpBackupBeforeWrite = true;
   let deployTargets: DeployTargetFlags = {
-    cursor: true,
+    antigravity: true,
     claude: true,
     codex: true,
     copilotCli: true,
-    vscode: true,
-    grok: true
+    cursor: true,
+    vscode: true
   };
   let mcpClientPaths: McpClientPaths = {
-    cursor: {},
+    antigravity: {},
     claude: {},
     codex: {},
     copilotCli: {},
-    vscode: {},
-    grok: {}
+    cursor: {},
+    vscode: {}
   };
 
   let hasHydratedSettings = false;
@@ -228,12 +228,12 @@
 
   function normalizeMcpClientPaths(paths: McpClientPaths): McpClientPaths {
     return {
-      cursor: normalizeMcpPathEntry(paths.cursor),
+      antigravity: normalizeMcpPathEntry(paths.antigravity),
       claude: normalizeMcpPathEntry(paths.claude),
       codex: normalizeMcpPathEntry(paths.codex),
       copilotCli: normalizeMcpPathEntry(paths.copilotCli),
-      vscode: normalizeMcpPathEntry(paths.vscode),
-      grok: normalizeMcpPathEntry(paths.grok)
+      cursor: normalizeMcpPathEntry(paths.cursor),
+      vscode: normalizeMcpPathEntry(paths.vscode)
     };
   }
 
@@ -253,12 +253,12 @@
       mcpMergeMode: input.mcpMergeMode,
       mcpBackupBeforeWrite: input.mcpBackupBeforeWrite,
       deployTargets: {
-        cursor: input.deployTargets.cursor,
+        antigravity: input.deployTargets.antigravity,
         claude: input.deployTargets.claude,
         codex: input.deployTargets.codex,
         copilotCli: input.deployTargets.copilotCli,
-        vscode: input.deployTargets.vscode,
-        grok: input.deployTargets.grok
+        cursor: input.deployTargets.cursor,
+        vscode: input.deployTargets.vscode
       },
       releaseRepo: trimmedRepo && trimmedRepo.length > 0 ? trimmedRepo : null
     };
@@ -745,12 +745,12 @@
         </thead>
         <tbody>
           {#each [
-            ["cursor", "Cursor"],
+            ["antigravity", "Antigravity"],
             ["claude", "Claude Code"],
             ["codex", "Codex"],
             ["copilotCli", "Copilot CLI"],
-            ["vscode", "VS Code"],
-            ["grok", "Grok"]
+            ["cursor", "Cursor-Grok"],
+            ["vscode", "VS Code"]
           ] as [clientKey, clientLabel]}
             {@const key = clientKey as keyof McpClientPaths}
             {@const entry = mcpClientPaths[key]}

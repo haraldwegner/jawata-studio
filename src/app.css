@@ -70,7 +70,7 @@ button {
 
 .full-height-shell {
   height: 100vh;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   overflow: hidden;
 }
 
@@ -84,6 +84,10 @@ button {
 
 .full-height-shell > .dashboard-main {
   grid-row: 3;
+}
+
+.full-height-shell > .engine-bar {
+  grid-row: 4;
 }
 
 .layout {
