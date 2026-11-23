@@ -20,7 +20,7 @@
   // the seat commands, not every client's MCP configuration).
   import { createEventDispatcher, onMount } from "svelte";
   import { adapterNotice } from "../adapterNotice";
-  import { selectedValue } from "../seatBrainChoice";
+  import { brainNote, canConnect, selectedValue } from "../seatBrainChoice";
   import {
     brainConnect,
     brainProbe,
@@ -130,12 +130,6 @@
     label: string;
   }
 
-  function loginNote(b: BrainStatus): string {
-    if (b.login === "notLoggedIn") return " (not logged in)";
-    if (b.login === "unknown") return " (login not checkable)";
-    return "";
-  }
-
   /** The two seats a person talks to directly; each runs on a brain the engine can start for a conversation. */
   const CONVERSATION = ["main", "btw"];
   const isConversation = (seat: SeatRow) => CONVERSATION.includes(seat.name);
@@ -152,8 +146,9 @@
     if (!seat.brain) options.push({ value: "|", label: "not set" });
     if (isConversation(seat)) {
       for (const b of brains.filter((x) => view?.acpBrains.includes(x.id))) {
-        options.push({ value: `${b.id}|`, label: `${b.label} — its default model${loginNote(b)}` });
-        for (const m of sessionModels[b.id] ?? []) options.push({ value: `${b.id}|${m}`, label: `${b.label} — ${m}${loginNote(b)}` });
+        const note = brainNote(b, seat.changesCode);
+        options.push({ value: `${b.id}|`, label: `${b.label} — its default model${note}` });
+        for (const m of sessionModels[b.id] ?? []) options.push({ value: `${b.id}|${m}`, label: `${b.label} — ${m}${note}` });
       }
       // The select picks the listed model the saved one stands for (selectedValue); a line saying the choice is not available is added only
       // when this machine offers nothing of the brain at all (his words, 2026-11-17).
@@ -168,7 +163,7 @@
     for (const b of brains.filter((x) => x.hirable && x.installed)) {
       // A brain whose writes no mechanism refuses (Cursor, Antigravity) cannot keep a seat that must not write from writing. The engine does
       // not prevent the choice (28h z56): the person is told, and only on a seat that is not allowed to change code.
-      const note = loginNote(b) + (b.writesHeldByInstruction && !seat.changesCode ? ` (${b.label} cannot be restricted from writing)` : "");
+      const note = brainNote(b, seat.changesCode);
       options.push({
         value: `${b.id}|`,
         label: `${b.label} — ${b.takesModel ? "its default model" : "chooses its own model"}${note}`,
@@ -362,6 +357,9 @@
               <span class="seat-name" title={invocationHint(seat)}>
                 {seat.name}{#if seat.command} <span class="seat-command">({seat.command})</span>{/if}
               </span>
+              {#if brains.find((b) => b.id === seat.brain && b.installed && b.login === "notLoggedIn")}
+                <span class="project-error seat-note" title="This seat's brain is not connected, so a hire or a chat on it will not start. Open the seat and press Connect.">not connected</span>
+              {/if}
               <span class="seat-first muted">{firstSentence(seat.purpose)}</span>
             </summary>
 
@@ -400,8 +398,12 @@
                         <span class="project-error seat-note">{brainLabel(t.brain)} did not answer: {t.error}</span>
                         <span class="seat-note">To log in, run <code>{t.loginCommand}</code> in a terminal, then choose it again. The previous choice is kept.</span>
                       {/if}
-                    {:else if status && status.installed && status.login === "notLoggedIn"}
-                      <span class="project-error seat-note">{status.label} is not connected: {status.reason}</span>
+                    {:else if status && canConnect(status)}
+                      {#if status.login === "notLoggedIn"}
+                        <span class="project-error seat-note">{status.label} is not connected{status.reason ? `: ${status.reason}` : ""}</span>
+                      {:else}
+                        <span class="seat-note muted">{status.label} cannot say whether it is connected.</span>
+                      {/if}
                       {#if connecting[status.id]}
                         <span class="seat-note">
                           The login of {status.label} was started: finish it in your browser, then

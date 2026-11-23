@@ -207,6 +207,25 @@ mod tests {
         );
     }
 
+    /// The command the engine names is the one that is started, with its own arguments, and the call does not wait for it.
+    #[cfg(unix)]
+    #[test]
+    fn the_command_the_engine_names_is_the_one_started_with_its_arguments() {
+        let marker = std::env::temp_dir().join(format!("jw-connect-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        connect(&format!("touch {}", marker.display())).unwrap();
+        let mut started = false;
+        for _ in 0..50 {
+            if marker.exists() {
+                started = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let _ = std::fs::remove_file(&marker);
+        assert!(started, "`touch` was not started with its argument");
+    }
+
     #[test]
     fn a_login_command_the_engine_did_not_name_is_refused_and_one_that_is_not_installed_says_so() {
         assert!(connect("   ").unwrap_err().contains("no login command"));

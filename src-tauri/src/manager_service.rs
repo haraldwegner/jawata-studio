@@ -8323,7 +8323,14 @@ pub(crate) fn engine_brain_status(servers: &[ManagedDeployServer], ids: &[String
     let data = ask_engine_brains(servers, serde_json::json!({ "action": "status" }), 120)?;
     let all: Vec<crate::brains::BrainStatus> = serde_json::from_value(data.get("brains").cloned().unwrap_or_default())
         .map_err(|error| format!("the engine's brain check could not be read: {error}"))?;
-    Ok(all.into_iter().filter(|b| ids.is_empty() || ids.contains(&b.id)).collect())
+    Ok(in_label_order(all.into_iter().filter(|b| ids.is_empty() || ids.contains(&b.id)).collect()))
+}
+
+/// The brains by the name a person reads, A to Z (his word, 2026-11-23: "sort alphabetically"); the engine lists them in the order its roster
+/// was written, which is not the order a person looks for one in.
+pub(crate) fn in_label_order(mut brains: Vec<crate::brains::BrainStatus>) -> Vec<crate::brains::BrainStatus> {
+    brains.sort_by_key(|b| b.label.to_lowercase());
+    brains
 }
 
 /// The one-word test run through `brain` on `model` (as a Brain list shows it; the engine gives the program's command line what it takes).
@@ -8351,6 +8358,17 @@ mod engine_brains_tests {
             { "brain": "cursor", "label": "Cursor", "error": "could not be started" }
         ] });
         assert_eq!(fold_models(&data), vec![("claude-code".to_string(), vec!["Opus 5.5".to_string(), "Haiku 5.5".to_string()])]);
+    }
+
+    /// The brains are listed by the name a person reads, whatever order the engine's roster is written in.
+    #[test]
+    fn the_brains_are_listed_a_to_z_by_label() {
+        let brain = |id: &str, label: &str| crate::brains::BrainStatus {
+            id: id.to_string(), label: label.to_string(), installed: true, version: None, login: crate::brains::Login::LoggedIn, reason: None,
+            login_command: String::new(), models: None, hirable: true, takes_model: true, writes_held_by_instruction: false,
+        };
+        let sorted = in_label_order(vec![brain("claude-code", "Claude Code"), brain("copilot", "Copilot"), brain("cursor", "Cursor-Grok"), brain("antigravity", "Antigravity")]);
+        assert_eq!(sorted.iter().map(|b| b.id.as_str()).collect::<Vec<_>>(), vec!["antigravity", "claude-code", "copilot", "cursor"]);
     }
 
     /// The engine's check and test run read into the studio's own shapes, so the Seats page draws them as before.

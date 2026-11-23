@@ -20,3 +20,28 @@ export function selectedValue(brain: string, saved: string | null | undefined, m
   if (!models || models.length === 0) return `${brain}|${saved ?? ""}`;
   return `${brain}|${listedModel(models, saved) ?? ""}`;
 }
+
+/** What the Seats page says beside a brain about its login. */
+export function loginNote(login: "loggedIn" | "notLoggedIn" | "unknown"): string {
+  if (login === "notLoggedIn") return " (not connected)";
+  if (login === "unknown") return " (connection not checkable)";
+  return "";
+}
+
+/**
+ * The note beside a brain in a seat's list: its login, and, only on a seat that is not allowed to change code, that the brain cannot be kept
+ * from writing (his words, 2026-11-23: warn for the seats not allowed to edit; "you should not prevent in the engine"). `changesCode` is
+ * the seat's own flag; a conversation seat that must not edit (main) is warned like a hire seat.
+ */
+export function brainNote(
+  brain: { label: string; login: "loggedIn" | "notLoggedIn" | "unknown"; writesHeldByInstruction: boolean },
+  seatChangesCode: boolean,
+): string {
+  const restriction = brain.writesHeldByInstruction && !seatChangesCode ? ` (${brain.label} cannot be restricted from writing)` : "";
+  return loginNote(brain.login) + restriction;
+}
+
+/** Whether the studio offers to start the brain's own login: it is installed and is not known to be connected (a brain with no way to say is offered it too). */
+export function canConnect(brain: { installed: boolean; login: "loggedIn" | "notLoggedIn" | "unknown"; loginCommand: string }): boolean {
+  return brain.installed && brain.login !== "loggedIn" && brain.loginCommand.trim().length > 0;
+}

@@ -91,7 +91,9 @@ pub struct Adapter {
 }
 
 /// The adapters in the order they are tried: for a brain with two, the first found is used and the first is the one a person is told to install.
-pub const ADAPTERS: [Adapter; 4] = [
+pub const ADAPTERS: [Adapter; 5] = [
+    // Antigravity's own program speaks ACP (`agy acp`, measured 2026-11-23 on 1.5.15); it is no adapter of another program, and its install line is Google's.
+    Adapter { brain: "antigravity", program: "agy", args: &["acp"], install: "curl -fsSL https://antigravity.google/cli/install.sh | bash", without_own_servers: false },
     Adapter { brain: "claude-code", program: "claude-agent-acp", args: &[], install: "npm install -g @agentclientprotocol/claude-agent-acp", without_own_servers: false },
     Adapter { brain: "claude-code", program: "claude-code-acp", args: &[], install: "npm install -g @zed-industries/claude-code-acp", without_own_servers: false },
     Adapter { brain: "codex", program: "codex-acp", args: &[], install: "npm install -g @zed-industries/codex-acp", without_own_servers: false },
@@ -315,6 +317,25 @@ mod tests {
         dir
     }
 
+    /// 28h z54: Antigravity's own program is the ACP program (`agy acp`), so with `agy` on the path the chat, Agent Control and the Seats
+    /// conversation brains offer it, and the registry the engines are started with names it. Without it on the path it is not offered.
+    #[cfg(unix)]
+    #[test]
+    fn antigravity_is_offered_when_agy_is_on_the_path_and_started_as_agy_acp() {
+        let dir = path_holding(&["agent", "agy"], "ag");
+        let with = detect_with(Some(dir.as_os_str()), &[]);
+        let none = path_holding(&["agent"], "ag2");
+        let without = detect_with(Some(none.as_os_str()), &[]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&none);
+        let registry: Value = serde_json::from_str(value_of(&with, HIRE_BRAINS_ENV)).unwrap();
+        let command = registry["antigravity"]["command"].as_array().unwrap();
+        assert!(command[0].as_str().unwrap().ends_with("agy"), "{command:?}");
+        assert_eq!(command[1], "acp");
+        assert!(acp_brains(&with).contains(&"antigravity".to_string()));
+        assert!(!acp_brains(&without).contains(&"antigravity".to_string()));
+    }
+
     /// D54 (f): Copilot's CLI loads the person's own servers into every turn, and three jawata servers made it answer "Static system messages
     /// and tool definitions exceed the model's usable context budget" and nothing else (measured 2026-11-09). So it is started with each
     /// deployed server named off, and the adapters that read no such list are started as they were.
@@ -349,15 +370,15 @@ mod tests {
         let missing = missing_adapters(Some(dir.as_os_str()));
         let _ = std::fs::remove_dir_all(&dir);
         let brains: Vec<&str> = missing.iter().map(|m| m.brain.as_str()).collect();
-        assert_eq!(brains, vec!["codex", "copilot"], "the older Claude adapter alone counts as Claude being here: {missing:?}");
-        assert_eq!(missing[0].install, "npm install -g @zed-industries/codex-acp");
-        assert_eq!(missing[1].install, "npm install -g @github/copilot");
+        assert_eq!(brains, vec!["antigravity", "codex", "copilot"], "the older Claude adapter alone counts as Claude being here: {missing:?}");
+        assert_eq!(missing[1].install, "npm install -g @zed-industries/codex-acp");
+        assert_eq!(missing[2].install, "npm install -g @github/copilot");
 
         let none = path_holding(&["agent"], "b");
         let missing = missing_adapters(Some(none.as_os_str()));
         let _ = std::fs::remove_dir_all(&none);
-        assert_eq!(missing.iter().map(|m| m.brain.as_str()).collect::<Vec<_>>(), vec!["claude-code", "codex", "copilot"]);
-        assert_eq!(missing[0].install, "npm install -g @agentclientprotocol/claude-agent-acp", "the current adapter is the one a person is told to install");
+        assert_eq!(missing.iter().map(|m| m.brain.as_str()).collect::<Vec<_>>(), vec!["antigravity", "claude-code", "codex", "copilot"]);
+        assert_eq!(missing[1].install, "npm install -g @agentclientprotocol/claude-agent-acp", "the current adapter is the one a person is told to install");
     }
 
     #[test]
