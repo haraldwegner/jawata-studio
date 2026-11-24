@@ -6022,7 +6022,9 @@ fn build_rule_block(client: &str, servers: &[ManagedDeployServer]) -> String {
          not come back into your turn by itself unless you are the jawata chat. Call \
          `hire_wait(hireId=..., waitSeconds=50)` until it says `finished`, then read its \
          `report`. It answers `running` while the hire works: call it again, and answer the \
-         person in between. A report you took is marked read, so the chat does not repeat it."
+         person in between. A report you took is marked read, so the chat does not repeat it. \
+         If you are `/main`, the principal of the jawata chat, never call it: end your turn, \
+         the report comes back to you as a new turn."
             .to_string(),
         String::new(),
         // v2.5.1 (Cursor parity, interim): the experience store is the CROSS-CLIENT
