@@ -4069,7 +4069,7 @@ impl ManagerService {
                     if !client_still_receives_seat_commands(client) || seat_commands_inherited {
                         if let Some(commands_dir) = derive_seat_commands_dir(client, &path) {
                             // Utility commands first: `remove_managed_seat_commands`
-                            // prunes `.agent/workflows` when it empties, and a
+                            // prunes the commands dir when it empties, and a
                             // pruned dir would strand the utility files inside it.
                             match remove_managed_utility_commands(client, &commands_dir) {
                                 Ok(true) => changed_sections.push("utilityCommands".into()),
@@ -5326,8 +5326,8 @@ fn derive_global_rule_path(client: &str) -> Option<String> {
 /// sibling), so a tempdir client tree in tests behaves like the real one.
 /// claude → `<base>/.claude/skills/<cmd>/SKILL.md` · cursor →
 /// `<base>/commands/<cmd>.md` (the config sibling IS `~/.cursor`) ·
-/// antigravity → `<base>/.agent/workflows/<cmd>.md` (verified format,
-/// C2). claude_desktop ships via the export zip; intellij via the
+/// antigravity → `<base>/skills/<cmd>/SKILL.md` (28h z61: a skill folder
+/// agy reads, measured). claude_desktop ships via the export zip; intellij via the
 /// rule-block phrase table — neither has a commands dir.
 /// Sprint 28a (D1) — whether a deploy still WRITES seat/utility command files
 /// for this client, as opposed to only knowing where its old ones live.
@@ -5395,13 +5395,16 @@ fn skipped_as_unsupported(client: &str, mode: &DeployMode) -> bool {
 /// here after nothing writes it, because deleting the mapping would strand the
 /// files forever with nothing left that knows where they are.
 fn remove_legacy_seat_commands(client: &str, mcp_target_path: &str) -> bool {
-    if client != "cursor" {
-        return false;
-    }
     let Some(parent) = PathBuf::from(mcp_target_path).parent().map(Path::to_path_buf) else {
         return false;
     };
-    let legacy = parent.join("commands");
+    // Cursor's flat `commands/` (studio#44); Antigravity's `.agent/workflows` (28h z61: a folder agy offers no command from, which it was
+    // measured not to read as commands).
+    let legacy = match client {
+        "cursor" => parent.join("commands"),
+        "antigravity" => parent.join(".agent").join("workflows"),
+        _ => return false,
+    };
     let mut removed = false;
     let names = crate::conductor::COMMAND_MAP
         .iter()
@@ -5415,11 +5418,14 @@ fn remove_legacy_seat_commands(client: &str, mcp_target_path: &str) -> bool {
         }
     }
     let _ = fs::remove_dir(&legacy); // only if empty — a user's own file stays
+    if client == "antigravity" {
+        let _ = fs::remove_dir(parent.join(".agent")); // only if empty
+    }
     removed
 }
 
 fn seat_layout_is_skill(client: &str) -> bool {
-    matches!(client, "claude" | "cursor")
+    matches!(client, "claude" | "cursor" | "antigravity")
 }
 
 fn derive_seat_commands_dir(client: &str, mcp_target_path: &str) -> Option<PathBuf> {
@@ -5431,7 +5437,8 @@ fn derive_seat_commands_dir(client: &str, mcp_target_path: &str) -> Option<PathB
         // studio#44: `skills`, not `commands` — the config sibling is the
         // Cursor dot-directory, so this lands beside its own settings.
         "cursor" => Some(parent.join("skills")),
-        "antigravity" => Some(parent.join(".agent").join("workflows")),
+        // 28h z61: a skill folder agy reads (measured), beside its MCP config, not the workflows folder it offers no command from.
+        "antigravity" => Some(parent.join("skills")),
         _ => None,
     }
 }
@@ -5654,7 +5661,7 @@ fn write_managed_seat_commands(
         let rendered = match client {
             "claude" => crate::conductor::render_claude_skill(seat),
             "cursor" => crate::conductor::render_cursor_command(seat),
-            "antigravity" => crate::conductor::render_antigravity_workflow(seat),
+            "antigravity" => crate::conductor::render_antigravity_skill(seat),
             _ => None,
         };
         let Some(body) = rendered else { continue };
@@ -5692,11 +5699,6 @@ fn remove_managed_seat_commands(client: &str, commands_dir: &Path) -> Result<boo
         }
     }
     let _ = fs::remove_dir(commands_dir); // only if empty
-    if client == "antigravity" {
-        if let Some(agent_dir) = commands_dir.parent() {
-            let _ = fs::remove_dir(agent_dir); // `.agent`, only if empty
-        }
-    }
     Ok(removed)
 }
 
@@ -13366,13 +13368,13 @@ mod tests {
         assert!(load_errors.is_empty(), "{load_errors:?}");
         for seat in &fixture_seats {
             let cmd = crate::conductor::command_for(&seat.name).expect("a fixture seat has a typed command");
-            let body = crate::conductor::render_antigravity_workflow(seat).expect("rendered");
-            actual.insert(format!("antigravity/{cmd}.md"), body.into_bytes());
+            let body = crate::conductor::render_antigravity_skill(seat).expect("rendered");
+            actual.insert(format!("antigravity/{cmd}/SKILL.md"), body.into_bytes());
         }
         for (cmd, desc) in crate::conductor::UTILITY_MAP {
             if cmd == "autocontinue" || cmd == "autocontinue-off" {
                 actual.insert(
-                    format!("antigravity/{cmd}.md"),
+                    format!("antigravity/{cmd}/SKILL.md"),
                     crate::conductor::render_antigravity_utility(cmd, desc).into_bytes(),
                 );
             }
@@ -19026,23 +19028,48 @@ judge was never told to give"
         }
     }
 
+    /// 28h z61: Antigravity's seat commands are skills in a folder agy was measured to read (the `skills` folder beside its MCP config), and the
+    /// workflow files an earlier deploy wrote into `.agent/workflows`, which agy offers no command from, are taken away; a file of the person's
+    /// own in that folder stays.
+    #[test]
+    fn antigravity_seat_commands_are_a_skill_folder_and_the_old_workflows_are_retired() {
+        let dir = unique_tempdir("ag-skills");
+        let config = dir.join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        let mcp = display_path(&config.join("mcp_config.json"));
+        assert_eq!(derive_seat_commands_dir("antigravity", &mcp), Some(config.join("skills")));
+        assert!(seat_layout_is_skill("antigravity"));
+
+        let old = config.join(".agent").join("workflows");
+        std::fs::create_dir_all(&old).unwrap();
+        let ours = format!("old\n> {GENERATED_MARKER} — do not edit\n");
+        std::fs::write(old.join("refactor.md"), &ours).unwrap();
+        std::fs::write(old.join("mine.md"), "my own workflow").unwrap();
+
+        assert!(remove_legacy_seat_commands("antigravity", &mcp), "the retired location was not cleaned");
+        assert!(!old.join("refactor.md").exists(), "a workflow this app wrote was left in the folder agy offers no command from");
+        assert!(old.join("mine.md").exists(), "a file of the person's own was removed");
+    }
+
     #[test]
     fn removing_antigravity_artifacts_takes_the_utility_files_too() {
         // Ordering matters and the test says why: remove_managed_seat_commands
-        // prunes `.agent/workflows` when it empties, so a utility file removed
+        // prunes the commands dir when it empties, so a utility file removed
         // AFTER it would be stranded inside a directory that no longer exists
         // in any mapping. The deploy path removes utilities first.
         let dir = unique_tempdir("ag-artifacts");
-        let commands = dir.join(".agent").join("workflows");
+        let commands = dir.join("skills");
         std::fs::create_dir_all(&commands).unwrap();
         // "old" files THIS APP wrote, so they carry its provenance line — every renderer has
         // written it since the commit that introduced the renderer, and since C11-10 a removal
         // takes only a file that carries it.
         let ours = format!("old\n> {GENERATED_MARKER} — do not edit\n");
         for (_, path) in seat_artifact_paths("antigravity", &commands) {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, &ours).unwrap();
         }
         for (_, path) in utility_artifact_paths("antigravity", &commands) {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, &ours).unwrap();
         }
 
@@ -19055,7 +19082,7 @@ judge was never told to give"
         for (_, path) in utility_artifact_paths("antigravity", &commands) {
             assert!(!path.exists(), "utility artifact survived: {}", path.display());
         }
-        assert!(!commands.exists(), "the emptied workflows dir was left behind");
+        assert!(!commands.exists(), "the emptied skills dir was left behind");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

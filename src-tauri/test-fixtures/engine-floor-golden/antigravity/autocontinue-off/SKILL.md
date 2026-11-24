@@ -1,4 +1,5 @@
 ---
+name: autocontinue-off
 description: "End plan-execution mode for this session: answer what each message asks and stop there until the person types /autocontinue again. Typed by the person"
 ---
 

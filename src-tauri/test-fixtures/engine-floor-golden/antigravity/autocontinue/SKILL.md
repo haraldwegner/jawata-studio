@@ -1,4 +1,5 @@
 ---
+name: autocontinue
 description: "Put this session into plan-execution mode: work the plan stage by stage and stop only at the checkpoints the plan numbers. Typed by the person; only /autocontinue-off ends it"
 ---
 
