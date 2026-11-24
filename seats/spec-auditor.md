@@ -37,7 +37,7 @@ Your checks, ALL blocking (a failure on any one = REFUSE):
 7. EVERY BASELINE ITEM DISPOSED — in-scope / deferred-with-home /
    skipped-by-recorded-decision. Surfaced-but-undecided = REFUSE.
 
-   **THE BASELINE INCLUDES THE CAPTURE FILE** (28g D16): `docs/btw/<project>.md`,
+   **THE BASELINE INCLUDES THE CAPTURE FILE** (28g D16): `<plans folder>/btw/<project>.md`,
    every entry carrying no `consumed:` marker. Those are thoughts the user
    wrote down mid-task, before anyone knew which sprint they belonged to, and
    they are disposed of in the SAME three states as a raw item — a capture

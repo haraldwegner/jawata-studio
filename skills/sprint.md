@@ -82,7 +82,7 @@ its files updated; it is not moved while another branch is editing it.
 
 - **EDITOR** (main context): maintains the raw faithfully; derives the clean per the
   split; on refusal revises the CLEAN (never the raw); parks mechanics in own notes.
-  **AND READS `docs/btw/<project>.md` IN THE SAME BREATH AS THE RAW** (D16, 28g): every
+  **AND READS `<plans folder>/btw/<project>.md` IN THE SAME BREATH AS THE RAW** (D16, 28g): every
   entry there with no `consumed:` marker is an unconsumed capture, and each one must end
   this pass in one of the same three states a raw item does — in scope, deferred with a
   named destination, or struck with a reason. A capture taken into scope gains
@@ -182,7 +182,7 @@ user's judgement, so check 13's product is a named decision for them, never a ve
    risk decision, never a redefined goal. The auditor polices the goal-translation
    force, never serves it.
 6. **Every RAW item DISPOSED — and every unconsumed CAPTURE with it** (D16, 28g:
-   `docs/btw/<project>.md`, the entries carrying no `consumed:` marker) — in-scope /
+   `<plans folder>/btw/<project>.md`, the entries carrying no `consumed:` marker) — in-scope /
    deferred-with-home / skipped-by-user-decision.
    Surfaced-but-undecided findings = REFUSE (they resurface later as negative surprises).
 7. **Reader-fit** — spec in user language, no implementation contracts, no condescension

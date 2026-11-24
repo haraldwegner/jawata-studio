@@ -1323,7 +1323,7 @@ mod tests {
         // THE READER, AND THE MOMENT IT FIRES — in both copies of the rule.
         let sprint = utility_body("sprint");
         assert!(
-            sprint.contains("docs/btw/<project>.md"),
+            sprint.contains("<plans folder>/btw/<project>.md"),
             "the /sprint editor step does not read the capture file, so nothing consumes \
              a capture and /btw writes to a file with no reader"
         );

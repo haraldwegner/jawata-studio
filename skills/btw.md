@@ -15,7 +15,7 @@ Three destinations, and which one it is follows from what the capture IS:
 |---|---|---|
 | a **defect** — something is broken, wrong, missing | an issue in its home sprint | the standing rule: the store is recall, not a backlog; file every defect as an issue in its home sprint, silently |
 | durable **knowledge** — true next month, reusable by someone not here | `/memorize`'s own routing | that verb exists and carries the cold-reader gate; do not duplicate it, FORWARD to it |
-| an **idea, a preference, a "we should"** | `docs/btw/<project>.md`, appended | the only one with no home today, and the gap this command exists to fill |
+| an **idea, a preference, a "we should"** | `<plans folder>/btw/<project>.md`, appended | the only one with no home today, and the gap this command exists to fill |
 
 **If it is genuinely two things, split it and say so in your one line.** If you cannot
 tell which it is, ask ONE question — but read it twice first, because most captures
@@ -38,7 +38,7 @@ verbs.
 
 ## STEP 3 — the idea lane's file, and his words survive it
 
-`docs/btw/<project>.md`, appended, never rewritten:
+`<plans folder>/btw/<project>.md`, appended, never rewritten:
 
 ```markdown
 ## 2026-10-05
@@ -65,7 +65,7 @@ That marker is the only edit ever made to an existing entry.
 
 **Reader: the `/sprint` skill's editor step. Moment: the editor pass, before the raw doc
 is cleaned.** That step already reads a raw working document and asks what the sprint must
-cover; it reads `docs/btw/<project>.md` in the same breath and must dispose of every
+cover; it reads `<plans folder>/btw/<project>.md` in the same breath and must dispose of every
 UNCONSUMED entry in one of three states — in scope, deferred with a named destination, or
 struck with a reason. That is the same disposition rule the auditor already enforces on
 raw items, so it needs no new mechanism.
@@ -85,7 +85,7 @@ remembered.
 
 ## STEP 5 — report, in ONE line
 
-    btw → docs/btw/jawata-studio.md (idea, appended under 2026-10-05)
+    btw → <plans folder>/btw/jawata-studio.md (idea, appended under 2026-10-05)
     btw → issue: jawata-mcp#NN (defect)
     btw → forwarded to /memorize (durable knowledge)
 
