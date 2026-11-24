@@ -1199,27 +1199,6 @@ impl ManagerService {
         self.build_dashboard(false)
     }
 
-    /// The clients seat commands are written for. DERIVED from the roster and the same two
-    /// predicates the deploy itself asks, never typed — a list here would be the copy of the
-    /// deploy's own decision that goes stale the first time a client is added.
-    fn seat_command_clients() -> Vec<crate::seat_settings::ClientChoice> {
-        crate::client_dialect::CLIENTS
-            .iter()
-            .filter(|c| {
-                client_still_receives_seat_commands(c.id)
-                    && derive_seat_commands_dir(c.id, "probe/config.json").is_some()
-                    // A client that reads another's seat directory is not an independent
-                    // choice: dropping a seat from the SOURCE removes it for both, and listing
-                    // the inheriting client alone would leave the seat in neither.
-                    && c.seats_inherited_from.is_empty()
-            })
-            .map(|c| crate::seat_settings::ClientChoice {
-                id: c.id.to_string(),
-                label: c.label.to_string(),
-            })
-            .collect()
-    }
-
     fn seats_dir(&self) -> PathBuf {
         self.config_store.paths().config_dir.join("seats")
     }
@@ -1238,7 +1217,7 @@ impl ManagerService {
         // is idempotent and is the one a deploy runs.
         let dir = self.seats_dir();
         let materialized = crate::conductor::materialize_seats(&dir);
-        let mut view = crate::seat_settings::seats_view(&dir, Self::seat_command_clients());
+        let mut view = crate::seat_settings::seats_view(&dir);
         if let Err(error) = materialized {
             view.errors.push(error);
         }
@@ -1293,12 +1272,10 @@ impl ManagerService {
         seat: &str,
         change: crate::seat_settings::SeatChange,
     ) -> Result<crate::seat_settings::SeatsView, String> {
-        let valid: Vec<String> =
-            Self::seat_command_clients().into_iter().map(|c| c.id).collect();
         if let crate::seat_settings::SeatChange::Brain { brain, model } = &change {
             engine_store_seat_choice(&self.knowledge_servers(), seat, brain, model.as_deref())?;
         }
-        crate::seat_settings::change_seat(&self.seats_dir(), &valid, seat, change)?;
+        crate::seat_settings::change_seat(&self.seats_dir(), seat, change)?;
         Ok(self.seats_view())
     }
 
@@ -5626,8 +5603,8 @@ fn is_studio_generated(path: &Path) -> bool {
 /// generated seat commands for one client. Returns every path it changed, in either
 /// direction, because the caller reports "something changed" and a removal is one.
 ///
-/// Whether a seat reaches this client is `SeatSettings::deploys_to` and nothing else: this
-/// function does not combine the on/off and client settings itself. It used to only write,
+/// Whether a seat is written is `SeatSettings::deploys` and nothing else (every client that can carry a seat command gets every seat that
+/// is on; there is no per-seat client list, 28h z59): this function does not read the settings itself. It used to only write,
 /// which made a turned-off seat a seat that merely stopped being refreshed — its file stayed
 /// in the client, listed and invokable, drifting from the product with no signal.
 fn write_managed_seat_commands(
@@ -5662,7 +5639,7 @@ fn write_managed_seat_commands(
             commands_dir.join(format!("{cmd}.md"))
         };
 
-        if !settings.deploys_to(&seat.name, client) {
+        if !settings.deploys(&seat.name) {
             if path.exists() && is_studio_generated(&path) {
                 fs::remove_file(&path)
                     .map_err(|e| format!("{client}: cannot remove {}: {e}", path.display()))?;
@@ -13553,23 +13530,6 @@ mod tests {
         assert!(!architect.exists(), "the saved setting survived the redeploy and was honoured");
     }
 
-    /// A client that reads another client's seat directory is not an independent choice for a
-    /// seat's client list: dropping the seat from the SOURCE removes it for both, so offering
-    /// the inheriting client alone would let a seat vanish from both while the view read ticked.
-    #[test]
-    fn only_independent_clients_are_offered_for_a_seats_client_list() {
-        let offered = ManagerService::seat_command_clients();
-        assert!(!offered.is_empty(), "control: there is at least one client to offer");
-        for client in &offered {
-            let row = crate::client_dialect::client(&client.id).expect("a roster client");
-            assert!(
-                row.seats_inherited_from.is_empty(),
-                "{} inherits another client's seat directory and must not be offered",
-                client.id
-            );
-        }
-    }
-
     /// An unreadable settings file stops the seat commands for that deploy and SAYS so. Falling
     /// back to "no settings" would re-enable a seat the user turned off.
     #[test]
@@ -13621,29 +13581,27 @@ mod tests {
         assert!(architect.exists(), "turned back on, the command returns");
     }
 
-    /// Setting 2: a client dropped from a seat's list loses that seat's command, and ONLY
-    /// that client does. Two clients so the assertion cannot be satisfied by a writer that
-    /// simply stopped writing.
+    /// 28h z59: there is no per-seat client list. A seat that is on is written for every client that carries seat commands, and one that is
+    /// off is removed from every one of them; a `clients` list an earlier version stored changes neither.
     #[test]
-    fn a_client_dropped_from_a_seats_list_loses_only_that_clients_command() {
-        let (_seats_dir, seats) = loaded_seats("settings-clients");
+    fn a_seat_that_is_on_reaches_every_client_and_one_that_is_off_leaves_all_of_them() {
+        let (seats_dir, seats) = loaded_seats("settings-clients");
+        fs::write(seats_dir.join(crate::seat_settings::SETTINGS_FILE), r#"{"seats":{"architect":{"clients":["cursor"]}}}"#).unwrap();
         let claude_dir = unique_tempdir("settings-clients-claude");
         let cursor_dir = unique_tempdir("settings-clients-cursor");
-        let mut settings = crate::seat_settings::SeatSettings::default();
+        let mut settings = crate::seat_settings::SeatSettings::load(&seats_dir).unwrap();
+        let cmd = crate::conductor::command_for("architect").unwrap();
 
         write_managed_seat_commands("claude", &claude_dir, &seats, &settings, false).unwrap();
         write_managed_seat_commands("cursor", &cursor_dir, &seats, &settings, false).unwrap();
-        let cmd = crate::conductor::command_for("architect").unwrap();
         let claude_file = claude_dir.join(cmd).join("SKILL.md");
         let cursor_file = cursor_dir.join(cmd).join("SKILL.md");
-        assert!(claude_file.exists() && cursor_file.exists(), "control: both clients have it");
+        assert!(claude_file.exists() && cursor_file.exists(), "both clients have it, whatever an old settings file said");
 
-        settings.set_clients("architect", vec!["cursor".into()]);
+        settings.set_enabled("architect", false);
         write_managed_seat_commands("claude", &claude_dir, &seats, &settings, false).unwrap();
         write_managed_seat_commands("cursor", &cursor_dir, &seats, &settings, false).unwrap();
-
-        assert!(!claude_file.exists(), "claude is off the list: its command goes");
-        assert!(cursor_file.exists(), "cursor is on the list: its command stays");
+        assert!(!claude_file.exists() && !cursor_file.exists(), "off removes it from both");
     }
 
     /// THE WIRING GATE FOR v4.0.0's STOP JUDGE.

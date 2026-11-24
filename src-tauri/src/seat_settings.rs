@@ -54,11 +54,6 @@ pub struct SeatOverride {
     /// turns a seat off, so a settings file that merely mentions a seat does not change it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    /// Setting 2 — which client dialects this seat is written for. `None` means every dialect
-    /// this build knows, which is the shipped behaviour; an EMPTY list means none, and is
-    /// distinct from `None` on purpose.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub clients: Option<Vec<String>>,
     /// Setting 3 — the brain a HIRE of this seat starts (`brains::HIRABLE`). `None` means the seat
     /// file's own, which the engine defaults to Claude Code.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -87,7 +82,7 @@ impl SeatOverride {
     /// Whether this override says anything at all. An override that says nothing is removed
     /// rather than stored, so the file never accumulates empty entries that read as settings.
     fn is_empty(&self) -> bool {
-        self.enabled.is_none() && self.clients.is_none() && self.brain.is_none() && self.workflow.is_none()
+        self.enabled.is_none() && self.brain.is_none() && self.workflow.is_none()
     }
 }
 
@@ -139,39 +134,15 @@ impl SeatSettings {
             .unwrap_or(true)
     }
 
-    /// Setting 2, read. `None` means "every dialect this build knows" — the caller keeps its
-    /// own list rather than this module holding a copy of it, which is the no-copy rule.
-    pub fn clients(&self, seat_name: &str) -> Option<&[String]> {
-        self.seats
-            .get(seat_name)
-            .and_then(|o| o.clients.as_deref())
-    }
-
-    /// Settings 1 and 2 as ONE question — does this seat's command get written for this
-    /// client. The deploy asks this and nothing else, so it never combines `is_enabled` and
-    /// `clients` itself: two readers combining two settings is how an off seat ends up
-    /// deployed to the one client whose list was consulted first.
-    ///
-    /// Off beats the client list. A seat that is off deploys nowhere, however its list reads.
-    pub fn deploys_to(&self, seat_name: &str, client: &str) -> bool {
-        if !self.is_enabled(seat_name) {
-            return false;
-        }
-        match self.clients(seat_name) {
-            None => true,
-            Some(list) => list.iter().any(|c| c == client),
-        }
+    /// Whether this seat's command is written for a client at all: only an off seat is not. Which agents get a seat command is not a
+    /// choice (his ruling 2026-11-24, 28h z59): every agent that can carry one gets it, so there is no per-seat client list.
+    pub fn deploys(&self, seat_name: &str) -> bool {
+        self.is_enabled(seat_name)
     }
 
     /// Set setting 1.
     pub fn set_enabled(&mut self, seat_name: &str, enabled: bool) {
         self.entry(seat_name).enabled = Some(enabled);
-    }
-
-    /// Set setting 2. An empty list is kept as an empty list — "no clients" is a real answer
-    /// and must not collapse into "all clients", which is what `None` means.
-    pub fn set_clients(&mut self, seat_name: &str, clients: Vec<String>) {
-        self.entry(seat_name).clients = Some(clients);
     }
 
     /// Setting 3, read: the chosen brain and, if any, the model asked of it.
@@ -366,14 +337,6 @@ pub fn reset_to_shipped(seats_dir: &Path, seat_name: &str) -> Result<(), String>
 // The seats view's model, and the one door the view changes settings through.
 // ===========================================================================
 
-/// One client a seat can be written for: its id (what the settings file stores) and the label a
-/// person reads.
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct ClientChoice {
-    pub id: String,
-    pub label: String,
-}
-
 /// One row of the seats view. Everything here is READ — from the seat's own file, from
 /// `COMMAND_MAP`, from the settings sidecar — and nothing is carried as a copy, so a seat
 /// whose model or purpose change makes the row change with it.
@@ -410,8 +373,6 @@ pub struct SeatRow {
     /// Whether this seat has a command a deploy writes. A driven seat has none, so turning it
     /// off would remove nothing; the view offers the toggle only where it does something.
     pub deployable: bool,
-    /// `None` = every client this build writes seat commands for.
-    pub clients: Option<Vec<String>>,
     pub customised: bool,
     /// Whether this seat is allowed to change code (its file's `changes_code`). The view warns that a brain cannot be restricted from writing
     /// only on a seat that is NOT allowed to (28h z56); on a seat that changes code, writing is its job and nothing is said.
@@ -421,8 +382,6 @@ pub struct SeatRow {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SeatsView {
     pub seats: Vec<SeatRow>,
-    /// The clients a seat can be written for — the choices the clients setting offers.
-    pub clients: Vec<ClientChoice>,
     /// Malformed seat files and an unreadable settings file, named. Never swallowed.
     pub errors: Vec<String>,
     /// The brains the principal and btw can run on: those the engine has a program for on this machine.
@@ -456,10 +415,8 @@ fn stance_edited(seats_dir: &Path, name: &str) -> bool {
     fs::read_to_string(seats_dir.join(&file)).map(|text| text != *shipped).unwrap_or(false)
 }
 
-/// Build the view from the seats directory. `clients` is passed in because which clients get
-/// seat commands is the deploy's knowledge, not this module's — holding a list here would be
-/// the copy this file's header rules out.
-pub fn seats_view(seats_dir: &Path, clients: Vec<ClientChoice>) -> SeatsView {
+/// Build the view from the seats directory.
+pub fn seats_view(seats_dir: &Path) -> SeatsView {
     let (seats, load_errors) = crate::seat_file::load_seat_definitions(seats_dir);
     let mut errors: Vec<String> = load_errors
         .iter()
@@ -492,7 +449,6 @@ pub fn seats_view(seats_dir: &Path, clients: Vec<ClientChoice>) -> SeatsView {
                 || crate::conductor::PIPELINE_SEATS.contains(&seat.name.as_str()),
             enabled: settings.is_enabled(&seat.name),
             deployable: crate::conductor::command_for(&seat.name).is_some(),
-            clients: settings.clients(&seat.name).map(<[String]>::to_vec),
             // An override OR a hand-edited stance: Reset exists for both, and a row that only
             // counted overrides left the edited stance with no way to reach it.
             customised: settings.is_customised(&seat.name) || stance_edited(seats_dir, &seat.name),
@@ -500,7 +456,7 @@ pub fn seats_view(seats_dir: &Path, clients: Vec<ClientChoice>) -> SeatsView {
         })
         .collect();
     errors.sort();
-    SeatsView { seats: rows, clients, errors, acp_brains: Vec::new(), missing_adapters: Vec::new() }
+    SeatsView { seats: rows, errors, acp_brains: Vec::new(), missing_adapters: Vec::new() }
 }
 
 /// What the view asks for. One variant per setting, so a request cannot name two at once.
@@ -508,7 +464,6 @@ pub fn seats_view(seats_dir: &Path, clients: Vec<ClientChoice>) -> SeatsView {
 #[serde(tag = "setting", rename_all = "camelCase")]
 pub enum SeatChange {
     Enabled { value: bool },
-    Clients { value: Vec<String> },
     /// Setting 3 — the brain a hire of this seat starts, and the model asked of it (`None` = the
     /// brain's own default). The view sends this only after a test run through it answered.
     Brain { brain: String, model: Option<String> },
@@ -532,7 +487,6 @@ pub enum SeatChange {
 /// that governs nothing and reads as a setting.
 pub fn change_seat(
     seats_dir: &Path,
-    valid_clients: &[String],
     seat_name: &str,
     change: SeatChange,
 ) -> Result<(), String> {
@@ -556,17 +510,6 @@ pub fn change_seat(
             // what the scheduler and a hire read, and an off switch that waited for the next
             // deploy would show the seat as off while a hire could still start it.
             crate::conductor::materialize_seats(seats_dir).map(|_| ())
-        }
-        SeatChange::Clients { value } => {
-            if let Some(unknown) = value.iter().find(|c| !valid_clients.contains(c)) {
-                return Err(format!(
-                    "'{unknown}' is not a client seat commands are written for (known: {})",
-                    valid_clients.join(", ")
-                ));
-            }
-            let mut settings = SeatSettings::load(seats_dir)?;
-            settings.set_clients(seat_name, value);
-            settings.save(seats_dir)
         }
         SeatChange::Brain { brain, model } => {
             if !crate::brains::HIRABLE.contains(&brain.as_str()) {
@@ -640,7 +583,6 @@ mod tests {
         assert_eq!(settings, SeatSettings::default());
         // and the defaults are the SHIPPED behaviour, not "off"
         assert!(settings.is_enabled("architect"));
-        assert_eq!(settings.clients("architect"), None);
         assert!(!settings.is_customised("architect"));
     }
 
@@ -665,7 +607,6 @@ mod tests {
 
         let mut settings = SeatSettings::load(&seats).unwrap();
         settings.set_enabled("profiler", false);
-        settings.set_clients("architect", vec!["claude".to_string()]);
         settings.save(&seats).unwrap();
 
         // THE REDEPLOY.
@@ -673,22 +614,9 @@ mod tests {
 
         let after = SeatSettings::load(&seats).unwrap();
         assert!(!after.is_enabled("profiler"), "setting 1 must survive");
-        assert_eq!(
-            after.clients("architect"),
-            Some(["claude".to_string()].as_slice()),
-            "setting 2 must survive"
-        );
         // setting 4 is the inverse and is tested below; what survives here is that a reset
         // has something to clear.
         assert!(after.is_customised("profiler"));
-    }
-
-    #[test]
-    fn no_clients_and_every_client_are_different_answers() {
-        let mut settings = SeatSettings::default();
-        settings.set_clients("report", vec![]);
-        assert_eq!(settings.clients("report"), Some([].as_slice()));
-        assert_ne!(settings.clients("report"), None);
     }
 
     #[test]
@@ -757,28 +685,22 @@ mod tests {
     }
 
     #[test]
-    fn deploys_to_answers_settings_one_and_two_together() {
+    fn a_seat_deploys_unless_it_is_off() {
         let mut settings = SeatSettings::default();
-        // Control: a seat nobody has an opinion about goes to every client.
-        assert!(settings.deploys_to("architect", "claude"));
-        assert!(settings.deploys_to("architect", "cursor"));
-
-        // A list narrows it; the client not on the list is excluded, the one on it is not.
-        settings.set_clients("architect", vec!["cursor".into()]);
-        assert!(settings.deploys_to("architect", "cursor"));
-        assert!(!settings.deploys_to("architect", "claude"));
-
-        // An EMPTY list is "no clients", distinct from no list at all.
-        settings.set_clients("architect", vec![]);
-        assert!(!settings.deploys_to("architect", "cursor"));
-
-        // Off beats a list that would admit the client.
-        settings.set_clients("architect", vec!["claude".into()]);
+        assert!(settings.deploys("architect"), "a seat nobody has an opinion about is written for every client");
         settings.set_enabled("architect", false);
-        assert!(!settings.deploys_to("architect", "claude"));
+        assert!(!settings.deploys("architect"));
+        assert!(settings.deploys("debugger"), "and one seat's setting never reaches another's");
+    }
 
-        // And one seat's settings never reach another's.
-        assert!(settings.deploys_to("debugger", "claude"));
+    /// 28h z59: a settings file an earlier version wrote, with a `clients` list in it, still loads, and the list decides nothing.
+    #[test]
+    fn a_stored_clients_list_from_an_earlier_version_is_ignored() {
+        let dir = tempdir("old-clients");
+        fs::write(dir.join(SETTINGS_FILE), r#"{"seats":{"architect":{"clients":["cursor"]}}}"#).unwrap();
+        let settings = SeatSettings::load(&dir).unwrap();
+        assert!(settings.deploys("architect"));
+        assert!(!settings.is_customised("architect"), "a list that decides nothing is not a customisation");
     }
 
     fn seeded(tag: &str) -> PathBuf {
@@ -787,24 +709,13 @@ mod tests {
         dir
     }
 
-    fn both_clients() -> Vec<ClientChoice> {
-        vec![
-            ClientChoice { id: "claude".into(), label: "Claude Code".into() },
-            ClientChoice { id: "cursor".into(), label: "Cursor".into() },
-        ]
-    }
-
-    fn valid() -> Vec<String> {
-        vec!["claude".into(), "cursor".into()]
-    }
-
     /// C11-6: switching a seat OFF reaches the seat FILE at once — the file the scheduler and the
     /// engine's hire read — as this app's own writing, so the seat still receives shipped updates;
     /// switching it back on takes the line out.
     #[test]
     fn switching_a_seat_off_writes_it_into_the_seat_file_every_reader_opens() {
         let dir = seeded("off-into-file");
-        change_seat(&dir, &valid(), "pm", SeatChange::Enabled { value: false }).unwrap();
+        change_seat(&dir, "pm", SeatChange::Enabled { value: false }).unwrap();
         let file = fs::read_to_string(dir.join("pm.md")).unwrap();
         assert!(file.contains("\nenabled: false\n"), "the off switch is in the file: {file}");
         let (seats, errors) = crate::seat_file::load_seat_definitions(&dir);
@@ -814,7 +725,7 @@ mod tests {
         let again = crate::conductor::materialize_seats(&dir).unwrap();
         assert!(!again.shadowed.contains(&"pm.md".to_string()), "still this app's writing: {again:?}");
 
-        change_seat(&dir, &valid(), "pm", SeatChange::Enabled { value: true }).unwrap();
+        change_seat(&dir, "pm", SeatChange::Enabled { value: true }).unwrap();
         let file = fs::read_to_string(dir.join("pm.md")).unwrap();
         assert!(!file.contains("enabled:"), "on again: the line is gone, not flipped: {file}");
     }
@@ -834,14 +745,14 @@ mod tests {
         assert_ne!(with_gate, shipped, "the fixture line went in");
         fs::write(&path, &with_gate).unwrap();
 
-        let view = seats_view(&dir, both_clients());
+        let view = seats_view(&dir);
         assert!(view.errors.is_empty(), "the key is not an unknown key to the view: {:?}", view.errors);
         assert!(view.seats.iter().any(|s| s.name == "pm"), "and the seat is listed");
 
-        change_seat(&dir, &valid(), "pm", SeatChange::Enabled { value: false }).unwrap();
+        change_seat(&dir, "pm", SeatChange::Enabled { value: false }).unwrap();
         let file = fs::read_to_string(&path).unwrap();
         assert!(file.contains("\nschedule_gate: get_diagnostics {\"severity\": \"error\"}\n"), "{file}");
-        assert!(seats_view(&dir, both_clients()).errors.is_empty());
+        assert!(seats_view(&dir).errors.is_empty());
     }
 
     /// The brain choice reaches the one place a hire reads — the seat FILE — and does so as this
@@ -849,7 +760,7 @@ mod tests {
     #[test]
     fn a_chosen_brain_is_written_into_the_seat_file_the_hire_reads_and_reset_removes_it() {
         let dir = seeded("brain-into-file");
-        change_seat(&dir, &valid(), "pm", SeatChange::Brain {
+        change_seat(&dir, "pm", SeatChange::Brain {
             brain: "codex".into(),
             model: None,
         })
@@ -858,7 +769,7 @@ mod tests {
         assert!(file.contains("\nbrain: codex\n"), "the hire reads this line: {file}");
         assert!(!file.contains("\nmodel:"), "no model was chosen, so none is written");
 
-        let row = seats_view(&dir, both_clients()).seats.into_iter().find(|s| s.name == "pm").unwrap();
+        let row = seats_view(&dir).seats.into_iter().find(|s| s.name == "pm").unwrap();
         assert_eq!((row.brain.as_str(), row.model.as_deref()), ("codex", None));
         assert!(row.customised, "a chosen brain is a customisation Reset can undo");
 
@@ -869,7 +780,7 @@ mod tests {
         assert!(fs::read_to_string(dir.join("pm.md")).unwrap().contains("\nbrain: codex\n"));
 
         // A model goes with the brain it was tested on.
-        change_seat(&dir, &valid(), "pm", SeatChange::Brain {
+        change_seat(&dir, "pm", SeatChange::Brain {
             brain: "claude-code".into(),
             model: Some("sonnet".into()),
         })
@@ -878,7 +789,7 @@ mod tests {
         assert!(file.contains("\nbrain: claude-code\nmodel: sonnet\n"), "{file}");
         assert_eq!(file.matches("brain:").count(), 1, "replaced, not appended");
 
-        change_seat(&dir, &valid(), "pm", SeatChange::Reset).unwrap();
+        change_seat(&dir, "pm", SeatChange::Reset).unwrap();
         let file = fs::read_to_string(dir.join("pm.md")).unwrap();
         assert!(!file.contains("brain:") && !file.contains("\nmodel:"), "reset takes this build's seat: {file}");
     }
@@ -890,7 +801,7 @@ mod tests {
     #[test]
     fn choosing_a_brain_held_only_by_an_instruction_writes_the_opt_in_the_hire_checks() {
         let dir = seeded("brain-opt-in");
-        change_seat(&dir, &valid(), "pm", SeatChange::Brain { brain: "cursor".into(), model: None })
+        change_seat(&dir, "pm", SeatChange::Brain { brain: "cursor".into(), model: None })
             .unwrap();
         let file = fs::read_to_string(dir.join("pm.md")).unwrap();
         assert!(
@@ -904,7 +815,7 @@ mod tests {
         assert_eq!(file.matches("accepts_uncontained_writes:").count(), 1, "{file}");
 
         // Switching to a brain a mechanism contains removes it again.
-        change_seat(&dir, &valid(), "pm", SeatChange::Brain { brain: "codex".into(), model: None })
+        change_seat(&dir, "pm", SeatChange::Brain { brain: "codex".into(), model: None })
             .unwrap();
         let file = fs::read_to_string(dir.join("pm.md")).unwrap();
         assert!(file.contains("\nbrain: codex\n"), "{file}");
@@ -931,7 +842,7 @@ mod tests {
     fn a_brain_no_hire_can_start_is_refused_and_nothing_is_written() {
         let dir = seeded("brain-refused");
         let before = fs::read_to_string(dir.join("pm.md")).unwrap();
-        let refused = change_seat(&dir, &valid(), "pm", SeatChange::Brain { brain: "grok".into(), model: None });
+        let refused = change_seat(&dir, "pm", SeatChange::Brain { brain: "grok".into(), model: None });
         assert!(refused.unwrap_err().contains("not a brain a hire can start"));
         assert_eq!(fs::read_to_string(dir.join("pm.md")).unwrap(), before);
     }
@@ -939,13 +850,13 @@ mod tests {
     #[test]
     fn the_view_has_one_row_per_shipped_seat_read_from_the_files() {
         let dir = seeded("view-rows");
-        let view = seats_view(&dir, both_clients());
+        let view = seats_view(&dir);
         assert!(view.errors.is_empty(), "{:?}", view.errors);
         assert_eq!(view.seats.len(), crate::conductor::EMBEDDED_SEATS.len());
 
         let architect = view.seats.iter().find(|s| s.name == "architect").unwrap();
         assert!(!architect.purpose.is_empty() && !architect.fires.is_empty());
-        assert!(architect.enabled && architect.clients.is_none() && !architect.customised);
+        assert!(architect.enabled && !architect.customised);
 
         // The command a person types is carried with its slash, read from COMMAND_MAP — the
         // seat's NAME is not what anyone types.
@@ -971,22 +882,20 @@ mod tests {
     #[test]
     fn a_change_shows_in_the_view_and_a_reset_takes_it_back() {
         let dir = seeded("view-change");
-        let shipped = seats_view(&dir, both_clients())
+        let shipped = seats_view(&dir)
             .seats.into_iter().find(|s| s.name == "debugger").unwrap();
 
-        change_seat(&dir, &valid(), "debugger", SeatChange::Enabled { value: false }).unwrap();
-        change_seat(&dir, &valid(), "debugger", SeatChange::Clients { value: vec!["cursor".into()] }).unwrap();
+        change_seat(&dir, "debugger", SeatChange::Enabled { value: false }).unwrap();
 
-        let changed = seats_view(&dir, both_clients())
+        let changed = seats_view(&dir)
             .seats.into_iter().find(|s| s.name == "debugger").unwrap();
         assert!(!changed.enabled);
-        assert_eq!(changed.clients, Some(vec!["cursor".to_string()]));
         assert!(changed.customised);
 
         // Reset: back to the shipped row, the seat is still THERE (the file was re-seeded),
         // and no other seat was touched.
-        change_seat(&dir, &valid(), "debugger", SeatChange::Reset).unwrap();
-        let reset = seats_view(&dir, both_clients());
+        change_seat(&dir, "debugger", SeatChange::Reset).unwrap();
+        let reset = seats_view(&dir);
         let after = reset.seats.iter().find(|s| s.name == "debugger").expect("seat survives a reset");
         assert_eq!(*after, shipped);
         assert_eq!(reset.seats.len(), crate::conductor::EMBEDDED_SEATS.len());
@@ -999,7 +908,7 @@ mod tests {
         let shipped = fs::read_to_string(&file).unwrap();
         fs::write(&file, format!("{shipped}\nMY OWN EDIT\n")).unwrap();
 
-        change_seat(&dir, &valid(), "debugger", SeatChange::Reset).unwrap();
+        change_seat(&dir, "debugger", SeatChange::Reset).unwrap();
 
         assert_eq!(fs::read_to_string(&file).unwrap(), shipped, "the shipped stance is back");
         assert!(
@@ -1009,24 +918,22 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_seat_or_client_is_refused_and_writes_nothing() {
+    fn an_unknown_seat_is_refused_and_writes_nothing() {
         let dir = seeded("view-refuse");
         let settings_file = dir.join(SETTINGS_FILE);
         assert!(!settings_file.exists(), "control: nothing written yet");
 
-        let ghost = change_seat(&dir, &valid(), "nonesuch", SeatChange::Enabled { value: false });
+        let ghost = change_seat(&dir, "nonesuch", SeatChange::Enabled { value: false });
         assert!(ghost.unwrap_err().contains("no seat named"));
-        let bad_client = change_seat(&dir, &valid(), "debugger", SeatChange::Clients { value: vec!["emacs".into()] });
-        assert!(bad_client.unwrap_err().contains("emacs"));
 
-        assert!(!settings_file.exists(), "two refusals, and neither left a trace");
+        assert!(!settings_file.exists(), "the refusal left no trace");
     }
 
     #[test]
     fn a_corrupt_settings_file_is_named_in_the_view() {
         let dir = seeded("view-corrupt");
         fs::write(dir.join(SETTINGS_FILE), "{ not json").unwrap();
-        let view = seats_view(&dir, both_clients());
+        let view = seats_view(&dir);
         assert!(view.errors.iter().any(|e| e.contains(SETTINGS_FILE)), "{:?}", view.errors);
         assert_eq!(view.seats.len(), crate::conductor::EMBEDDED_SEATS.len(), "the seats still list");
     }
@@ -1039,25 +946,20 @@ mod tests {
     fn the_wire_shape_is_what_the_front_end_sends_and_reads() {
         let sent = |json: &str| serde_json::from_str::<SeatChange>(json).unwrap();
         assert_eq!(sent(r#"{"setting":"enabled","value":false}"#), SeatChange::Enabled { value: false });
-        assert_eq!(
-            sent(r#"{"setting":"clients","value":["claude"]}"#),
-            SeatChange::Clients { value: vec!["claude".into()] }
-        );
         assert_eq!(sent(r#"{"setting":"reset"}"#), SeatChange::Reset);
 
         let dir = seeded("view-wire");
-        let value = serde_json::to_value(seats_view(&dir, both_clients())).unwrap();
-        assert!(value["errors"].is_array() && value["clients"][0]["id"].is_string());
-        assert!(value["clients"][0]["label"].is_string());
+        let value = serde_json::to_value(seats_view(&dir)).unwrap();
+        assert!(value["errors"].is_array() && value.get("clients").is_none(), "the view offers no client choice");
         let row = &value["seats"][0];
         for key in [
             "name", "command", "pipeline", "purpose", "fires", "brain", "model", "runsInAgent",
-            "enabled", "clients", "customised", "deployable",
+            "enabled", "customised", "deployable",
         ] {
             assert!(row.get(key).is_some(), "the view reads `{key}` and the row does not carry it");
         }
         // And what the view must NOT be handed, because no person decides anything with it.
-        for gone in ["tools", "gates", "schedule"] {
+        for gone in ["tools", "gates", "schedule", "clients"] {
             assert!(row.get(gone).is_none(), "the row still carries `{gone}`, which no one acts on");
         }
     }
@@ -1070,14 +972,14 @@ mod tests {
         let dir = seeded("view-edited-stance");
         let file = dir.join("debugger.md");
         let shipped = fs::read_to_string(&file).unwrap();
-        let untouched = seats_view(&dir, both_clients());
+        let untouched = seats_view(&dir);
         assert!(
             !untouched.seats.iter().find(|s| s.name == "debugger").unwrap().customised,
             "control: a seat nobody touched is not customised"
         );
 
         fs::write(&file, format!("{shipped}\nMY OWN EDIT\n")).unwrap();
-        let edited = seats_view(&dir, both_clients());
+        let edited = seats_view(&dir);
         assert!(edited.seats.iter().find(|s| s.name == "debugger").unwrap().customised);
     }
 
@@ -1089,7 +991,7 @@ mod tests {
         let dir = seeded("view-reset-corrupt");
         fs::write(dir.join(SETTINGS_FILE), "{ not json").unwrap();
 
-        change_seat(&dir, &valid(), "debugger", SeatChange::Reset).unwrap();
+        change_seat(&dir, "debugger", SeatChange::Reset).unwrap();
 
         assert!(SeatSettings::load(&dir).is_ok(), "the settings file is readable again");
         assert!(
@@ -1112,7 +1014,7 @@ mod tests {
             .join("\n");
         fs::write(&file, stripped + "\n").unwrap();
 
-        let row = seats_view(&dir, both_clients())
+        let row = seats_view(&dir)
             .seats.into_iter().find(|s| s.name == "debugger").unwrap();
         assert!(!row.purpose.is_empty() && !row.fires.is_empty(), "{row:?}");
     }
@@ -1122,7 +1024,7 @@ mod tests {
         // A driven seat writes no command file, so "off" would remove nothing. The row says so
         // and the view offers the toggle only where it does something.
         let dir = seeded("view-deployable");
-        let view = seats_view(&dir, both_clients());
+        let view = seats_view(&dir);
         assert!(view.seats.iter().find(|s| s.name == "architect").unwrap().deployable);
         assert!(!view.seats.iter().find(|s| s.name == "spec-auditor").unwrap().deployable);
     }

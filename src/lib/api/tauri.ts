@@ -859,12 +859,6 @@ export function fieldSetSilence(
 
 // ===== Sprint 28g (D19 / D20): the seats view =====
 
-/** A client a seat's command can be written for. */
-export interface ClientChoice {
-  id: string;
-  label: string;
-}
-
 /** One seat, as the seats view shows it. Everything is read from the seat's own file and the
  * settings beside it; nothing here is a copy. */
 export interface SeatRow {
@@ -885,8 +879,6 @@ export interface SeatRow {
   /** Whether the seat has a command a deploy writes. A driven seat has none: "off" would remove
    * nothing, so the view offers the toggle only where it does something. */
   deployable: boolean;
-  /** `null` means every client seat commands are written for. */
-  clients: string[] | null;
   customised: boolean;
   /** Whether the seat is allowed to change code. The view warns that a brain cannot be restricted from writing only where it is not. */
   changesCode: boolean;
@@ -894,7 +886,6 @@ export interface SeatRow {
 
 export interface SeatsView {
   seats: SeatRow[];
-  clients: ClientChoice[];
   /** Malformed seat files and an unreadable settings file. Never swallowed. */
   errors: string[];
   /** The brains the principal and btw can run on. */
@@ -906,7 +897,6 @@ export interface SeatsView {
 /** One setting per request, so a call cannot name two at once. */
 export type SeatChange =
   | { setting: "enabled"; value: boolean }
-  | { setting: "clients"; value: string[] }
   /** Send only after `brainProbe` answered for this brain and model. */
   | { setting: "brain"; brain: string; model: string | null }
   | { setting: "reset" }

@@ -314,7 +314,6 @@ mod tests {
     fn place(seats: &Path, seat: &str, parent: &str, role: &str, escalates: Option<&str>) -> Result<(), String> {
         change_seat(
             seats,
-            &[],
             seat,
             SeatChange::Workflow {
                 parent: parent.into(),
@@ -351,7 +350,7 @@ mod tests {
         assert_eq!((row.parent.as_str(), row.placed), ("pm", true));
         assert_eq!(row.signed.unwrap().parent, "chief-engineer", "the row still says where the signed tree puts it");
 
-        change_seat(&seats, &[], "cataloguer", SeatChange::WorkflowDefault).unwrap();
+        change_seat(&seats, "cataloguer", SeatChange::WorkflowDefault).unwrap();
         let back = fs::read_to_string(seats.join("cataloguer.md")).unwrap();
         assert!(!back.contains("parent:") && !back.contains("escalates_to:"), "{back}");
         assert!(!workflow_view(&seats).rows.into_iter().find(|r| r.name == "cataloguer").unwrap().placed);
@@ -455,7 +454,7 @@ mod tests {
         let path = seats.join("cataloguer.md");
         fs::write(&path, format!("{}\nan edit of the stance\n", fs::read_to_string(&path).unwrap())).unwrap();
 
-        change_seat(&seats, &[], "cataloguer", SeatChange::WorkflowDefault).unwrap();
+        change_seat(&seats, "cataloguer", SeatChange::WorkflowDefault).unwrap();
 
         let after = fs::read_to_string(&path).unwrap();
         assert!(after.contains("an edit of the stance"), "the person's edit is kept");

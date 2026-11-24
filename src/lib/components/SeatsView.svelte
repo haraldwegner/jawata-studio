@@ -13,11 +13,10 @@
   // reset. Every one of them has a mouseover saying what it means or what changing it does.
   // Tools, gates and the schedule are not shown: no person acts on them, and no schedule runs.
   //
-  // On is offered only where it does something (a seat with a command); Clients only when two
-  // INDEPENDENT clients exist — Cursor reads Claude's seat directory, so offering both would let
-  // a seat vanish from both while Cursor read ticked. A change is written and the seat part of a
-  // deploy runs at once, so a toggle never waits on a second button somewhere else (C11-4: only
-  // the seat commands, not every client's MCP configuration).
+  // On is offered only where it does something (a seat with a command). There is no choice of which agents get a seat's command: every agent
+  // that can carry one gets it (his ruling 2026-11-24, 28h z59: *"I don't want the fucking checkboxes"*). A change is written and the seat
+  // part of a deploy runs at once, so a toggle never waits on a second button somewhere else (C11-4: only the seat commands, not every
+  // client's MCP configuration).
   import { createEventDispatcher, onMount } from "svelte";
   import { adapterNotice } from "../adapterNotice";
   import { brainNote, canConnect, selectedValue } from "../seatBrainChoice";
@@ -235,22 +234,6 @@
   const BRAIN_HINT = "Typed as a command, a seat runs on your own agent; this is the brain a HIRE of it starts: the agent program, and the model, — logged in with your account on this machine. Choosing one first runs a one-word test through it (Claude Code: under a cent, measured) and is saved only if it answers. The list is read from the programs installed here.";
   const CONVERSATION_BRAIN_HINT = "The brain and model a new conversation with this seat starts on. The models listed are the ones that brain's own session offers; the chat can change the model of a running conversation. Choosing one first runs a one-word test through the brain and is saved only if it answers.";
   const RESET_HINT = "Discards your changes to this seat and takes the version this studio ships. Your changed file is kept beside it as a backup.";
-  const CLIENTS_HINT = "Which of your agents get this seat's command.";
-
-  /** Whether the seat's command is written for this client right now. `null` means all. */
-  function onClient(seat: SeatRow, clientId: string): boolean {
-    return seat.clients === null || seat.clients.includes(clientId);
-  }
-
-  function toggleClient(seat: SeatRow, clientId: string, checked: boolean) {
-    const all = (view?.clients ?? []).map((c) => c.id);
-    const current = seat.clients ?? all;
-    const next = checked
-      ? all.filter((id) => id === clientId || current.includes(id))
-      : current.filter((id) => id !== clientId);
-    apply(seat, { setting: "clients", value: next });
-  }
-
   onMount(() => {
     void load();
     // A choice made in the chat or in Agent Control is the same entry. The page reads it again without being asked.
@@ -432,22 +415,6 @@
                     {/if}
                   {/if}
                 </dd>
-                {#if seat.deployable && view.clients.length >= 2}
-                  <dt title={CLIENTS_HINT}>Clients</dt>
-                  <dd title={CLIENTS_HINT}>
-                    {#each view.clients as client (client.id)}
-                      <label class="checkbox-row">
-                        <input
-                          checked={onClient(seat, client.id)}
-                          disabled={disabled || busy}
-                          on:change={(e) => toggleClient(seat, client.id, e.currentTarget.checked)}
-                          type="checkbox"
-                        />
-                        <span>{client.label}</span>
-                      </label>
-                    {/each}
-                  </dd>
-                {/if}
               </dl>
 
               {#if seat.customised}
