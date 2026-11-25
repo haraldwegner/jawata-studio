@@ -18659,6 +18659,17 @@ judge was never told to give"
         );
     }
 
+    /// 28h z76: a planned probe that was refused was replaced by a search of another file and the item reported as passed.
+    #[test]
+    fn dogfood_a_refused_planned_probe_is_not_probed_and_never_replaced() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let tm = std::fs::read_to_string(root.join("seats/test-manager.md")).expect("seats/test-manager.md");
+        assert!(
+            tm.contains("the row says NOT PROBED") && tm.contains("never put another file or search in its place") && tm.contains("names the planned path"),
+            "the test manager's seat must say a refused planned probe is not probed, is not replaced, and that the check names the planned path"
+        );
+    }
+
     /// 28h Stage 27 (z15): the dogfood rows are written with `files` and probed with `lookup`, so the seat lists both.
     #[test]
     fn dogfood_test_manager_carries_files_and_lookup() {
