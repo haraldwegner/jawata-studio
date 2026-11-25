@@ -227,7 +227,7 @@ mod tests {
             "unknown-role", "role-absent-on-client", "not-configured",
             "stdin-timed-out", "payload-unreadable", "no-cues",
             "store-had-nothing", "not-this-lanes-moment", "query-failed", "contract-mismatch",
-            "cannot-inject", "recorded-not-injected", "nothing-to-observe",
+            "cannot-inject", "passed-through", "recorded-not-injected", "nothing-to-observe",
             "answer-unusable", "watchdog-fired", "no-transcript",
             "autonomy-unknown", "stop-allowed", "panicked",
         ];

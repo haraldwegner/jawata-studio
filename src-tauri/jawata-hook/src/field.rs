@@ -40,7 +40,7 @@ pub const ANSWERED_BUT_SUPPRESSED: &[&str] =
 /// Tags that mean "quiet was the correct outcome".
 pub const LEGITIMATELY_QUIET: &[&str] = &[
     "store-had-nothing", "no-cues", "stop-allowed", "role-absent-on-client",
-    "recorded-not-injected", "nothing-to-observe",
+    "recorded-not-injected", "nothing-to-observe", "passed-through",
 ];
 
 /// How far back the DEAD verdict is allowed to look: seven days.

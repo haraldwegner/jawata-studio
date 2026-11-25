@@ -465,7 +465,7 @@ fn exposes_credentials(text: &str) -> bool {
 /// The whole-payload verdict: the rules that police PATHS and credentials,
 /// which see the command AND the file arguments of Read/Edit/Write. The
 /// shell-command rules stay in [`crate::guard::judge`].
-pub fn judge_payload(text: &str) -> Verdict {
+pub fn judge_payload(text: &str, own_folders: &[&str]) -> Verdict {
     if exposes_credentials(text) {
         return Verdict::Deny {
             reason: "git remote/config introspection is off-limits — a remote address \
@@ -485,7 +485,8 @@ pub fn judge_payload(text: &str) -> Verdict {
     let Some(home_str) = home_dir.to_str() else {
         return Verdict::Allow;
     };
-    let roots = workspace_roots();
+    let mut roots = workspace_roots();
+    roots.extend(own_folders.iter().map(|folder| home_dir.join(folder)));
     for path in home_paths_named(text, home_str) {
         if !inside(&path, &roots) {
             return Verdict::Deny {
@@ -585,17 +586,17 @@ mod tests {
 
     #[test]
     fn git_remote_introspection_is_denied() {
-        assert!(denied(judge_payload("git remote -v")));
-        assert!(denied(judge_payload("cd /repo && git remote get-url origin")));
-        assert!(denied(judge_payload("git config --list")));
+        assert!(denied(judge_payload("git remote -v", &[])));
+        assert!(denied(judge_payload("cd /repo && git remote get-url origin", &[])));
+        assert!(denied(judge_payload("git config --list", &[])));
     }
 
     #[test]
     fn ordinary_git_is_untouched() {
         // The rule is about EXPOSING a remote address, not about git.
-        assert!(!denied(judge_payload("git status --porcelain")));
-        assert!(!denied(judge_payload("git log --oneline -3")));
-        assert!(!denied(judge_payload("git config user.name")));
+        assert!(!denied(judge_payload("git status --porcelain", &[])));
+        assert!(!denied(judge_payload("git log --oneline -3", &[])));
+        assert!(!denied(judge_payload("git config user.name", &[])));
     }
 
     #[test]
@@ -909,7 +910,7 @@ mod tests {
     #[test]
     fn system_paths_are_never_policed() {
         // Toolchain, not user data.
-        assert!(!denied(judge_payload("ls /usr/lib/jvm && cat /etc/hosts")));
+        assert!(!denied(judge_payload("ls /usr/lib/jvm && cat /etc/hosts", &[])));
     }
 
     /// A gate that declares itself in its own header, and the directory it sits in.

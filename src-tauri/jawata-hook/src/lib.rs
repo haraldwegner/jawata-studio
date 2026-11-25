@@ -13,6 +13,7 @@
 mod testdir;
 
 pub mod access;
+pub mod antigravity;
 pub mod autonomy;
 pub mod bracket;
 pub mod cadence;
@@ -60,6 +61,9 @@ pub fn dispatch(argv0: &str) -> Outcome {
         Ok(p) => p,
         Err(reason) => return Outcome::Silent(reason),
     };
+    if config.client.trim() == antigravity::CLIENT {
+        antigravity::enter(&payload);
+    }
     let store = pipeline::LiveStore(query::Endpoint {
         url: config.url.clone(),
         token: config.token.clone(),

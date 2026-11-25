@@ -43,6 +43,10 @@
     "guard": "beforeShellExecution",
     "observer": "afterMCPExecution"
   },
+  "antigravity": {
+    "_why": "28h z68: only the guard is deployed to Antigravity (agy), through the adapter jawata-hook/src/antigravity.rs. agy has SessionStart, PreInvocation, PostToolUse and Stop hooks with shapes of their own; no adapter for them is built",
+    "guard": "PreToolUse"
+  },
   "_absent": {
     "cursor.recall": "Cursor fires no before-a-tool-call event; afterMCPExecution is the only tool-shaped hook and it runs too late to recall INTO the call",
     "cursor.stop": "Cursor has no agent-stop event, so the stop gate cannot exist there; the discipline it enforces is carried by the rule block instead"

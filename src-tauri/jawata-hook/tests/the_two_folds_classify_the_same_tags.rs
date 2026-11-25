@@ -36,6 +36,7 @@ const LEGITIMATELY_QUIET: &[&str] = &[
     "role-absent-on-client",
     "recorded-not-injected",
     "nothing-to-observe",
+    "passed-through",
 ];
 
 /// The studio's copy of the fold. Reached as a FILE, never as a crate.

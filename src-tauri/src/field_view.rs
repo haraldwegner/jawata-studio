@@ -55,6 +55,7 @@ pub const LEGITIMATELY_QUIET: &[&str] = &[
     "role-absent-on-client",
     "recorded-not-injected",
     "nothing-to-observe",
+    "passed-through",
 ];
 
 /// How far back the DEAD verdict is allowed to look: seven days.

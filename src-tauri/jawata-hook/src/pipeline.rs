@@ -149,6 +149,10 @@ fn with_budget(arguments: &mut serde_json::Value, timeout: std::time::Duration) 
 
 /// Run one hook invocation.
 pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) -> Outcome {
+    // 28h z68: agy speaks its own hook shape and has the guard alone; the adapter restates it for the same rules.
+    if config.client.trim() == crate::antigravity::CLIENT {
+        return crate::antigravity::run(role, payload);
+    }
     let client = match config.client() {
         Ok(c) => c,
         Err(reason) => return Outcome::Silent(reason),
@@ -164,7 +168,7 @@ pub fn run(role: Role, config: &HookConfig, payload: &str, store: &dyn Store) ->
         // The guard decides locally and never asks: it must answer while the
         // resident is down, and a guard that asked and failed open would leak
         // exactly the calls it exists to deny.
-        Role::Guard => guard(client, payload),
+        Role::Guard => guard(client, payload, &[]),
         // Sprint 28g S21 — a session that starts AFTER A COMPACTION also gets the discussion back:
         // every window the transcript still holds is stored, and the last things he said ride on
         // top of the primer. Any other start asks the engine nothing extra.
@@ -391,14 +395,16 @@ fn answering_then_working(payload: &str) -> Option<String> {
 /// guard's own rules decide; and WHAT WAS DECIDED is recorded against the call afterwards. No
 /// model is hired for the person's own conversation (28h D57 (d)): watching hired workers is the
 /// engine's, against the instructions each was given.
-fn guard(client: Client, payload: &str) -> Outcome {
+///
+/// `own_folders` are the client's own folders under the home beyond the ones every client has: agy keeps its skills in `.gemini`.
+pub(crate) fn guard(client: Client, payload: &str, own_folders: &[&str]) -> Outcome {
     let watched = watch_begin(payload);
     let outcome = match watched.as_ref().and_then(|w| w.halt.as_ref()) {
         Some(finding) => {
             emit_observer_signal("observer-halt", finding.class.name());
             emit_permission(client, false, finding.correction.clone())
         }
-        None => guard_rules(client, payload),
+        None => guard_rules(client, payload, own_folders),
     };
     if let Some(w) = &watched {
         crate::watch::end(&w.ticket, is_denial(&outcome));
@@ -416,7 +422,7 @@ fn is_denial(outcome: &Outcome) -> bool {
     }
 }
 
-fn guard_rules(client: Client, payload: &str) -> Outcome {
+fn guard_rules(client: Client, payload: &str, own_folders: &[&str]) -> Outcome {
     // THE EDIT HALF, FIRST. Sprint 28's binary read only a shell command and
     // never looked at which tool fired, so a front-door `Edit` of a `.java`
     // file went through unblocked — caught by the 3.7.3 dogfood, and the reason
@@ -576,7 +582,7 @@ fn guard_rules(client: Client, payload: &str) -> Outcome {
         scan.push(' ');
         scan.push_str(&path);
     }
-    if let crate::guard::Verdict::Deny { reason } = crate::local::judge_payload(&scan) {
+    if let crate::guard::Verdict::Deny { reason } = crate::local::judge_payload(&scan, own_folders) {
         return emit_permission(client, false, reason);
     }
     // One question where there were two. "Which repository" and "does the output

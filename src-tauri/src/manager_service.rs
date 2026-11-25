@@ -3511,6 +3511,15 @@ impl ManagerService {
                 }
             }
 
+            // 28h z68: strip Antigravity's guard hook. The person's own hooks stay.
+            if let Some((hooks_json, hooks_dir)) = derive_antigravity_hooks(client, &path) {
+                match remove_managed_antigravity_hooks(&hooks_json, &hooks_dir, backup_before_write) {
+                    Ok(true) => changed_sections.push("antigravityHooks".into()),
+                    Ok(false) => {}
+                    Err(error) => errors.push(error),
+                }
+            }
+
             // Sprint 25a D1: strip the generated seat commands + the skill export.
             if let Some(commands_dir) = derive_seat_commands_dir(client, &path) {
                 match remove_managed_utility_commands(client, &commands_dir) {
@@ -3950,6 +3959,23 @@ impl ManagerService {
                 matches!(mode, DeployMode::Regenerate),
             ) {
                 Ok(true) => changed_sections.push("cursorHooks".into()),
+                Ok(false) => {}
+                Err(error) => errors.push(error),
+            }
+        }
+
+        // 28h z68: Antigravity's guard hook, merged into the person's `hooks.json` beside its MCP config.
+        if let (Some((hooks_json, hooks_dir)), Some(server)) = (derive_antigravity_hooks(client, &path), servers.first()) {
+            match write_managed_antigravity_hooks(
+                &hooks_json,
+                &hooks_dir,
+                hook_binary_source().as_deref(),
+                &server.url,
+                &server.token,
+                backup_before_write,
+                matches!(mode, DeployMode::Regenerate),
+            ) {
+                Ok(true) => changed_sections.push("antigravityHooks".into()),
                 Ok(false) => {}
                 Err(error) => errors.push(error),
             }
@@ -7130,9 +7156,9 @@ fn remove_inert_rule_file(mcp_target_path: &str) -> Result<bool, String> {
 /// Sprint 22 (POST layer): sentinel for the managed PostToolUse observer entry.
 const JAWATA_POSTHOOK_SENTINEL: &str = "jawata-studio/posttooluse-observer.sh";
 
-/// The client whose settings file receives the enforcement hook. Claude Code only:
-/// its `~/.claude/settings.json` hook schema is the one we target; Cursor/
-/// Antigravity have no equivalent, so they keep the rule block (level 2) alone.
+/// The client whose `settings.json` receives the enforcement hook. Claude Code only:
+/// the schema here is its own. Cursor's hooks are written by `write_managed_cursor_hooks`
+/// and Antigravity's guard by `write_managed_antigravity_hooks`, each into its own `hooks.json`.
 /// The stand-in home of every test build of the studio (see `claude_scripts_dir`): one per test thread, removed when
 /// the test ends.
 #[cfg(test)]
@@ -9311,7 +9337,17 @@ fn hook_source_candidates(exe_dir: &Path) -> Vec<PathBuf> {
     vec![exe_dir.join("jawata-hook"), exe_dir.join("jawata-hook.exe")]
 }
 
+#[cfg(test)]
+thread_local! {
+    /// A test's stand-in for the shipped hook binary; unset, the search below runs.
+    static TEST_HOOK_SOURCE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
 fn hook_binary_source() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(stand_in) = TEST_HOOK_SOURCE.with(|s| s.borrow().clone()) {
+        return Some(stand_in);
+    }
     let beside_app = std::env::current_exe().ok().and_then(|e| e.parent().map(PathBuf::from));
     let mut candidates: Vec<PathBuf> = beside_app
         .as_ref()
@@ -9614,6 +9650,9 @@ fn client_for_hooks_dir(hooks_dir: &Path) -> &'static str {
     // the unrecognised case LOUD, which changes what `write_hook_config` does for any
     // caller handing it a directory that is neither — including the test path. Two
     // admissible answers with different costs, so it is raised rather than chosen here.
+    if hooks_dir.file_name().is_some_and(|name| name == ANTIGRAVITY_HOOKS_DIR) {
+        return "antigravity";
+    }
     let cursor_owned = hooks_dir
         .components()
         .any(|c| c.as_os_str().to_string_lossy() == ".cursor");
@@ -11216,6 +11255,157 @@ fn remove_managed_cursor_hooks(
             }
         }
     }
+    Ok(changed)
+}
+
+// ---------------------------------------------------------------------------
+// Antigravity (`agy`), 28h z68: the guard hook, in agy's own `hooks.json`.
+//
+// Measured against agy 1.5.17 (2026-11-26): a `PreToolUse` command hook of the `hooks.json` in agy's config folder runs before a call and
+// refuses it, in the terminal run and in `agy acp`. The file is a map of NAMED hooks, so ours is one key and every other key is the person's.
+// agy refuses the call of a hook that exits non-zero (a missing binary included) and reads `{}` as a refusal; the adapter in the hook crate
+// prints a refusal or nothing, and the command below passes when the binary is gone.
+//
+// Only the guard: the other roles have no adapter for agy's event shapes.
+// ---------------------------------------------------------------------------
+
+/// Our key in agy's `hooks.json`, and so the whole of what a redeploy replaces and an undeploy removes.
+const ANTIGRAVITY_HOOK_NAME: &str = "jawata-studio-guard";
+
+/// The folder of the guard binary and its `hook_config.json`, beside agy's own configuration. Its name says whose it is.
+const ANTIGRAVITY_HOOKS_DIR: &str = "jawata-antigravity";
+
+const ANTIGRAVITY_GUARD_ROLE: &str = "jawata-hook-guard";
+
+/// The tools of agy's the guard has a rule for, as measured. agy matches the tool's name against this.
+const ANTIGRAVITY_GUARDED_TOOLS: &str = "run_command|read_file|write_file|edit_file|call_mcp_tool";
+
+/// agy's `hooks.json` and our folder, both beside the MCP config the studio deploys to.
+fn derive_antigravity_hooks(client: &str, mcp_target_path: &str) -> Option<(PathBuf, PathBuf)> {
+    if client != "antigravity" {
+        return None;
+    }
+    let config = Path::new(mcp_target_path).parent()?;
+    Some((config.join("hooks.json"), config.join(ANTIGRAVITY_HOOKS_DIR)))
+}
+
+/// The command agy runs through `sh -c` (`cmd /c` on Windows): the guard when it is there, a pass when it is not.
+fn antigravity_hook_command(platform: HostPlatform, binary: &Path) -> String {
+    let raw = display_path(binary);
+    match platform {
+        HostPlatform::Unix => {
+            let quoted = format!("'{}'", raw.replace('\'', r"'\''"));
+            format!("test -x {quoted} || exit 0; exec {quoted}")
+        }
+        HostPlatform::Windows => format!("if exist \"{raw}\" \"{raw}\""),
+    }
+}
+
+/// agy's `hooks.json` as it stands: `None` when there is none, an error when it is not a JSON object (it is the person's file).
+fn read_antigravity_hooks(hooks_json: &Path) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String> {
+    let text = match fs::read_to_string(hooks_json) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("failed reading {}: {error}", hooks_json.display())),
+    };
+    let body = text.trim_start_matches('\u{feff}').trim();
+    if body.is_empty() {
+        return Ok(Some(serde_json::Map::new()));
+    }
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(serde_json::Value::Object(object)) => Ok(Some(object)),
+        _ => Err(format!(
+            "{} does not parse as a JSON object, so it was left as it is and the guard hook was not changed",
+            hooks_json.display()
+        )),
+    }
+}
+
+fn backup_antigravity_hooks(hooks_json: &Path, backup_before_write: bool) -> Result<(), String> {
+    if backup_before_write && hooks_json.exists() {
+        crate::backups::backup_before_write(hooks_json)
+            .map_err(|e| format!("failed creating centralized Antigravity hooks backup: {e}"))?;
+    }
+    Ok(())
+}
+
+fn write_antigravity_hooks_file(
+    hooks_json: &Path,
+    object: &serde_json::Map<String, serde_json::Value>,
+    backup_before_write: bool,
+) -> Result<(), String> {
+    backup_antigravity_hooks(hooks_json, backup_before_write)?;
+    let next = serde_json::to_string_pretty(object).map_err(|e| format!("failed serializing Antigravity hooks.json: {e}"))?;
+    fs::write(hooks_json, format!("{next}\n")).map_err(|e| format!("failed writing {}: {e}", hooks_json.display()))
+}
+
+/// Installs the guard binary and its config, and merges our named hook into agy's `hooks.json`. `Ok(true)` when anything changed.
+///
+/// No `source` means no entry: agy has no script generation to fall back to. An installed build without its binary is reported by the
+/// deploy's own binary step, which every client's deploy runs.
+fn write_managed_antigravity_hooks(
+    hooks_json: &Path,
+    hooks_dir: &Path,
+    source: Option<&Path>,
+    mcp_url: &str,
+    token: &str,
+    backup_before_write: bool,
+    force_rewrite: bool,
+) -> Result<bool, String> {
+    let Some(source) = source else { return Ok(false) };
+    // Read FIRST: a file we will not touch means no binary is laid down either.
+    let mut object = read_antigravity_hooks(hooks_json)?.unwrap_or_default();
+    let platform = HostPlatform::host();
+    let config_changed = write_hook_config(hooks_dir, mcp_url, token, None, None)?;
+    let binary_changed = !deploy_hook_binaries(source, hooks_dir, &[ANTIGRAVITY_GUARD_ROLE], platform, &[])?.is_empty();
+
+    let binary = hooks_dir.join(role_binary_file_name_on(platform, ANTIGRAVITY_GUARD_ROLE));
+    let entry = serde_json::json!({
+        "PreToolUse": [{
+            "matcher": ANTIGRAVITY_GUARDED_TOOLS,
+            "hooks": [{ "type": "command", "command": antigravity_hook_command(platform, &binary), "timeout": HOOK_TIMEOUT_SECS }],
+        }],
+    });
+    let entry_changed = object.get(ANTIGRAVITY_HOOK_NAME) != Some(&entry);
+    if entry_changed || force_rewrite {
+        object.insert(ANTIGRAVITY_HOOK_NAME.into(), entry);
+        write_antigravity_hooks_file(hooks_json, &object, backup_before_write)?;
+    }
+    Ok(config_changed || binary_changed || entry_changed || force_rewrite)
+}
+
+/// Removes our named hook and our folder's files; the person's hooks stay, and a `hooks.json` that held only ours goes.
+fn remove_managed_antigravity_hooks(hooks_json: &Path, hooks_dir: &Path, backup_before_write: bool) -> Result<bool, String> {
+    let mut changed = false;
+    match read_antigravity_hooks(hooks_json) {
+        Ok(Some(mut object)) => {
+            if object.remove(ANTIGRAVITY_HOOK_NAME).is_some() {
+                if object.is_empty() {
+                    backup_antigravity_hooks(hooks_json, backup_before_write)?;
+                    fs::remove_file(hooks_json).map_err(|e| format!("failed removing {}: {e}", hooks_json.display()))?;
+                } else {
+                    write_antigravity_hooks_file(hooks_json, &object, backup_before_write)?;
+                }
+                changed = true;
+            }
+        }
+        Ok(None) => {}
+        // A file that does not parse and never named our hook holds nothing of ours.
+        Err(error) => {
+            if fs::read_to_string(hooks_json).map(|t| t.contains(ANTIGRAVITY_HOOK_NAME)).unwrap_or(true) {
+                return Err(error);
+            }
+        }
+    }
+    let binary = role_binary_file_name_on(HostPlatform::host(), ANTIGRAVITY_GUARD_ROLE);
+    for name in [binary.as_str(), "hook_config.json", "hook_silence.log", "hook_silence.log.1"] {
+        let path = hooks_dir.join(name);
+        if path.exists() {
+            fs::remove_file(&path).map_err(|e| format!("failed removing {}: {e}", path.display()))?;
+            changed = true;
+        }
+    }
+    let _ = fs::remove_dir(hooks_dir); // only if empty
     Ok(changed)
 }
 
@@ -15434,6 +15624,133 @@ judge was never told to give"
     }
 
     // ===== Sprint 22a P1-b: Cursor hooks.json deploy/remove lifecycle =====
+
+    /// An agy config folder as the deploy meets it, with a stand-in for the hook binary the bundle ships.
+    fn antigravity_config(label: &str) -> (TestDir, PathBuf, PathBuf, PathBuf) {
+        // A space and a quote in the path: agy runs the command through `sh -c`.
+        let dir = unique_tempdir(label);
+        let config = dir.join("a user's home").join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        let source = dir.join("shipped-hook");
+        std::fs::write(&source, "#!/bin/sh\necho ran\n").unwrap();
+        let mcp = config.join("mcp_config.json");
+        (dir, config, mcp, source)
+    }
+
+    const PERSONS_HOOK: &str =
+        r#"{"my-lint":{"PostToolUse":[{"matcher":"run_command","hooks":[{"type":"command","command":"./lint.sh"}]}]}}"#;
+
+    fn json_file(path: &Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    /// 28h z68: agy was measured to run a `PreToolUse` command hook before a call and to refuse the call on its word.
+    #[test]
+    fn antigravity_gets_the_guard_hook_beside_its_config_and_keeps_the_persons_own() {
+        let (_dir, config, mcp, source) = antigravity_config("agy-hooks-write");
+        let hooks_json = config.join("hooks.json");
+        std::fs::write(&hooks_json, PERSONS_HOOK).unwrap();
+        let (derived_json, hooks_dir) = derive_antigravity_hooks("antigravity", mcp.to_str().unwrap()).expect("agy has hooks");
+        assert_eq!((&derived_json, hooks_dir.parent()), (&hooks_json, Some(config.as_path())));
+        for other in known_deploy_client_ids().into_iter().filter(|id| *id != "antigravity") {
+            assert!(derive_antigravity_hooks(other, mcp.to_str().unwrap()).is_none(), "{other} has no agy hooks");
+        }
+        let write = || {
+            write_managed_antigravity_hooks(&hooks_json, &hooks_dir, Some(&source), "http://127.0.0.1:8899/mcp", "tok", false, false)
+        };
+
+        assert!(write().unwrap());
+
+        let v = json_file(&hooks_json);
+        assert_eq!(v["my-lint"], serde_json::from_str::<serde_json::Value>(PERSONS_HOOK).unwrap()["my-lint"], "the person's hook");
+        let ours = &v["jawata-studio-guard"]["PreToolUse"][0];
+        let declared: serde_json::Value = serde_json::from_str(include_str!("../hook-events.json")).unwrap();
+        assert!(v["jawata-studio-guard"][declared["antigravity"]["guard"].as_str().unwrap()].is_array(), "the contract's event: {v}");
+        assert_eq!("run_command|read_file|write_file|edit_file|call_mcp_tool", ours["matcher"], "the tools measured in agy 1.5.17");
+        assert_eq!("command", ours["hooks"][0]["type"]);
+        let binary = hooks_dir.join(role_binary_file_name_on(HostPlatform::host(), "jawata-hook-guard"));
+        assert!(binary.exists(), "the guard binary");
+        assert_eq!("antigravity", json_file(&hooks_dir.join("hook_config.json"))["client"], "the binary must speak agy's dialect");
+        assert!(!write().unwrap(), "an unchanged re-deploy writes nothing");
+
+        // The command as agy runs it; and with the binary gone it must PASS, because agy refuses every call of a hook that fails.
+        #[cfg(unix)]
+        {
+            let command = ours["hooks"][0]["command"].as_str().unwrap().to_string();
+            let run = || std::process::Command::new("sh").arg("-c").arg(&command).output().unwrap();
+            let present = run();
+            assert_eq!((Some(0), "ran\n"), (present.status.code(), String::from_utf8_lossy(&present.stdout).as_ref()), "{command}");
+            std::fs::remove_file(&binary).unwrap();
+            let gone = run();
+            assert_eq!((Some(0), true), (gone.status.code(), gone.stdout.is_empty()), "a missing binary must not stop agy: {command}");
+        }
+    }
+
+    #[test]
+    fn antigravity_undeploy_retires_our_hook_alone() {
+        let (_dir, config, mcp, source) = antigravity_config("agy-hooks-remove");
+        let (hooks_json, hooks_dir) = derive_antigravity_hooks("antigravity", mcp.to_str().unwrap()).unwrap();
+        let write =
+            || write_managed_antigravity_hooks(&hooks_json, &hooks_dir, Some(&source), "http://u/mcp", "t", false, false).unwrap();
+
+        std::fs::write(&hooks_json, PERSONS_HOOK).unwrap();
+        write();
+        assert!(remove_managed_antigravity_hooks(&hooks_json, &hooks_dir, false).unwrap());
+        assert_eq!(serde_json::from_str::<serde_json::Value>(PERSONS_HOOK).unwrap(), json_file(&hooks_json), "the person's alone");
+        assert!(!hooks_dir.exists(), "our folder goes with the entry");
+        assert!(!remove_managed_antigravity_hooks(&hooks_json, &hooks_dir, false).unwrap(), "nothing left to retire");
+
+        // A file that held only ours goes.
+        std::fs::remove_file(&hooks_json).unwrap();
+        write();
+        assert!(remove_managed_antigravity_hooks(&hooks_json, &hooks_dir, false).unwrap());
+        assert!(!hooks_json.exists() && config.exists());
+    }
+
+    #[test]
+    fn an_antigravity_hooks_file_that_does_not_parse_is_left_alone() {
+        let (_dir, _config, mcp, source) = antigravity_config("agy-hooks-broken");
+        let (hooks_json, hooks_dir) = derive_antigravity_hooks("antigravity", mcp.to_str().unwrap()).unwrap();
+        std::fs::write(&hooks_json, "{ \"mine\": ").unwrap();
+
+        let refused = write_managed_antigravity_hooks(&hooks_json, &hooks_dir, Some(&source), "http://u/mcp", "t", false, true);
+
+        assert!(refused.unwrap_err().contains("left as it is"));
+        assert_eq!("{ \"mine\": ", std::fs::read_to_string(&hooks_json).unwrap());
+        assert!(!remove_managed_antigravity_hooks(&hooks_json, &hooks_dir, false).unwrap(), "it never held ours");
+    }
+
+    /// The wiring: the deploy of the Antigravity client installs the hook, and its undeploy retires it.
+    #[test]
+    fn the_antigravity_deploy_installs_the_guard_hook_and_the_undeploy_retires_it() {
+        let (dir, config, mcp, source) = antigravity_config("agy-hooks-deploy");
+        let service = service_over(&dir);
+        let settings = service.config_store.get_settings();
+        let hooks_json = config.join("hooks.json");
+        let servers = vec![url_server("jawata-ws-a", 8800, "tok", false)];
+        let deploy = |mode: DeployMode| {
+            service.deploy_to_client(
+                "antigravity",
+                Some(mcp.to_string_lossy().into_owned()),
+                &servers,
+                &settings.mcp_merge_mode,
+                false,
+                &mode,
+                false,
+            )
+        };
+        TEST_HOOK_SOURCE.with(|s| *s.borrow_mut() = Some(source.clone()));
+
+        let installed = deploy(DeployMode::Deploy);
+        let after_deploy = std::fs::read_to_string(&hooks_json);
+        let retired = deploy(DeployMode::Delete);
+        TEST_HOOK_SOURCE.with(|s| *s.borrow_mut() = None);
+
+        assert!(installed.changed_sections.iter().any(|s| s == "antigravityHooks"), "{:?}", installed);
+        assert!(after_deploy.unwrap().contains("jawata-studio-guard"));
+        assert!(retired.changed_sections.iter().any(|s| s == "antigravityHooks"), "{:?}", retired);
+        assert!(!hooks_json.exists(), "it held only ours");
+    }
 
     #[test]
     fn cursor_hooks_path_is_cursor_only() {

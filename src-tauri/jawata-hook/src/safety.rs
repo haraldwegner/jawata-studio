@@ -137,6 +137,8 @@ silence_reasons! {
     ContractMismatch(String) => "contract-mismatch", SilenceReason::ContractMismatch("ours=1 theirs=2".into());
     /// This role cannot inject on this client.
     CannotInject => "cannot-inject", SilenceReason::CannotInject;
+    /// 28h z68: the guard let an agy call through. agy takes any JSON object as a decision, so a pass is said by saying nothing.
+    PassedThrough => "passed-through", SilenceReason::PassedThrough;
 
     /// Sprint 28b D8/F2: the role RECORDED what it saw and its client cannot
     /// inject BY DESIGN (Cursor's observer/user-prompt cells) — quiet is the
