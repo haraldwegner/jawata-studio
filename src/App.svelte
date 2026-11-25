@@ -603,6 +603,7 @@
               runtimeStatuses={$appStore.runtimeStatuses ?? {}}
               workspaceReadable={$appStore.workspaceReadable ?? {}}
               projectUnhealthy={$appStore.projectUnhealthy ?? {}}
+              workspaceWarnings={$appStore.workspaceWarnings ?? {}}
               selectedProjectId={$appStore.selectedProjectId}
             />
           </div>

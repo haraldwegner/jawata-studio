@@ -13,6 +13,7 @@
   import { projectPathKey } from "../api/tauri";
   import ContextMenu from "./ContextMenu.svelte";
   import { deployStatusLines } from "../deployStatus";
+  import { unreadableTitle } from "../unreadableTitle";
 
   interface ContextMenuItem {
     label: string;
@@ -61,6 +62,8 @@
    *  correct and one a lie, indistinguishable. A project absent from this map has not been
    *  reported unreadable, which is NOT the same as confirmed healthy. */
   export let projectUnhealthy: Record<string, ProjectResolution> = {};
+  /** The engine's warning for each workspace it cannot read, by workspace name; it names the cause and the remedy. */
+  export let workspaceWarnings: Record<string, string> = {};
   export let onDeploy: (mode: DeployMode, targetClients?: string[]) => void;
   export let deployTargetDefaults: DeployTargetFlags = {
     antigravity: true,
@@ -869,7 +872,7 @@
                 <!-- jawata-studio#24. Beside the phase, never instead of it: the
                      service really is running, AND the workspace cannot be read.
                      Both are true and the reader needs both. -->
-                <span class="badge workspace-status failed" title="This workspace cannot be read — at least one project's directory is missing or unreadable. Refactorings are refused while this is true.">
+                <span class="badge workspace-status failed" title={unreadableTitle(workspaceWarnings[workspace.name])}>
                   <span class="status-lamp failed"></span>
                   cannot be read
                 </span>

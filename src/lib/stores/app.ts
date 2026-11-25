@@ -56,6 +56,8 @@ interface AppState extends Partial<ManagerDashboard> {
    *  of leaving the reader with one workspace-level marker and five green rows. Absent
    *  means not yet observed, which is NOT the same as healthy. */
   projectUnhealthy?: Record<string, ProjectResolution>;
+  /** The engine's warning for each workspace it cannot read, by workspace name. */
+  workspaceWarnings?: Record<string, string>;
   lastCleanupSummary?: CleanupSummary;
   serviceProbeBusy?: boolean;
   serviceProbeError?: string;
@@ -473,9 +475,16 @@ export function createAppStore() {
       // for a consumer that knows projects by path rather than by key" — which is what a
       // dashboard row is.
       let unhealthy: Record<string, ProjectResolution> | undefined;
+      // 28h z74: the engine's own warning per workspace, which the badge shows; a workspace whose every project failed to load reports no
+      // project rows at all, so its reason is only here.
+      let warnings: Record<string, string> | undefined;
       try {
         unhealthy = {};
+        warnings = {};
         for (const workspace of await resolutionStatus()) {
+          if (workspace.healthy === false && workspace.warning) {
+            warnings[workspace.workspace] = workspace.warning;
+          }
           for (const project of workspace.projects) {
             if (project.healthy === false) {
               unhealthy[projectPathKey(project.projectPath)] = project;
@@ -485,6 +494,7 @@ export function createAppStore() {
       } catch (e) {
         console.error("per-project resolution poll failed", e);
         unhealthy = undefined;
+        warnings = undefined;
       }
 
       update((state) => {
@@ -501,7 +511,8 @@ export function createAppStore() {
           workspaceReadable: readable ?? state.workspaceReadable ?? {},
           // A failed poll leaves the previous answer standing rather than inventing
           // "everything is fine" — the same discipline the readability poll above uses.
-          projectUnhealthy: unhealthy ?? state.projectUnhealthy ?? {}
+          projectUnhealthy: unhealthy ?? state.projectUnhealthy ?? {},
+          workspaceWarnings: warnings ?? state.workspaceWarnings ?? {}
         };
       });
     } finally {
