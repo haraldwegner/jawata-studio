@@ -75,6 +75,9 @@
 //!   `---JAWATA-PROPOSAL-BEGIN---` and `---JAWATA-PROPOSAL-END---` markers.
 //!   Everything before the markers is treated as the seat's evidence prose.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -1591,35 +1594,42 @@ pub fn journal_nothing_to_do(
 /// touched; gates run against the shadow — the future the human would get.
 pub fn shadow_apply(workdir: &Path, diff: &str) -> Result<PathBuf, String> {
     let shadow = shadow_dir_name();
-    copy_tree(workdir, &shadow)?;
-    let mut diff_text = diff.to_string();
-    if !diff_text.ends_with('\n') {
-        diff_text.push('\n');
+    let applied = (|| -> Result<(), String> {
+        copy_tree(workdir, &shadow)?;
+        let mut diff_text = diff.to_string();
+        if !diff_text.ends_with('\n') {
+            diff_text.push('\n');
+        }
+        let diff_file = shadow.join(".jawata-proposal.diff");
+        fs::write(&diff_file, &diff_text).map_err(|e| e.to_string())?;
+        // `git apply --recount` recomputes hunk-header line counts from the
+        // hunk bodies — model-generated diffs routinely miscount them; the
+        // CONTENT (context + changes) stays strictly verified. Works outside a
+        // git repository. -C1 tolerates a drifted context line at hunk edges.
+        let output = Command::new("git")
+            .arg("apply")
+            .arg("--recount")
+            .arg("-C1")
+            .arg("--whitespace=nowarn")
+            .arg(&diff_file)
+            .current_dir(&shadow)
+            .output()
+            .map_err(|e| format!("git apply: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "proposal diff does not apply: {}{}",
+                String::from_utf8_lossy(&output.stdout).trim(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        let _ = fs::remove_file(&diff_file);
+        Ok(())
+    })();
+    if applied.is_err() {
+        // The caller gets no path to a copy that was not finished, so nobody else can remove it.
+        let _ = fs::remove_dir_all(&shadow);
     }
-    let diff_file = shadow.join(".jawata-proposal.diff");
-    fs::write(&diff_file, &diff_text).map_err(|e| e.to_string())?;
-    // `git apply --recount` recomputes hunk-header line counts from the
-    // hunk bodies — model-generated diffs routinely miscount them; the
-    // CONTENT (context + changes) stays strictly verified. Works outside a
-    // git repository. -C1 tolerates a drifted context line at hunk edges.
-    let output = Command::new("git")
-        .arg("apply")
-        .arg("--recount")
-        .arg("-C1")
-        .arg("--whitespace=nowarn")
-        .arg(&diff_file)
-        .current_dir(&shadow)
-        .output()
-        .map_err(|e| format!("git apply: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "proposal diff does not apply: {}{}",
-            String::from_utf8_lossy(&output.stdout).trim(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let _ = fs::remove_file(&diff_file);
-    Ok(shadow)
+    applied.map(|()| shadow)
 }
 
 /// FILE-BLOCK staging: shadow = tree copy + the proposal's files written
@@ -2648,21 +2658,8 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
-    fn unique_tempdir(label: &str) -> PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "jawata-runner-test-{label}-{}-{}-{}",
-            std::process::id(),
-            nanos,
-            n
-        ));
-        fs::create_dir_all(&dir).expect("test tempdir");
-        dir
+    fn unique_tempdir(label: &str) -> TestDir {
+        TestDir::new(&format!("jawata-runner-test-{label}"))
     }
 
     use crate::seat_file::{load_seat_definitions, parse_seat_definition, Ceilings, SeatKind, SEAT_FIXTURE};
@@ -3443,12 +3440,11 @@ mod tests {
         assert!(p.diff.contains("+/** Doc. */"), "computed diff:\n{}", p.diff);
         assert!(p.diff.contains("--- a/src/main/java/com/example/Foo.java"));
         // Staging writes the file into the shadow, not the workdir.
-        let shadow = shadow_stage_files(&dir.join("fixture"), &p.files).unwrap();
+        let shadow = TestDir::adopt(shadow_stage_files(&dir.join("fixture"), &p.files).unwrap());
         assert!(fs::read_to_string(shadow.join("src/main/java/com/example/Foo.java"))
             .unwrap()
             .contains("/** Doc. */"));
         assert!(!fs::read_to_string(src.join("Foo.java")).unwrap().contains("Doc"));
-        let _ = fs::remove_dir_all(&shadow);
         // Traversal-shaped paths refuse the whole block.
         let evil = format!(
             "{PROPOSAL_BEGIN}\n===FILE: ../evil.java===\nx\n===END-FILE===\n{PROPOSAL_END}"
@@ -4663,15 +4659,15 @@ mod tests {
                                 content: fs::read_to_string(&f).unwrap(),
                             });
                         }
-                        let shadow =
-                            shadow_stage_files(&fixture, &staged).expect("shadow for count");
+                        let shadow = TestDir::adopt(
+                            shadow_stage_files(&fixture, &staged).expect("shadow for count"),
+                        );
                         exec.call_tool(
                             "load_project",
                             serde_json::json!({ "projectPath": shadow.to_string_lossy() }),
                         )
                         .expect("load shadow");
                         let a = count_lack(&exec);
-                        let _ = fs::remove_dir_all(&shadow);
                         (a, report.gates.iter().all(|g| g.passed))
                     }
                     _ => (before, false),

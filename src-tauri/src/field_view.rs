@@ -22,6 +22,9 @@
 //! the files say, the tile carries two switches, and a failing canary changes a
 //! colour. That is the whole surface — see `interruption_scans` at the foot of this file.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -1644,14 +1647,8 @@ fn number_field(line: &str, key: &str) -> Option<u64> {
 mod tests {
     use super::*;
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "jawata-field-view-{name}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn scratch(name: &str) -> TestDir {
+        TestDir::new(&format!("jawata-field-view-{name}"))
     }
 
     /// The seeded pile the whole stage is proven against: one shape over the

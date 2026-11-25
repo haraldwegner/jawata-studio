@@ -9,6 +9,9 @@
 //! The fix is the one editors use: ask the person's own shell, once, what its PATH is, and add the folders the studio's PATH does not hold
 //! after the studio's own, so the folders the studio and the AppImage put first keep winning.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::ffi::{OsStr, OsString};
 #[cfg(test)]
 use std::path::PathBuf;
@@ -140,11 +143,8 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn scratch(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("jawata-login-env-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn scratch(name: &str) -> TestDir {
+        TestDir::new(&format!("jawata-login-env-{name}"))
     }
 
     /// What start-up files print around the PATH (a banner, a warning) is not read as PATH.

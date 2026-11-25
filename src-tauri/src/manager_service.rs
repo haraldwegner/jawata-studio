@@ -1,3 +1,6 @@
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use crate::{
     eclipse_notes::{self, EclipseWorkspaceRow},
     config::{
@@ -7130,10 +7133,14 @@ const JAWATA_POSTHOOK_SENTINEL: &str = "jawata-studio/posttooluse-observer.sh";
 /// The client whose settings file receives the enforcement hook. Claude Code only:
 /// its `~/.claude/settings.json` hook schema is the one we target; Cursor/
 /// Antigravity have no equivalent, so they keep the rule block (level 2) alone.
-/// The stand-in home of every test build of the studio (see `claude_scripts_dir`).
+/// The stand-in home of every test build of the studio (see `claude_scripts_dir`): one per test thread, removed when
+/// the test ends.
 #[cfg(test)]
 fn test_home() -> PathBuf {
-    std::env::temp_dir().join("jawata-studio-test-home")
+    thread_local! {
+        static HOME: TestDir = TestDir::new("jawata-studio-test-home");
+    }
+    HOME.with(|home| home.to_path_buf())
 }
 
 fn derive_hook_settings_path(client: &str) -> Option<String> {
@@ -11752,26 +11759,11 @@ mod tests {
     // ============================================================
 
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     /// Returns a unique tempdir per call so concurrent tests don't
-    /// collide. Caller is responsible for cleanup (best-effort).
-    pub(super) fn unique_tempdir(label: &str) -> PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "jawata-studio-mstest-{label}-{}-{}-{}",
-            std::process::id(),
-            nanos,
-            n
-        ));
-        std::fs::create_dir_all(&dir).expect("failed to create test tempdir");
-        dir
+    /// collide. It is removed when the returned guard is dropped.
+    pub(super) fn unique_tempdir(label: &str) -> TestDir {
+        TestDir::new(&format!("jawata-studio-mstest-{label}"))
     }
 
     #[test]
@@ -11913,7 +11905,7 @@ mod tests {
     /// last and the file is right.
     #[test]
     fn a_claude_hooks_dir_is_never_stamped_as_cursor() {
-        let dir = unique_tempdir("hookcfg-claude").join(".claude").join("jawata-studio");
+        let dir = unique_tempdir("hookcfg-claude").child(".claude").child("jawata-studio");
         fs::create_dir_all(&dir).unwrap();
 
         write_hook_config(&dir, "http://127.0.0.1:1/mcp", "t", None, None).unwrap();
@@ -11935,7 +11927,7 @@ mod tests {
     /// defect this product already shipped once.
     #[test]
     fn a_cursor_hooks_dir_is_stamped_as_cursor() {
-        let dir = unique_tempdir("hookcfg-cursor").join(".cursor").join("hooks");
+        let dir = unique_tempdir("hookcfg-cursor").child(".cursor").child("hooks");
         fs::create_dir_all(&dir).unwrap();
 
         write_hook_config(&dir, "http://127.0.0.1:1/mcp", "t", None, None).unwrap();
@@ -12830,9 +12822,8 @@ mod tests {
     /// were stale, not the check: these tests exist to prove the SHAPE checks
     /// (length, undefined terms, second pass), so they now supply the judged
     /// precondition rather than asserting an unjudged ask may pass.
-    fn transcript_with(dir_label: &str, final_text: &str, extra: &str) -> String {
-        let dir = unique_tempdir(dir_label);
-        let tp = dir.join("transcript.jsonl");
+    fn transcript_with(dir_label: &str, final_text: &str, extra: &str) -> TestDir {
+        let tp = unique_tempdir(dir_label).child("transcript.jsonl");
         let mut lines = String::new();
         lines.push_str(&serde_json::json!({
             "type": "assistant",
@@ -12847,7 +12838,7 @@ mod tests {
         }).to_string());
         lines.push('\n');
         fs::write(&tp, lines).unwrap();
-        display_path(&tp)
+        tp
     }
 
     #[test]
@@ -12860,7 +12851,7 @@ mod tests {
         ] {
             let tp = transcript_with(&format!("shape-{label}"), &shaped, "");
             let v = run_stop_script(&serde_json::json!({
-                "transcript_path": tp, "stop_hook_active": false }));
+                "transcript_path": &*tp, "stop_hook_active": false }));
             assert_eq!(v["decision"], "block", "{label} must bounce");
             assert!(v["reason"].as_str().unwrap().contains("LENGTH"), "{label}: names length");
         }
@@ -12871,17 +12862,17 @@ mod tests {
         // Clean shaped message: short, no undefined terms → allowed.
         let tp = transcript_with("clean", "DECISION: ship v3.2.0? Options: yes / no.", "");
         let v = run_stop_script(&serde_json::json!({
-            "transcript_path": tp, "stop_hook_active": false }));
+            "transcript_path": &*tp, "stop_hook_active": false }));
         assert!(v.get("decision").is_none(), "clean passes: {v}");
         // stop_hook_active = the one-rewrite-loop guard.
         let tp2 = transcript_with("second", &"DECISION: x".repeat(500), "");
         let v2 = run_stop_script(&serde_json::json!({
-            "transcript_path": tp2, "stop_hook_active": true }));
+            "transcript_path": &*tp2, "stop_hook_active": true }));
         assert!(v2.get("decision").is_none(), "second pass always allowed");
         // Unshaped prose is never gated.
         let tp3 = transcript_with("prose", &"just working notes ".repeat(300), "");
         let v3 = run_stop_script(&serde_json::json!({
-            "transcript_path": tp3, "stop_hook_active": false }));
+            "transcript_path": &*tp3, "stop_hook_active": false }));
         assert!(v3.get("decision").is_none(), "unshaped prose passes");
     }
 
@@ -12893,7 +12884,7 @@ mod tests {
         }).to_string() + "\n";
         let tp = transcript_with("seat-skip", "Proposal: add javadoc to Foo.", &seat_line);
         let v = run_stop_script(&serde_json::json!({
-            "transcript_path": tp, "stop_hook_active": false }));
+            "transcript_path": &*tp, "stop_hook_active": false }));
         assert_eq!(v["decision"], "block");
         assert!(v["reason"].as_str().unwrap().contains("SEAT DISCIPLINE"));
         assert!(v["reason"].as_str().unwrap().contains("compile_workspace"));
@@ -12904,7 +12895,7 @@ mod tests {
         }).to_string() + "\n";
         let tp2 = transcript_with("seat-ok", "Proposal: add javadoc to Foo.", &gated);
         let v2 = run_stop_script(&serde_json::json!({
-            "transcript_path": tp2, "stop_hook_active": false }));
+            "transcript_path": &*tp2, "stop_hook_active": false }));
         assert!(v2.get("decision").is_none(), "gated seat session passes: {v2}");
     }
 
@@ -13144,8 +13135,8 @@ mod tests {
         }
     }
 
-    fn loaded_seats(label: &str) -> (PathBuf, Vec<crate::seat_file::SeatDefinition>) {
-        let seats_dir = unique_tempdir(label).join("seats");
+    fn loaded_seats(label: &str) -> (TestDir, Vec<crate::seat_file::SeatDefinition>) {
+        let seats_dir = unique_tempdir(label).child("seats");
         crate::conductor::materialize_seats(&seats_dir).expect("materialize");
         let (seats, errors) = crate::seat_file::load_seat_definitions(&seats_dir);
         assert!(errors.is_empty(), "embedded seats must load clean: {errors:?}");
@@ -13718,7 +13709,7 @@ judge was never told to give"
     /// that answered `true` unconditionally could not pass.
     #[test]
     fn the_probe_reads_the_seat_directory_it_is_given() {
-        let (_, seats) = loaded_seats("seat-probe");
+        let (_seats_dir, seats) = loaded_seats("seat-probe");
         let base = unique_tempdir("seat-probe-tree");
         let cfg = base.join("config.json");
         fs::write(&cfg, "{}").unwrap();
@@ -14035,8 +14026,7 @@ judge was never told to give"
     #[ignore]
     fn engine_trial_passes_a_real_published_engine() {
         let jar = std::env::var("JAWATA_TRIAL_JAR").expect("set JAWATA_TRIAL_JAR to a published jawata.jar");
-        let dir = std::env::temp_dir().join(format!("jawata-trial-real-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("jawata-trial-real");
         let service = service_over(&dir);
 
         let verdict = service.engine_trial(Path::new(&jar));
@@ -14259,7 +14249,7 @@ judge was never told to give"
     /// them without anything having moved anywhere in particular.
     #[test]
     fn the_cursor_seats_move_to_skills_and_the_old_copies_go() {
-        let (_, seats) = loaded_seats("cursor-skills");
+        let (_seats_dir, seats) = loaded_seats("cursor-skills");
         let base = unique_tempdir("cursor-move");
         let cfg = base.join("config.json");
         fs::write(&cfg, "{}").unwrap();
@@ -14310,7 +14300,7 @@ judge was never told to give"
 
     #[test]
     fn seat_commands_roundtrip_inventory_idempotency_delete_per_client() {
-        let (_, seats) = loaded_seats("seat-rt");
+        let (_seats_dir, seats) = loaded_seats("seat-rt");
         for client in ["claude", "cursor", "antigravity"] {
             let base = unique_tempdir(&format!("tree-{client}"));
             let cfg = base.join("config.json");
@@ -14362,7 +14352,8 @@ judge was never told to give"
             fs::write(&cfg, "{}").unwrap();
             let dir = derive_seat_commands_dir(client, &display_path(&cfg)).unwrap();
             write_managed_seat_commands(client, &dir, &seats, &crate::seat_settings::SeatSettings::default(), false).unwrap();
-            trees.push((client, dir));
+            // The guard goes with the tree: the folder lasts as long as it is deployed into.
+            trees.push((client, dir, base));
         }
         // Edit the materialized seat (the config copy — the runtime source).
         let seat_path = seats_dir.join("javadoc-writer.md");
@@ -14372,7 +14363,7 @@ judge was never told to give"
         fs::write(&seat_path, &edited).unwrap();
         let (reloaded, errors) = crate::seat_file::load_seat_definitions(&seats_dir);
         assert!(errors.is_empty());
-        for (client, dir) in &trees {
+        for (client, dir, _base) in &trees {
             let written = write_managed_seat_commands(client, dir, &reloaded, &crate::seat_settings::SeatSettings::default(), false).unwrap();
             assert_eq!(written.len(), 1, "{client}: exactly the edited seat rewrites");
             let (_, javadocs_path) = seat_artifact_paths(client, dir)
@@ -14425,9 +14416,7 @@ judge was never told to give"
     /// REPLACED by the redeploy — never duplicated beside the old block.
     #[test]
     fn legacy_goja_rule_block_is_replaced_not_duplicated() {
-        let dir = std::env::temp_dir().join(format!("jawata-legacy-rule-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("jawata-legacy-rule");
         let path = dir.join("CLAUDE.md");
         fs::write(
             &path,
@@ -14451,9 +14440,7 @@ judge was never told to give"
     /// Sprint 22b: removal cleans blocks of EITHER generation.
     #[test]
     fn remove_managed_rule_block_removes_legacy_generation() {
-        let dir = std::env::temp_dir().join(format!("jawata-legacy-rm-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("jawata-legacy-rm");
         let path = dir.join("CLAUDE.md");
         fs::write(
             &path,
@@ -14486,9 +14473,7 @@ judge was never told to give"
     /// force_rewrite / ReplaceManagedSection, so legacy keys survived forever.
     #[test]
     fn plain_merge_deploy_strips_stale_managed_generations() {
-        let dir = std::env::temp_dir().join(format!("jawata-prune-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("jawata-prune");
         let cfg = dir.join("mcp.json");
         fs::write(
             &cfg,
@@ -14539,8 +14524,7 @@ judge was never told to give"
             "command": "./hooks/goja-guard.sh", "timeout": 5
         })), "legacy goja entry recognized as managed");
 
-        let dir = std::env::temp_dir().join(format!("jawata-cursor-mig-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        let dir = TestDir::new("jawata-cursor-mig");
         let hooks_dir = dir.join("hooks");
         fs::create_dir_all(&hooks_dir).unwrap();
         fs::write(hooks_dir.join("goja-guard.sh"), "#!/bin/sh\nold").unwrap();
@@ -15237,8 +15221,7 @@ judge was never told to give"
 
     #[test]
     fn the_moved_brain_lines_are_written_only_when_the_store_file_is_missing() {
-        let dir = std::env::temp_dir().join(format!("seat-choice-seed-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = TestDir::new("seat-choice-seed");
         let file = dir.join("seats-brains");
         seed_moved_seat_choices(&file).unwrap();
         assert_eq!(
@@ -16510,9 +16493,7 @@ judge was never told to give"
     /// deploy path actually calls, and requires the rotation to have happened.
     #[test]
     fn a_config_deploy_rotates_an_oversized_silence_log_on_the_way() {
-        let dir = std::env::temp_dir().join(format!("jawata-mgr-rotwire-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("jawata-mgr-rotwire");
         let live = dir.join("hook_silence.log");
         let filler = "0\tprimer\tstore-had-nothing\t".to_string() + &"x".repeat(200) + "\n";
         let mut body = String::new();
@@ -16536,9 +16517,7 @@ judge was never told to give"
     /// capability nothing can ever reach — the shape this sprint exists to end.
     #[test]
     fn the_hook_config_carries_the_field_directory_when_the_deploy_knows_it() {
-        let dir = std::env::temp_dir().join(format!("jawata-mgr-fielddir-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("jawata-mgr-fielddir");
 
         write_hook_config(&dir, "http://u/mcp", "t", Some("/w/ws/field"), None).unwrap();
         let written = fs::read_to_string(dir.join("hook_config.json")).unwrap();
@@ -16547,9 +16526,7 @@ judge was never told to give"
 
         // And absent stays ABSENT — a gateway deploy fronts every workspace, so
         // naming one would point the hook at another workspace's recording.
-        let bare = std::env::temp_dir().join(format!("jawata-mgr-nofield-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&bare);
-        fs::create_dir_all(&bare).unwrap();
+        let bare = TestDir::new("jawata-mgr-nofield");
         write_hook_config(&bare, "http://u/mcp", "t", None, None).unwrap();
         assert!(!fs::read_to_string(bare.join("hook_config.json")).unwrap().contains("field_dir"),
             "no field dir must mean no key — never a guessed path");
@@ -16560,9 +16537,7 @@ judge was never told to give"
     /// runs the first tier alone — and the written file still parses as the hook's own config.
     #[test]
     fn the_hook_config_carries_the_seats_directory_when_the_deploy_knows_it() {
-        let dir = std::env::temp_dir().join(format!("jawata-mgr-seatsdir-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("jawata-mgr-seatsdir");
         write_hook_config(&dir, "http://u/mcp", "t", None, Some("/cfg/seats")).unwrap();
         let written = fs::read_to_string(dir.join("hook_config.json")).unwrap();
         assert!(written.contains("\"seats_dir\":\"/cfg/seats\""), "{written}");
@@ -16571,18 +16546,14 @@ judge was never told to give"
         let value: serde_json::Value = serde_json::from_str(&written).unwrap();
         assert_eq!(value["seats_dir"], "/cfg/seats");
 
-        let bare = std::env::temp_dir().join(format!("jawata-mgr-noseatsdir-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&bare);
-        fs::create_dir_all(&bare).unwrap();
+        let bare = TestDir::new("jawata-mgr-noseatsdir");
         write_hook_config(&bare, "http://u/mcp", "t", None, None).unwrap();
         assert!(!fs::read_to_string(bare.join("hook_config.json")).unwrap().contains("seats_dir"));
     }
 
     #[test]
     fn the_manager_rotates_an_oversized_silence_log_and_leaves_a_small_one_alone() {
-        let dir = std::env::temp_dir().join(format!("jawata-mgr-rotate-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("jawata-mgr-rotate");
         let live = dir.join("hook_silence.log");
 
         // Small: untouched.
@@ -17204,10 +17175,7 @@ judge was never told to give"
         // role resolves to its script and the loop below would `continue` past
         // every assertion — green, and blind. So the binary case is staged
         // explicitly, and the script case is checked as the fallback it is.
-        let dir = std::env::temp_dir()
-            .join(format!("jawata-cursor-contract-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("scratch hooks dir");
+        let dir = TestDir::new("jawata-cursor-contract");
 
         // --- state 1: no binary deployed -> the fallback is the script ---
         let fallback = managed_cursor_hook_entries(&dir);
@@ -17307,12 +17275,7 @@ judge was never told to give"
     #[test]
     fn what_the_deploy_writes_is_what_the_resolver_looks_for() {
         for platform in [HostPlatform::Unix, HostPlatform::Windows] {
-            let dir = std::env::temp_dir().join(format!(
-                "jawata-roundtrip-{}-{platform:?}",
-                std::process::id()
-            ));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).expect("scratch dir");
+            let dir = TestDir::new(&format!("jawata-roundtrip-{platform:?}"));
 
             // A stand-in for the shipped binary; the bytes are irrelevant, the
             // NAME is the entire subject of this test.
@@ -17351,10 +17314,7 @@ judge was never told to give"
     #[test]
     fn a_windows_deploy_leaves_every_cursor_entry_naming_a_file_that_exists() {
         for platform in [HostPlatform::Unix, HostPlatform::Windows] {
-            let dir = std::env::temp_dir()
-                .join(format!("jawata-e2e-{}-{platform:?}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).expect("scratch dir");
+            let dir = TestDir::new(&format!("jawata-e2e-{platform:?}"));
 
             let source = dir.join("source-binary");
             std::fs::write(&source, b"binary bytes").expect("stage a source");
@@ -17404,9 +17364,7 @@ judge was never told to give"
     #[test]
     fn a_deploy_removes_our_residue_and_leaves_everything_else_alone() {
         let platform = HostPlatform::Windows;
-        let dir = std::env::temp_dir().join(format!("jawata-sweep-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let dir = TestDir::new("jawata-sweep");
 
         // The residue, and two files that must NOT be touched.
         for stale in [
@@ -20143,11 +20101,8 @@ mod eclipse_rows_tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fixtures/engine-notes")
     }
 
-    fn temp(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("jawata-eclipse-rows-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp(tag: &str) -> TestDir {
+        TestDir::new(&format!("jawata-eclipse-rows-{tag}"))
     }
 
     /// A service over `dir` whose notes folder is a copy of the engine's fixtures (in `dir/engines`).
@@ -20427,12 +20382,8 @@ mod registration_rows_tests {
         Ok(vec![("jawata".to_string(), Launch::for_resident("/e/jawata.jar", "http://u", "k"))])
     }
 
-    fn scratch(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("jawata-studio-regwire-{label}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    fn scratch(label: &str) -> TestDir {
+        TestDir::new(&format!("jawata-studio-regwire-{label}"))
     }
 
     fn run(
@@ -20819,7 +20770,8 @@ pub(crate) mod engine_switch_fixture {
     pub(crate) struct EngineSwitch {
         service: Option<ManagerService>,
         config_dir: PathBuf,
-        dir: PathBuf,
+        /// Declared after the service, so it is removed after the service is gone.
+        dir: TestDir,
         commands: PathBuf,
         held_seat: String,
     }
@@ -20916,12 +20868,6 @@ pub(crate) mod engine_switch_fixture {
 
         pub(crate) fn make_the_client_writable(&self) {
             let _ = fs::remove_file(&self.commands);
-        }
-    }
-
-    impl Drop for EngineSwitch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.dir);
         }
     }
 }

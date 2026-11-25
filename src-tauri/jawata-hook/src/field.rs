@@ -13,6 +13,9 @@
 //! to say; that distinction is the whole reason a naive threshold would be
 //! noise (the spec's "absence is often legitimate").
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -538,12 +541,8 @@ mod tests {
 
     // ---- D4: the nudge's four conditions ----
 
-    fn field_scratch(name: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir()
-            .join(format!("jawata-nudge-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn field_scratch(name: &str) -> TestDir {
+        TestDir::new(&format!("jawata-nudge-{name}"))
     }
 
     /// A pile with `times` failures of one shape, plus one success and one

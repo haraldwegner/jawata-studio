@@ -14,6 +14,9 @@
 //! a download the person has not approved) or for Copilot (its ACP start fails). A credential is never
 //! written: the `env` of every program is empty, the program uses its own login.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::ffi::OsStr;
 use std::path::PathBuf;
 
@@ -281,9 +284,7 @@ mod tests {
     #[test]
     fn an_adapter_on_the_path_joins_the_registry_and_an_absent_one_does_not() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("jw-adapters-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("jw-adapters");
         for name in ["agent", "codex-acp", "copilot"] {
             let file = dir.join(name);
             std::fs::write(&file, "#!/bin/sh\n").unwrap();
@@ -304,11 +305,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn path_holding(names: &[&str], tag: &str) -> std::path::PathBuf {
+    fn path_holding(names: &[&str], tag: &str) -> TestDir {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("jw-missing-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new(&format!("jw-missing-{tag}"));
         for name in names {
             let file = dir.join(name);
             std::fs::write(&file, "#!/bin/sh\n").unwrap();
@@ -384,8 +383,7 @@ mod tests {
     #[test]
     fn what_is_said_to_be_missing_and_what_is_offered_come_from_one_list() {
         let offered: std::collections::BTreeSet<&str> = ADAPTERS.iter().map(|a| a.brain).collect();
-        let empty = std::env::temp_dir().join(format!("jw-empty-{}", std::process::id()));
-        std::fs::create_dir_all(&empty).unwrap();
+        let empty = TestDir::new("jw-empty");
         let missing: std::collections::BTreeSet<String> = missing_adapters(Some(empty.as_os_str())).into_iter().map(|m| m.brain).collect();
         let _ = std::fs::remove_dir_all(&empty);
         assert_eq!(missing.iter().map(String::as_str).collect::<std::collections::BTreeSet<_>>(), offered, "an empty path misses every brain the list offers");
@@ -507,8 +505,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_search_path_adds_the_npm_folders_of_the_home_folder_after_the_studios_own() {
-        let home = std::env::temp_dir().join(format!("jw-home-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
+        let home = TestDir::new("jw-home");
         for version in ["v18.2.0", "v22.22.2", "v9.1.0"] {
             std::fs::create_dir_all(home.join(".nvm/versions/node").join(version).join("bin")).unwrap();
         }
@@ -535,8 +532,7 @@ mod tests {
     #[test]
     fn an_adapter_installed_under_nvm_is_found_and_started_with_its_folder_on_the_path() {
         use std::os::unix::fs::PermissionsExt;
-        let home = std::env::temp_dir().join(format!("jw-nvm-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
+        let home = TestDir::new("jw-nvm");
         let bin = home.join(".nvm/versions/node/v22.22.2/bin");
         std::fs::create_dir_all(&bin).unwrap();
         let adapter = bin.join("claude-agent-acp");
@@ -566,8 +562,7 @@ mod tests {
     #[test]
     fn the_folder_npm_names_for_global_commands_is_searched_too() {
         use std::os::unix::fs::PermissionsExt;
-        let root = std::env::temp_dir().join(format!("jw-npm-prefix-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = TestDir::new("jw-npm-prefix");
         let own = root.join("own");
         let prefix = root.join("custom-prefix");
         std::fs::create_dir_all(&own).unwrap();

@@ -1,3 +1,6 @@
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use crate::config::{display_path, AppPaths};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -2354,7 +2357,7 @@ mod tests {
     fn an_engine_is_told_where_the_editor_windows_folders_are_kept_and_given_no_fixed_list() {
         let manager = RuntimeManager::new(fake_paths());
         let mut request = fake_launch_request();
-        let root = std::env::temp_dir().join(format!("jawata-editor-folders-{}", std::process::id()));
+        let root = TestDir::new("jawata-editor-folders");
         let dir = root.join("ws");
         std::fs::create_dir_all(&dir).unwrap();
         request.reference.workspace_dir = dir.to_string_lossy().into_owned();
@@ -2373,8 +2376,7 @@ mod tests {
     /// folder (it closed, or holds none) has no list; a list is written once per folder; the one shared file of the earlier form goes.
     #[test]
     fn each_editor_window_keeps_a_list_of_its_own_and_a_window_that_holds_none_keeps_none() {
-        let root = std::env::temp_dir().join(format!("jawata-editor-windows-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = TestDir::new("jawata-editor-windows");
         let dir = root.join("javata-dev");
         let other = root.join("orb");
         std::fs::create_dir_all(&dir).unwrap();
@@ -2404,8 +2406,7 @@ mod tests {
     /// workspace leaves none behind in the old one; another window's list there stays.
     #[test]
     fn a_window_whose_folders_move_to_another_workspace_keeps_no_list_in_the_old_one() {
-        let root = std::env::temp_dir().join(format!("jawata-editor-move-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = TestDir::new("jawata-editor-move");
         let (old, new) = (root.join("wa"), root.join("wb"));
         std::fs::create_dir_all(&old).unwrap();
         std::fs::create_dir_all(&new).unwrap();
@@ -2425,8 +2426,7 @@ mod tests {
     /// workspace once its process is gone; an open window's lists stay, and so does the list of a window whose process was never kept.
     #[test]
     fn the_lists_of_a_window_whose_process_ended_are_dropped_and_an_open_one_is_kept() {
-        let root = std::env::temp_dir().join(format!("jawata-editor-sweep-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = TestDir::new("jawata-editor-sweep");
         let (workspaces, windows) = (root.join("workspaces"), root.join("windows"));
         let (wa, wb) = (workspaces.join("wa"), workspaces.join("wb"));
         std::fs::create_dir_all(&wa).unwrap();
@@ -2453,8 +2453,7 @@ mod tests {
     /// tells them apart, so the window's lists are dropped, while an open window whose identity matches is kept.
     #[test]
     fn a_window_whose_process_number_was_given_to_another_process_is_dropped() {
-        let root = std::env::temp_dir().join(format!("jawata-editor-reused-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = TestDir::new("jawata-editor-reused");
         let (workspaces, windows) = (root.join("workspaces"), root.join("windows"));
         let wa = workspaces.join("wa");
         std::fs::create_dir_all(&wa).unwrap();
@@ -2481,7 +2480,7 @@ mod tests {
         let manager = RuntimeManager::new(fake_paths());
         let mut request = fake_launch_request();
         request.reference.seats_dir = Some("/cfg/jawata/seats".into());
-        let (old_path, old_program) = fake_agent_path("old");
+        let (old_path, old_program, _old_dir) = fake_agent_path("old");
         request.reference.agent_brain = crate::agent_brain_settings::detect(Some(&old_path));
 
         let spec = manager.command_spec_for(&request);
@@ -2494,7 +2493,7 @@ mod tests {
         assert!(spec.env[2].1.contains(&old_text), "{} in {}", old_text, spec.env[2].1);
 
         // The program moved: the next start carries the new path, each name still once.
-        let (new_path, new_program) = fake_agent_path("new");
+        let (new_path, new_program, _new_dir) = fake_agent_path("new");
         request.reference.agent_brain = crate::agent_brain_settings::detect(Some(&new_path));
         let spec = manager.command_spec_for(&request);
         assert_eq!(spec.env.len(), 5, "{:?}", spec.env);
@@ -2507,7 +2506,8 @@ mod tests {
 
     /// A `PATH` value whose one folder holds an executable `agent`, built in a real temp folder so the
     /// detector the studio uses finds it.
-    fn fake_agent_path(label: &str) -> (std::ffi::OsString, PathBuf) {
+    /// The third value is the folder: it is removed when the test that holds it ends.
+    fn fake_agent_path(label: &str) -> (std::ffi::OsString, PathBuf, TestDir) {
         let dir = unique_tempdir(&format!("agentpath-{label}"));
         let program = dir.join(if cfg!(windows) { "agent.exe" } else { "agent" });
         std::fs::write(&program, "#!/bin/sh\n").unwrap();
@@ -2516,7 +2516,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        (std::env::join_paths([&dir]).unwrap(), program)
+        (std::env::join_paths([&*dir]).unwrap(), program, dir)
     }
 
     #[test]
@@ -2941,23 +2941,9 @@ mod tests {
     // Skipped on non-Unix platforms because `sleep` isn't on Windows.
     // ============================================================
 
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn unique_tempdir(label: &str) -> PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "jawata-studio-rmtest-{label}-{}-{}-{}",
-            std::process::id(),
-            nanos,
-            n
-        ));
-        std::fs::create_dir_all(&dir).expect("failed to create test tempdir");
+    fn unique_tempdir(label: &str) -> TestDir {
+        let dir = TestDir::new(&format!("jawata-studio-rmtest-{label}"));
         std::fs::create_dir_all(dir.join("logs")).unwrap();
         std::fs::create_dir_all(dir.join("ws")).unwrap();
         dir
@@ -4077,18 +4063,11 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn unique_test_dir(label: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "jawata-stage10-{}-{}-{}",
-            label,
-            nanos,
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).expect("create test dir");
+    fn unique_test_dir(label: &str) -> TestDir {
+        // One level down inside the guarded folder: the engine writes its sibling registry into the workspace
+        // folder's parent, which would otherwise be the temporary folder itself.
+        let dir = TestDir::new(&format!("jawata-stage10-{label}")).child("ws");
+        std::fs::create_dir_all(&*dir).expect("create test dir");
         dir
     }
 }

@@ -25,6 +25,9 @@
 //! edit-switch model is gone), so every post was refused and counted as a
 //! failure in the field recording. The posting and the holding went together.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -407,12 +410,8 @@ mod tests {
     /// The crate's own scratch pattern (see pipeline's tail tests) — no
     /// tempfile dependency: the hook's closure ratchet exists precisely so a
     /// test convenience cannot grow the world a hook links.
-    fn scratch(name: &str) -> PathBuf {
-        let d = std::env::temp_dir()
-            .join(format!("jawata-observer-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn scratch(name: &str) -> TestDir {
+        TestDir::new(&format!("jawata-observer-{name}"))
     }
 
     fn dir(home: &Path) -> PathBuf {

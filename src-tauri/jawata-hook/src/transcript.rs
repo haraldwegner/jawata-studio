@@ -15,6 +15,9 @@
 //! A capture never changes what a hook answers: every failure is recorded and swallowed, because
 //! the discussion lane exists to remember and a hook that cannot remember must still do its job.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
@@ -832,11 +835,8 @@ mod tests {
         std::time::Instant::now() + std::time::Duration::from_secs(30)
     }
 
-    fn scratch(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("jawata-transcript-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn scratch(name: &str) -> TestDir {
+        TestDir::new(&format!("jawata-transcript-{name}"))
     }
 
     /// A tiny transcript: two windows of his, a tool call that failed, an answer.

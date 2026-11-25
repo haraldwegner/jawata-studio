@@ -2,15 +2,16 @@
 //! [--baseline <file>]`. A report nothing can invoke is a report nobody reads, and a decision function
 //! that is green while the subcommand is not dispatched is the failure this file exists to catch.
 
+#[path = "../src/testdir.rs"]
+mod testdir;
+use testdir::TestDir;
+
 use std::process::Command;
 
 const HOOK: &str = env!("CARGO_BIN_EXE_jawata-hook");
 
-fn scratch(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("jawata-fallback-rate-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch");
-    dir
+fn scratch(name: &str) -> TestDir {
+    TestDir::new(&format!("jawata-fallback-rate-{name}"))
 }
 
 fn run_with(log: &std::path::Path, baseline: Option<&std::path::Path>) -> (i32, String) {

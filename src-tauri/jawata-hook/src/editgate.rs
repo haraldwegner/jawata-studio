@@ -38,6 +38,9 @@
 //! the creation of every new Java file in the project, which is authoring by
 //! definition.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -397,8 +400,7 @@ mod tests {
 
     #[test]
     fn one_exception_covers_one_edit_of_its_own_tool_and_no_other() {
-        let dir = std::env::temp_dir().join(format!("jawata-exception-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("jawata-exception");
         let shape = visibility_shape();
 
         // No exception: refused, by name.
@@ -436,8 +438,7 @@ mod tests {
 
     #[test]
     fn a_window_expires_and_a_missing_or_torn_one_never_opens() {
-        let dir = std::env::temp_dir().join(format!("jawata-editgate-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("jawata-editgate");
 
         assert!(!window_is_open(&dir, "no-such-session"), "a missing window is closed");
 

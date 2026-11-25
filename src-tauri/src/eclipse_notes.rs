@@ -15,6 +15,9 @@
 //! the row (`EclipseWorkspaceRow::running`), the same discipline `RuntimePhase::is_live` keeps for the
 //! headless workspaces (S19-10b).
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -546,11 +549,8 @@ mod tests {
         pid == 4242 && started == Some(NOTED_START)
     }
 
-    fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("jawata-eclipse-notes-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_dir(tag: &str) -> TestDir {
+        TestDir::new(&format!("jawata-eclipse-notes-{tag}"))
     }
 
     fn reading<'a>(all: &'a [NoteReading], file: &str) -> &'a NoteReading {

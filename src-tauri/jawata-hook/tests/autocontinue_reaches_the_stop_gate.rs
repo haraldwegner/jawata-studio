@@ -25,21 +25,17 @@
 //! while the pipeline never calls it. So: two invocations of the real
 //! executable, in sequence, sharing one scratch `HOME`.
 
+#[path = "../src/testdir.rs"]
+mod testdir;
+use testdir::TestDir;
+
 use std::process::{Command, Stdio};
 use std::io::Write;
 
 const HOOK: &str = env!("CARGO_BIN_EXE_jawata-hook");
 
-fn scratch_home(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "jawata-autocontinue-{tag}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&d).unwrap();
+fn scratch_home(tag: &str) -> TestDir {
+    let d = TestDir::new(&format!("jawata-autocontinue-{tag}"));
     // The hook refuses to act unconfigured — `--explain` reports
     // `SILENT [not-configured]`, which on stdout is indistinguishable from a
     // gate that looked and decided to stay quiet. So the scratch HOME gets the

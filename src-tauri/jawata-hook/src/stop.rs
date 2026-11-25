@@ -41,6 +41,9 @@
 //! because it is a stop hook. It is the other way round: when should a judge
 //! NOT be called?"* — grant OFF, or something genuinely pending. Nothing else.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use crate::safety::SilenceReason;
 
 /// Characters past which a message to the human must have been judged.
@@ -4684,8 +4687,7 @@ message while you were working:\n<agent-message from=\"a14a4ae2f3b5ee48b\">\nVER
         // The real fix: a job whose output file carries the harness's exit
         // marker is over, even though no notification was ever seen — and one
         // whose promised file is absent is not running under that name either.
-        let dir = std::env::temp_dir().join(format!("jawata-hook-machine-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("jawata-hook-machine");
 
         let done = dir.join("finished.output");
         std::fs::write(&done, "some output\n\n[exited with code 0]\n").unwrap();

@@ -20,6 +20,10 @@
 //! below runs with the resident deliberately unreachable, so a line that only
 //! rode on recall output would fail all four.
 
+#[path = "../src/testdir.rs"]
+mod testdir;
+use testdir::TestDir;
+
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
@@ -95,11 +99,8 @@ fn userprompt_says_at(payload: &str, home: &std::path::Path, url: &str) -> Strin
     out
 }
 
-fn scratch(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("jawata-modeline-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("scratch home");
-    d
+fn scratch(name: &str) -> TestDir {
+    TestDir::new(&format!("jawata-modeline-{name}"))
 }
 
 fn payload(session: &str, prompt: &str) -> String {

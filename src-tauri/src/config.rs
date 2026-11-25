@@ -1,3 +1,6 @@
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -2245,25 +2248,11 @@ mod tests {
     // Sprint 10 v0.10.4: workspace_name + migration tests.
     // ============================================================
 
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     /// Returns a unique tempdir path per call, so concurrent tests don't
     /// step on each other's projects.json / settings.json files.
-    fn unique_tempdir(label: &str) -> PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "jawata-studio-test-{label}-{}-{}-{}",
-            std::process::id(),
-            nanos,
-            n
-        ));
-        fs::create_dir_all(&dir).expect("failed to create test tempdir");
-        dir
+    fn unique_tempdir(label: &str) -> TestDir {
+        TestDir::new(&format!("jawata-studio-test-{label}"))
     }
 
     fn paths_in(dir: &Path) -> AppPaths {

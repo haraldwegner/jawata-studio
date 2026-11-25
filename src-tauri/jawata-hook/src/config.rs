@@ -15,6 +15,9 @@
 //! lifecycle Studio owns. With the resident down the memory hooks correctly
 //! get nothing, and the guard — which never queries — still answers.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use crate::safety::SilenceReason;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -151,10 +154,8 @@ pub fn load() -> Result<HookConfig, SilenceReason> {
 mod tests {
     use super::*;
 
-    fn tmp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("jawata-hook-cfg-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join(CONFIG_FILE)
+    fn tmp(name: &str) -> TestDir {
+        TestDir::new(&format!("jawata-hook-cfg-{name}")).child(CONFIG_FILE)
     }
 
     #[test]

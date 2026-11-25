@@ -16,6 +16,9 @@
 //! source file, by import, for the removal tools; this one decides per workspace,
 //! from build files and `lombok.config`, whether the JVM needs the agent at start.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -148,10 +151,8 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn tmp() -> PathBuf {
-        let base = std::env::temp_dir().join(format!("jlm-lombok-test-{}", unique()));
-        fs::create_dir_all(&base).unwrap();
-        base
+    fn tmp() -> TestDir {
+        TestDir::new("jlm-lombok-test")
     }
 
     // Deterministic unique suffix without Date/rand: a process-local counter.
@@ -262,7 +263,7 @@ mod tests {
         let ws = tmp();
         fs::write(
             ws.join("workspace.json"),
-            serde_json::json!({ "version": 1, "name": "w", "projects": [plain, lombok] }).to_string(),
+            serde_json::json!({ "version": 1, "name": "w", "projects": [plain.as_path(), lombok.as_path()] }).to_string(),
         )
         .unwrap();
         let roots = workspace_project_roots(&ws, &plain);
@@ -287,7 +288,7 @@ mod tests {
         assert_eq!(decide(&[plain.clone()], &jar), AgentDecision::NotUsed);
         assert_eq!(decide(&[lombok.clone()], &jar), AgentDecision::NoJar);
         fs::write(product.join("lombok.jar"), "x").unwrap();
-        match decide(&[plain, lombok], &jar) {
+        match decide(&[plain.to_path_buf(), lombok.to_path_buf()], &jar) {
             AgentDecision::Add(arg) => assert!(arg.starts_with("-javaagent:") && arg.ends_with("lombok.jar")),
             other => panic!("expected the agent: {other:?}"),
         }

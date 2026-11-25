@@ -3,6 +3,9 @@
 //! except `materialize_seats`; the deploy layer in `manager_service.rs` is
 //! the only writer into client trees. Architecture: ARCHITECTURE-conductor.md.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use crate::seat_file::{parse_seat_definition, GateClass, SeatDefinition};
 use std::fs;
 use std::path::Path;
@@ -922,8 +925,6 @@ pub fn embedded_seat_definitions() -> Result<Vec<SeatDefinition>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     /// The `command:` line of a seat file's frontmatter, when it has one.
     fn command_key(seat_file: &str) -> Option<String> {
@@ -987,21 +988,8 @@ mod tests {
         }
     }
 
-    fn unique_tempdir(label: &str) -> std::path::PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "jawata-conductor-test-{label}-{}-{}-{}",
-            std::process::id(),
-            nanos,
-            n
-        ));
-        fs::create_dir_all(&dir).expect("test tempdir");
-        dir
+    fn unique_tempdir(label: &str) -> TestDir {
+        TestDir::new(&format!("jawata-conductor-test-{label}"))
     }
 
     fn seats() -> Vec<SeatDefinition> {
@@ -2446,7 +2434,7 @@ mod tests {
 
     #[test]
     fn materialize_seeds_refreshes_unedited_and_preserves_edits() {
-        let seats_dir = unique_tempdir("materialize").join("seats");
+        let seats_dir = unique_tempdir("materialize").child("seats");
         let first = materialize_seats(&seats_dir).unwrap();
         assert_eq!(
             first.seeded.len(),
@@ -2491,7 +2479,7 @@ mod tests {
     /// there, so nothing is destroyed, and nothing stays silently stale.
     #[test]
     fn pre_manifest_installs_adopt_matching_and_migrate_differing_with_backup() {
-        let seats_dir = unique_tempdir("premanifest").join("seats");
+        let seats_dir = unique_tempdir("premanifest").child("seats");
         materialize_seats(&seats_dir).unwrap();
         fs::remove_file(seats_dir.join(".seeded.json")).unwrap();
         let stale = seats_dir.join("architect.md");
@@ -2510,7 +2498,7 @@ mod tests {
 
     #[test]
     fn corrupted_config_seat_is_a_loud_error_via_the_runner_loader() {
-        let seats_dir = unique_tempdir("corrupt").join("seats");
+        let seats_dir = unique_tempdir("corrupt").child("seats");
         materialize_seats(&seats_dir).unwrap();
         fs::write(seats_dir.join("broken.md"), "not a seat").unwrap();
         let (ok, errors) = crate::seat_file::load_seat_definitions(&seats_dir);

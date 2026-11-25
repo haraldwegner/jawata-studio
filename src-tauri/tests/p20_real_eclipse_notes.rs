@@ -17,6 +17,10 @@
 //! A note carries the real pid and process start time of its Eclipse, so the real OS liveness check is used. The
 //! rows come from the production code (`EclipseProbe`): a real dashboard build and the tray's own menu function.
 
+#[path = "../jawata-hook/src/testdir.rs"]
+mod testdir;
+use testdir::TestDir;
+
 use jawata_studio_lib::eclipse_probe::EclipseProbe;
 use std::{collections::BTreeMap, fs, path::Path};
 
@@ -120,7 +124,7 @@ fn studios_compiled_code_reads_the_notes_real_eclipse_instances_wrote() {
     if let Some((file, bytes)) = before.iter().next() {
         let text = String::from_utf8(bytes.clone()).expect("a note is UTF-8");
         assert!(text.contains("jawata.engine-note/1"), "the real note carries the schema the reader supports: {file}");
-        let copy_dir = std::env::temp_dir().join(format!("p20-newer-schema-{}", std::process::id()));
+        let copy_dir = TestDir::new("p20-newer-schema");
         let copy_settings = copy_dir.join("settings");
         let copy_notes = copy_dir.join("notes");
         fs::create_dir_all(&copy_settings).unwrap();

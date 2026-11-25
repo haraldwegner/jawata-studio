@@ -56,6 +56,9 @@
 //! identically, which is how a safety valve becomes a limit on the feature it
 //! is guarding.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::path::{Path, PathBuf};
 
 use crate::stop::Autonomy;
@@ -546,18 +549,9 @@ mod tests {
     /// Every sibling helper in this crate takes a per-test NAME and never had
     /// the problem; a monotonic counter buys the same guarantee without
     /// touching the call sites, and it cannot be defeated by clock resolution.
-    fn tmp() -> PathBuf {
+    fn tmp() -> TestDir {
         static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let d = std::env::temp_dir().join(format!(
-            "jawata-autonomy-{}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&d).unwrap();
+        let d = TestDir::new("jawata-autonomy");
         d
     }
 

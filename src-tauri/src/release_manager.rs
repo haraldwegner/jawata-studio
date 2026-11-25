@@ -1,3 +1,6 @@
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use crate::config::{
     current_timestamp_string, display_path, effective_release_repo, ManagerSettings, UpdatePolicy,
 };
@@ -1333,19 +1336,8 @@ mod tests {
 
     // ===== Sprint 15 Stage 8 (bug #8) =====
 
-    fn unique_test_dir(label: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!(
-            "jawata-stage8-{}-{}-{}",
-            label,
-            nanos,
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir).expect("create test tools dir");
-        dir
+    fn unique_test_dir(label: &str) -> TestDir {
+        TestDir::new(&format!("jawata-stage8-{label}"))
     }
 
     // ---- 4.4.14: a replacing engine is tried before it is switched to ----
@@ -1667,11 +1659,8 @@ mod tests {
         }
     }
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("studio-resume-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    fn scratch(name: &str) -> TestDir {
+        TestDir::new(&format!("studio-resume-{name}"))
     }
 
     fn archive_bytes() -> Vec<u8> {

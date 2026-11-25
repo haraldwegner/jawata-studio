@@ -11,6 +11,9 @@
 //! touched. A studio started from a terminal keeps its terminal: a developer watching the
 //! output is already reading it.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::fs::{self, File, OpenOptions};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -135,8 +138,7 @@ mod tests {
 
     #[test]
     fn a_large_log_is_moved_aside_and_a_small_one_is_left() {
-        let dir = std::env::temp_dir().join(format!("studio-log-rotate-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("studio-log-rotate");
         let path = log_path(&dir);
         fs::write(&path, vec![b'x'; 64]).unwrap();
         rotate_if_large(&path, 100);
@@ -158,8 +160,7 @@ mod tests {
             eprintln!("marker-from-the-child");
             return;
         }
-        let dir = std::env::temp_dir().join(format!("studio-log-child-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        let dir = TestDir::new("studio-log-child");
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",

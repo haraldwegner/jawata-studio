@@ -26,6 +26,10 @@
 //! of its two halves, green the whole time. Every case below spawns the built
 //! executable and reads the JSON it prints.
 
+#[path = "../src/testdir.rs"]
+mod testdir;
+use testdir::TestDir;
+
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
@@ -85,11 +89,8 @@ fn guard_says(payload: &str, home: &std::path::Path) -> String {
     out
 }
 
-fn scratch(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("jawata-turnaround-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("scratch home");
-    d
+fn scratch(name: &str) -> TestDir {
+    TestDir::new(&format!("jawata-turnaround-{name}"))
 }
 
 /// BOTH CLIENT DIALECTS, and the first draft of this file got it wrong in a way

@@ -27,6 +27,10 @@
 //! LINE rather than a stop decision: a skip is a measurement, and bouncing the
 //! agent back into a finished turn over one would wedge the session.
 
+#[path = "../src/testdir.rs"]
+mod testdir;
+use testdir::TestDir;
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::process::{Command, Stdio};
@@ -124,11 +128,8 @@ fn run_as(role: &str, home: &std::path::Path, url: &str, payload: &str) -> Strin
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
-fn scratch(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("jawata-skip-e2e-{}-{tag}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+fn scratch(tag: &str) -> TestDir {
+    TestDir::new(&format!("jawata-skip-e2e-{tag}"))
 }
 
 fn outcomes(home: &std::path::Path) -> String {

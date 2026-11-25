@@ -9,6 +9,9 @@
 //! Stage 8's log depends on, and the reason the return type is not an
 //! `Option`.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use crate::config::HookConfig;
 use crate::emit::{self, Emission};
 use crate::query::{self, Answer, Endpoint, QueryError};
@@ -2522,8 +2525,7 @@ mod tests {
                 Ok(serde_json::json!({"missing": ["Placed#a"]}))
             }
         }
-        let dir = std::env::temp_dir().join(format!("jawata-rel4443-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("jawata-rel4443");
         let placed = dir.join("Placed.java").to_string_lossy().to_string();
         let whole = dir.join("Whole.java").to_string_lossy().to_string();
         std::fs::write(&placed, "class Placed {\n  void a() {\n    go();\n  }\n}\n").unwrap();
@@ -2751,8 +2753,7 @@ mod tests {
     /// engine running is a wait and is let through. The two differ only in what the store says about running hires.
     #[test]
     fn the_stop_gate_waits_for_a_hire_the_engine_has_running() {
-        let d = std::env::temp_dir().join(format!("jawata-hires-gate-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
+        let d = TestDir::new("jawata-hires-gate");
         let p = d.join("t.jsonl");
         std::fs::write(
             &p,
@@ -2774,8 +2775,7 @@ mod tests {
     /// that stopped blocking.
     #[test]
     fn the_stop_gate_lets_the_same_rule_b_block_through_the_second_time_on_an_unmoved_state() {
-        let d = std::env::temp_dir().join(format!("jawata-repeat-gate-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
+        let d = TestDir::new("jawata-repeat-gate");
         let p = d.join("t.jsonl");
         let line = |text: &str| format!("{}\n", serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}));
         std::fs::write(&p, line("done")).unwrap();
@@ -3224,12 +3224,8 @@ mod tests {
         }
     }
 
-    fn primer_scratch(name: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir()
-            .join(format!("jawata-primer-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn primer_scratch(name: &str) -> TestDir {
+        TestDir::new(&format!("jawata-primer-{name}"))
     }
 
     /// A field directory that genuinely OWES a reminder: unposted failures in
@@ -3488,10 +3484,8 @@ mod tests {
     /// very shape this sprint exists to catch, one hour after building the
     /// detector for it. Every assertion below goes through `run`, so the arm
     /// in the match is load-bearing.
-    fn transcript(body: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("jawata-stopwire-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
-        let p = d.join(format!("t-{}.jsonl", body.len()));
+    fn transcript(body: &str) -> TestDir {
+        let p = TestDir::new("jawata-stopwire").child(format!("t-{}.jsonl", body.len()));
         std::fs::write(&p, body).unwrap();
         p
     }
@@ -3510,7 +3504,7 @@ mod tests {
         // and was invalid JSON on Windows, where these tests had never run until
         // the crate's tests became a CI gate.
         let payload = serde_json::json!({
-            "transcript_path": p, "stop_hook_active": false
+            "transcript_path": p.as_path(), "stop_hook_active": false
         }).to_string();
         let out = run(Role::Stop, &config("claude-code"), &payload, &Stub(Ok(Answer::Nothing)));
         // The review rule went back to decision-class scope on 2026-08-20, so a
@@ -3676,8 +3670,7 @@ mod tests {
     #[test]
     fn tier_one_halts_once_through_run_the_next_call_carries_the_reminder_and_the_count_sees_it() {
         let session = format!("o1-wire-{}-{}", std::process::id(), line!());
-        let signals = std::env::temp_dir().join(format!("o1-signals-{}-{}", std::process::id(), line!()));
-        let _ = std::fs::remove_dir_all(&signals);
+        let signals = TestDir::new("o1-signals");
         TEST_SIGNAL_DIR.with(|d| *d.borrow_mut() = Some(signals.clone()));
         let payload = |command: &str| {
             serde_json::json!({ "session_id": session, "tool_name": "Bash", "tool_input": { "command": command } })
@@ -3807,8 +3800,7 @@ mod tests {
         let home = home_dir().expect("a home directory");
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
-        let seats = std::env::temp_dir().join(format!("d57d-seats-{}-{}", std::process::id(), line!()));
-        std::fs::create_dir_all(&seats).unwrap();
+        let seats = TestDir::new("d57d-seats");
         std::fs::write(seats.join("observer.md"), "---\nname: observer\n---\nbody").unwrap();
         let mut cfg = config("claude-code");
         cfg.url = format!("http://{}/mcp", listener.local_addr().unwrap());
@@ -4063,8 +4055,7 @@ mod tests {
     /// the whole record that began there — the unconditional first-line drop.
     #[test]
     fn a_window_boundary_on_a_record_edge_keeps_every_record() {
-        let d = std::env::temp_dir().join(format!("jawata-tail-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
+        let d = TestDir::new("jawata-tail");
         let p = d.join("edge.jsonl");
         // Ten 10-byte records; a 50-byte window falls exactly on an edge.
         let body: String = (0..10).map(|i| format!("L{i:08}\n")).collect();
@@ -4079,8 +4070,7 @@ mod tests {
     /// nothing". It must say it could not look.
     #[test]
     fn a_window_with_no_complete_record_is_an_error_not_an_empty_turn() {
-        let d = std::env::temp_dir().join(format!("jawata-tail-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
+        let d = TestDir::new("jawata-tail");
         let p = d.join("no-newline.jsonl");
         std::fs::write(&p, "x".repeat(500)).unwrap();
         assert!(
@@ -4091,8 +4081,7 @@ mod tests {
 
     #[test]
     fn a_file_smaller_than_the_window_is_returned_whole() {
-        let d = std::env::temp_dir().join(format!("jawata-tail-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
+        let d = TestDir::new("jawata-tail");
         let p = d.join("small.jsonl");
         std::fs::write(&p, "a\nb\nc\n").unwrap();
         assert_eq!("a\nb\nc\n", read_tail(p.to_str().unwrap(), 4096).expect("reads"));
@@ -4119,8 +4108,7 @@ mod tests {
     /// purpose is unchanged; only the rule carrying it moved.
     #[test]
     fn the_anti_loop_flag_is_read_from_the_payload() {
-        let d = std::env::temp_dir().join(format!("jawata-antiloop-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
+        let d = TestDir::new("jawata-antiloop");
         let p = d.join("t.jsonl");
         let long_text = "x".repeat(crate::stop::LENGTH_BUDGET + 200);
         std::fs::write(
@@ -4161,8 +4149,7 @@ mod tests {
     /// branch.
     #[test]
     fn a_window_whose_only_newline_is_the_probe_byte_is_an_error() {
-        let d = std::env::temp_dir().join(format!("jawata-probe-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
+        let d = TestDir::new("jawata-probe");
         let p = d.join("probe.jsonl");
         // 60 bytes: a newline exactly at the probe position, then no other.
         let mut body = "A".repeat(9);
@@ -4177,8 +4164,7 @@ mod tests {
 
     #[test]
     fn a_probe_newline_followed_by_a_complete_record_is_read() {
-        let d = std::env::temp_dir().join(format!("jawata-probe-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
+        let d = TestDir::new("jawata-probe");
         let p = d.join("probe-ok.jsonl");
         let body = format!("{}\n{}\n", "A".repeat(9), "B".repeat(40));
         std::fs::write(&p, &body).unwrap();
@@ -4191,8 +4177,7 @@ mod tests {
     /// supplies real autonomy every judged stop would file a false reason.
     #[test]
     fn a_judged_allow_is_not_logged_as_autonomy_unknown() {
-        let d = std::env::temp_dir().join(format!("jawata-judged-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
+        let d = TestDir::new("jawata-judged");
         let p = d.join("t.jsonl");
         std::fs::write(
             &p,
@@ -4310,7 +4295,7 @@ mod payload_parsing_tests {
     /// over a measurement. This pins the rule the code now follows.
     #[test]
     fn a_recall_skip_is_recorded_and_never_blocks_the_stop() {
-        let home = std::env::temp_dir().join(format!("jawata-skip-{}", std::process::id()));
+        let home = TestDir::new("jawata-skip");
         let dir = home.join(".claude").join("jawata-studio");
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&dir).unwrap();
@@ -4338,7 +4323,7 @@ mod payload_parsing_tests {
     /// disposed of what it was given is not a skip, so nothing is recorded.
     #[test]
     fn a_session_that_answered_leaves_no_skip() {
-        let home = std::env::temp_dir().join(format!("jawata-noskip-{}", std::process::id()));
+        let home = TestDir::new("jawata-noskip");
         let dir = home.join(".claude").join("jawata-studio");
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&dir).unwrap();
@@ -4486,9 +4471,7 @@ mod payload_parsing_tests {
             "echo 'jawata-duplicate: the shared reader cannot see this format'",
             "echo 'jawata-distinct: that job reads files and this one reads a string'",
         ] {
-            let home = std::env::temp_dir().join(format!("jawata-dup-g-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&home);
-            std::fs::create_dir_all(&home).unwrap();
+            let home = TestDir::new("jawata-dup-g");
             let write = sessioned_write("s-g");
             let store = Recording::new(Ok(Answer::Nothing)).answering_duplicate_check_with(nominee_answer());
             let ask = || dup_gate_in(Some(&home), Client::ClaudeCode, &gate_config("claude-code"), &write, &store);
@@ -4523,9 +4506,7 @@ mod payload_parsing_tests {
     /// a command that merely mentions the token, it is not a judgement about anything.
     #[test]
     fn a_declaration_before_any_refusal_or_a_mere_mention_opens_nothing() {
-        let home = std::env::temp_dir().join(format!("jawata-dup-pre-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        std::fs::create_dir_all(&home).unwrap();
+        let home = TestDir::new("jawata-dup-pre");
         let write = sessioned_write("s-pre");
         let store = Recording::new(Ok(Answer::Nothing)).answering_duplicate_check_with(nominee_answer());
         let ask = || dup_gate_in(Some(&home), Client::ClaudeCode, &gate_config("claude-code"), &write, &store);
@@ -4562,9 +4543,7 @@ mod payload_parsing_tests {
     /// a shell command; the guard records it; the repeated write proceeds — ONCE.
     #[test]
     fn a_shell_declaration_lets_the_repeated_write_through_once() {
-        let home = std::env::temp_dir().join(format!("jawata-dup-pipe-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        std::fs::create_dir_all(&home).unwrap();
+        let home = TestDir::new("jawata-dup-pipe");
         let write = serde_json::json!({
             "session_id": "s-dup",
             "tool_name": "Write",

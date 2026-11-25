@@ -6,6 +6,9 @@
 //! all read seats through it. This module is the part of the old runner those four depend on,
 //! and nothing in it starts, drives or judges a run.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -683,16 +686,9 @@ You are the echo seat. You document what you are told to document.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn unique_tempdir(label: &str) -> PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!("jawata-seat-file-test-{label}-{}-{nanos}-{n}", std::process::id()));
-        fs::create_dir_all(&dir).expect("test tempdir");
-        dir
+    fn unique_tempdir(label: &str) -> TestDir {
+        TestDir::new(&format!("jawata-seat-file-test-{label}"))
     }
 
     /// D12: EVERY SEAT STATES ITS TASK KIND, AND THE KIND HAS TEETH.

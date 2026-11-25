@@ -7,6 +7,9 @@
 //! [`DEFAULT_RETENTION`] versions per file, and a one-time GC (dry-run first) sweeps
 //! the historically scattered `.bak` files in.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -126,10 +129,11 @@ fn backups_dir() -> PathBuf {
     // own cache directory either.
     #[cfg(test)]
     let root = configured_root().unwrap_or_else(|| {
-        std::env::temp_dir()
-            .join("jawata-studio-test-backups")
-            .to_string_lossy()
-            .to_string()
+        // One per test thread, removed when the test ends.
+        thread_local! {
+            static UNDECLARED: TestDir = TestDir::new("jawata-studio-test-backups");
+        }
+        UNDECLARED.with(|dir| dir.to_string_lossy().into_owned())
     });
     #[cfg(not(test))]
     let root = configured_root().unwrap_or_else(crate::config::default_data_root);
@@ -441,13 +445,8 @@ mod tests {
         found
     }
 
-    fn tempdir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "jawata-backups-{tag}-{}",
-            crate::config::current_timestamp_millis()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    fn tempdir(tag: &str) -> TestDir {
+        TestDir::new(&format!("jawata-backups-{tag}"))
     }
 
     #[test]

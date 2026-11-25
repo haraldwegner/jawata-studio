@@ -34,6 +34,9 @@
 //! stance updates, and a hire that reads it starts the chosen brain. Reset drops it with the rest.
 //! A choice is only stored after a test run through that brain answered (`brains::probe`).
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -564,16 +567,9 @@ pub fn change_seat(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
-    fn tempdir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "jw-seat-settings-{tag}-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    fn tempdir(tag: &str) -> TestDir {
+        TestDir::new(&format!("jw-seat-settings-{tag}"))
     }
 
     #[test]
@@ -703,8 +699,8 @@ mod tests {
         assert!(!settings.is_customised("architect"), "a list that decides nothing is not a customisation");
     }
 
-    fn seeded(tag: &str) -> PathBuf {
-        let dir = tempdir(tag).join("seats");
+    fn seeded(tag: &str) -> TestDir {
+        let dir = tempdir(tag).child("seats");
         crate::conductor::materialize_seats(&dir).unwrap();
         dir
     }

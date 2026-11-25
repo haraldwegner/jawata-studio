@@ -14,6 +14,10 @@
 //! So this test runs the built binary, under a role name, with no endpoint,
 //! and reads what it wrote.
 
+#[path = "../src/testdir.rs"]
+mod testdir;
+use testdir::TestDir;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -65,11 +69,8 @@ fn built_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_jawata-hook"))
 }
 
-fn scratch(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("jawata-explain-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("scratch dir");
-    d
+fn scratch(name: &str) -> TestDir {
+    TestDir::new(&format!("jawata-explain-{name}"))
 }
 
 /// The gate clause: `--explain` runs the real path.

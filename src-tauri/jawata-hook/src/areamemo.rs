@@ -15,6 +15,9 @@
 //! cost the orientation itself, with nothing to say why. So every error here reads as "not
 //! shown yet": the cost of being wrong lands on repetition rather than on silence.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::path::{Path, PathBuf};
 
 /// Where a session's shown-areas live: `$HOME/.claude/jawata-studio/areamemo/<session>`.
@@ -63,12 +66,8 @@ pub fn mark_shown(home: &Path, session_id: &str, package: &str) {
 mod tests {
     use super::*;
 
-    fn temp() -> PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("jawata-areamemo-{}-{:?}", std::process::id(), std::thread::current().id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp() -> TestDir {
+        TestDir::new("jawata-areamemo")
     }
 
     #[test]

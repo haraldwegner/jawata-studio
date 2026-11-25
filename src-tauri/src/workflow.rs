@@ -14,6 +14,9 @@
 //! never as a silently different tree. One rule is only half mirrored: the engine knows which of its
 //! tools change code, the studio sees the seat file's `changes_code` and the brain's own editors.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -301,12 +304,9 @@ mod tests {
     use super::*;
     use crate::seat_settings::{change_seat, SeatChange};
     use std::fs;
-    use std::path::PathBuf;
 
-    fn deployed(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("jw-workflow-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let seats = dir.join("seats");
+    fn deployed(tag: &str) -> TestDir {
+        let seats = TestDir::new(&format!("jw-workflow-{tag}")).child("seats");
         crate::conductor::materialize_seats(&seats).unwrap();
         seats
     }

@@ -9,6 +9,9 @@
 //! Best effort in both directions, and the direction is deliberate: a record that cannot be written
 //! simply is not there, which makes the gate it unlocks stay shut, the safe way to fail.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -90,11 +93,8 @@ pub fn discard(home: &Path, session_id: &str, suffix: &str) {
 mod tests {
     use super::*;
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("jawata-oneshot-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn scratch(name: &str) -> TestDir {
+        TestDir::new(&format!("jawata-oneshot-{name}"))
     }
 
     #[test]

@@ -35,6 +35,9 @@
 //! NO FABRICATION. A call whose text cannot be read gets no finding: an instrument that halts
 //! on what it cannot see turns every unreadable payload into a refusal.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -562,14 +565,8 @@ mod tests {
         bash("python3 -I - <<'EOF'\n# jawata-author: editing a file\nEOF")
     }
 
-    fn home() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "watch-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn home() -> TestDir {
+        TestDir::new("watch-test")
     }
 
     fn watch(home: &Path, session: &str, call: CallView) -> Watched {

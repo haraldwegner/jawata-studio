@@ -23,6 +23,10 @@
 //! app closed; they go quiet when the resident service is stopped.* Not "hooks
 //! work with Studio closed" full stop.
 
+#[path = "../src/testdir.rs"]
+mod testdir;
+use testdir::TestDir;
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::process::{Command, Stdio};
@@ -78,9 +82,7 @@ fn serve(body: &'static str) -> String {
 
 fn deploy_and_run(tag: &str, role: &str, url: &str) -> (Option<i32>, String) {
     let _serial = deploy_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let dir = std::env::temp_dir().join(format!("jawata-hook-state-{}-{tag}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = TestDir::new(&format!("jawata-hook-state-{tag}"));
     let exe = dir.join(role);
 
     // macOS validates a binary's code signature PER INODE, so overwriting an

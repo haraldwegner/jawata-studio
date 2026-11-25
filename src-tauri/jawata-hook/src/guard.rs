@@ -773,8 +773,11 @@ mod tests {
     fn suite_cmd(tail: &str) -> String {
         // A real script whose own header declares it the suite runner — that
         // declaration is what the hook reads now, where it used to match a name.
-        let (dir, name) = crate::gatefile::testkit::script_with("# jawata-gate: suite");
-        format!("cd {} && ./{} 4{}", dir.display(), name, tail)
+        // One per test thread, so the script is there as long as the test and goes when it ends.
+        thread_local! {
+            static SUITE: (crate::testdir::TestDir, String) = crate::gatefile::testkit::script_with("# jawata-gate: suite");
+        }
+        SUITE.with(|(dir, name)| format!("cd {} && ./{} 4{}", dir.display(), name, tail))
     }
 
     #[test]

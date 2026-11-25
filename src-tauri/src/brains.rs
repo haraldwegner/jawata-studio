@@ -211,8 +211,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_command_the_engine_names_is_the_one_started_with_its_arguments() {
-        let marker = std::env::temp_dir().join(format!("jw-connect-{}", std::process::id()));
-        let _ = std::fs::remove_file(&marker);
+        // In a folder of its own, so the marker goes also when the assertion below fails.
+        let marker = crate::testdir::TestDir::new("jw-connect").child("marker");
         connect(&format!("touch {}", marker.display())).unwrap();
         let mut started = false;
         for _ in 0..50 {
@@ -222,7 +222,6 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        let _ = std::fs::remove_file(&marker);
         assert!(started, "`touch` was not started with its argument");
     }
 

@@ -24,6 +24,9 @@
 //! it cannot see is worse than one that stays quiet, because the findings are
 //! the whole product here.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -176,14 +179,8 @@ pub fn record(home: &Path, misses: &[Miss]) {
 mod tests {
     use super::*;
 
-    fn scratch(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "jawata-javawatch-{label}-{}-{}",
-            std::process::id(),
-            now_millis()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn scratch(label: &str) -> TestDir {
+        TestDir::new(&format!("jawata-javawatch-{label}"))
     }
 
     /// THE MEASURE, both halves. A `.java` write by a route the text tripwire

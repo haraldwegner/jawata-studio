@@ -16,7 +16,11 @@
 //! its side and this one keeps proving what the hook needs on ours, so the
 //! disagreement cannot pass unnoticed in either direction.
 
-use std::path::{Path, PathBuf};
+#[path = "../src/testdir.rs"]
+mod testdir;
+use testdir::TestDir;
+
+use std::path::Path;
 
 use jawata_hook::field::{reminder_due, REMINDER_INTERVAL_MILLIS};
 
@@ -30,14 +34,8 @@ const CHECKBOX_SILENCED_STATE: &str =
 const CHECKBOX_CLEARED_STATE: &str =
     "{\"nudges\":true,\"posted\":[],\"remindedAt\":0,\"silenced\":false,\"strikes\":0}";
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "jawata-checkbox-loop-{name}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn scratch(name: &str) -> TestDir {
+    TestDir::new(&format!("jawata-checkbox-loop-{name}"))
 }
 
 /// A pile with a shape well over the threshold, so a reminder is genuinely owed

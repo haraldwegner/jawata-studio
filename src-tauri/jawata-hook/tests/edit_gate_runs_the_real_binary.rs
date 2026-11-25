@@ -19,6 +19,10 @@
 //! It is also the gate on `BINARY_LIVE_ROLES`: the guard may only flip to its
 //! binary generation when BOTH halves are proven here.
 
+#[path = "../src/testdir.rs"]
+mod testdir;
+use testdir::TestDir;
+
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
@@ -104,11 +108,8 @@ fn guard_says(payload: &str, home: &std::path::Path) -> String {
     out
 }
 
-fn scratch(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("jawata-editgate-e2e-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("scratch home");
-    d
+fn scratch(name: &str) -> TestDir {
+    TestDir::new(&format!("jawata-editgate-e2e-{name}"))
 }
 
 #[test]

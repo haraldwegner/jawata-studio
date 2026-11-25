@@ -54,6 +54,9 @@
 //! as "could not answer" and never as "nothing like this exists": those are
 //! different facts and this sprint exists because they used to print the same.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use serde_json::Value;
 use std::path::Path;
 
@@ -574,11 +577,8 @@ mod tests {
         assert!(matches!(observed, Verdict::Nominated { .. }), "{observed:?}");
     }
 
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("jawata-dup-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn scratch(name: &str) -> TestDir {
+        TestDir::new(&format!("jawata-dup-{name}"))
     }
 
     fn shell(command: &str) -> String {

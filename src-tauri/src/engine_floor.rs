@@ -18,6 +18,9 @@
 //! answers there is nothing to compare with and the deploy proceeds as it did before (a deploy with
 //! no engine answering is not checked, and holds nothing back).
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::collections::BTreeSet;
 
 use crate::seat_file::SeatDefinition;
@@ -270,8 +273,8 @@ mod tests {
         assert!(held_utilities(Some(&surface_verbs())).is_empty(), "control: an engine offering everything holds none");
     }
 
-    fn seats_dir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("engine-floor-seats-{}", std::process::id())).join("seats");
+    fn seats_dir() -> TestDir {
+        let dir = TestDir::new("engine-floor-seats").child("seats");
         crate::conductor::materialize_seats(&dir).expect("materialize");
         dir
     }

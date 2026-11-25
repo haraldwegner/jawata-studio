@@ -9,6 +9,9 @@
 //!
 //! `main.rs` stays a thin shell over [`run`].
 
+#[cfg(test)]
+mod testdir;
+
 pub mod access;
 pub mod autonomy;
 pub mod bracket;

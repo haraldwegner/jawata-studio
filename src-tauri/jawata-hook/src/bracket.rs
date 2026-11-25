@@ -24,6 +24,9 @@
 //! `cat`, after the run, by anyone: command, directory, exit status, seconds, byte
 //! and line counts, and the last lines of output — the part a reader wants first.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -274,10 +277,8 @@ pub fn is_bracket_call(args: &[String]) -> bool {
 mod tests {
     use super::*;
 
-    fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("jawata-bracket-{tag}-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn scratch(tag: &str) -> TestDir {
+        TestDir::new(&format!("jawata-bracket-{tag}"))
     }
 
     fn args(v: &[&str]) -> Vec<String> {

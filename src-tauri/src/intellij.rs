@@ -5,6 +5,9 @@
 //!
 //! The files are read as text: they are small, IntelliJ writes them in one shape, and studio carries no XML parser.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::path::{Component, Path, PathBuf};
 
 /// One module of an IntelliJ project, as its `.iml` describes it.
@@ -157,7 +160,7 @@ mod tests {
 
     #[test]
     fn a_module_file_that_cannot_be_read_is_an_error_that_names_it() {
-        let scratch = std::env::temp_dir().join(format!("jawata-intellij-missing-{}", std::process::id()));
+        let scratch = TestDir::new("jawata-intellij-missing");
         std::fs::create_dir_all(scratch.join(".idea")).unwrap();
         std::fs::write(scratch.join(".idea").join("modules.xml"),
             r#"<modules><module fileurl="file://$PROJECT_DIR$/gone/gone.iml" filepath="$PROJECT_DIR$/gone/gone.iml" /></modules>"#).unwrap();

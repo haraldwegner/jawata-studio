@@ -29,6 +29,9 @@
 //! What it gives up, stated: a long script that does not carry the marker is
 //! unguarded until it does. The marker is one comment line.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::path::{Path, PathBuf};
 
 /// The token a script's header carries: `# jawata-gate: long` or `suite`.
@@ -481,19 +484,9 @@ fn split_commands(command: &str) -> Vec<String> {
 
 #[cfg(test)]
 pub(crate) mod testkit {
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static N: AtomicUsize = AtomicUsize::new(0);
-
     /// A scratch directory holding a script with the given header line.
-    pub fn script_with(header: &str) -> (PathBuf, String) {
-        let dir = std::env::temp_dir().join(format!(
-            "jawata-gatefile-{}-{}",
-            std::process::id(),
-            N.fetch_add(1, Ordering::SeqCst)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+    pub fn script_with(header: &str) -> (crate::testdir::TestDir, String) {
+        let dir = crate::testdir::TestDir::new("jawata-gatefile");
         let name = "gate.sh".to_string();
         std::fs::write(dir.join(&name), format!("#!/bin/bash\n{header}\necho hi\n")).unwrap();
         (dir, name)
@@ -535,8 +528,7 @@ mod tests {
 
     #[test]
     fn a_marker_in_the_body_is_not_a_declaration() {
-        let dir = std::env::temp_dir().join(format!("jawata-gatefile-body-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = TestDir::new("jawata-gatefile-body");
         let mut body = String::from("#!/bin/bash\n");
         for _ in 0..HEADER_LINES {
             body.push_str("true\n");
@@ -586,7 +578,7 @@ mod tests {
         let elsewhere = std::env::temp_dir();
         let cd = format!("cd {}", dir.display());
         let moved = dir_after(&cd, &elsewhere);
-        assert_eq!(dir, moved);
+        assert_eq!(*dir, moved);
         assert!(runs_long_gate(&format!("./{name}"), &moved));
         assert!(!runs_long_gate(&format!("./{name}"), &elsewhere), "same script, other directory");
     }

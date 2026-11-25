@@ -28,6 +28,9 @@
 //! Ported faithfully rather than reinvented: each message below is the one the
 //! script had earned, incident by incident, and each incident is kept with it.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::path::{Path, PathBuf};
 
 use crate::guard::Verdict;
@@ -727,7 +730,7 @@ mod tests {
     /// produce; the Windows-only spellings are the test below.
     #[test]
     fn containment_follows_a_link_to_the_same_place() {
-        let base = std::env::temp_dir().join(format!("jawata-38-{}", std::process::id()));
+        let base = TestDir::new("jawata-38");
         let real = base.join("real");
         let _ = std::fs::create_dir_all(&real);
         let link = base.join("link");
@@ -787,8 +790,7 @@ mod tests {
     /// probe reports which branch ran.
     #[test]
     fn one_place_spelled_two_ways_is_one_place_where_the_filesystem_says_so() {
-        let base = std::env::temp_dir().join(format!("jawata-38-case-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = TestDir::new("jawata-38-case");
         let root = base.join("Root");
         std::fs::create_dir_all(&root).expect("scratch");
 
@@ -912,8 +914,11 @@ mod tests {
 
     /// A gate that declares itself in its own header, and the directory it sits in.
     fn a_declared_gate() -> (String, String) {
-        let (dir, name) = crate::gatefile::testkit::script_with("# jawata-gate: long");
-        (dir.display().to_string(), name)
+        // One per test thread, so the script is there as long as the test and goes when it ends.
+        thread_local! {
+            static GATE: (crate::testdir::TestDir, String) = crate::gatefile::testkit::script_with("# jawata-gate: long");
+        }
+        GATE.with(|(dir, name)| (dir.display().to_string(), name.clone()))
     }
 
     #[test]

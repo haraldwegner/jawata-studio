@@ -14,21 +14,17 @@
 //!   "(2 of 3)". Three unrelated pushes and an unjudged ask sails through at
 //!   the cap.
 
+#[path = "../src/testdir.rs"]
+mod testdir;
+use testdir::TestDir;
+
 use std::io::Write;
 use std::process::{Command, Stdio};
 
 const HOOK: &str = env!("CARGO_BIN_EXE_jawata-hook");
 
-fn scratch_home(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "jawata-loopreset-{tag}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&d).unwrap();
+fn scratch_home(tag: &str) -> TestDir {
+    let d = TestDir::new(&format!("jawata-loopreset-{tag}"));
     let studio = d.join(".claude").join("jawata-studio");
     std::fs::create_dir_all(&studio).unwrap();
     std::fs::write(

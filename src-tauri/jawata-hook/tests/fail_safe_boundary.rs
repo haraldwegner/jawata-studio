@@ -13,6 +13,10 @@
 //! the silent path; a diagnostic line written to stdout there is malformed
 //! output to a `failClosed` guard, and every in-process test would stay green.
 
+#[path = "../src/testdir.rs"]
+mod testdir;
+use testdir::TestDir;
+
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -49,17 +53,12 @@ const HOOK: &str = env!("CARGO_BIN_EXE_jawata-hook");
 /// a "stdin that never closes" test would pass in microseconds without
 /// touching the deadline it claims to exercise. The timing gave that away —
 /// four tests in under a second when one of them must take at least 1.5s.
-fn deploy(tag: &str, role_binary: &str, config: Option<&str>) -> (std::path::PathBuf, std::path::PathBuf) {
+fn deploy(tag: &str, role_binary: &str, config: Option<&str>) -> (TestDir, std::path::PathBuf) {
     // The dir is keyed by TEST, not by role name. Two tests deploying the same
     // role into one directory reproduced ETXTBSY ("Text file busy") — the very
     // hazard the design names for re-deploy, since Linux refuses to overwrite
     // a binary that is executing. Tests run in parallel, so they hit it first.
-    let dir = std::env::temp_dir().join(format!(
-        "jawata-hook-boundary-{}-{tag}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let dir = TestDir::new(&format!("jawata-hook-boundary-{tag}"));
     let target = dir.join(role_binary);
     // Retry on ETXTBSY. Copying FROM the freshly-built binary while cargo or
     // another parallel test still holds it executing makes Linux refuse with

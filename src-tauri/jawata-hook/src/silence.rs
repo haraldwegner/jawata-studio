@@ -28,6 +28,9 @@
 //!    bounding cannot be made safe here — every scheme destroyed records or
 //!    disabled itself.
 
+#[cfg(test)]
+use crate::testdir::TestDir;
+
 use std::fmt::Write as _;
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -144,10 +147,8 @@ mod tests {
     // hollow-wiring gate flagged exactly that.
     use crate::safety::SilenceReason;
 
-    fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("jawata-silence-{}-{name}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
-        d.join("hook_silence.log")
+    fn tmp(name: &str) -> TestDir {
+        TestDir::new(&format!("jawata-silence-{name}")).child("hook_silence.log")
     }
 
     /// The gate says "each reason forced by a test".
@@ -364,8 +365,7 @@ mod tests {
     /// make every open fail on every platform.
     #[test]
     fn an_unwritable_log_is_a_no_op_not_an_error() {
-        let d = std::env::temp_dir().join(format!("jawata-silence-blocked-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&d);
+        let d = TestDir::new("jawata-silence-blocked");
         // `d` is a directory; opening it for append must fail.
         assert!(!append_to(&d, "primer", &Outcome::Silent(SilenceReason::CannotInject)));
     }

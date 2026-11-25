@@ -1,3 +1,8 @@
+// Test code only: the one drop guard for a test's temporary folder, shared with jawata-hook.
+#[cfg(test)]
+#[path = "../jawata-hook/src/testdir.rs"]
+mod testdir;
+
 mod agent_brain_settings;
 mod agent_registration;
 mod backups;
