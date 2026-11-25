@@ -20,6 +20,7 @@
   import { createEventDispatcher, onMount } from "svelte";
   import { adapterNotice } from "../adapterNotice";
   import { brainNote, canConnect, selectedValue } from "../seatBrainChoice";
+  import { brainCheckError } from "../seatErrors";
   import {
     brainConnect,
     brainProbe,
@@ -65,12 +66,12 @@
 
   /** Asks every agent program on this machine whether it is installed and logged in. Runs after
    * the list is shown, so a slow program never holds the page. */
-  async function checkBrains(_current: SeatsView) {
+  async function checkBrains(current: SeatsView) {
     brainsChecking = true;
     try {
       brains = await brainsStatus([]);
     } catch (error) {
-      actionError = `brain check: ${String(error)}`;
+      actionError = brainCheckError(String(error), current.errors);
     } finally {
       brainsChecking = false;
     }
