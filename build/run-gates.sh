@@ -67,10 +67,9 @@ fi
 
 echo
 echo "=== gate: the frontend type pass ==="
-# THE ONLY AUTOMATED READING THE FRONTEND GETS. This repository has no frontend
-# test framework, so every .svelte file is uncovered BY CONSTRUCTION — the Rust
-# suite above cannot see one line of it. `svelte-check` is therefore not a nicety
-# here; it is the whole of the frontend's verification, and until Sprint 28f it
+# THE ONLY AUTOMATED READING A .svelte FILE GETS. No test renders a component, so
+# every .svelte file is uncovered by the Rust suite above and by the unit tests
+# below. `svelte-check` is therefore not a nicety here, and until Sprint 28f it
 # was wired into no gate at all. Found at C1, while shipping a MemoryView change
 # that nothing else in this tree could have read.
 #
@@ -88,6 +87,16 @@ TYPES=$?
 if [ "$TYPES" -ne 0 ]; then
     echo "FAILED: the frontend type pass. A .svelte or .ts error is invisible to every"
     echo "other gate here, because nothing else in this repository reads that code."
+    exit 1
+fi
+
+echo
+echo "=== gate: the frontend unit tests ==="
+# 28h: src/lib/*.test.mjs existed and no gate ran it, so a red test there held nothing back.
+( cd "$ROOT" && npm test --silent )
+UNIT=$?
+if [ "$UNIT" -ne 0 ]; then
+    echo "FAILED: the frontend unit tests (npm test, exit $UNIT)."
     exit 1
 fi
 
