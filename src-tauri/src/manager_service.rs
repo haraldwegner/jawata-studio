@@ -18659,6 +18659,17 @@ judge was never told to give"
         );
     }
 
+    /// 28h z63: main hired the test manager itself and was refused; its seat says the pm is the one that hires it.
+    #[test]
+    fn main_never_hires_the_test_manager_itself() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let main = std::fs::read_to_string(root.join("seats/main.md")).expect("seats/main.md");
+        assert!(
+            main.contains("the pm hires the test manager, and you NEVER hire the test manager yourself"),
+            "main's seat must say that the pm hires the test manager and main never does"
+        );
+    }
+
     /// 28h z76: a planned probe that was refused was replaced by a search of another file and the item reported as passed.
     #[test]
     fn dogfood_a_refused_planned_probe_is_not_probed_and_never_replaced() {
