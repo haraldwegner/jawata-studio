@@ -764,6 +764,28 @@ pub const CONDUCTOR_SECTION_BUDGET_INTELLIJ: usize = 60;
 /// per-client variation in the rule-block body (the invariant test asserts
 /// every other section stays byte-identical across clients).
 pub fn render_conductor_section(seats: &[SeatDefinition], client: &str) -> Vec<String> {
+    // 28h z73: who hires each helper is read from the tree the engine enforces (`workflow::SIGNED`), main's first and a seat nobody
+    // hires last, so the rules cannot name a hirer the engine refuses.
+    fn by_hirer(hired: &[(String, String)]) -> String {
+        let mut groups: std::collections::BTreeMap<(u8, &str), Vec<&str>> = std::collections::BTreeMap::new();
+        for (name, shown) in hired {
+            let parent = crate::workflow::SIGNED
+                .iter()
+                .find(|(seat, ..)| seat == name)
+                .map(|(_, parent, ..)| *parent);
+            let key = match parent {
+                Some(crate::workflow::TOP) => (0, crate::workflow::TOP),
+                Some(parent) => (1, parent),
+                None => (2, "no seat"),
+            };
+            groups.entry(key).or_default().push(shown);
+        }
+        groups
+            .iter()
+            .map(|((_, parent), seats)| format!("hired by {parent}: {}", seats.join(" + ")))
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
     // DERIVED, never typed: the sentence used to carry the words "seven" and
     // "Five" while the arrays said something else was true — a seat could be
     // added and the prose would keep announcing the old roster. The counts
@@ -774,13 +796,16 @@ pub fn render_conductor_section(seats: &[SeatDefinition], client: &str) -> Vec<S
     // The helpers the principal hires, each with the word a person may also type for it. Derived
     // from the embedded files in their order, because the old sum (total minus direct) counted
     // them as /sprint's and announced five where two live there (C7-3).
-    let hired: Vec<String> = EMBEDDED_SEATS
+    let hired: Vec<(String, String)> = EMBEDDED_SEATS
         .iter()
         .map(|(file, _)| file.trim_end_matches(".md").to_string())
         .filter(|name| HIRED_SEATS.contains(&name.as_str()))
-        .map(|name| match command_for(&name) {
-            Some(command) => format!("{name} (`/{command}`)"),
-            None => name,
+        .map(|name| {
+            let shown = match command_for(&name) {
+                Some(command) => format!("{name} (`/{command}`)"),
+                None => name.clone(),
+            };
+            (name, shown)
         })
         .collect();
     let mut lines = vec![
@@ -806,9 +831,8 @@ pub fn render_conductor_section(seats: &[SeatDefinition], client: &str) -> Vec<S
         "- spec-editor + spec-auditor — the /sprint two-seat artifact pipeline".to_string()
     } else {
         format!(
-            "- spec-editor + spec-auditor — the /sprint two-seat artifact pipeline; {} — hired by the \
-             principal, and each also runs when you type its word",
-            hired.join(" + ")
+            "- spec-editor + spec-auditor — the /sprint two-seat artifact pipeline; {}. Each also runs when you type its word",
+            by_hirer(&hired)
         )
     });
     lines.extend([
@@ -2105,13 +2129,16 @@ mod tests {
             rendered.contains("11 are direct roles; 2 live in /sprint; 4 are hired helpers you can also call by their word"),
             "{rendered}"
         );
+        // 28h z73: who hires whom is the engine's tree, never "the principal" for all four; the old sentence told a principal to hire the
+        // test manager, which the engine refuses.
         assert!(
             rendered.contains(
-                "chief-engineer (`/chief-engineer`) + observer (`/observer`) + pm (`/pm`) + test-manager (`/test-manager`) \
-                 — hired by the principal, and each also runs when you type its word"
+                "hired by main: pm (`/pm`); hired by pm: chief-engineer (`/chief-engineer`) + test-manager (`/test-manager`); \
+                 hired by no seat: observer (`/observer`). Each also runs when you type its word"
             ),
             "{rendered}"
         );
+        assert!(!rendered.contains("hired by the principal"), "{rendered}");
         assert_eq!(
             COMMAND_MAP.len() + PIPELINE_SEATS.len() + ["developer", "senior-developer", "btw"].len(),
             EMBEDDED_SEATS.len(),
