@@ -22,6 +22,7 @@
   } from "./lib/api/tauri";
   import { formatManagerVersionForUi, getManagerAppVersion } from "./lib/appVersion";
   import { confirmDestructive } from "./lib/dialog";
+  import { loadPinned, savePinned } from "./lib/pinnedWorkspaces";
 
   const appStore = createAppStore();
   let managerAppVersion = "";
@@ -38,10 +39,10 @@
   let activeWorkspaceName: string = "";
   /** Workspaces that exist in the UI but have no projects yet —
    * typically just-created via "+ New workspace…". They aren't in
-   * projects.json so we keep them pinned client-side for the session
-   * so the user can switch back to them. They graduate to "real" once
-   * a project is added; they vanish if explicitly deleted. */
-  let pinnedEmptyWorkspaces = new Set<string>();
+   * projects.json, so the window keeps their names (across restarts)
+   * until a project is added or they are deleted. */
+  let pinnedEmptyWorkspaces = loadPinned(window.localStorage);
+  $: savePinned(window.localStorage, pinnedEmptyWorkspaces);
   let leftPanelWidth = 320;
   let isDraggingSplitter = false;
   let isCompactLayout = false;
