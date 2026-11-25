@@ -54,6 +54,7 @@ mod runner;
 mod seat_file;
 mod runtime_manager;
 mod seat_settings;
+mod startup_problem;
 mod vscode_deploy;
 mod workflow;
 mod store_seed;
@@ -581,7 +582,13 @@ pub fn run() {
     // brains those start and a hire's shell never found Maven. Taken once, before anything is started from it.
     login_env::adopt_login_path();
 
-    let config_store = ConfigStore::new().expect("failed to initialize config store");
+    // One call site for both ways of starting: the macro may be expanded once only.
+    let context = tauri::generate_context!();
+    // A file the studio cannot read is the person's to repair: say which and why, and touch nothing.
+    let config_store = match ConfigStore::new() {
+        Ok(store) => store,
+        Err(problem) => return startup_problem::run(problem, context),
+    };
     let release_manager = ReleaseManager::new().expect("failed to initialize release manager");
     let runtime_manager = RuntimeManager::new(config_store.paths());
     let manager_service = ManagerService::new(config_store, release_manager, runtime_manager);
@@ -1005,6 +1012,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            startup_problem::startup_problem,
             commands::get_dashboard,
             commands::editor_update_prompts,
             commands::answer_editor_update,
@@ -1058,7 +1066,7 @@ pub fn run() {
             commands::get_quit_prompt_context,
             commands::perform_quit_action,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while running jawata-studio")
         .run(|_app_handle, _event| {
             // Sprint 28 (v3.6.1): macOS "reopen" — clicking the Dock icon, or

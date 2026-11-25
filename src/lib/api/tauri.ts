@@ -388,6 +388,11 @@ export interface WorkspaceImportResult {
   skipped: string[];
 }
 
+/** Why the studio could not start, or null when it did. */
+export function startupProblem(): Promise<string | null> {
+  return invoke("startup_problem");
+}
+
 /** Retrieves the current dashboard state. */
 export function getDashboard(): Promise<ManagerDashboard> {
   return invoke("get_dashboard");
