@@ -14,10 +14,10 @@ configuration, or other material — that you intentionally submit to the Projec
 (e.g. via pull request, patch, or issue attachment).
 
 ### 2. Copyright licence
-You grant the Maintainer and downstream recipients a **perpetual, worldwide, non-exclusive,
-royalty-free, irrevocable** copyright licence to reproduce, prepare derivative works of,
-publicly display and perform, sublicense, and distribute your Contributions and derivative
-works.
+You grant the Maintainer a **perpetual, worldwide, non-exclusive, royalty-free,
+irrevocable** copyright licence to reproduce, prepare derivative works of, publicly display
+and perform, sublicense, and distribute your Contributions and derivative works. Everyone
+else receives your Contributions only under the Project's open-source licence.
 
 **You additionally grant the Maintainer the right to license and _relicense_ your
 Contributions under any terms — including proprietary or commercial terms, and any future

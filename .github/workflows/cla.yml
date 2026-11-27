@@ -16,7 +16,7 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write   # the signature is committed to signatures/cla.json in this repository
   pull-requests: write
   statuses: write
 
